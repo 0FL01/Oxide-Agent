@@ -35,6 +35,8 @@ const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
 const DEFAULT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "crawl4ai_markdown", "web_markdown"];
+const TIMEOUT_REPORT_MAX_ITEMS: usize = 6;
+const TIMEOUT_REPORT_SNIPPET_CHARS: usize = 220;
 const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research sidecar. Use only the tools available to you and return compact handoff notes for the main agent.";
 const GENERATION_PROMPT_HEADER: &str = r#"You are Search Probe, a web-only research sidecar for the web console.
 
@@ -489,29 +491,278 @@ fn parse_search_probe_contract(generation: u8, text: &str) -> SearchProbeHandoff
 }
 
 fn handoff_from_generation_text(generation: u8, text: &str) -> SearchProbeHandoff {
-    let mut handoff = parse_search_probe_contract(generation, text);
-    if is_timeout_report(text) {
-        handoff.public_update = handoff.public_update.or_else(|| {
-            Some(
-                "Search Probe reached its soft time budget; passing partial findings to the main runtime."
-                    .to_owned(),
-            )
-        });
-        handoff.decision = SearchProbeDecision::Stop;
+    if let Some(handoff) = timeout_report_handoff(generation, text) {
+        return handoff;
     }
-    handoff
+
+    parse_search_probe_contract(generation, text)
+}
+
+fn timeout_report_handoff(generation: u8, text: &str) -> Option<SearchProbeHandoff> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    if !is_timeout_report_value(&value) {
+        return None;
+    }
+
+    let public_update = timeout_report_public_update(&value);
+    let handoff = sanitize_timeout_report(&value);
+    Some(SearchProbeHandoff {
+        generation,
+        public_update: Some(public_update),
+        handoff,
+        decision: SearchProbeDecision::Stop,
+    })
 }
 
 fn is_timeout_report(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|value| {
-            value
-                .get("status")
-                .and_then(|status| status.as_str())
-                .map(|status| status == "timeout")
-        })
+        .map(|value| is_timeout_report_value(&value))
         .unwrap_or(false)
+}
+
+fn is_timeout_report_value(value: &serde_json::Value) -> bool {
+    value
+        .get("status")
+        .and_then(|status| status.as_str())
+        .map(|status| status == "timeout")
+        .unwrap_or(false)
+}
+
+fn timeout_report_public_update(value: &serde_json::Value) -> String {
+    let tools = timeout_report_tools(value);
+    let mut update = String::from("Search Probe reached its soft time budget");
+    if !tools.is_empty() {
+        update.push_str(" after using ");
+        update.push_str(&tools.join(", "));
+    }
+    let leads = timeout_report_leads(value);
+    if let Some(first) = leads.first() {
+        update.push_str("; passing partial leads: ");
+        update.push_str(&compact_text(first, 140));
+    } else {
+        update.push_str("; passing compact partial findings to the main runtime");
+    }
+    update.push('.');
+    update
+}
+
+fn sanitize_timeout_report(value: &serde_json::Value) -> String {
+    let mut handoff = String::from(
+        "Search Probe stopped at its soft time budget. Treat the following as partial leads only.\n",
+    );
+    push_timeout_report_meta(&mut handoff, value);
+
+    let leads = timeout_report_leads(value);
+    if !leads.is_empty() {
+        handoff.push_str("\nPartial leads:\n");
+        push_bullets(&mut handoff, &leads);
+    }
+
+    let failures = timeout_report_failures(value);
+    if !failures.is_empty() {
+        handoff.push_str("\nTool failures / dead ends:\n");
+        push_bullets(&mut handoff, &failures);
+    }
+
+    handoff.push_str("\nNext for main runtime:\n");
+    handoff.push_str("- Verify source-backed claims before final answer.\n");
+    handoff.push_str(
+        "- Continue web research only for exact numbers not covered by the partial leads.\n",
+    );
+    handoff
+}
+
+fn push_timeout_report_meta(handoff: &mut String, value: &serde_json::Value) {
+    if let Some(reason) = value.get("termination_reason").and_then(|v| v.as_str()) {
+        handoff.push_str("Termination: ");
+        handoff.push_str(reason.trim());
+        handoff.push('\n');
+    }
+    if let Some(note) = value.get("note").and_then(|v| v.as_str()) {
+        handoff.push_str("Note: ");
+        handoff.push_str(note.trim());
+        handoff.push('\n');
+    }
+    if let Some(stats) = timeout_report_stats(value) {
+        handoff.push_str("Stats: ");
+        handoff.push_str(&stats);
+        handoff.push('\n');
+    }
+}
+
+fn timeout_report_stats(value: &serde_json::Value) -> Option<String> {
+    let stats = value.get("stats")?;
+    let mut parts = Vec::new();
+    if let Some(iterations) = stats.get("iterations").and_then(|v| v.as_u64()) {
+        parts.push(format!("iterations={iterations}"));
+    }
+    if let Some(tokens) = stats.get("tokens_used").and_then(|v| v.as_u64()) {
+        parts.push(format!("tokens_used={tokens}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+fn timeout_report_tools(value: &serde_json::Value) -> Vec<String> {
+    let mut tools = Vec::new();
+    for message in timeout_report_messages(value) {
+        if let Some(tool) = message.get("tool_name").and_then(|v| v.as_str())
+            && !tool.trim().is_empty()
+            && !tools.iter().any(|existing| existing == tool)
+        {
+            tools.push(tool.to_owned());
+        }
+    }
+    tools
+}
+
+fn timeout_report_leads(value: &serde_json::Value) -> Vec<String> {
+    let mut leads = Vec::new();
+    for message in timeout_report_messages(value) {
+        if leads.len() >= TIMEOUT_REPORT_MAX_ITEMS {
+            break;
+        }
+        let Some(tool) = message.get("tool_name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(content) = message.get("content").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if let Some(lead) = summarize_tool_success(tool, content) {
+            leads.push(lead);
+        }
+    }
+    leads
+}
+
+fn timeout_report_failures(value: &serde_json::Value) -> Vec<String> {
+    let mut failures = Vec::new();
+    for message in timeout_report_messages(value) {
+        if failures.len() >= TIMEOUT_REPORT_MAX_ITEMS {
+            break;
+        }
+        let Some(tool) = message.get("tool_name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(content) = message.get("content").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if let Some(failure) = summarize_tool_failure(tool, content) {
+            failures.push(failure);
+        }
+    }
+    failures
+}
+
+fn timeout_report_messages(value: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+    value
+        .get("recent_messages")
+        .and_then(|messages| messages.as_array())
+        .into_iter()
+        .flatten()
+}
+
+fn summarize_tool_success(tool: &str, content: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<serde_json::Value>(content).ok();
+    if parsed
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(|status| status.as_str())
+        == Some("failure")
+    {
+        return None;
+    }
+
+    let text = parsed
+        .as_ref()
+        .and_then(extract_stdout_text)
+        .unwrap_or(content);
+    let summary = summarize_tool_text(text)?;
+    Some(format!("{tool}: {summary}"))
+}
+
+fn summarize_tool_failure(tool: &str, content: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    if value.get("status").and_then(|status| status.as_str()) != Some("failure") {
+        return None;
+    }
+
+    let kind = value
+        .get("failure_kind")
+        .and_then(|failure_kind| failure_kind.as_str())
+        .unwrap_or("failure");
+    let summary = value
+        .get("summary")
+        .and_then(|summary| summary.as_str())
+        .unwrap_or("tool call failed");
+    Some(format!("{tool}: {kind}: {}", compact_text(summary, 180)))
+}
+
+fn extract_stdout_text(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("stdout")
+        .and_then(|stdout| stdout.get("text"))
+        .and_then(|text| text.as_str())
+}
+
+fn summarize_tool_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(summary) = summarize_crawl_json(trimmed) {
+        return Some(summary);
+    }
+    Some(compact_text(
+        &first_useful_lines(trimmed),
+        TIMEOUT_REPORT_SNIPPET_CHARS,
+    ))
+}
+
+fn summarize_crawl_json(text: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let final_url = value.get("final_url").and_then(|url| url.as_str())?;
+    let chars = value.get("chars").and_then(|chars| chars.as_u64());
+    let mode = value.get("content_mode").and_then(|mode| mode.as_str());
+    let mut summary = format!("fetched {final_url}");
+    if let Some(mode) = mode {
+        summary.push_str(" via ");
+        summary.push_str(mode);
+    }
+    if let Some(chars) = chars {
+        summary.push_str(&format!(" ({chars} chars)"));
+    }
+    Some(summary)
+}
+
+fn first_useful_lines(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn compact_text(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if char_count(&normalized) <= max_chars {
+        return normalized;
+    }
+    let mut truncated: String = normalized
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect();
+    truncated.push('…');
+    truncated
+}
+
+fn push_bullets(output: &mut String, items: &[String]) {
+    for item in items {
+        output.push_str("- ");
+        output.push_str(item);
+        output.push('\n');
+    }
 }
 
 fn extract_tag(text: &str, tag: &str) -> Option<String> {
@@ -1421,22 +1672,57 @@ after
     fn timeout_report_becomes_stopping_handoff_with_public_update() {
         let parsed = handoff_from_generation_text(
             1,
-            r#"{
+            r###"{
   "status": "timeout",
   "note": "Partial results included.",
-  "recent_messages": [{"role":"tool","content":"source clue"}]
-}"#,
+  "termination_reason": "Soft timeout reached",
+  "recent_messages": [
+    {
+      "role":"tool",
+      "tool_name":"searxng_search",
+      "content":"{\"status\":\"success\",\"stdout\":{\"text\":\"## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5\\n\\n### Results\\n\\n1. StepFun Step-3.7-Flash-GGUF model page\"}}"
+    },
+    {
+      "role":"assistant",
+      "reasoning":"private chain-of-thought should not leak",
+      "content":""
+    },
+    {
+      "role":"tool",
+      "tool_name":"crawl4ai_markdown",
+      "content":"{\"status\":\"failure\",\"failure_kind\":\"anti_bot\",\"summary\":\"Blocked by anti-bot protection\"}"
+    }
+  ],
+  "stats": {"iterations": 3, "tokens_used": 11970}
+}"###,
         );
 
         assert_eq!(parsed.generation, 1);
         assert_eq!(parsed.decision, SearchProbeDecision::Stop);
         assert!(parsed.handoff.contains("Partial results included"));
-        assert_eq!(
-            parsed.public_update.as_deref(),
-            Some(
-                "Search Probe reached its soft time budget; passing partial findings to the main runtime."
-            )
+        assert!(parsed.handoff.contains("Termination: Soft timeout reached"));
+        assert!(
+            parsed
+                .handoff
+                .contains("Stats: iterations=3, tokens_used=11970")
         );
+        assert!(parsed.handoff.contains("Partial leads:"));
+        assert!(
+            parsed
+                .handoff
+                .contains("searxng_search: ## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5")
+        );
+        assert!(parsed.handoff.contains("Tool failures / dead ends:"));
+        assert!(
+            parsed
+                .handoff
+                .contains("crawl4ai_markdown: anti_bot: Blocked by anti-bot protection")
+        );
+        assert!(!parsed.handoff.contains("recent_messages"));
+        assert!(!parsed.handoff.contains("private chain-of-thought"));
+        let update = parsed.public_update.as_deref().unwrap_or_default();
+        assert!(update.contains("Search Probe reached its soft time budget after using searxng_search, crawl4ai_markdown"));
+        assert!(update.contains("passing partial leads"));
     }
 
     #[test]
