@@ -19,6 +19,7 @@ use super::streaming::{StreamUiSignals, start_task_stream};
 use super::versions::selected_version_index;
 
 const SEARCH_PROBE_REASONING_PREFIX: &str = "Search Probe #";
+const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main answer.";
 
 // ── Task Card ────────────────────────────────────────────────────────────
 
@@ -185,7 +186,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProbeChatMessage {
-    label: String,
     body: String,
 }
 
@@ -197,7 +197,6 @@ fn SearchProbeMessages(messages: Vec<SearchProbeChatMessage>) -> impl IntoView {
             view! {
                 <div class="message assistant-message-wrap search-probe-message-wrap">
                     <div class="search-probe-message">
-                        <div class="search-probe-label">{message.label}</div>
                         <div class="search-probe-body">
                             <MarkdownContent markdown=message.body />
                         </div>
@@ -587,9 +586,11 @@ fn parse_search_probe_reasoning_summary(summary: &str) -> Option<SearchProbeChat
     if body.is_empty() {
         return None;
     }
+    if body == SEARCH_PROBE_START_UPDATE {
+        return None;
+    }
 
     Some(SearchProbeChatMessage {
-        label: format!("Probe #{generation}"),
         body: body.to_owned(),
     })
 }
@@ -732,13 +733,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_search_probe_reasoning_summary_extracts_label_and_body() {
+    fn parse_search_probe_reasoning_summary_extracts_body_without_label() {
         let parsed = parse_search_probe_reasoning_summary(
             "Search Probe #2: TL;DR: found enough source context.",
         )
         .expect("probe message");
 
-        assert_eq!(parsed.label, "Probe #2");
         assert_eq!(parsed.body, "TL;DR: found enough source context.");
     }
 
@@ -757,6 +757,12 @@ mod tests {
             parse_search_probe_reasoning_summary("Search Probe #1:"),
             None
         );
+        assert_eq!(
+            parse_search_probe_reasoning_summary(
+                "Search Probe #1: Starting web research before the main answer."
+            ),
+            None
+        );
     }
 
     #[test]
@@ -767,23 +773,29 @@ mod tests {
                 "task-a",
                 2,
                 TaskEventKind::Reasoning,
+                "Search Probe #1: Starting web research before the main answer.",
+            ),
+            event(
+                "task-a",
+                3,
+                TaskEventKind::Reasoning,
                 "Search Probe #1: first",
             ),
             event(
                 "task-b",
-                3,
+                4,
                 TaskEventKind::Reasoning,
                 "Search Probe #1: other task",
             ),
             event(
                 "task-a",
-                4,
+                5,
                 TaskEventKind::ToolCall,
                 "Search Probe #2: tool",
             ),
             event(
                 "task-a",
-                5,
+                6,
                 TaskEventKind::Reasoning,
                 "Search Probe #2: second",
             ),
@@ -795,11 +807,9 @@ mod tests {
             messages,
             vec![
                 SearchProbeChatMessage {
-                    label: "Probe #1".to_owned(),
                     body: "first".to_owned(),
                 },
                 SearchProbeChatMessage {
-                    label: "Probe #2".to_owned(),
                     body: "second".to_owned(),
                 },
             ]

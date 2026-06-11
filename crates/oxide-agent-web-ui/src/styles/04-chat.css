@@ -500,14 +500,6 @@
   padding: 12px 14px;
 }
 
-.search-probe-label {
-  margin-bottom: 6px;
-  color: var(--accent-blue);
-  font: 600 11px/1.4 var(--font-mono);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
 .search-probe-body {
   color: var(--fg);
   font-size: 13px;
