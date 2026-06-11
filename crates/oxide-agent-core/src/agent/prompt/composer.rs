@@ -254,7 +254,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         }
         if has_tool(&tool_names, "web_markdown") && has_tool(&tool_names, "crawl4ai_markdown") {
             lines.push(
-                "Use `web_markdown` first for Reddit threads, GitHub/HuggingFace README pages, Markdown files, and simple static pages; use `crawl4ai_markdown` for pages needing browser rendering, JavaScript, or overlay/consent handling."
+                "Use `web_markdown` first for Reddit threads, repository README pages, Rust/PyPI package pages, Markdown files, and simple static pages; use `crawl4ai_markdown` for pages needing browser rendering, JavaScript, or overlay/consent handling."
                     .to_string(),
             );
         } else if has_tool(&tool_names, "crawl4ai_markdown") {
