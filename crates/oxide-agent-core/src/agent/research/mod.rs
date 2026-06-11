@@ -9,8 +9,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
+mod proof_not_found;
 mod verifier;
 
+pub use proof_not_found::{
+    PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS, PROOF_NOT_FOUND_MAX_REPORT_CHARS, ProofNotFoundReport,
+    ProofNotFoundReportInput, build_proof_not_found_report,
+};
 pub use verifier::{
     AnswerVerificationDecision, AnswerVerificationError, AnswerVerificationRequest,
     AnswerVerifierConfidence, AnswerVerifierVerdict, ResearchVerifierConfig, StrictAnswerVerifier,

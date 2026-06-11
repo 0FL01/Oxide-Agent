@@ -5,7 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
-use crate::agent::research::{ResearchRuntime, ResearchVerifierConfig};
+use crate::agent::research::{AnswerVerificationDecision, ResearchRuntime, ResearchVerifierConfig};
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
@@ -251,10 +251,22 @@ pub(super) struct RunState {
     pub force_manual_compaction: bool,
     /// Substantive final-answer draft produced next to a terminal `write_todos` call.
     pub pending_final_draft: Option<PendingFinalDraft>,
-    /// Whether strict verifier already forced the constrained proof-not-found report pass.
+    /// Number of strict verifier calls in normal mode only.
+    pub verifier_rounds: usize,
+    /// Whether one short/empty final-answer retry was already requested.
+    pub short_final_retry_used: bool,
+    /// Whether one oversized final-answer retry was already requested.
+    pub oversized_final_retry_used: bool,
+    /// Whether strict verifier already entered deterministic proof-not-found fallback.
     pub proof_not_found_report_requested: bool,
-    /// Whether proof-not-found mode already used its single repair retry.
+    /// Number of verifier calls for deterministic proof-not-found reports.
+    pub proof_not_found_verify_attempts: usize,
+    /// Whether deterministic proof-not-found report already used its single repair rebuild.
+    pub proof_not_found_repair_used: bool,
+    /// Legacy alias for proof-not-found one-shot repair state used by older tests/flows.
     pub proof_not_found_repair_attempt_used: bool,
+    /// Latest typed normal-mode verifier decision used to build deterministic fallback.
+    pub last_verifier_decision: Option<AnswerVerificationDecision>,
 }
 
 pub(super) struct PendingFinalDraft {
@@ -303,8 +315,14 @@ impl RunState {
             compaction_count: 0,
             force_manual_compaction: false,
             pending_final_draft: None,
+            verifier_rounds: 0,
+            short_final_retry_used: false,
+            oversized_final_retry_used: false,
             proof_not_found_report_requested: false,
+            proof_not_found_verify_attempts: 0,
+            proof_not_found_repair_used: false,
             proof_not_found_repair_attempt_used: false,
+            last_verifier_decision: None,
         }
     }
 
