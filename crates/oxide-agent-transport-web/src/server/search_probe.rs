@@ -675,11 +675,21 @@ fn summarize_tool_success(tool: &str, content: &str) -> Option<String> {
         return None;
     }
 
-    let text = parsed
+    let output = parsed
         .as_ref()
         .and_then(extract_stdout_text)
-        .unwrap_or(content);
-    let summary = summarize_tool_text(text)?;
+        .map(str::to_owned)
+        .or_else(|| extract_stdout_text_lossy(content));
+
+    let summary = if let Some(text) = output.as_deref() {
+        summarize_tool_text(text)
+    } else if looks_like_tool_wrapper(content) {
+        Some(String::from(
+            "tool returned data, but the timeout report truncated it before it could be compacted safely; re-check this source if needed",
+        ))
+    } else {
+        summarize_tool_text(content)
+    }?;
     Some(format!("{tool}: {summary}"))
 }
 
@@ -707,6 +717,46 @@ fn extract_stdout_text(value: &serde_json::Value) -> Option<&str> {
         .and_then(|text| text.as_str())
 }
 
+fn extract_stdout_text_lossy(content: &str) -> Option<String> {
+    let stdout_index = content.find("\"stdout\"")?;
+    let after_stdout = &content[stdout_index..];
+    let text_index = after_stdout.find("\"text\"")?;
+    let after_text = &after_stdout[text_index + "\"text\"".len()..];
+    let colon_index = after_text.find(':')?;
+    let after_colon = after_text[colon_index + 1..].trim_start();
+    let json_string = slice_json_string(after_colon)?;
+    serde_json::from_str::<String>(json_string).ok()
+}
+
+fn slice_json_string(value: &str) -> Option<&str> {
+    let bytes = value.as_bytes();
+    if bytes.first().copied() != Some(b'\"') {
+        return None;
+    }
+
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().enumerate().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'\"' => return value.get(..=index),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn looks_like_tool_wrapper(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    trimmed.starts_with("{\"artifacts\"")
+        || trimmed.contains("\"cleanup_status\"")
+        || trimmed.contains("\"stdout\"")
+        || trimmed.contains("\"stderr\"")
+}
+
 fn summarize_tool_text(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -722,12 +772,26 @@ fn summarize_tool_text(text: &str) -> Option<String> {
 }
 
 fn summarize_crawl_json(text: &str) -> Option<String> {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    let final_url = value.get("final_url").and_then(|url| url.as_str())?;
-    let chars = value.get("chars").and_then(|chars| chars.as_u64());
-    let mode = value.get("content_mode").and_then(|mode| mode.as_str());
+    let parsed = serde_json::from_str::<serde_json::Value>(text).ok();
+    let final_url = parsed
+        .as_ref()
+        .and_then(|value| value.get("final_url"))
+        .and_then(|url| url.as_str())
+        .map(str::to_owned)
+        .or_else(|| extract_json_string_field_lossy(text, "final_url"))?;
+    let chars = parsed
+        .as_ref()
+        .and_then(|value| value.get("chars"))
+        .and_then(|chars| chars.as_u64())
+        .or_else(|| extract_json_u64_field_lossy(text, "chars"));
+    let mode = parsed
+        .as_ref()
+        .and_then(|value| value.get("content_mode"))
+        .and_then(|mode| mode.as_str())
+        .map(str::to_owned)
+        .or_else(|| extract_json_string_field_lossy(text, "content_mode"));
     let mut summary = format!("fetched {final_url}");
-    if let Some(mode) = mode {
+    if let Some(mode) = mode.as_deref() {
         summary.push_str(" via ");
         summary.push_str(mode);
     }
@@ -735,6 +799,29 @@ fn summarize_crawl_json(text: &str) -> Option<String> {
         summary.push_str(&format!(" ({chars} chars)"));
     }
     Some(summary)
+}
+
+fn extract_json_string_field_lossy(content: &str, field: &str) -> Option<String> {
+    let quoted_field = format!("\"{field}\"");
+    let field_index = content.find(&quoted_field)?;
+    let after_field = &content[field_index + quoted_field.len()..];
+    let colon_index = after_field.find(':')?;
+    let after_colon = after_field[colon_index + 1..].trim_start();
+    let json_string = slice_json_string(after_colon)?;
+    serde_json::from_str::<String>(json_string).ok()
+}
+
+fn extract_json_u64_field_lossy(content: &str, field: &str) -> Option<u64> {
+    let quoted_field = format!("\"{field}\"");
+    let field_index = content.find(&quoted_field)?;
+    let after_field = &content[field_index + quoted_field.len()..];
+    let colon_index = after_field.find(':')?;
+    let digits = after_field[colon_index + 1..]
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
 }
 
 fn first_useful_lines(text: &str) -> String {
@@ -1725,6 +1812,55 @@ after
         let update = parsed.public_update.as_deref().unwrap_or_default();
         assert!(update.contains("Search Probe reached its soft time budget after using searxng_search, crawl4ai_markdown"));
         assert!(update.contains("passing partial leads"));
+    }
+
+    #[test]
+    fn timeout_report_sanitizer_unwraps_tool_output_wrappers() {
+        let truncated_crawl_wrapper = r#"{"artifacts":[],"cancellation_reason":null,"cleanup_status":"not_needed","duration_ms":5894,"error_message":null,"exit_code":null,"status":"success","stderr":{"text":""},"stdout":{"text":"{\"chars\":5223,\"content_mode\":\"crawl4ai_fit_markdown\",\"final_url\":\"https://huggingface.co/unsloth/Step-3.7-Flash-GGUF\"}"},"#;
+        let searxng_wrapper = r###"{"artifacts":[],"cleanup_status":"not_needed","status":"success","stdout":{"text":"## SearXNG results for: DDR3 ECC 2133 quad channel RAM bandwidth\n\n### Results\n\n1. llama.cpp / ik_llama MoE Expert Offloading"},"stderr":{"text":""}}"###;
+        let report = serde_json::json!({
+            "status": "timeout",
+            "note": "Partial results included.",
+            "termination_reason": "Soft timeout reached",
+            "recent_messages": [
+                {
+                    "role": "tool",
+                    "tool_name": "crawl4ai_markdown",
+                    "content": truncated_crawl_wrapper,
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "searxng_search",
+                    "content": searxng_wrapper,
+                },
+                {
+                    "role": "assistant",
+                    "reasoning": "private reasoning must not leak",
+                    "content": "",
+                }
+            ],
+            "stats": {"iterations": 3, "tokens_used": 13667}
+        });
+
+        let parsed = handoff_from_generation_text(1, &report.to_string());
+
+        assert_eq!(parsed.decision, SearchProbeDecision::Stop);
+        assert!(parsed.handoff.contains(
+            "crawl4ai_markdown: fetched https://huggingface.co/unsloth/Step-3.7-Flash-GGUF via crawl4ai_fit_markdown (5223 chars)"
+        ));
+        assert!(parsed.handoff.contains(
+            "searxng_search: ## SearXNG results for: DDR3 ECC 2133 quad channel RAM bandwidth"
+        ));
+        assert!(!parsed.handoff.contains("{\"artifacts\""));
+        assert!(!parsed.handoff.contains("cleanup_status"));
+        assert!(!parsed.handoff.contains("\"stdout\""));
+        assert!(!parsed.handoff.contains("\"stderr\""));
+        assert!(!parsed.handoff.contains("private reasoning"));
+
+        let update = parsed.public_update.as_deref().unwrap_or_default();
+        assert!(update.contains("fetched https://huggingface.co/unsloth/Step-3.7-Flash-GGUF"));
+        assert!(!update.contains("{\"artifacts\""));
+        assert!(!update.contains("cleanup_status"));
     }
 
     #[test]
