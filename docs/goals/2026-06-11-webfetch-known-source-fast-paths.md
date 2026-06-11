@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-webfetch-known-source-fast-paths.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to extend `webfetch_md` fast paths after `a53799f4 feat(webfetch): add fast README fetch paths`
 Goal doc owner: Codex
-Last updated: 2026-06-12 00:04
+Last updated: 2026-06-12 00:38
 
 ## Objective
 
@@ -57,7 +57,7 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Acceptance: `fetch.rs` contains no host-specific matchers except calling `known_sources::classify()` and executing returned plans; direct repository hosts live in `known_sources/repo_hosts.rs`; `crates.io`/`docs.rs` logic lives in `known_sources/rust_packages.rs`; PyPI logic lives in `known_sources/pypi.rs`; no single known-source slice exceeds ~220 lines excluding tests unless justified in Decisions
   - Evidence required: code inspection with file paths and line ranges; `cargo check` passes
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 moved existing GitHub/HuggingFace matching to `known_sources/repo_hosts.rs`; `fetch.rs` now calls `known_sources::classify()`. Future `rust_packages.rs` and `pypi.rs` remain pending for later checkpoints.
+  - Evidence collected: Checkpoint 1 moved existing GitHub/HuggingFace matching to `known_sources/repo_hosts.rs`; `fetch.rs` now calls `known_sources::classify()`. Checkpoint 3 added `known_sources/rust_packages.rs` for `crates.io`/`docs.rs`; `pypi.rs` remains pending for Checkpoint 4.
 
 - G2: GitLab fast path
   - Source: user request: "gitlab"
@@ -77,15 +77,15 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: user request: "Rust"
   - Acceptance: `https://crates.io/crates/<crate>` fetches `https://crates.io/api/v1/crates/<crate>`, extracts a concrete version, then fetches `https://crates.io/api/v1/crates/<crate>/<version>/readme`; output identifies the original source URL, selected version, mode, and README content
   - Evidence required: mapping/unit tests plus local-server async test for metadata + README flow; targeted webfetch tests pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 3 added `CrateReadme` source plans in `known_sources/mod.rs:14-20`, crates.io classification and minimal metadata parsing/rendering in `known_sources/rust_packages.rs:7-162`, and fetch orchestration in `fetch.rs:121-199`; tests cover mapping and local metadata+README server flow in `tests.rs:630-706`; targeted webfetch tests passed 37/37.
 
 - G5: `docs.rs` fast path through `crates.io` README API
   - Source: user request: "docs.rs"
   - Acceptance: common docs.rs URLs (`/crate/<crate>/<version>`, `/<crate>`, `/<crate>/latest/...`, `/<crate>/<version>/...`) resolve to the same crates.io README flow; explicit non-latest version skips version discovery when safe; package docs pages remain source URL in output
   - Evidence required: mapping tests for URL variants and local-server coverage shared with G4; targeted webfetch tests pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 3 added docs.rs URL classification for root, `latest`, explicit version, and `/crate/<crate>/<version>` routes in `known_sources/rust_packages.rs:89-108`; mapping tests assert version discovery vs explicit version handling in `tests.rs:644-667`; local-server coverage is shared with the crates.io README flow; targeted webfetch tests passed 37/37.
 
 - G6: PyPI package fast path
   - Source: user request: "PyPI"
@@ -99,35 +99,35 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Acceptance: every fast path failure logs a warning and falls back to the original URL fetch; normal `web_markdown` anti-bot failure behavior remains unchanged
   - Evidence required: code inspection and existing anti-bot tests still pass
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 preserved existing fallback flow; Checkpoint 2 only extends known-source classification and keeps `fetch.rs` fallback unchanged; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md` passed 34/34.
+  - Evidence collected: Checkpoint 1 preserved existing fallback flow; Checkpoint 2 only extended known-source classification; Checkpoint 3 keeps the existing known-source failure warning/fallback in `fetch.rs:42-58` and routes crates/docs failures through that same path; targeted webfetch tests passed 37/37.
 
 - Q2: No new dependencies or over-engineering
   - Source: `AGENTS.md` project rules
   - Acceptance: no `Cargo.toml` changes; no new services/caches/queues; JSON parsing uses existing `serde_json`
   - Evidence required: `git diff -- Cargo.toml` empty; code inspection
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added only local Rust modules; Checkpoint 2 changed only `known_sources/repo_hosts.rs`, tests, and this goal doc; `git diff -- Cargo.toml` is empty.
+  - Evidence collected: Checkpoint 1 added only local Rust modules; Checkpoint 2 changed only `known_sources/repo_hosts.rs`, tests, and this goal doc; Checkpoint 3 used existing `serde_json` and added no dependency changes; `git diff -- Cargo.toml` is empty.
 
 - Q3: Output remains agent-readable and source-transparent
   - Source: previous implementation contract from `a53799f4`
   - Acceptance: fast-path outputs include enough metadata to identify `URL`, `Source-URL`, `Mode`, and source-specific metadata such as version where relevant
   - Evidence required: async tests assert output fields for crates.io/PyPI and code inspection for direct README paths
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 crate README output includes `URL`, `Source-URL`, `Mode`, `Crate`, `Version`, `Content-Type`, `Fetched-Bytes`, and `Truncated`; async test asserts source URL, mode, crate, version, and README content in `tests.rs:699-705`. PyPI output remains pending.
 
 - Q4: Slice boundaries stay locally understandable
   - Source: project anti-overengineering rules and user concern about one-file "каша"
   - Acceptance: no generic provider trait, registry framework, macros, or router abstraction; each known-source module exposes small plain functions and focused data structs/enums only when needed by `fetch.rs`
   - Evidence required: code inspection and absence of new dependencies/framework-style abstractions
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 introduced plain `known_sources/mod.rs` and `known_sources/repo_hosts.rs`; no traits, macros, registry framework, or new dependency.
+  - Evidence collected: Checkpoint 1 introduced plain `known_sources/mod.rs` and `known_sources/repo_hosts.rs`; Checkpoint 3 added one focused `rust_packages.rs` slice and a simple enum variant, with no traits, macros, registry framework, or new dependency.
 
 - V1: Required validation passes
   - Source: repo validation conventions and previous webfetch checkpoint
   - Acceptance: listed validation commands pass, except documented unrelated workspace-wide clippy failures if re-run
   - Evidence required: command outputs summarized in Progress Log and Final Verification
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`.
+  - Evidence collected: Checkpoint 3 validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`; `git diff -- Cargo.toml` empty.
 
 - N1: No broad arbitrary-host root guessing
   - Source: safety boundary in user-reviewed plan
@@ -224,6 +224,13 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`; `git diff -- Cargo.toml`
   - Audit IDs updated: G2(verified), G3(verified), Q1(in_progress), Q2(in_progress), V1(in_progress), N1(verified)
   - Next: Checkpoint 3 crates.io and docs.rs API-backed README fast paths
+
+- 2026-06-12 00:38: Checkpoint 3 implemented
+  - Changed: added `CrateReadme` known-source plan; added `known_sources/rust_packages.rs` for crates.io/docs.rs classification, minimal crates.io metadata version selection, README API URL construction, and source-transparent rendering; added local-server async coverage for metadata+README fetch flow
+  - Evidence: `rust_packages.rs` is 162 lines; tests cover crates.io mapping, docs.rs root/latest/explicit version mapping, and local metadata+README fetch output fields
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`; `git diff -- Cargo.toml`
+  - Audit IDs updated: G4(verified), G5(verified), Q1(in_progress), Q2(in_progress), Q3(in_progress), Q4(in_progress), V1(in_progress)
+  - Next: Checkpoint 4 PyPI API-backed project description fast path
 
 ## Risks and Blockers
 

@@ -85,6 +85,40 @@ async fn serve_http_once(body: &'static str, content_type: &'static str) -> Sock
     addr
 }
 
+async fn serve_http_sequence(responses: Vec<(&'static str, &'static str)>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local test server");
+    let addr = listener.local_addr().expect("local address");
+    tokio::spawn(async move {
+        for (body, content_type) in responses {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        }
+    });
+    addr
+}
+
 #[test]
 fn typed_runtime_lists_only_web_markdown_tool() {
     let provider = Arc::new(WebFetchMdProvider::new());
@@ -591,6 +625,84 @@ fn maps_gitea_src_branch_readme_to_raw_url() {
         "https://gitea.com/owner/repo/raw/branch/main/docs/README.md"
     );
     assert_eq!(source.mode(), "gitea_src_fast_path");
+}
+
+#[test]
+fn maps_crates_io_package_to_readme_api_plan() {
+    let url = Url::parse("https://crates.io/crates/tokio").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(source.source_url(), &url);
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://crates.io/api/v1/crates/tokio"
+    );
+    assert!(matches!(source, KnownMarkdownSource::CrateReadme { .. }));
+    assert_eq!(source.mode(), "crates_io_readme_fast_path");
+}
+
+#[test]
+fn maps_docs_rs_urls_to_crates_io_readme_api_plan() {
+    for (raw, expected_version) in [
+        ("https://docs.rs/tokio", None),
+        ("https://docs.rs/tokio/latest/tokio/", None),
+        ("https://docs.rs/tokio/1.48.0/tokio/", Some("1.48.0")),
+        ("https://docs.rs/crate/tokio/1.48.0", Some("1.48.0")),
+    ] {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("known markdown source");
+
+        assert_eq!(
+            source.fetch_url().as_str(),
+            "https://crates.io/api/v1/crates/tokio"
+        );
+        assert_eq!(source.mode(), "docs_rs_readme_fast_path");
+        match source {
+            KnownMarkdownSource::CrateReadme { version, .. } => {
+                assert_eq!(version.as_deref(), expected_version);
+            }
+            KnownMarkdownSource::DirectReadme { .. } => panic!("expected crate README source"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn fetches_crates_io_readme_via_metadata_api() {
+    let addr = serve_http_sequence(vec![
+        (
+            r#"{"crate":{"newest_version":"1.2.3"}}"#,
+            "application/json",
+        ),
+        (
+            "# Demo crate\n\nREADME from API.",
+            "text/markdown; charset=utf-8",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("crates.io", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://crates.io/crates/demo".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("crates.io README fast path succeeds");
+
+    assert!(output.contains("URL: http://crates.io/api/v1/crates/demo/1.2.3/readme"));
+    assert!(output.contains("Source-URL: http://crates.io/crates/demo"));
+    assert!(output.contains("Mode: crates_io_readme_fast_path"));
+    assert!(output.contains("Crate: demo"));
+    assert!(output.contains("Version: 1.2.3"));
+    assert!(output.contains("# Demo crate"));
+    assert!(output.contains("README from API."));
 }
 
 #[test]

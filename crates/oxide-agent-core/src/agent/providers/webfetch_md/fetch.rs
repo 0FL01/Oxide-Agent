@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::convert::{html_to_markdown, truncate_chars};
 use super::error::{display_content_type, is_html_content_type, reject_anti_bot_challenge};
-use super::known_sources::{KnownMarkdownSource, classify as classify_known_source};
+use super::known_sources::{KnownMarkdownSource, classify as classify_known_source, rust_packages};
 use super::reddit::{
     parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown, xml_tag_text,
 };
@@ -118,6 +118,12 @@ impl WebFetchMdProvider {
     ) -> Result<String> {
         reject_unsafe_url(source.fetch_url())?;
 
+        if matches!(source, KnownMarkdownSource::CrateReadme { .. }) {
+            return self
+                .fetch_crate_readme(source, timeout_secs, cancellation_token)
+                .await;
+        }
+
         let fetched = self
             .fetch_text(source.fetch_url().clone(), timeout_secs, cancellation_token)
             .await
@@ -143,6 +149,53 @@ impl WebFetchMdProvider {
             fetched.bytes_read,
             truncated_label,
             truncated.text
+        ))
+    }
+
+    async fn fetch_crate_readme(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let (source_url, metadata_url, crate_name, requested_version, mode) =
+            rust_packages::crate_readme_parts(source)?;
+
+        reject_unsafe_url(metadata_url)?;
+        let metadata = self
+            .fetch_text(metadata_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("crates.io metadata fetch failed")?;
+        reject_unsafe_url(&metadata.final_url)?;
+
+        let version = rust_packages::selected_crate_version(&metadata.text, requested_version)?;
+        let readme_url = rust_packages::readme_url(metadata_url, crate_name, &version)?;
+        reject_unsafe_url(&readme_url)?;
+
+        let fetched = self
+            .fetch_text(readme_url, timeout_secs, cancellation_token)
+            .await
+            .context("crates.io README fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = if is_html_content_type(&fetched.content_type) {
+            html_to_markdown(&fetched.text)?
+        } else {
+            fetched.text
+        };
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(rust_packages::render_readme(
+            source_url,
+            &fetched.final_url,
+            mode,
+            crate_name,
+            &version,
+            display_content_type(&fetched.content_type),
+            fetched.bytes_read,
+            truncated_label,
+            &truncated.text,
         ))
     }
 
