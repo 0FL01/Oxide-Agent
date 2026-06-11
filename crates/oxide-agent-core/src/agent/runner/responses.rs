@@ -5,6 +5,7 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::hooks::completion::response_is_research_status_only;
 use crate::agent::memory::AgentMemory;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TodoList;
@@ -187,7 +188,9 @@ Original chars: {original_chars}. Preview is truncated.]\n\nUndelivered draft pr
         let mut final_response = input.final_answer;
         let mut reasoning = input.reasoning;
         if let Some(draft) = state.pending_final_draft.take() {
-            if draft.should_replace_final_response(&final_response) {
+            if draft.should_replace_final_response(&final_response)
+                || response_is_research_status_only(&final_response)
+            {
                 info!(
                     task_id = ctx.task_id,
                     draft_len = draft.content_len(),
@@ -1428,7 +1431,7 @@ mod tests {
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookResult};
     use crate::agent::memory::AgentMessage;
-    use crate::agent::providers::{TodoItem, TodoList};
+    use crate::agent::providers::{TodoItem, TodoList, TodoStatus};
     use crate::agent::research::{ResearchRuntime, ResearchVerifierConfig};
     use crate::agent::runner::test_support::{build_llm_client, single_final_response_provider};
     use crate::agent::runner::types::{FinalResponseInput, PendingFinalDraft, RunState};
@@ -2170,6 +2173,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn research_status_only_final_is_forced_to_continue_before_verifier() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(0);
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+
+        let mut runner = AgentRunner::new(Arc::new(llm));
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+        let mut session = EphemeralSession::new(4096);
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem {
+            description: "Research comparison".to_string(),
+            status: TodoStatus::Completed,
+        });
+        let todos_arc = Arc::new(Mutex::new(todos));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "compare two models with speed, prompt eval, VRAM and a table",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "research-status-only-final",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(runtime_with_evidence_document()),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Отчёт готов. Если хотите, могу дополнительно проверить конкретные цифры на RTX 4090, разобрать DiffusionGemma и дать команду для vLLM запуска.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("status-only research final should continue before verifier");
+
+        assert!(result.is_none());
+        assert_eq!(state.continuation_count, 1);
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("status/offer")
+                && message.content.contains("Start with TL;DR")
+        }));
+        assert!(!ctx.agent.memory().get_messages().iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content.contains("Отчёт готов")
+        }));
+    }
+
+    #[tokio::test]
     async fn strict_verifier_block_does_not_deliver_final_response() {
         let (result, _state, memory, _messages) =
             run_final_with_verifier_response(hard_block_decision_json()).await;
@@ -2833,6 +2907,57 @@ mod tests {
             message.resolved_kind() == AgentMessageKind::AssistantResponse
                 && message.content == long_draft.trim()
         }));
+    }
+
+    #[tokio::test]
+    async fn pending_final_draft_replaces_research_status_only_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "pending-final-draft-replaces-meta",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let long_draft = format!("## Verified report\n\n{}", "confirmed line\n".repeat(120));
+        let status_only = "Отчёт готов. Если хотите, могу дополнительно проверить источники, разобрать детали, сравнить соседние варианты и дать команду для запуска. ".repeat(10);
+        let mut state = RunState::new();
+        state.pending_final_draft =
+            PendingFinalDraft::from_write_todos_content(long_draft.clone(), 18);
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: status_only,
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("final response should be handled");
+
+        match result {
+            Some(AgentRunResult::Final(response)) => assert_eq!(response, long_draft.trim()),
+            _ => panic!("expected final response"),
+        }
+        assert!(state.pending_final_draft.is_none());
     }
 
     #[tokio::test]
