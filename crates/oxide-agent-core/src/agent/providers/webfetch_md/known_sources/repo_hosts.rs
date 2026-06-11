@@ -6,8 +6,10 @@ pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
     let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
     match host.as_str() {
         "github.com" => github_markdown_source(url),
+        "gitlab.com" => gitlab_markdown_source(url),
         "huggingface.co" => huggingface_markdown_source(url),
-        _ => None,
+        "codeberg.org" | "gitea.com" => gitea_markdown_source(url, true),
+        _ => gitea_markdown_source(url, false),
     }
 }
 
@@ -86,6 +88,78 @@ fn huggingface_resolve_url(prefix: &[&str], branch: &str, path: &str) -> Option<
     let mut resolve = Url::parse("https://huggingface.co").ok()?;
     resolve.set_path(&format!("/{}/resolve/{branch}/{path}", prefix.join("/")));
     Some(resolve)
+}
+
+fn gitlab_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let (fetch_url, mode) =
+        if let Some(dash_index) = segments.iter().position(|segment| *segment == "-") {
+            let repo_path = &segments[..dash_index];
+            let suffix = &segments[dash_index + 1..];
+            match suffix {
+                ["blob", branch, path @ ..] if repo_path.len() >= 2 && is_readme_path(path) => (
+                    gitlab_raw_url(repo_path, branch, &path.join("/"))?,
+                    "gitlab_blob_fast_path",
+                ),
+                _ => return None,
+            }
+        } else if segments.len() >= 2 {
+            (
+                gitlab_raw_url(&segments, "HEAD", "README.md")?,
+                "gitlab_readme_fast_path",
+            )
+        } else {
+            return None;
+        };
+
+    Some(KnownMarkdownSource::direct_readme(
+        url.clone(),
+        fetch_url,
+        mode,
+    ))
+}
+
+fn gitlab_raw_url(repo_path: &[&str], branch: &str, path: &str) -> Option<Url> {
+    let mut raw = Url::parse("https://gitlab.com").ok()?;
+    raw.set_path(&format!("/{}/-/raw/{branch}/{path}", repo_path.join("/")));
+    Some(raw)
+}
+
+fn gitea_markdown_source(url: &Url, known_host: bool) -> Option<KnownMarkdownSource> {
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let (fetch_url, mode) = match segments.as_slice() {
+        [owner, repo] if known_host => (
+            gitea_raw_url(url, owner, repo, "HEAD", "README.md")?,
+            "gitea_readme_fast_path",
+        ),
+        [owner, repo, "src", "branch", branch, path @ ..] if is_readme_path(path) => (
+            gitea_raw_url(url, owner, repo, branch, &path.join("/"))?,
+            "gitea_src_fast_path",
+        ),
+        _ => return None,
+    };
+
+    Some(KnownMarkdownSource::direct_readme(
+        url.clone(),
+        fetch_url,
+        mode,
+    ))
+}
+
+fn gitea_raw_url(url: &Url, owner: &str, repo: &str, branch: &str, path: &str) -> Option<Url> {
+    let mut raw = url.clone();
+    raw.set_query(None);
+    raw.set_fragment(None);
+    raw.set_path(&format!("/{owner}/{repo}/raw/branch/{branch}/{path}"));
+    Some(raw)
 }
 
 fn is_readme_path(path: &[&str]) -> bool {

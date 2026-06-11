@@ -532,10 +532,91 @@ fn maps_huggingface_dataset_blob_to_resolve_readme() {
 }
 
 #[test]
+fn maps_gitlab_repo_root_to_raw_readme() {
+    let url = Url::parse("https://gitlab.com/gitlab-org/gitlab").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://gitlab.com/gitlab-org/gitlab/-/raw/HEAD/README.md"
+    );
+    assert_eq!(source.mode(), "gitlab_readme_fast_path");
+}
+
+#[test]
+fn maps_gitlab_nested_group_root_to_raw_readme() {
+    let url = Url::parse("https://gitlab.com/group/subgroup/project").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://gitlab.com/group/subgroup/project/-/raw/HEAD/README.md"
+    );
+    assert_eq!(source.mode(), "gitlab_readme_fast_path");
+}
+
+#[test]
+fn maps_gitlab_readme_blob_to_raw_url() {
+    let url = Url::parse("https://gitlab.com/group/subgroup/project/-/blob/main/docs/README.md")
+        .expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://gitlab.com/group/subgroup/project/-/raw/main/docs/README.md"
+    );
+    assert_eq!(source.mode(), "gitlab_blob_fast_path");
+}
+
+#[test]
+fn maps_codeberg_repo_root_to_raw_readme() {
+    let url = Url::parse("https://codeberg.org/forgejo/forgejo").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://codeberg.org/forgejo/forgejo/raw/branch/HEAD/README.md"
+    );
+    assert_eq!(source.mode(), "gitea_readme_fast_path");
+}
+
+#[test]
+fn maps_gitea_src_branch_readme_to_raw_url() {
+    let url =
+        Url::parse("https://gitea.com/owner/repo/src/branch/main/docs/README.md").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://gitea.com/owner/repo/raw/branch/main/docs/README.md"
+    );
+    assert_eq!(source.mode(), "gitea_src_fast_path");
+}
+
+#[test]
+fn maps_generic_gitea_src_branch_readme_to_raw_url() {
+    let url =
+        Url::parse("https://git.example.test/owner/repo/src/branch/dev/README.md").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://git.example.test/owner/repo/raw/branch/dev/README.md"
+    );
+    assert_eq!(source.mode(), "gitea_src_fast_path");
+}
+
+#[test]
 fn ignores_non_readme_known_source_pages() {
     for raw in [
         "https://github.com/owner/repo/issues/1",
         "https://github.com/owner/repo/blob/main/src/lib.rs",
+        "https://gitlab.com/group/project/-/issues/1",
+        "https://gitlab.com/group/project/-/blob/main/src/lib.rs",
+        "https://codeberg.org/owner/repo/issues/1",
+        "https://codeberg.org/owner/repo/src/branch/main/src/lib.rs",
+        "https://git.example.test/owner/repo",
+        "https://git.example.test/owner/repo/src/branch/main/src/lib.rs",
         "https://huggingface.co/owner/model/discussions/1",
         "https://huggingface.co/owner/model/blob/main/config.json",
     ] {

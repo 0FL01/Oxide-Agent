@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-webfetch-known-source-fast-paths.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to extend `webfetch_md` fast paths after `a53799f4 feat(webfetch): add fast README fetch paths`
 Goal doc owner: Codex
-Last updated: 2026-06-11 00:35
+Last updated: 2026-06-12 00:04
 
 ## Objective
 
@@ -63,15 +63,15 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: user request: "gitlab"
   - Acceptance: `gitlab.com/<group...>/<project>` maps to `/-/raw/HEAD/README.md`; `/-/blob/<branch>/.../README.md` maps to `/-/raw/<branch>/.../README.md`; nested groups are supported; non-README pages are ignored
   - Evidence required: unit tests for root, nested group, blob, and negative cases; targeted webfetch tests pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 2 added GitLab classification in `known_sources/repo_hosts.rs:93-130` and tests for root, nested group root, blob README, and non-README negatives in `tests.rs:535-568` and `tests.rs:614-615`; targeted webfetch tests passed 34/34.
 
 - G3: Gitea/Forgejo/Codeberg fast path
   - Source: user request: "Gitea / Forgejo / Codeberg"
   - Acceptance: known hosts (`codeberg.org`, `gitea.com`, and any explicitly chosen Forgejo/Gitea host) map root `owner/repo` to `/raw/branch/HEAD/README.md`; explicit `/src/branch/<branch>/.../README.md` maps to `/raw/branch/<branch>/.../README.md`; generic self-hosted support is limited to explicit `/src/branch/.../README.md` patterns
   - Evidence required: unit tests for Codeberg root, Codeberg `src/branch`, generic self-hosted `src/branch`, and negative cases; targeted webfetch tests pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 2 added known-host root and explicit `src/branch` rewrites in `known_sources/repo_hosts.rs:132-163`; tests cover Codeberg root, Gitea `src/branch`, generic self-hosted `src/branch`, arbitrary-root negative, and non-README negatives in `tests.rs:571-607` and `tests.rs:616-619`; targeted webfetch tests passed 34/34.
 
 - G4: Rust package fast path through `crates.io`
   - Source: user request: "Rust"
@@ -99,14 +99,14 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Acceptance: every fast path failure logs a warning and falls back to the original URL fetch; normal `web_markdown` anti-bot failure behavior remains unchanged
   - Evidence required: code inspection and existing anti-bot tests still pass
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 preserved existing fallback flow; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md` passed 28/28.
+  - Evidence collected: Checkpoint 1 preserved existing fallback flow; Checkpoint 2 only extends known-source classification and keeps `fetch.rs` fallback unchanged; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md` passed 34/34.
 
 - Q2: No new dependencies or over-engineering
   - Source: `AGENTS.md` project rules
   - Acceptance: no `Cargo.toml` changes; no new services/caches/queues; JSON parsing uses existing `serde_json`
   - Evidence required: `git diff -- Cargo.toml` empty; code inspection
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added only local Rust modules; no `Cargo.toml` changes.
+  - Evidence collected: Checkpoint 1 added only local Rust modules; Checkpoint 2 changed only `known_sources/repo_hosts.rs`, tests, and this goal doc; `git diff -- Cargo.toml` is empty.
 
 - Q3: Output remains agent-readable and source-transparent
   - Source: previous implementation contract from `a53799f4`
@@ -126,15 +126,15 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: repo validation conventions and previous webfetch checkpoint
   - Acceptance: listed validation commands pass, except documented unrelated workspace-wide clippy failures if re-run
   - Evidence required: command outputs summarized in Progress Log and Final Verification
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`.
 
 - N1: No broad arbitrary-host root guessing
   - Source: safety boundary in user-reviewed plan
   - Must preserve: root URL fast paths only for known hosts; arbitrary hosts only get explicit, highly specific raw/blob pattern rewrites when safe
   - Evidence required: negative tests and code inspection
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 2 limits root rewrites to `codeberg.org` and `gitea.com` while allowing arbitrary hosts only for explicit `/owner/repo/src/branch/<branch>/.../README.md`; negative tests include `https://git.example.test/owner/repo` and non-README explicit paths in `tests.rs:618-619`.
 
 ## Implementation Plan
 
@@ -217,6 +217,13 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`
   - Audit IDs updated: G1(in_progress), Q1(in_progress), Q2(in_progress), Q4(in_progress)
   - Next: Checkpoint 2 direct forge README fast paths
+
+- 2026-06-12 00:04: Checkpoint 2 implemented
+  - Changed: added GitLab root/blob README rewrites; added Codeberg/Gitea known-host root rewrites; added explicit Gitea/Forgejo `src/branch` README rewrites for any host without arbitrary root guessing
+  - Evidence: `known_sources/repo_hosts.rs` is 168 lines; tests cover GitLab root/nested/blob, Codeberg root, Gitea explicit source path, generic self-hosted explicit source path, and negative cases
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`; `git diff -- Cargo.toml`
+  - Audit IDs updated: G2(verified), G3(verified), Q1(in_progress), Q2(in_progress), V1(in_progress), N1(verified)
+  - Next: Checkpoint 3 crates.io and docs.rs API-backed README fast paths
 
 ## Risks and Blockers
 
