@@ -600,6 +600,24 @@ fn maps_huggingface_dataset_blob_to_resolve_readme() {
 }
 
 #[test]
+fn maps_huggingface_blog_to_html_fast_path() {
+    for raw in [
+        "https://huggingface.co/blog/slug-only",
+        "https://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram#section",
+    ] {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("known markdown source");
+
+        assert!(matches!(
+            source,
+            KnownMarkdownSource::HuggingFaceBlog { .. }
+        ));
+        assert_eq!(source.mode(), "huggingface_blog_fast_path");
+        assert_eq!(source.fetch_url().fragment(), None);
+    }
+}
+
+#[test]
 fn maps_gitlab_repo_root_to_raw_readme() {
     let url = Url::parse("https://gitlab.com/gitlab-org/gitlab").expect("url");
     let source = classify_known_source(&url).expect("known markdown source");
@@ -854,6 +872,82 @@ async fn fetches_github_gist_truncated_file_from_raw_url() {
     assert!(output.contains("# Full raw gist"));
     assert!(output.contains("Fetched from raw_url."));
     assert!(!output.contains("partial"));
+}
+
+#[tokio::test]
+async fn fetches_huggingface_blog_content_despite_waf_markers() {
+    let html = r#"
+        <html>
+          <head><script>window.hubConfig = {"captchaApiKey":"test"};</script></head>
+          <body>
+            <main>
+              <div class="blog-content prose">
+                <h1>Flash Load</h1>
+                <p>The runtime has three practical pieces.</p>
+                <script src="https://example.awswaf.com/challenge.js"></script>
+              </div>
+            </main>
+          </body>
+        </html>
+    "#;
+    let addr = serve_http_once(html, "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("huggingface.co", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
+                    .to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("HuggingFace Blog fast path succeeds");
+
+    assert!(output.contains("Mode: huggingface_blog_fast_path"));
+    assert!(output.contains("# Flash Load"));
+    assert!(output.contains("The runtime has three practical pieces."));
+    assert!(!output.contains("captchaApiKey"));
+    assert!(!output.contains("challenge.js"));
+}
+
+#[tokio::test]
+async fn huggingface_blog_without_blog_content_falls_back_to_antibot_failure() {
+    let waf_html = r#"
+        <html>
+          <head><script src="https://example.awswaf.com/challenge.js"></script></head>
+          <body>captcha challenge</body>
+        </html>
+    "#;
+    let addr = serve_http_sequence(vec![
+        (waf_html, "text/html; charset=utf-8"),
+        (waf_html, "text/html; charset=utf-8"),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("huggingface.co", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
+                    .to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect_err("WAF-only HuggingFace Blog fails as anti-bot");
+
+    assert!(format!("{error:#}").contains("anti-bot protection"));
 }
 
 #[tokio::test]

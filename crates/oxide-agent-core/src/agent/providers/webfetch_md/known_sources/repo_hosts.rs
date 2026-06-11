@@ -51,6 +51,14 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
         .collect::<Vec<_>>();
 
     let (fetch_url, mode) = match segments.as_slice() {
+        ["blog", slug] if is_huggingface_blog_slug(slug) => {
+            (url_without_fragment(url), "huggingface_blog_fast_path")
+        }
+        ["blog", author, slug]
+            if is_huggingface_blog_author(author) && is_huggingface_blog_slug(slug) =>
+        {
+            (url_without_fragment(url), "huggingface_blog_fast_path")
+        }
         [owner, repo] => (
             huggingface_resolve_url(&[*owner, *repo], "main", "README.md")?,
             "huggingface_readme_fast_path",
@@ -77,6 +85,14 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
         _ => return None,
     };
 
+    if mode == "huggingface_blog_fast_path" {
+        return Some(KnownMarkdownSource::huggingface_blog(
+            url.clone(),
+            fetch_url,
+            mode,
+        ));
+    }
+
     Some(KnownMarkdownSource::direct_readme(
         url.clone(),
         fetch_url,
@@ -88,6 +104,28 @@ fn huggingface_resolve_url(prefix: &[&str], branch: &str, path: &str) -> Option<
     let mut resolve = Url::parse("https://huggingface.co").ok()?;
     resolve.set_path(&format!("/{}/resolve/{branch}/{path}", prefix.join("/")));
     Some(resolve)
+}
+
+fn url_without_fragment(url: &Url) -> Url {
+    let mut fetch_url = url.clone();
+    fetch_url.set_fragment(None);
+    fetch_url
+}
+
+fn is_huggingface_blog_author(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_huggingface_blog_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 fn gitlab_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {

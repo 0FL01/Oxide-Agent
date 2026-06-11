@@ -139,6 +139,11 @@ impl WebFetchMdProvider {
                     .fetch_github_gist(source, timeout_secs, cancellation_token)
                     .await;
             }
+            KnownMarkdownSource::HuggingFaceBlog { .. } => {
+                return self
+                    .fetch_huggingface_blog(source, timeout_secs, cancellation_token)
+                    .await;
+            }
             KnownMarkdownSource::DirectReadme { .. } => {}
         }
 
@@ -332,6 +337,48 @@ impl WebFetchMdProvider {
         }))
     }
 
+    async fn fetch_huggingface_blog(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::HuggingFaceBlog {
+            source_url,
+            fetch_url,
+            mode,
+        } = source
+        else {
+            bail!("not a HuggingFace Blog source");
+        };
+
+        let fetched = self
+            .fetch_text_without_antibot(fetch_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("HuggingFace Blog fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+        if !is_html_content_type(&fetched.content_type) {
+            bail!("HuggingFace Blog returned non-HTML content");
+        }
+
+        let article_html = extract_huggingface_blog_html(&fetched.text)?;
+        let markdown = html_to_markdown(article_html)?;
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
     /// Fetch a Reddit thread via its Atom RSS feed and render as Markdown.
     async fn fetch_reddit_rss(
         &self,
@@ -385,6 +432,27 @@ impl WebFetchMdProvider {
         timeout_secs: u64,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<FetchResult> {
+        self.fetch_text_inner(url, timeout_secs, cancellation_token, true)
+            .await
+    }
+
+    async fn fetch_text_without_antibot(
+        &self,
+        url: Url,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<FetchResult> {
+        self.fetch_text_inner(url, timeout_secs, cancellation_token, false)
+            .await
+    }
+
+    async fn fetch_text_inner(
+        &self,
+        url: Url,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+        reject_antibot: bool,
+    ) -> Result<FetchResult> {
         if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
             bail!("web_markdown cancelled before request");
         }
@@ -423,7 +491,9 @@ impl WebFetchMdProvider {
         let bytes_read = body.len();
         let text = String::from_utf8_lossy(&body).into_owned();
 
-        reject_anti_bot_challenge(&headers, &text)?;
+        if reject_antibot {
+            reject_anti_bot_challenge(&headers, &text)?;
+        }
 
         if !status.is_success() {
             bail!("server returned non-success status: {status}");
@@ -519,6 +589,25 @@ fn format_web_markdown_output(
     output.push_str("\n\n### Content\n\n");
     output.push_str(markdown);
     output
+}
+
+fn extract_huggingface_blog_html(html: &str) -> Result<&str> {
+    let marker = html
+        .find("blog-content")
+        .context("HuggingFace Blog HTML did not include blog-content")?;
+    let start = html[..marker].rfind("<div").unwrap_or(marker);
+    let tail = &html[marker..];
+    let end = tail
+        .find("</main>")
+        .map(|offset| marker + offset)
+        .or_else(|| tail.find("</article>").map(|offset| marker + offset))
+        .or_else(|| tail.find("</body>").map(|offset| marker + offset))
+        .unwrap_or(html.len());
+
+    if end <= start {
+        bail!("HuggingFace Blog HTML did not include a usable article body");
+    }
+    Ok(&html[start..end])
 }
 
 async fn read_limited_body(

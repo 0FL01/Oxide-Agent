@@ -34,6 +34,11 @@ pub(super) enum KnownMarkdownSource {
         comment_id: Option<String>,
         mode: &'static str,
     },
+    HuggingFaceBlog {
+        source_url: Url,
+        fetch_url: Url,
+        mode: &'static str,
+    },
 }
 
 impl KnownMarkdownSource {
@@ -93,12 +98,21 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn huggingface_blog(source_url: Url, fetch_url: Url, mode: &'static str) -> Self {
+        Self::HuggingFaceBlog {
+            source_url,
+            fetch_url,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
             Self::CrateReadme { source_url, .. } => source_url,
             Self::PypiProject { source_url, .. } => source_url,
             Self::GitHubGist { source_url, .. } => source_url,
+            Self::HuggingFaceBlog { source_url, .. } => source_url,
         }
     }
 
@@ -108,6 +122,7 @@ impl KnownMarkdownSource {
             Self::CrateReadme { metadata_url, .. } => metadata_url,
             Self::PypiProject { metadata_url, .. } => metadata_url,
             Self::GitHubGist { api_url, .. } => api_url,
+            Self::HuggingFaceBlog { fetch_url, .. } => fetch_url,
         }
     }
 
@@ -117,6 +132,7 @@ impl KnownMarkdownSource {
             Self::CrateReadme { mode, .. } => mode,
             Self::PypiProject { mode, .. } => mode,
             Self::GitHubGist { mode, .. } => mode,
+            Self::HuggingFaceBlog { mode, .. } => mode,
         }
     }
 }
