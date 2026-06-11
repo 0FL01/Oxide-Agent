@@ -544,6 +544,47 @@ fn maps_github_readme_blob_to_raw_url() {
 }
 
 #[test]
+fn maps_github_text_and_code_blobs_to_raw_url() {
+    for (raw, expected) in [
+        (
+            "https://github.com/stepfun-ai/Step-3.5-Flash/blob/main/llama.cpp/docs/step3.5-flash.md",
+            "https://raw.githubusercontent.com/stepfun-ai/Step-3.5-Flash/main/llama.cpp/docs/step3.5-flash.md",
+        ),
+        (
+            "https://github.com/owner/repo/blob/main/src/lib.rs",
+            "https://raw.githubusercontent.com/owner/repo/main/src/lib.rs",
+        ),
+        (
+            "https://github.com/owner/repo/blob/main/scripts/run.py",
+            "https://raw.githubusercontent.com/owner/repo/main/scripts/run.py",
+        ),
+        (
+            "https://github.com/owner/repo/blob/main/package.json",
+            "https://raw.githubusercontent.com/owner/repo/main/package.json",
+        ),
+    ] {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("known markdown source");
+
+        assert_eq!(source.fetch_url().as_str(), expected);
+        assert_eq!(source.mode(), "github_blob_fast_path");
+    }
+}
+
+#[test]
+fn ignores_github_binary_blobs() {
+    for raw in [
+        "https://github.com/owner/repo/blob/main/image.png",
+        "https://github.com/owner/repo/blob/main/model.gguf",
+        "https://github.com/owner/repo/blob/main/archive.zip",
+    ] {
+        let url = Url::parse(raw).expect("url");
+
+        assert!(classify_known_source(&url).is_none());
+    }
+}
+
+#[test]
 fn maps_github_gist_to_api_plan() {
     let url = Url::parse("https://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0")
         .expect("url");
@@ -1086,7 +1127,6 @@ fn maps_generic_gitea_src_branch_readme_to_raw_url() {
 fn ignores_non_readme_known_source_pages() {
     for raw in [
         "https://github.com/owner/repo/issues/1",
-        "https://github.com/owner/repo/blob/main/src/lib.rs",
         "https://gitlab.com/group/project/-/issues/1",
         "https://gitlab.com/group/project/-/blob/main/src/lib.rs",
         "https://codeberg.org/owner/repo/issues/1",

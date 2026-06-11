@@ -24,7 +24,7 @@ fn github_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
             github_raw_url(owner, repo, "HEAD", "README.md")?,
             "github_readme_fast_path",
         ),
-        [owner, repo, "blob", branch, path @ ..] if is_readme_path(path) => (
+        [owner, repo, "blob", branch, path @ ..] if is_text_blob_path(path) => (
             github_raw_url(owner, repo, branch, &path.join("/"))?,
             "github_blob_fast_path",
         ),
@@ -279,4 +279,87 @@ fn gitea_raw_url(url: &Url, owner: &str, repo: &str, branch: &str, path: &str) -
 fn is_readme_path(path: &[&str]) -> bool {
     path.last()
         .is_some_and(|file_name| file_name.eq_ignore_ascii_case("README.md"))
+}
+
+fn is_text_blob_path(path: &[&str]) -> bool {
+    let Some(file_name) = path.last().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+
+    if matches!(
+        file_name.as_str(),
+        "dockerfile" | "makefile" | "rakefile" | "gemfile" | "cargo.lock" | "go.sum" | "go.mod"
+    ) || file_name.ends_with(".env.example")
+    {
+        return true;
+    }
+
+    let Some((_, extension)) = file_name.rsplit_once('.') else {
+        return false;
+    };
+
+    matches!(
+        extension,
+        "adoc"
+            | "bash"
+            | "c"
+            | "cc"
+            | "cfg"
+            | "clj"
+            | "cljs"
+            | "cpp"
+            | "cs"
+            | "csv"
+            | "cxx"
+            | "dockerfile"
+            | "env"
+            | "erl"
+            | "ex"
+            | "exs"
+            | "fish"
+            | "go"
+            | "graphql"
+            | "h"
+            | "hpp"
+            | "hrl"
+            | "hs"
+            | "html"
+            | "ini"
+            | "java"
+            | "jl"
+            | "js"
+            | "json"
+            | "jsonc"
+            | "jsx"
+            | "kt"
+            | "kts"
+            | "lua"
+            | "m"
+            | "markdown"
+            | "md"
+            | "mdx"
+            | "nix"
+            | "php"
+            | "proto"
+            | "ps1"
+            | "py"
+            | "r"
+            | "rb"
+            | "rs"
+            | "rst"
+            | "scala"
+            | "sh"
+            | "sql"
+            | "swift"
+            | "tf"
+            | "toml"
+            | "ts"
+            | "tsv"
+            | "tsx"
+            | "txt"
+            | "xml"
+            | "yaml"
+            | "yml"
+            | "zsh"
+    )
 }
