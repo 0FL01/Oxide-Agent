@@ -5,7 +5,7 @@ Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 21:40 +03
+Last updated: 2026-06-11 22:10 +03
 
 ## Objective
 
@@ -305,12 +305,19 @@ Out of scope:
   - Audit IDs updated: none; this is runtime tuning after verified MVP completion.
   - Next: manual browser verification with `OXIDE_SEARCH_PROBE_ENABLED=true`.
 
+- 2026-06-11 22:10 +03 Post-completion forced finalize tuning
+  - Changed: added a no-tools forced finalize pass after soft-timeout reports, with env-backed finalize timeout/effort and focused feature-profile coverage.
+  - Evidence: manual logs showed a probe can exhaust search budget and still spend the remaining window on a synthesis turn; forced finalize creates a fresh probe executor with an empty tool allowlist and asks it to convert sanitized partial leads into the final XML-like handoff.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local timeout_report_runs_forced_finalize_without_tools --lib`; `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: none; this is reliability tuning after verified MVP completion.
+  - Next: run manual browser verification with `OXIDE_SEARCH_PROBE_FORCED_FINALIZE_TIMEOUT_SECS` set high enough for the selected model route.
+
 ## Risks and Blockers
 
 - Search Probe bounds may need deployment-specific tuning
   - Impact: slow search providers can consume the soft-finalize window before a useful handoff is returned.
-  - Evidence: manual logs showed one slow `searxng_search` retry consumed enough time for the previous `25s/35s` defaults to hard-timeout without a dossier.
-  - Mitigation or requested decision: defaults now use `search_limit=3`, `soft_finalize=35s`, and hard timeouts of `60s`; tune env vars per deployment if providers are slower.
+  - Evidence: manual logs showed one slow `searxng_search` retry consumed enough time for the previous `25s/35s` defaults to hard-timeout without a dossier; later logs showed the synthesis turn after search budget exhaustion can also consume the remaining window.
+  - Mitigation or requested decision: defaults now use `search_limit=3`, `soft_finalize=35s`, hard timeouts of `60s`, and a no-tools forced finalize pass; tune env vars per deployment if providers or selected model routes are slower.
   - Audit IDs affected: G3, G5, Q2.
 
 ## Final Verification

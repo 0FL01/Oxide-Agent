@@ -19,6 +19,8 @@ const ENV_MAX_GENERATIONS: &str = "OXIDE_SEARCH_PROBE_MAX_GENERATIONS";
 const ENV_PER_GENERATION_TIMEOUT_SECS: &str = "OXIDE_SEARCH_PROBE_PER_GENERATION_TIMEOUT_SECS";
 const ENV_TOTAL_TIMEOUT_SECS: &str = "OXIDE_SEARCH_PROBE_TOTAL_TIMEOUT_SECS";
 const ENV_SOFT_FINALIZE_SECS: &str = "OXIDE_SEARCH_PROBE_SOFT_FINALIZE_SECS";
+const ENV_FORCED_FINALIZE_TIMEOUT_SECS: &str = "OXIDE_SEARCH_PROBE_FORCED_FINALIZE_TIMEOUT_SECS";
+const ENV_FORCED_FINALIZE_EFFORT: &str = "OXIDE_SEARCH_PROBE_FORCED_FINALIZE_EFFORT";
 const ENV_SEARCH_LIMIT: &str = "OXIDE_SEARCH_PROBE_SEARCH_LIMIT";
 const ENV_MIN_EFFORT: &str = "OXIDE_SEARCH_PROBE_MIN_EFFORT";
 const ENV_PUBLIC_UPDATES: &str = "OXIDE_SEARCH_PROBE_PUBLIC_UPDATES";
@@ -30,6 +32,7 @@ const DEFAULT_MAX_GENERATIONS: u8 = 2;
 const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_SOFT_FINALIZE_SECS: u64 = 35;
+const DEFAULT_FORCED_FINALIZE_TIMEOUT_SECS: u64 = 20;
 const DEFAULT_SEARCH_LIMIT: usize = 3;
 const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
@@ -58,6 +61,24 @@ Dense facts, source notes, uncertainties, and next-search hints for the main age
 
 <search_probe_decision>
 continue or stop
+</search_probe_decision>
+"#;
+const FORCED_FINALIZE_PROMPT_HEADER: &str = r#"You are Search Probe in forced finalize mode.
+
+You have no web tools now. Do not attempt more research. Convert the partial Search Probe leads into a compact handoff for the main agent.
+
+Return this XML-like contract:
+
+<search_probe_public_update>
+Short user-visible TL;DR in the user's language.
+</search_probe_public_update>
+
+<search_probe_handoff>
+Dense facts, source notes, uncertainties, failed/dead-end sources, and exact next-search hints for the main agent.
+</search_probe_handoff>
+
+<search_probe_decision>
+stop
 </search_probe_decision>
 "#;
 
@@ -92,6 +113,20 @@ struct SearchProbeRunCtx<'a> {
     cancellation_token: CancellationToken,
 }
 
+struct SearchProbeFinalizeCtx<'a> {
+    session_manager: &'a WebSessionManager,
+    session_id: &'a str,
+    task_id: &'a str,
+    original_prompt: &'a str,
+    generation: u8,
+    partial_handoff: &'a SearchProbeHandoff,
+    config: &'a SearchProbeConfig,
+    progress_tx: &'a mpsc::Sender<AgentEvent>,
+    cancellation_token: &'a CancellationToken,
+    started_at: tokio::time::Instant,
+    total_timeout: std::time::Duration,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchProbeConfig {
     pub(crate) enabled: bool,
@@ -99,6 +134,8 @@ pub(crate) struct SearchProbeConfig {
     pub(crate) per_generation_timeout_secs: u64,
     pub(crate) total_timeout_secs: u64,
     pub(crate) soft_finalize_secs: u64,
+    pub(crate) forced_finalize_timeout_secs: u64,
+    pub(crate) forced_finalize_effort: WebAgentEffort,
     pub(crate) search_limit: usize,
     pub(crate) min_effort: WebAgentEffort,
     pub(crate) public_updates: bool,
@@ -119,6 +156,14 @@ impl SearchProbeConfig {
             ),
             total_timeout_secs: env_u64(ENV_TOTAL_TIMEOUT_SECS, DEFAULT_TOTAL_TIMEOUT_SECS),
             soft_finalize_secs: env_u64(ENV_SOFT_FINALIZE_SECS, DEFAULT_SOFT_FINALIZE_SECS),
+            forced_finalize_timeout_secs: env_u64(
+                ENV_FORCED_FINALIZE_TIMEOUT_SECS,
+                DEFAULT_FORCED_FINALIZE_TIMEOUT_SECS,
+            ),
+            forced_finalize_effort: env_effort(
+                ENV_FORCED_FINALIZE_EFFORT,
+                WebAgentEffort::Standard,
+            ),
             search_limit: env_usize(ENV_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT),
             min_effort: env_effort(ENV_MIN_EFFORT, WebAgentEffort::Heavy),
             public_updates: env_bool_default(ENV_PUBLIC_UPDATES, DEFAULT_PUBLIC_UPDATES),
@@ -140,6 +185,8 @@ impl Default for SearchProbeConfig {
             per_generation_timeout_secs: DEFAULT_PER_GENERATION_TIMEOUT_SECS,
             total_timeout_secs: DEFAULT_TOTAL_TIMEOUT_SECS,
             soft_finalize_secs: DEFAULT_SOFT_FINALIZE_SECS,
+            forced_finalize_timeout_secs: DEFAULT_FORCED_FINALIZE_TIMEOUT_SECS,
+            forced_finalize_effort: WebAgentEffort::Standard,
             search_limit: DEFAULT_SEARCH_LIMIT,
             min_effort: WebAgentEffort::Heavy,
             public_updates: DEFAULT_PUBLIC_UPDATES,
@@ -217,6 +264,8 @@ async fn maybe_run_search_probe_with_runtime(
                 per_generation_timeout_secs = config.per_generation_timeout_secs,
                 total_timeout_secs = config.total_timeout_secs,
                 soft_finalize_secs = config.soft_finalize_secs,
+                forced_finalize_timeout_secs = config.forced_finalize_timeout_secs,
+                ?config.forced_finalize_effort,
                 search_limit = config.search_limit,
                 ?config.min_effort,
                 public_updates = config.public_updates,
@@ -401,9 +450,26 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
             }
         };
 
-        let handoff = handoff_from_generation_text(generation, &text);
+        let mut handoff = handoff_from_generation_text(generation, &text);
         if is_timeout_report(&text) {
             warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe soft finalize timeout report produced");
+            if let Some(finalized) = run_forced_finalize(SearchProbeFinalizeCtx {
+                session_manager,
+                session_id,
+                task_id,
+                original_prompt: original_input.text_projection(),
+                generation,
+                partial_handoff: &handoff,
+                config,
+                progress_tx: &progress_tx,
+                cancellation_token: &cancellation_token,
+                started_at,
+                total_timeout,
+            })
+            .await
+            {
+                handoff = finalized;
+            }
         }
         if config.public_updates
             && let Some(update) = handoff.public_update.as_deref()
@@ -427,6 +493,103 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         handoffs,
         cancelled: false,
     }
+}
+
+async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchProbeHandoff> {
+    let SearchProbeFinalizeCtx {
+        session_manager,
+        session_id,
+        task_id,
+        original_prompt,
+        generation,
+        partial_handoff,
+        config,
+        progress_tx,
+        cancellation_token,
+        started_at,
+        total_timeout,
+    } = ctx;
+
+    if cancellation_token.is_cancelled() {
+        return None;
+    }
+
+    let total_remaining = remaining_timeout(started_at, total_timeout)?;
+    let finalize_timeout = total_remaining.min(std::time::Duration::from_secs(
+        config.forced_finalize_timeout_secs.max(1),
+    ));
+    if finalize_timeout <= std::time::Duration::from_secs(1) {
+        warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe skipped forced finalize because no time remains");
+        return None;
+    }
+
+    let Some(mut executor) = session_manager
+        .create_search_probe_executor(
+            session_id,
+            SearchProbeRuntimeOptions {
+                tool_allowlist: Vec::new(),
+                prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
+            },
+        )
+        .await
+    else {
+        warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe forced finalize parent session not found");
+        return None;
+    };
+    executor.session_mut().cancellation_token = cancellation_token.child_token();
+
+    send_milestone(
+        progress_tx,
+        &format!("search_probe_generation_{generation}_forced_finalize_started"),
+    )
+    .await;
+
+    let prompt = build_forced_finalize_prompt(original_prompt, generation, partial_handoff);
+    let probe_tx = spawn_probe_event_relay(progress_tx.clone(), false);
+    let execution = executor.execute_user_input_with_options(
+        AgentUserInput::new(prompt),
+        Some(probe_tx),
+        forced_finalize_execution_options(config.forced_finalize_effort, finalize_timeout),
+    );
+
+    let result = tokio::select! {
+        () = cancellation_token.cancelled() => return None,
+        result = tokio::time::timeout(finalize_timeout, execution) => result,
+    };
+
+    let text = match result {
+        Ok(Ok(AgentExecutionOutcome::Completed(text))) => text,
+        Ok(Ok(AgentExecutionOutcome::WaitingForUserInput(_))) => {
+            warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe forced finalize unexpectedly requested user input");
+            return None;
+        }
+        Ok(Err(error)) => {
+            warn!(session_id = %session_id, task_id = %task_id, generation, error = %error, "Search Probe forced finalize failed");
+            return None;
+        }
+        Err(_) => {
+            executor.session_mut().cancellation_token.cancel();
+            warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe forced finalize timed out");
+            return None;
+        }
+    };
+
+    let mut handoff = parse_search_probe_contract(generation, &text);
+    handoff.decision = SearchProbeDecision::Stop;
+    send_milestone(
+        progress_tx,
+        &format!("search_probe_generation_{generation}_forced_finalize_completed"),
+    )
+    .await;
+    Some(handoff)
+}
+
+fn remaining_timeout(
+    started_at: tokio::time::Instant,
+    total_timeout: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let elapsed = started_at.elapsed();
+    (elapsed < total_timeout).then(|| total_timeout.saturating_sub(elapsed))
 }
 
 fn next_generation_timeout(
@@ -466,6 +629,25 @@ fn build_generation_prompt(
         }
         prompt.push_str("</previous_search_probe_handoffs>\n");
     }
+    prompt
+}
+
+fn build_forced_finalize_prompt(
+    original_prompt: &str,
+    generation: u8,
+    partial_handoff: &SearchProbeHandoff,
+) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(FORCED_FINALIZE_PROMPT_HEADER);
+    prompt.push_str("\n<original_user_prompt>\n");
+    prompt.push_str(original_prompt);
+    prompt.push_str("\n</original_user_prompt>\n");
+    prompt.push_str("\n<search_probe_generation>\n");
+    prompt.push_str(&generation.to_string());
+    prompt.push_str("\n</search_probe_generation>\n");
+    prompt.push_str("\n<partial_search_probe_handoff>\n");
+    prompt.push_str(&partial_handoff.handoff);
+    prompt.push_str("\n</partial_search_probe_handoff>\n");
     prompt
 }
 
@@ -1048,6 +1230,15 @@ fn probe_execution_options(
     .with_search_limit(search_limit.max(1))
 }
 
+fn forced_finalize_execution_options(
+    effort: WebAgentEffort,
+    timeout: std::time::Duration,
+) -> AgentExecutionOptions {
+    AgentExecutionOptions::with_effort(web_effort_to_core(effort))
+        .with_timeout_secs(timeout.as_secs().max(1))
+        .with_search_limit(1)
+}
+
 const fn max_effort(left: WebAgentEffort, right: WebAgentEffort) -> WebAgentEffort {
     if effort_rank(left) >= effort_rank(right) {
         left
@@ -1232,6 +1423,8 @@ mod tests {
         ENV_PER_GENERATION_TIMEOUT_SECS,
         ENV_TOTAL_TIMEOUT_SECS,
         ENV_SOFT_FINALIZE_SECS,
+        ENV_FORCED_FINALIZE_TIMEOUT_SECS,
+        ENV_FORCED_FINALIZE_EFFORT,
         ENV_SEARCH_LIMIT,
         ENV_MIN_EFFORT,
         ENV_PUBLIC_UPDATES,
@@ -1476,6 +1669,8 @@ mod tests {
         assert_eq!(config.per_generation_timeout_secs, 60);
         assert_eq!(config.total_timeout_secs, 60);
         assert_eq!(config.soft_finalize_secs, 35);
+        assert_eq!(config.forced_finalize_timeout_secs, 20);
+        assert_eq!(config.forced_finalize_effort, WebAgentEffort::Standard);
         assert_eq!(config.search_limit, 3);
         assert_eq!(config.min_effort, WebAgentEffort::Heavy);
         assert!(config.public_updates);
@@ -1495,6 +1690,8 @@ mod tests {
         test_set_env(ENV_PER_GENERATION_TIMEOUT_SECS, "11");
         test_set_env(ENV_TOTAL_TIMEOUT_SECS, "22");
         test_set_env(ENV_SOFT_FINALIZE_SECS, "7");
+        test_set_env(ENV_FORCED_FINALIZE_TIMEOUT_SECS, "8");
+        test_set_env(ENV_FORCED_FINALIZE_EFFORT, "extended");
         test_set_env(ENV_SEARCH_LIMIT, "4");
         test_set_env(ENV_MIN_EFFORT, "extended");
         test_set_env(ENV_PUBLIC_UPDATES, "false");
@@ -1512,6 +1709,8 @@ mod tests {
         assert_eq!(config.per_generation_timeout_secs, 11);
         assert_eq!(config.total_timeout_secs, 22);
         assert_eq!(config.soft_finalize_secs, 7);
+        assert_eq!(config.forced_finalize_timeout_secs, 8);
+        assert_eq!(config.forced_finalize_effort, WebAgentEffort::Extended);
         assert_eq!(config.search_limit, 4);
         assert_eq!(config.min_effort, WebAgentEffort::Extended);
         assert!(!config.public_updates);
@@ -1672,6 +1871,88 @@ stop
             reasoning
                 .iter()
                 .any(|summary| summary.contains("Search Probe #2: TL;DR: second pass"))
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    async fn timeout_report_runs_forced_finalize_without_tools() {
+        let timeout_report = serde_json::json!({
+            "status": "timeout",
+            "note": "Partial results included.",
+            "termination_reason": "Soft timeout reached",
+            "recent_messages": [
+                {
+                    "role": "tool",
+                    "tool_name": "searxng_search",
+                    "content": "{\"status\":\"success\",\"stdout\":{\"text\":\"## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5\"}}",
+                }
+            ],
+            "stats": {"iterations": 3, "tokens_used": 11970}
+        })
+        .to_string();
+        let session_manager = test_session_manager_with_responses(vec![
+            structured_final_answer_response(&timeout_report),
+            structured_final_answer_response(
+                r#"<search_probe_public_update>
+TL;DR: forced finalize compressed partial leads.
+</search_probe_public_update>
+<search_probe_handoff>
+forced finalize handoff without additional web tools
+</search_probe_handoff>
+<search_probe_decision>
+stop
+</search_probe_decision>"#,
+            ),
+        ]);
+        create_parent_session(&session_manager).await;
+        let config = SearchProbeConfig {
+            enabled: true,
+            max_generations: 1,
+            per_generation_timeout_secs: 20,
+            total_timeout_secs: 30,
+            forced_finalize_timeout_secs: 10,
+            forward_tool_events: false,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(32);
+
+        let (result, outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("original prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        assert!(!outcome.cancelled);
+        assert_eq!(outcome.handoffs.len(), 1);
+        assert_eq!(outcome.handoffs[0].decision, SearchProbeDecision::Stop);
+        assert_eq!(
+            outcome.handoffs[0].public_update.as_deref(),
+            Some("TL;DR: forced finalize compressed partial leads.")
+        );
+        assert!(
+            outcome.handoffs[0]
+                .handoff
+                .contains("forced finalize handoff without additional web tools")
+        );
+        assert!(
+            request_content(&result)
+                .contains("forced finalize handoff without additional web tools")
+        );
+        assert!(!request_content(&result).contains("Partial results included."));
+
+        let milestones = milestone_names(&events);
+        assert!(
+            milestones.contains(&"search_probe_generation_1_forced_finalize_started".to_string())
+        );
+        assert!(
+            milestones.contains(&"search_probe_generation_1_forced_finalize_completed".to_string())
         );
     }
 
@@ -1998,6 +2279,16 @@ after
         );
 
         assert_eq!(options.timeout_secs, Some(9));
+        assert_eq!(options.search_limit, Some(1));
+    }
+
+    #[test]
+    fn forced_finalize_options_disable_search_by_policy() {
+        let options =
+            forced_finalize_execution_options(WebAgentEffort::Standard, Duration::from_secs(20));
+
+        assert_eq!(options.effort, AgentExecutionEffort::Standard);
+        assert_eq!(options.timeout_secs, Some(20));
         assert_eq!(options.search_limit, Some(1));
     }
 
