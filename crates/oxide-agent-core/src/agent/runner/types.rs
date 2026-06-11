@@ -253,6 +253,8 @@ pub(super) struct RunState {
     pub pending_final_draft: Option<PendingFinalDraft>,
     /// Whether strict verifier already forced the constrained proof-not-found report pass.
     pub proof_not_found_report_requested: bool,
+    /// Whether proof-not-found mode already used its single repair retry.
+    pub proof_not_found_repair_attempt_used: bool,
 }
 
 pub(super) struct PendingFinalDraft {
@@ -302,6 +304,7 @@ impl RunState {
             force_manual_compaction: false,
             pending_final_draft: None,
             proof_not_found_report_requested: false,
+            proof_not_found_repair_attempt_used: false,
         }
     }
 

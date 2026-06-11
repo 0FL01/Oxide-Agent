@@ -1616,7 +1616,7 @@ mod tests {
     fn research_verifier_defaults_keep_payload_bounded() {
         let settings = AgentSettings::default();
 
-        assert_eq!(settings.get_research_verifier_max_evidence_docs(), 12);
+        assert_eq!(settings.get_research_verifier_max_evidence_docs(), 3);
         assert_eq!(settings.get_research_verifier_max_excerpt_chars(), 4096);
     }
 
@@ -2448,7 +2448,7 @@ pub const RESEARCH_VERIFIER_MAX_ROUNDS: usize = 10;
 /// Default strict verifier request timeout.
 pub const RESEARCH_VERIFIER_TIMEOUT_SECS: u64 = 120;
 /// Default maximum evidence documents included in one verifier request.
-pub const RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS: usize = 12;
+pub const RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS: usize = 3;
 /// Default maximum excerpt characters per evidence document included in one verifier request.
 pub const RESEARCH_VERIFIER_MAX_EXCERPT_CHARS: usize = 4_096;
 

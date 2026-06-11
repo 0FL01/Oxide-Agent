@@ -17,9 +17,9 @@ Rules:
 - Do NOT trust the agent draft, sub-agent summaries, reasoning, memory, search snippets, or prior conclusions.
 - Every factual claim in the final answer must be directly supported by evidence text.
 - Licenses, benchmark metrics, language support, model architecture, training data, Russian/152-ФЗ suitability, recommendations, and rankings require direct source text.
-- If evidence is missing, return need_more_evidence or revise.
+- If evidence is missing but the draft can be repaired by fetching specific sources or removing claims, return need_more_evidence or revise.
 - Return proof_not_found only for a constrained no-proof report that explicitly avoids unsupported recommendations.
-- Return block for unsafe, contradictory, malformed, or unverifiable answers that should not be delivered.
+- Return block only for hard-stop cases: unsafe content, malformed final answers, contradictions that must not be revised in-place, or answers that are impossible to repair with more evidence/removing unsupported claims.
 
 Respond ONLY with one strict JSON object matching this schema.
 The first non-whitespace character MUST be `{` and the last non-whitespace character MUST be `}`.

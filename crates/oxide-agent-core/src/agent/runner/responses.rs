@@ -18,6 +18,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+const MIN_VERIFIER_FINAL_ANSWER_CHARS: usize = 200;
+const PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS: usize = 3;
+const PROOF_NOT_FOUND_MAX_EXCERPT_CHARS: usize = 2_048;
+const PROOF_NOT_FOUND_MAX_REPORT_CHARS: usize = 3_500;
+
 impl AgentRunner {
     /// Handle malformed structured output responses.
     pub(super) async fn handle_structured_output_error(
@@ -302,11 +307,44 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             return Ok(FinalVerificationOutcome::Deliver);
         }
 
-        let Some(verifier_config) = ctx.config.research_verifier_config.clone() else {
+        let Some(mut verifier_config) = ctx.config.research_verifier_config.clone() else {
             return Ok(FinalVerificationOutcome::Deliver);
         };
         if !verifier_config.enabled {
             return Ok(FinalVerificationOutcome::Deliver);
+        }
+
+        let final_response_chars = final_response.trim().chars().count();
+        if final_response_chars < MIN_VERIFIER_FINAL_ANSWER_CHARS {
+            return Ok(FinalVerificationOutcome::Continue {
+                reason: "Strict answer verifier requires a substantive final answer".to_string(),
+                context: verifier_substantive_final_answer_context(final_response_chars),
+            });
+        }
+
+        let proof_not_found_mode = state.proof_not_found_report_requested;
+        if proof_not_found_mode {
+            verifier_config = compact_proof_not_found_verifier_config(verifier_config);
+            if final_response_chars > PROOF_NOT_FOUND_MAX_REPORT_CHARS {
+                if state.proof_not_found_repair_attempt_used {
+                    self.save_undelivered_final_response_draft(
+                        ctx,
+                        final_response,
+                        "constrained proof-not-found report exceeded length limit",
+                    );
+                    return Err(anyhow::anyhow!(
+                        "strict answer verifier failed closed: constrained proof-not-found report exceeded {PROOF_NOT_FOUND_MAX_REPORT_CHARS} chars after retry"
+                    ));
+                }
+                state.proof_not_found_repair_attempt_used = true;
+                return Ok(FinalVerificationOutcome::Continue {
+                    reason: "Strict answer verifier requires a shorter proof-not-found report"
+                        .to_string(),
+                    context: verifier_proof_not_found_short_report_context(
+                        "proof-not-found report exceeded the length limit before verification",
+                    ),
+                });
+            }
         }
 
         let Some(research_runtime) = ctx.research_runtime.as_deref() else {
@@ -322,10 +360,13 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
 
         let research_snapshot = research_runtime.snapshot();
         let max_rounds = verifier_config.max_rounds;
+        let max_evidence_docs = verifier_config.max_evidence_docs;
         let verifier = StrictAnswerVerifier::new(self.llm_client(), verifier_config);
         let round = state.continuation_count.saturating_add(1);
-        let proof_not_found_mode = state.proof_not_found_report_requested;
-        let evidence_document_count = research_snapshot.evidence_documents.len();
+        let evidence_document_count = research_snapshot
+            .evidence_documents
+            .len()
+            .min(max_evidence_docs);
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::FinalDraftPendingVerification {
@@ -385,6 +426,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                     round,
                     max_rounds,
                     proof_not_found_mode,
+                    state.proof_not_found_repair_attempt_used,
                 );
                 let payload = research_runtime.record_verifier_trace(ResearchVerifierTrace {
                     verdict: None,
@@ -406,7 +448,10 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                 });
                 emit_research_verification_trace(ctx.progress_tx, payload).await;
 
-                if let Some(outcome) = transient_outcome {
+                if let Some((outcome, used_proof_not_found_retry)) = transient_outcome {
+                    if used_proof_not_found_retry {
+                        state.proof_not_found_repair_attempt_used = true;
+                    }
                     return Ok(outcome);
                 }
 
@@ -451,6 +496,30 @@ enum FinalVerificationOutcome {
     Continue { reason: String, context: String },
 }
 
+fn compact_proof_not_found_verifier_config(
+    mut config: crate::agent::research::ResearchVerifierConfig,
+) -> crate::agent::research::ResearchVerifierConfig {
+    config.max_evidence_docs = config
+        .max_evidence_docs
+        .min(PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS);
+    config.max_excerpt_chars = config
+        .max_excerpt_chars
+        .min(PROOF_NOT_FOUND_MAX_EXCERPT_CHARS);
+    config
+}
+
+fn verifier_substantive_final_answer_context(final_response_chars: usize) -> String {
+    [
+        format!(
+            "The previous final answer was too short to verify ({final_response_chars} chars; minimum is {MIN_VERIFIER_FINAL_ANSWER_CHARS})."
+        ),
+        "Do not send empty placeholders or status text as final_answer.".to_string(),
+        "Generate a substantive final answer grounded in fetched EvidenceDocument excerpts.".to_string(),
+        "If evidence is insufficient, state exactly what was confirmed and what was not confirmed instead of inventing missing claims.".to_string(),
+    ]
+    .join("\n")
+}
+
 fn verifier_decision_outcome(
     decision: &AnswerVerificationDecision,
     proof_not_found_mode: bool,
@@ -484,10 +553,23 @@ fn verifier_decision_outcome(
         AnswerVerifierVerdict::ProofNotFound => Err(anyhow::anyhow!(
             "strict answer verifier failed closed: proof_not_found verdict is only deliverable in constrained proof-not-found mode"
         )),
-        AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
-            "strict answer verifier blocked final response: {}",
-            verifier_decision_summary(decision)
-        )),
+        AnswerVerifierVerdict::Block => {
+            if round < max_rounds.max(1) && verifier_block_is_recoverable(decision) {
+                return Ok((
+                    FinalVerificationOutcome::Continue {
+                        reason: "Strict answer verifier requires recovery from a blocked draft"
+                            .to_string(),
+                        context: verifier_block_recovery_context(decision),
+                    },
+                    false,
+                ));
+            }
+
+            Err(anyhow::anyhow!(
+                "strict answer verifier blocked final response: {}",
+                verifier_decision_summary(decision)
+            ))
+        }
     }
 }
 
@@ -612,10 +694,56 @@ fn verifier_retry_context(decision: &AnswerVerificationDecision) -> String {
                 .enumerate()
                 .map(|(index, action)| format!("{}. {action}", index + 1)),
         );
+        sections.push(
+            "Before the next final answer, execute the required actions against the exact sources/URLs or remove every claim that depends on them."
+                .to_string(),
+        );
     }
 
     sections.push(
         "When evidence cannot be found, do not invent it; continue gathering proof until the proof-not-found flow is requested."
+            .to_string(),
+    );
+    sections.join("\n")
+}
+
+fn verifier_block_is_recoverable(decision: &AnswerVerificationDecision) -> bool {
+    !decision.required_next_actions.is_empty()
+        || (!decision.unsupported_claims.is_empty() && decision.contradictions.is_empty())
+}
+
+fn verifier_block_recovery_context(decision: &AnswerVerificationDecision) -> String {
+    let mut sections = vec![
+        "The strict answer verifier blocked the previous final draft, but reported actionable fixes.".to_string(),
+        format!("Verifier summary: {}", decision.summary),
+        "Do not deliver the blocked draft. Before producing another final answer, either fetch and cite the exact required sources or remove every unsupported claim.".to_string(),
+        "Claims about model architecture, license, datasets, metrics, language support, rankings, and suitability must be present in fetched EvidenceDocument excerpts.".to_string(),
+    ];
+
+    if !decision.required_next_actions.is_empty() {
+        sections.push("Mandatory required actions before retrying final answer:".to_string());
+        sections.extend(
+            decision
+                .required_next_actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| format!("{}. {action}", index + 1)),
+        );
+    }
+
+    if !decision.unsupported_claims.is_empty() {
+        sections.push("Unsupported claims to prove or remove:".to_string());
+        sections.extend(
+            decision
+                .unsupported_claims
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| unsupported_claim_context_line(index, claim)),
+        );
+    }
+
+    sections.push(
+        "If a required source cannot be fetched or does not support the claim, state that it was not confirmed instead of asserting it."
             .to_string(),
     );
     sections.join("\n")
@@ -632,7 +760,13 @@ fn verifier_proof_not_found_context(
         format!("Verifier summary: {}", decision.summary),
         "Do not try to deliver or prove the rejected draft anymore. Produce exactly one constrained proof-not-found final report.".to_string(),
         "The report must start exactly with: Проверка завершена: достаточные пруфы не найдены".to_string(),
-        "The report must include: what was checked, what was confirmed by fetched proof documents, what was not confirmed, claims that cannot be asserted, and safe next steps.".to_string(),
+        format!(
+            "The report must be <= {PROOF_NOT_FOUND_MAX_REPORT_CHARS} chars and cite at most {PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS} fetched sources."
+        ),
+        "Do not include a benchmark table.".to_string(),
+        "Do not include unsupported numbers, speed figures, benchmark scores, VRAM estimates, license claims, rankings, or suitability claims.".to_string(),
+        "Use only these sections: confirmed / not confirmed / claims removed / safe next steps.".to_string(),
+        "For each claim, write only confirmed or not confirmed; do not infer beyond EvidenceDocument excerpts.".to_string(),
         "The report must not recommend a model as usable, best, suitable, compliant, licensed, Russian-capable, or benchmarked unless that exact claim is directly supported by EvidenceDocument excerpts.".to_string(),
         "The next final answer will be verified in proof_not_found_mode and will be delivered only if the verifier returns proof_not_found or allow.".to_string(),
     ];
@@ -660,6 +794,21 @@ fn verifier_proof_not_found_context(
     }
 
     sections.join("\n")
+}
+
+fn verifier_proof_not_found_short_report_context(summary: &str) -> String {
+    [
+        "The constrained proof-not-found report was not delivered.".to_string(),
+        format!("Verifier failure: {summary}"),
+        format!(
+            "Produce one shorter proof-not-found report under {PROOF_NOT_FOUND_MAX_REPORT_CHARS} chars."
+        ),
+        format!("Use at most {PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS} fetched sources."),
+        "Start exactly with: Проверка завершена: достаточные пруфы не найдены".to_string(),
+        "No benchmark table. No unsupported numbers. No inferred speed, VRAM, license, ranking, production-readiness, or suitability claims.".to_string(),
+        "Only state: confirmed / not confirmed / claims removed / safe next steps.".to_string(),
+    ]
+    .join("\n")
 }
 
 fn unsupported_claim_context_line(index: usize, claim: &VerifierUnsupportedClaim) -> String {
@@ -698,7 +847,8 @@ fn verifier_transient_error_outcome(
     round: usize,
     max_rounds: usize,
     proof_not_found_mode: bool,
-) -> Option<FinalVerificationOutcome> {
+    proof_not_found_repair_attempt_used: bool,
+) -> Option<(FinalVerificationOutcome, bool)> {
     let is_transient = match error {
         AnswerVerificationError::Timeout { .. } => true,
         AnswerVerificationError::Provider(error) => LlmClient::is_retryable_error(error),
@@ -707,14 +857,35 @@ fn verifier_transient_error_outcome(
         | AnswerVerificationError::InvalidJson(_) => false,
     };
 
-    if !is_transient || proof_not_found_mode || round >= max_rounds.max(1) {
+    if !is_transient {
         return None;
     }
 
-    Some(FinalVerificationOutcome::Continue {
-        reason: "Strict answer verifier had a transient provider failure; retrying with a shorter evidence-cited answer".to_string(),
-        context: verifier_transient_error_context(summary),
-    })
+    if proof_not_found_mode {
+        if proof_not_found_repair_attempt_used {
+            return None;
+        }
+        return Some((
+            FinalVerificationOutcome::Continue {
+                reason: "Strict answer verifier timed out while checking proof-not-found report"
+                    .to_string(),
+                context: verifier_proof_not_found_short_report_context(summary),
+            },
+            true,
+        ));
+    }
+
+    if round >= max_rounds.max(1) {
+        return None;
+    }
+
+    Some((
+        FinalVerificationOutcome::Continue {
+            reason: "Strict answer verifier had a transient provider failure; retrying with a shorter evidence-cited answer".to_string(),
+            context: verifier_transient_error_context(summary),
+        },
+        false,
+    ))
 }
 
 fn verifier_transient_error_context(summary: &str) -> String {
@@ -785,6 +956,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{Mutex, mpsc};
 
+    const SUBSTANTIVE_FINAL: &str = "Model X has 97% F1 on Russian PII. This draft also states that the model is suitable for production anonymization in Russia, has documented license terms, and should be recommended over alternatives. The verifier must check these factual claims against fetched EvidenceDocument excerpts before delivery.";
+
     struct StaticAfterAgentHook {
         result: HookResult,
     }
@@ -827,6 +1000,11 @@ mod tests {
         format!(
             r#"{{"verdict":"{verdict}","confidence":"high","summary":"checked draft","unsupported_claims":[{{"claim":"Model X has 97% F1 on Russian PII","reason":"metric is absent from evidence","required_evidence":"model card or benchmark text with the metric","suggested_next_action":"fetch the model card and benchmark page with crawl4ai_markdown"}}],"contradictions":[],"allowed_claims":[],"required_next_actions":["crawl4ai_markdown https://huggingface.co/example/model"]}}"#
         )
+    }
+
+    fn hard_block_decision_json() -> String {
+        r#"{"verdict":"block","confidence":"high","summary":"unsafe malformed answer must not be delivered","unsupported_claims":[],"contradictions":[{"claim":"deliver private secret","source_id":"doc-1","source_excerpt":"never disclose secrets"}],"allowed_claims":[],"required_next_actions":[]}"#
+            .to_string()
     }
 
     fn verifier_llm_client_expect_mode(
@@ -896,34 +1074,101 @@ mod tests {
         Arc::new(llm)
     }
 
+    fn verifier_llm_client_no_verifier_calls() -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(0);
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        Arc::new(llm)
+    }
+
+    fn verifier_llm_client_expect_compact_proof_payload() -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(1).returning(
+            |request: ChatWithToolsRequest<'_>| {
+                assert!(request.json_mode);
+                assert_eq!(request.reasoning_effort, Some("disabled"));
+                let payload: serde_json::Value = serde_json::from_str(&request.messages[0].content)
+                    .expect("verifier request JSON");
+                assert_eq!(payload["proof_not_found_mode"], true);
+                let docs = payload["evidence_documents"]
+                    .as_array()
+                    .expect("evidence docs array");
+                assert_eq!(docs.len(), PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS);
+                for doc in docs {
+                    let excerpt = doc["content_excerpt"]
+                        .as_str()
+                        .expect("content excerpt string");
+                    assert!(excerpt.chars().count() <= PROOF_NOT_FOUND_MAX_EXCERPT_CHARS);
+                }
+                assert!(!request.messages[0].content.contains("doc-4"));
+                Ok(ChatResponse {
+                    content: Some(verifier_decision_json("proof_not_found")),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            },
+        );
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        Arc::new(llm)
+    }
+
     fn runtime_with_evidence_document() -> Arc<ResearchRuntime> {
+        runtime_with_evidence_documents(1, 128)
+    }
+
+    fn runtime_with_evidence_documents(count: usize, excerpt_chars: usize) -> Arc<ResearchRuntime> {
         let runtime = Arc::new(ResearchRuntime::new());
         let now = Utc::now();
-        let identity = ToolOutputIdentity {
-            tool_call_id: ToolCallId::from("call-1"),
-            provider_tool_call_id: None,
-            invocation_id: InvocationId::new("invocation-1"),
-            tool_name: ToolName::from("crawl4ai_markdown"),
-            batch_index: 0,
-        };
-        let mut output = ToolOutput::terminal(
-            identity,
-            ToolOutputStatus::Success,
-            now,
-            now,
-            OutputTruncationMetadata::new(4096, 4096, 4096),
-        );
-        output.structured_payload = Some(json!({
-            "provider": "crawl4ai_markdown",
-            "kind": "fetch",
-            "url": "https://huggingface.co/example/model",
-            "final_url": "https://huggingface.co/example/model",
-            "status_code": 200,
-            "markdown": "# Example model\nLicense: Apache 2.0\nRussian PII support is documented.",
-            "source_kind": "model_card",
-            "fetched_at": "2026-06-10T18:00:00Z"
-        }));
-        runtime.record_tool_output(&output);
+        for index in 0..count {
+            let identity = ToolOutputIdentity {
+                tool_call_id: ToolCallId::from(format!("call-{}", index + 1)),
+                provider_tool_call_id: None,
+                invocation_id: InvocationId::new(format!("invocation-{}", index + 1)),
+                tool_name: ToolName::from("crawl4ai_markdown"),
+                batch_index: index,
+            };
+            let mut output = ToolOutput::terminal(
+                identity,
+                ToolOutputStatus::Success,
+                now,
+                now,
+                OutputTruncationMetadata::new(4096, 4096, 4096),
+            );
+            let markdown = format!(
+                "# Example model {}\nLicense: Apache 2.0\nRussian PII support is documented.\n{}",
+                index + 1,
+                "A".repeat(excerpt_chars)
+            );
+            output.structured_payload = Some(json!({
+                "provider": "crawl4ai_markdown",
+                "kind": "fetch",
+                "url": format!("https://huggingface.co/example/model-{}", index + 1),
+                "final_url": format!("https://huggingface.co/example/model-{}", index + 1),
+                "status_code": 200,
+                "markdown": markdown,
+                "source_kind": "model_card",
+                "fetched_at": "2026-06-10T18:00:00Z"
+            }));
+            runtime.record_tool_output(&output);
+        }
         runtime
     }
 
@@ -952,14 +1197,14 @@ mod tests {
             raw_response,
             state,
             expected_proof_not_found_mode,
-            "Model X has 97% F1 on Russian PII.",
+            SUBSTANTIVE_FINAL,
         )
         .await
     }
 
     async fn run_final_with_verifier_response_and_state_and_answer(
         raw_response: String,
-        mut state: RunState,
+        state: RunState,
         expected_proof_not_found_mode: bool,
         final_answer: &str,
     ) -> (
@@ -970,6 +1215,26 @@ mod tests {
     ) {
         let llm_client =
             verifier_llm_client_expect_mode(raw_response, expected_proof_not_found_mode);
+        run_final_with_llm_client_state_and_answer(
+            llm_client,
+            state,
+            final_answer,
+            runtime_with_evidence_document(),
+        )
+        .await
+    }
+
+    async fn run_final_with_llm_client_state_and_answer(
+        llm_client: Arc<LlmClient>,
+        mut state: RunState,
+        final_answer: &str,
+        research_runtime: Arc<ResearchRuntime>,
+    ) -> (
+        Result<Option<AgentRunResult>, String>,
+        RunState,
+        Vec<AgentMessage>,
+        Vec<crate::llm::Message>,
+    ) {
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(4096);
         let todos_arc = Arc::new(Mutex::new(TodoList::new()));
@@ -990,7 +1255,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            research_runtime: Some(runtime_with_evidence_document()),
+            research_runtime: Some(research_runtime),
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
                 .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
         };
@@ -1036,13 +1301,13 @@ mod tests {
 
         match result.expect("allow should succeed") {
             Some(AgentRunResult::Final(response)) => {
-                assert_eq!(response, "Model X has 97% F1 on Russian PII.");
+                assert_eq!(response, SUBSTANTIVE_FINAL);
             }
             _ => panic!("expected delivered final response"),
         }
         assert!(memory.iter().any(|message| {
             message.resolved_kind() == AgentMessageKind::AssistantResponse
-                && message.content == "Model X has 97% F1 on Russian PII."
+                && message.content == SUBSTANTIVE_FINAL
         }));
     }
 
@@ -1106,7 +1371,7 @@ mod tests {
                 &mut ctx,
                 &mut state,
                 FinalResponseInput {
-                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    final_answer: SUBSTANTIVE_FINAL.to_string(),
                     reasoning: None,
                 },
             )
@@ -1134,10 +1399,7 @@ mod tests {
                 round,
                 ..
             } => {
-                assert_eq!(
-                    content_chars,
-                    "Model X has 97% F1 on Russian PII.".chars().count()
-                );
+                assert_eq!(content_chars, SUBSTANTIVE_FINAL.chars().count());
                 assert_eq!(round, 1);
             }
             other => panic!("expected final draft event, got {other:?}"),
@@ -1199,6 +1461,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_verifier_recoverable_block_forces_iteration_with_required_actions() {
+        let (result, state, memory, messages) =
+            run_final_with_verifier_response(verifier_decision_json("block")).await;
+
+        assert!(result.expect("recoverable block should continue").is_none());
+        assert_eq!(state.continuation_count, 1);
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+                && message.content.contains("Model X has 97% F1")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("recovery from a blocked draft")
+                && message.content.contains("Mandatory required actions")
+                && message
+                    .content
+                    .contains("crawl4ai_markdown https://huggingface.co/example/model")
+                && message.content.contains("prove or remove")
+        }));
+    }
+
+    #[tokio::test]
     async fn strict_verifier_retryable_provider_error_forces_shorter_retry_iteration() {
         let llm_client = verifier_llm_client_retryable_empty_response();
         let mut runner = AgentRunner::new(llm_client);
@@ -1233,7 +1517,7 @@ mod tests {
                 &mut ctx,
                 &mut state,
                 FinalResponseInput {
-                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    final_answer: SUBSTANTIVE_FINAL.to_string(),
                     reasoning: None,
                 },
             )
@@ -1262,9 +1546,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_verifier_short_final_answer_forces_substantive_iteration_without_provider_call()
+    {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(0);
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+
+        let mut runner = AgentRunner::new(Arc::new(llm));
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-short-final",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(runtime_with_evidence_document()),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "done".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("short final should continue without verifier call");
+
+        assert!(result.is_none());
+        assert_eq!(state.continuation_count, 1);
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("substantive final answer")
+        }));
+    }
+
+    #[tokio::test]
     async fn strict_verifier_block_does_not_deliver_final_response() {
         let (result, _state, memory, _messages) =
-            run_final_with_verifier_response(verifier_decision_json("block")).await;
+            run_final_with_verifier_response(hard_block_decision_json()).await;
 
         let error = match result {
             Ok(_) => panic!("block should fail closed"),
@@ -1338,7 +1682,7 @@ mod tests {
                 &mut ctx,
                 &mut state,
                 FinalResponseInput {
-                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    final_answer: SUBSTANTIVE_FINAL.to_string(),
                     reasoning: None,
                 },
             )
@@ -1390,7 +1734,7 @@ mod tests {
         let mut state = RunState::new();
         state.continuation_count = 10;
         state.proof_not_found_report_requested = true;
-        let report = "Проверка завершена: достаточные пруфы не найдены\n\nЧто проверено: https://huggingface.co/example/model\nЧто подтверждено: лицензия Apache 2.0.\nЧто не подтверждено: 97% F1 на русском PII.";
+        let report = "Проверка завершена: достаточные пруфы не найдены\n\nЧто проверено: https://huggingface.co/example/model and fetched model-card excerpts.\nЧто подтверждено: лицензия Apache 2.0 is present in the fetched evidence excerpt.\nЧто не подтверждено: 97% F1 на русском PII, ranking, production suitability, and deployment recommendation were not directly confirmed.\nБезопасный следующий шаг: fetch official benchmark text before asserting numeric performance.";
         let (result, _state, memory, _messages) =
             run_final_with_verifier_response_and_state_and_answer(
                 verifier_decision_json("proof_not_found"),
@@ -1409,6 +1753,110 @@ mod tests {
         assert!(memory.iter().any(|message| {
             message.resolved_kind() == AgentMessageKind::AssistantResponse
                 && message.content == report
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_mode_uses_compact_payload() {
+        let llm_client = verifier_llm_client_expect_compact_proof_payload();
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified proof-not-found report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-compact-proof",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(runtime_with_evidence_documents(7, 4_000)),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let report = "Проверка завершена: достаточные пруфы не найдены\nconfirmed: license text was fetched from source 1 and model-card availability was checked from source 2.\nnot confirmed: speed, prompt eval, VRAM numbers, ranking, production readiness, and Russian suitability claims were not directly confirmed.\nclaims removed: benchmark table and unsupported numeric comparisons.";
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: report.to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("verified compact proof report should deliver");
+
+        assert!(matches!(result, Some(AgentRunResult::Final(_))));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_transient_error_allows_one_short_retry() {
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let (result, state, memory, messages) = run_final_with_llm_client_state_and_answer(
+            verifier_llm_client_retryable_empty_response(),
+            state,
+            SUBSTANTIVE_FINAL,
+            runtime_with_evidence_document(),
+        )
+        .await;
+
+        assert!(
+            result
+                .expect("first proof-not-found transient failure should continue")
+                .is_none()
+        );
+        assert!(state.proof_not_found_repair_attempt_used);
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+        }));
+        assert!(messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("under 3500 chars")
+                && message.content.contains("No benchmark table")
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_long_report_gets_one_short_retry() {
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let long_report = format!(
+            "Проверка завершена: достаточные пруфы не найдены\n{}",
+            "x".repeat(PROOF_NOT_FOUND_MAX_REPORT_CHARS + 1)
+        );
+        let (result, state, _memory, messages) = run_final_with_llm_client_state_and_answer(
+            verifier_llm_client_no_verifier_calls(),
+            state,
+            &long_report,
+            runtime_with_evidence_document(),
+        )
+        .await;
+
+        assert!(
+            result
+                .expect("long proof report should continue once")
+                .is_none()
+        );
+        assert!(state.proof_not_found_repair_attempt_used);
+        assert!(messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("under 3500 chars")
         }));
     }
 
