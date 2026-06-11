@@ -192,7 +192,7 @@ async fn maybe_run_search_probe_with_runtime(
         return (run_request, SearchProbeRunOutcome::default());
     }
 
-    match &run_request {
+    match run_request {
         TaskRunRequest::Execute { input, effort } => {
             debug!(
                 session_id = %session_id,
@@ -211,25 +211,32 @@ async fn maybe_run_search_probe_with_runtime(
                 session_manager,
                 session_id,
                 task_id,
-                original_input: input,
-                parent_effort: *effort,
+                original_input: &input,
+                parent_effort: effort,
                 config,
                 progress_tx,
                 cancellation_token,
             })
             .await;
-            return (run_request, outcome);
+            let input = if outcome.cancelled {
+                input
+            } else {
+                inject_search_probe_dossier(input, &outcome.handoffs, config.dossier_max_chars)
+            };
+            (TaskRunRequest::Execute { input, effort }, outcome)
         }
-        TaskRunRequest::ResumeUserInput { .. } => {
+        TaskRunRequest::ResumeUserInput { input, effort } => {
             debug!(
                 session_id = %session_id,
                 task_id = %task_id,
                 "Search Probe skipped for ResumeUserInput"
             );
+            (
+                TaskRunRequest::ResumeUserInput { input, effort },
+                SearchProbeRunOutcome::default(),
+            )
         }
     }
-
-    (run_request, SearchProbeRunOutcome::default())
 }
 
 async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbeRunOutcome {
@@ -427,6 +434,171 @@ fn extract_tag(text: &str, tag: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
+fn inject_search_probe_dossier(
+    mut input: AgentUserInput,
+    handoffs: &[SearchProbeHandoff],
+    dossier_max_chars: usize,
+) -> AgentUserInput {
+    let Some(dossier) = render_search_probe_dossier(handoffs, dossier_max_chars) else {
+        return input;
+    };
+
+    input.content = format!("{}\n\n{}", input.content, dossier);
+    input
+}
+
+fn render_search_probe_dossier(
+    handoffs: &[SearchProbeHandoff],
+    dossier_max_chars: usize,
+) -> Option<String> {
+    let handoffs = handoffs
+        .iter()
+        .filter(|handoff| !handoff.handoff.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    if handoffs.is_empty() {
+        return None;
+    }
+
+    let max_chars = dossier_max_chars.max(1);
+    let full = render_dossier_from_handoffs(&handoffs, false);
+    if char_count(&full) <= max_chars {
+        return Some(full);
+    }
+
+    for start in 1..handoffs.len() {
+        let rendered = render_dossier_from_handoffs(&handoffs[start..], true);
+        if char_count(&rendered) <= max_chars {
+            return Some(rendered);
+        }
+    }
+
+    Some(render_truncated_latest_handoff(
+        handoffs.last().expect("handoffs is not empty"),
+        max_chars,
+    ))
+}
+
+fn render_truncated_latest_handoff(handoff: &SearchProbeHandoff, max_chars: usize) -> String {
+    let original_handoff = handoff.handoff.clone();
+    let mut candidate = handoff.clone();
+    candidate.public_update = None;
+    candidate.handoff.clear();
+    let mut best = render_dossier_from_handoffs(std::slice::from_ref(&candidate), true);
+
+    let total_chars = char_count(&original_handoff);
+    let mut low = 0usize;
+    let mut high = total_chars;
+    while low <= high {
+        let mid = low + ((high - low) / 2);
+        candidate.handoff = if mid == total_chars {
+            original_handoff.clone()
+        } else {
+            format!(
+                "[truncated to preserve newest Search Probe handoff]\n{}",
+                last_chars(&original_handoff, mid)
+            )
+        };
+        let rendered = render_dossier_from_handoffs(std::slice::from_ref(&candidate), true);
+        if char_count(&rendered) <= max_chars {
+            best = rendered;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    best
+}
+
+fn render_dossier_from_handoffs(handoffs: &[SearchProbeHandoff], truncated: bool) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("<search_probe_dossier>\n");
+    push_tag(
+        &mut rendered,
+        "generated_by",
+        "web Search Probe before main agent runtime",
+    );
+    push_tag(
+        &mut rendered,
+        "guidance",
+        "Treat this as research grounding and leads, not final truth. Verify important claims before final answer.",
+    );
+
+    for handoff in handoffs {
+        rendered.push_str("<generation index=\"");
+        rendered.push_str(&handoff.generation.to_string());
+        rendered.push_str("\">\n");
+        if let Some(update) = handoff.public_update.as_deref()
+            && !update.trim().is_empty()
+        {
+            push_tag(&mut rendered, "public_update", update);
+        }
+        push_tag(&mut rendered, "handoff", &handoff.handoff);
+        push_tag(&mut rendered, "decision", handoff.decision.as_str());
+        rendered.push_str("</generation>\n");
+    }
+
+    if let Some(latest) = handoffs.last() {
+        push_tag(&mut rendered, "final_synthesis", &latest.handoff);
+        push_tag(&mut rendered, "decision", latest.decision.as_str());
+    }
+    push_tag(
+        &mut rendered,
+        "truncated",
+        if truncated { "true" } else { "false" },
+    );
+    push_tag(
+        &mut rendered,
+        "instructions_for_main_runtime",
+        "Use this as starting context, not proof. Verify source-backed claims before final answer. Do not repeat unsupported assumptions. If sources are insufficient, say so explicitly.",
+    );
+    rendered.push_str("</search_probe_dossier>");
+    rendered
+}
+
+fn push_tag(rendered: &mut String, tag: &str, value: &str) {
+    rendered.push('<');
+    rendered.push_str(tag);
+    rendered.push_str(">\n");
+    rendered.push_str(&escape_dossier_text(value));
+    rendered.push('\n');
+    rendered.push_str("</");
+    rendered.push_str(tag);
+    rendered.push_str(">\n");
+}
+
+fn escape_dossier_text(value: &str) -> String {
+    value
+        .trim()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn char_count(value: &str) -> usize {
+    value.chars().count()
+}
+
+fn last_chars(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    value
+        .chars()
+        .skip(total.saturating_sub(max_chars))
+        .collect()
+}
+
+impl SearchProbeDecision {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 fn probe_execution_options(
     parent_effort: Option<WebAgentEffort>,
     min_effort: WebAgentEffort,
@@ -595,6 +767,7 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::in_memory_storage::InMemoryStorage;
+    use oxide_agent_core::agent::AgentMessageAttachment;
     use oxide_agent_core::config::AgentSettings;
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_runtime::SessionRegistry;
@@ -685,6 +858,15 @@ mod tests {
         match run_request {
             TaskRunRequest::Execute { input, .. }
             | TaskRunRequest::ResumeUserInput { input, .. } => &input.content,
+        }
+    }
+
+    fn handoff(generation: u8, handoff: &str, decision: SearchProbeDecision) -> SearchProbeHandoff {
+        SearchProbeHandoff {
+            generation,
+            public_update: Some(format!("public update {generation}")),
+            handoff: handoff.to_owned(),
+            decision,
         }
     }
 
@@ -846,6 +1028,93 @@ after
         assert_eq!(parsed.public_update, None);
         assert_eq!(parsed.handoff, "plain handoff without tags");
         assert_eq!(parsed.decision, SearchProbeDecision::Continue);
+    }
+
+    #[test]
+    fn dossier_renderer_returns_none_without_handoffs() {
+        assert_eq!(render_search_probe_dossier(&[], 80_000), None);
+
+        let empty = SearchProbeHandoff {
+            generation: 1,
+            public_update: None,
+            handoff: "   ".to_owned(),
+            decision: SearchProbeDecision::Continue,
+        };
+        assert_eq!(render_search_probe_dossier(&[empty], 80_000), None);
+    }
+
+    #[test]
+    fn dossier_renderer_uses_xml_like_envelope_and_escapes_content() {
+        let rendered = render_search_probe_dossier(
+            &[SearchProbeHandoff {
+                generation: 1,
+                public_update: Some("TL;DR: A < B & C".to_owned()),
+                handoff: "Use <source> & verify > claims".to_owned(),
+                decision: SearchProbeDecision::Stop,
+            }],
+            80_000,
+        )
+        .expect("dossier");
+
+        assert!(rendered.starts_with("<search_probe_dossier>"));
+        assert!(rendered.contains("<generation index=\"1\">"));
+        assert!(rendered.contains("TL;DR: A &lt; B &amp; C"));
+        assert!(rendered.contains("Use &lt;source&gt; &amp; verify &gt; claims"));
+        assert!(rendered.contains("<decision>\nstop\n</decision>"));
+        assert!(rendered.contains("<truncated>\nfalse\n</truncated>"));
+        assert!(!rendered.contains("<original_user_prompt>"));
+    }
+
+    #[test]
+    fn dossier_injection_appends_after_original_prompt_and_preserves_attachments() {
+        let attachment = AgentMessageAttachment::image(
+            "shot.png",
+            Some("image/png".to_owned()),
+            123,
+            "/workspace/uploads/shot.png",
+        );
+        let input = AgentUserInput::new("original task").with_attachments(vec![attachment.clone()]);
+
+        let injected = inject_search_probe_dossier(
+            input,
+            &[handoff(1, "compact handoff", SearchProbeDecision::Stop)],
+            80_000,
+        );
+
+        assert!(
+            injected
+                .content
+                .starts_with("original task\n\n<search_probe_dossier>")
+        );
+        assert!(injected.content.contains("compact handoff"));
+        assert_eq!(injected.attachments, vec![attachment]);
+    }
+
+    #[test]
+    fn dossier_injection_noops_without_handoffs() {
+        let input = AgentUserInput::new("original task");
+
+        let injected = inject_search_probe_dossier(input, &[], 80_000);
+
+        assert_eq!(injected.content, "original task");
+        assert!(injected.attachments.is_empty());
+    }
+
+    #[test]
+    fn dossier_truncation_preserves_newest_handoff_first() {
+        let rendered = render_search_probe_dossier(
+            &[
+                handoff(1, &"old ".repeat(2_000), SearchProbeDecision::Continue),
+                handoff(2, "newest critical handoff", SearchProbeDecision::Stop),
+            ],
+            1_200,
+        )
+        .expect("dossier");
+
+        assert!(rendered.contains("<truncated>\ntrue\n</truncated>"));
+        assert!(!rendered.contains("old old old"));
+        assert!(rendered.contains("newest critical handoff"));
+        assert!(char_count(&rendered) <= 1_200);
     }
 
     #[test]

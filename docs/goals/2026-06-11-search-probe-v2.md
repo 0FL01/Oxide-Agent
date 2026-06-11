@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 19:14 +03
+Last updated: 2026-06-11 19:22 +03
 
 ## Objective
 
@@ -109,8 +109,8 @@ Out of scope:
   - Requirement: Render handoffs into `SearchProbeDossier`, inject it into `AgentUserInput.content`, preserve attachments, and avoid passing raw probe transcript to main runtime.
   - Acceptance: main input contains original task first and an appended XML-like `<search_probe_dossier>` only when handoffs exist; attachments unchanged; no probe internal message history, raw tool outputs, reasoning, or event stream is injected.
   - Evidence required: unit tests for renderer/injection and attachment preservation.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 4 added deterministic XML-like dossier rendering and injection into `AgentUserInput.content` after the original prompt. Focused tests cover no-op empty handoffs, XML-like rendering/escaping, attachment preservation, and newest-handoff truncation.
 
 - G9: Failure and cancellation behavior are safe
   - Source: `docs/prd/plan-search-probe.md` sections 17 and 18.
@@ -125,7 +125,7 @@ Out of scope:
   - Acceptance: Search Probe does not modify core prompt composer or inject volatile probe data into system prompt/stable prefix; dossier is user input/runtime content only and is appended after the original prompt.
   - Evidence required: diff audit and a focused assertion/test if prompt path is touched.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged.
+  - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged. Checkpoint 4 injects probe data only into web `TaskRunRequest::Execute` user input after the original prompt and does not touch core prompt composer/system prompt paths.
 
 - Q2: Simple MVP architecture
   - Source: repository `AGENTS.md` over-engineering constraints and `docs/prd/plan-search-probe.md` section 22.
@@ -139,20 +139,20 @@ Out of scope:
   - Must preserve: no `should_probe`, entity extractor, exact/near-miss scorer, query template planner, or Rust-owned research heuristics.
   - Evidence required: diff review and test names/content review.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-3 added lifecycle config, an executor factory, generation prompts, contract parsing, and event/cancellation handling only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
+  - Evidence collected: Checkpoints 1-4 added lifecycle config, an executor factory, generation prompts, contract parsing, event/cancellation handling, and deterministic dossier formatting only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
 
 - N2: Non-web transports remain untouched
   - Source: `docs/prd/plan-search-probe.md` section 3.
   - Must preserve: Telegram transport and transport-agnostic core/runtime behavior are not changed for MVP except using existing public APIs.
   - Evidence required: `git diff --name-only` review.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-3 diff is limited to `crates/oxide-agent-transport-web/` and this goal document.
+  - Evidence collected: Checkpoints 1-4 diff is limited to `crates/oxide-agent-transport-web/` and this goal document.
 
 - V1: Focused web transport validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo check -p oxide-agent-transport-web` and focused web transport tests for Search Probe.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-3 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`; Checkpoint 3 also passed `cargo fmt --all -- --check` and scoped `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`.
+  - Evidence collected: Checkpoints 1-4 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`; Checkpoints 3-4 also passed `cargo fmt --all -- --check` and scoped `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`.
 
 - V2: Final workspace quality gates pass
   - Source: repository `AGENTS.md`.
@@ -281,6 +281,13 @@ Out of scope:
   - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`.
   - Audit IDs updated: G4 evidence extended; G6, G7, G9 moved to `in_progress`; Q2, N1, N2, V1 evidence extended.
   - Next: Checkpoint 4, dossier render and main input injection.
+
+- 2026-06-11 19:22 +03 Checkpoint 4: Dossier render and main input injection
+  - Changed: added XML-like `SearchProbeDossier` rendering, no-op empty handoff behavior, newest-handoff truncation with explicit marker, and injection after original `AgentUserInput.content` while preserving attachments.
+  - Evidence: focused tests cover empty dossier no-op, XML-like rendering/escaping, original-prompt-first injection, attachment preservation, and truncation preserving newest handoff.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: G8 moved to `in_progress`; Q1, N1, V1 evidence extended.
+  - Next: Checkpoint 5, end-to-end web validation and final audit.
 
 ## Risks and Blockers
 
