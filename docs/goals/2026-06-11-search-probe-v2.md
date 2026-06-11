@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 18:22 +03
+Last updated: 2026-06-11 18:33 +03
 
 ## Objective
 
@@ -69,24 +69,24 @@ Out of scope:
   - Requirement: Each generation uses a fresh `AgentSession`/`AgentExecutor`, does not hydrate durable memory, does not install a memory checkpoint, and does not persist probe transcript.
   - Acceptance: generation 1..N do not share hot memory with each other or the main runtime; only handoffs flow forward.
   - Evidence required: implementation diff and tests or assertions for no registry insertion/checkpoint/hydration path.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 added `WebSessionManager::create_search_probe_executor`, which builds a fresh unregistered `AgentExecutor` with empty memory; focused tests verify no registry insertion and missing parent sessions return `None`.
 
 - G4: Probe inherits selected model route and effort policy
   - Source: `docs/prd/plan-search-probe.md` section 9.
   - Requirement: Probe uses the same selected model route as the web session, with configurable minimum effort defaulting to heavy.
   - Acceptance: selected web model route override is applied to probe executor; standard requests can be elevated to configured probe minimum effort.
   - Evidence required: focused tests for selected route inheritance and effort mapping.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 reuses existing web model-route selection logic for probe executors and verifies selected route inheritance. Effort elevation remains for the generation runner checkpoint.
 
 - G5: Probe tool policy is web-research-only
   - Source: `docs/prd/plan-search-probe.md` section 10.
   - Requirement: Probe exposes only `searxng_search`, `crawl4ai_markdown`, and fallback `web_markdown` in MVP.
   - Acceptance: mutable/high-blast-radius tools are unavailable to probe; normal main runtime tool policy remains unchanged.
   - Evidence required: tool registry/policy test showing only allowed probe tools are exposed.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 applies a probe `AgentExecutionProfile` with a deny-by-default tool allowlist; focused tests verify the allowlist can hide all runtime tools.
 
 - G6: Probe final contract and fallback parser work
   - Source: `docs/prd/plan-search-probe.md` sections 6 and 7.
@@ -132,27 +132,27 @@ Out of scope:
   - Acceptance: no new crates, services, queues, storage tables, custom search clients, broad abstractions, or transport-wide rewrites.
   - Evidence required: dependency diff and file-scope diff review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added one web-transport module, no new crates, no dependency changes, no storage changes, and no new services.
+  - Evidence collected: Checkpoint 1 added one web-transport module. Checkpoint 2 reused `WebSessionManager`, existing route selection, `AgentExecutor`, and `ToolAccessPolicy`; no new crates, dependency changes, storage changes, or services.
 
 - N1: No deterministic research logic
   - Source: `docs/prd/plan-search-probe.md` sections 1 and 22.
   - Must preserve: no `should_probe`, entity extractor, exact/near-miss scorer, query template planner, or Rust-owned research heuristics.
   - Evidence required: diff review and test names/content review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 config parses only lifecycle/safety knobs; no query planner, entity extraction, scorers, or `should_probe` logic were added.
+  - Evidence collected: Checkpoints 1-2 added lifecycle config and an executor factory only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
 
 - N2: Non-web transports remain untouched
   - Source: `docs/prd/plan-search-probe.md` section 3.
   - Must preserve: Telegram transport and transport-agnostic core/runtime behavior are not changed for MVP except using existing public APIs.
   - Evidence required: `git diff --name-only` review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 diff is limited to `crates/oxide-agent-transport-web/src/server/` and this goal document.
+  - Evidence collected: Checkpoints 1-2 diff is limited to `crates/oxide-agent-transport-web/src/` and this goal document.
 
 - V1: Focused web transport validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo check -p oxide-agent-transport-web` and focused web transport tests for Search Probe.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Evidence collected: Checkpoints 1-2 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`.
 
 - V2: Final workspace quality gates pass
   - Source: repository `AGENTS.md`.
@@ -265,13 +265,14 @@ Out of scope:
   - Audit IDs updated: G1, G2, Q1, Q2, N1, N2, V1 moved to `in_progress` with Checkpoint 1 evidence.
   - Next: Checkpoint 2, ephemeral probe executor factory.
 
-## Risks and Blockers
+- 2026-06-11 18:33 +03 Checkpoint 2: Ephemeral probe executor factory
+  - Changed: added `SearchProbeRuntimeOptions` and `WebSessionManager::create_search_probe_executor`; Search Probe shell now creates and drops an unregistered probe executor when enabled.
+  - Evidence: focused tests cover selected model route inheritance, deny-by-default tool policy, no registry insertion, empty fresh memory, and missing parent session handling.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Audit IDs updated: G3, G4, G5 moved to `in_progress`; Q2, N1, N2, V1 evidence extended.
+  - Next: Checkpoint 3, generation runner, final contract parser, and event updates.
 
-- Ephemeral executor creation may expose private `session.rs` route-selection boundaries
-  - Impact: naive implementation could duplicate model selection logic or widen APIs unnecessarily.
-  - Evidence: model-route selection helpers currently live in web session management.
-  - Mitigation or requested decision: keep helper inside `WebSessionManager`/`session.rs` and expose only the smallest method needed by `search_probe.rs`.
-  - Audit IDs affected: G3, G4, Q2.
+## Risks and Blockers
 
 - Existing search budget hook may constrain probe too much
   - Impact: probe may stop before useful research if default search budget applies too aggressively.

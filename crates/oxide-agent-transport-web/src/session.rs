@@ -31,6 +31,7 @@ use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
     AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+    ToolAccessPolicy,
 };
 use oxide_agent_core::config::{
     AgentSettings, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -42,7 +43,7 @@ use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::ModelSelection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -105,6 +106,12 @@ pub struct WebSessionRuntimeOptions {
     pub agent_profile_id: Option<String>,
     pub execution_profile: Option<AgentExecutionProfile>,
     pub skip_fresh_durable_bootstrap: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SearchProbeRuntimeOptions {
+    pub(crate) tool_allowlist: Vec<String>,
+    pub(crate) prompt_instructions: Option<String>,
 }
 
 /// Task metadata.
@@ -422,6 +429,28 @@ impl WebSessionManager {
         } else {
             dash.to_string()
         }
+    }
+
+    pub(crate) async fn create_search_probe_executor(
+        &self,
+        parent_session_id: &str,
+        options: SearchProbeRuntimeOptions,
+    ) -> Option<AgentExecutor> {
+        let parent_meta = self.get_session(parent_session_id).await?;
+        let probe_sid = derive_search_probe_session_id(parent_session_id);
+        let session = AgentSession::new(probe_sid);
+        let mut executor =
+            AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
+
+        if let Some(model_routes) = self
+            .model_routes_override_for_selection(parent_meta.model_selection.as_ref())
+            .await
+        {
+            executor.set_model_routes_override(model_routes);
+        }
+
+        executor.set_execution_profile(search_probe_execution_profile(options));
+        Some(executor)
     }
 
     // --- Session CRUD ---
@@ -1035,6 +1064,30 @@ fn derive_web_session_id(user_id: i64, session_id: &str) -> SessionId {
     SessionId::from(h.finish() as i64)
 }
 
+fn derive_search_probe_session_id(parent_session_id: &str) -> SessionId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    "search-probe".hash(&mut h);
+    parent_session_id.hash(&mut h);
+    Uuid::new_v4().hash(&mut h);
+    SessionId::from(h.finish() as i64)
+}
+
+fn search_probe_execution_profile(options: SearchProbeRuntimeOptions) -> AgentExecutionProfile {
+    let allowed_tools = options
+        .tool_allowlist
+        .into_iter()
+        .map(|tool| tool.trim().to_string())
+        .filter(|tool| !tool.is_empty())
+        .collect::<HashSet<_>>();
+    AgentExecutionProfile::new(
+        Some("search-probe".to_string()),
+        options.prompt_instructions,
+        ToolAccessPolicy::new(Some(allowed_tools), HashSet::new()),
+    )
+}
+
 fn is_fresh_web_session_context(context_key: &str) -> bool {
     context_key.starts_with("web-session-")
 }
@@ -1367,6 +1420,115 @@ mod tests {
                 .iter()
                 .all(|route| route.id != "opencode-go/deepseek-v4-flash")
         );
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_inherits_model_route_without_registry_insert() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "opencode-go/deepseek-v4-flash".to_string(),
+                provider: "opencode_go".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "search-probe-model-selection-test".to_string(),
+                "web-session-search-probe-model-selection-test".to_string(),
+                "main".to_string(),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-go/deepseek-v4-flash".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+        let registry_len_before = manager.session_registry().len().await;
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-model-selection-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["web_markdown".to_string()],
+                    prompt_instructions: Some("probe instructions".to_string()),
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+        let registry_len_after = manager.session_registry().len().await;
+
+        assert_eq!(registry_len_before, 1);
+        assert_eq!(registry_len_after, registry_len_before);
+        assert_ne!(
+            probe.session().session_id,
+            derive_web_session_id(91, "search-probe-model-selection-test")
+        );
+        assert!(probe.session().memory.get_messages().is_empty());
+
+        let routes = probe
+            .model_routes_override()
+            .expect("probe should inherit selected model route");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
+        assert_eq!(routes[0].provider, "opencode-go");
+        assert_eq!(routes[0].max_output_tokens, 32_000);
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_applies_tool_allowlist() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        manager
+            .create_session_with_id(
+                92,
+                "search-probe-tool-policy-test".to_string(),
+                "web-session-search-probe-tool-policy-test".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-tool-policy-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["definitely_not_a_real_tool".to_string()],
+                    prompt_instructions: None,
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+
+        assert!(probe.current_tool_definitions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_requires_existing_parent_session() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        let probe = manager
+            .create_search_probe_executor(
+                "missing-session",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["web_markdown".to_string()],
+                    prompt_instructions: None,
+                },
+            )
+            .await;
+
+        assert!(probe.is_none());
+        assert_eq!(manager.session_registry().len().await, 0);
     }
 
     // -----------------------------------------------------------------------

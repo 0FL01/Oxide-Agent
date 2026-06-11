@@ -1,12 +1,12 @@
 //! Web Search Probe orchestration shell.
 //!
-//! Checkpoint 1 intentionally keeps this module as a no-op lifecycle hook:
-//! it parses config, skips non-`Execute` requests, and returns the original
-//! request unchanged. Actual probe executor creation starts in the next
-//! checkpoint.
+//! The early checkpoints keep this module as a no-op lifecycle hook: it parses
+//! config, skips non-`Execute` requests, creates an ephemeral probe executor
+//! when enabled, and returns the original request unchanged.
 
 use super::{web_bool_env, web_env_value};
 use crate::server::task_executor::TaskRunRequest;
+use crate::session::{SearchProbeRuntimeOptions, WebSessionManager};
 use oxide_agent_web_contracts::AgentEffort as WebAgentEffort;
 use tracing::debug;
 
@@ -27,6 +27,7 @@ const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
 const DEFAULT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "crawl4ai_markdown", "web_markdown"];
+const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research sidecar. Use only the tools available to you and return compact handoff notes for the main agent.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchProbeConfig {
@@ -84,15 +85,18 @@ impl Default for SearchProbeConfig {
 }
 
 pub(crate) async fn maybe_run_search_probe(
+    session_manager: &WebSessionManager,
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
 ) -> TaskRunRequest {
     let config = SearchProbeConfig::from_env();
-    maybe_run_search_probe_with_config(session_id, task_id, run_request, &config).await
+    maybe_run_search_probe_with_config(session_manager, session_id, task_id, run_request, &config)
+        .await
 }
 
 async fn maybe_run_search_probe_with_config(
+    session_manager: &WebSessionManager,
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
@@ -104,9 +108,19 @@ async fn maybe_run_search_probe_with_config(
 
     match &run_request {
         TaskRunRequest::Execute { .. } => {
+            let probe_executor = session_manager
+                .create_search_probe_executor(
+                    session_id,
+                    SearchProbeRuntimeOptions {
+                        tool_allowlist: config.tool_allowlist.clone(),
+                        prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
+                    },
+                )
+                .await;
             debug!(
                 session_id = %session_id,
                 task_id = %task_id,
+                probe_executor_created = probe_executor.is_some(),
                 max_generations = config.max_generations,
                 per_generation_timeout_secs = config.per_generation_timeout_secs,
                 total_timeout_secs = config.total_timeout_secs,
@@ -191,7 +205,12 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::in_memory_storage::InMemoryStorage;
     use oxide_agent_core::agent::AgentUserInput;
+    use oxide_agent_core::config::AgentSettings;
+    use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_runtime::SessionRegistry;
+    use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -249,6 +268,17 @@ mod tests {
             input: AgentUserInput::new(content),
             effort: None,
         }
+    }
+
+    fn test_session_manager() -> WebSessionManager {
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        WebSessionManager::new_with_storage(
+            SessionRegistry::new(),
+            llm,
+            settings,
+            Arc::new(InMemoryStorage::new()),
+        )
     }
 
     fn request_content(run_request: &TaskRunRequest) -> &str {
@@ -312,14 +342,21 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_shell_returns_execute_request_unchanged() {
+        let session_manager = test_session_manager();
         let config = SearchProbeConfig {
             enabled: false,
             ..SearchProbeConfig::default()
         };
         let run_request = execute_request("original prompt");
 
-        let result =
-            maybe_run_search_probe_with_config("session", "task", run_request, &config).await;
+        let result = maybe_run_search_probe_with_config(
+            &session_manager,
+            "session",
+            "task",
+            run_request,
+            &config,
+        )
+        .await;
 
         assert!(matches!(result, TaskRunRequest::Execute { .. }));
         assert_eq!(request_content(&result), "original prompt");
@@ -327,14 +364,29 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_shell_returns_execute_request_unchanged() {
+        let session_manager = test_session_manager();
+        session_manager
+            .create_session_with_id(
+                1,
+                "session".to_string(),
+                "web-session-search-probe-test".to_string(),
+                "main".to_string(),
+            )
+            .await;
         let config = SearchProbeConfig {
             enabled: true,
             ..SearchProbeConfig::default()
         };
         let run_request = execute_request("original prompt");
 
-        let result =
-            maybe_run_search_probe_with_config("session", "task", run_request, &config).await;
+        let result = maybe_run_search_probe_with_config(
+            &session_manager,
+            "session",
+            "task",
+            run_request,
+            &config,
+        )
+        .await;
 
         assert!(matches!(result, TaskRunRequest::Execute { .. }));
         assert_eq!(request_content(&result), "original prompt");
@@ -342,14 +394,21 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_shell_skips_resume_request() {
+        let session_manager = test_session_manager();
         let config = SearchProbeConfig {
             enabled: true,
             ..SearchProbeConfig::default()
         };
         let run_request = resume_request("resume prompt");
 
-        let result =
-            maybe_run_search_probe_with_config("session", "task", run_request, &config).await;
+        let result = maybe_run_search_probe_with_config(
+            &session_manager,
+            "session",
+            "task",
+            run_request,
+            &config,
+        )
+        .await;
 
         assert!(matches!(result, TaskRunRequest::ResumeUserInput { .. }));
         assert_eq!(request_content(&result), "resume prompt");
