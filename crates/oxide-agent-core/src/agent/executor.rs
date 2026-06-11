@@ -40,13 +40,35 @@ pub enum AgentExecutionEffort {
 pub struct AgentExecutionOptions {
     /// Effort preset applied to runner budgets.
     pub effort: AgentExecutionEffort,
+    /// Exact per-run timeout override in seconds.
+    pub timeout_secs: Option<u64>,
+    /// Exact per-run search tool call limit override.
+    pub search_limit: Option<usize>,
 }
 
 impl AgentExecutionOptions {
     /// Create options for a specific effort preset.
     #[must_use]
     pub const fn with_effort(effort: AgentExecutionEffort) -> Self {
-        Self { effort }
+        Self {
+            effort,
+            timeout_secs: None,
+            search_limit: None,
+        }
+    }
+
+    /// Set an exact per-run timeout override in seconds.
+    #[must_use]
+    pub const fn with_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = Some(timeout_secs);
+        self
+    }
+
+    /// Set an exact per-run search tool call limit override.
+    #[must_use]
+    pub const fn with_search_limit(mut self, search_limit: usize) -> Self {
+        self.search_limit = Some(search_limit);
+        self
     }
 
     pub(crate) const fn min_max_iterations(self) -> Option<usize> {

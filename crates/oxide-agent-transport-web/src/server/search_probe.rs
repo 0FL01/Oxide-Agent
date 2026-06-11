@@ -18,6 +18,8 @@ const ENV_ENABLED: &str = "OXIDE_SEARCH_PROBE_ENABLED";
 const ENV_MAX_GENERATIONS: &str = "OXIDE_SEARCH_PROBE_MAX_GENERATIONS";
 const ENV_PER_GENERATION_TIMEOUT_SECS: &str = "OXIDE_SEARCH_PROBE_PER_GENERATION_TIMEOUT_SECS";
 const ENV_TOTAL_TIMEOUT_SECS: &str = "OXIDE_SEARCH_PROBE_TOTAL_TIMEOUT_SECS";
+const ENV_SOFT_FINALIZE_SECS: &str = "OXIDE_SEARCH_PROBE_SOFT_FINALIZE_SECS";
+const ENV_SEARCH_LIMIT: &str = "OXIDE_SEARCH_PROBE_SEARCH_LIMIT";
 const ENV_MIN_EFFORT: &str = "OXIDE_SEARCH_PROBE_MIN_EFFORT";
 const ENV_PUBLIC_UPDATES: &str = "OXIDE_SEARCH_PROBE_PUBLIC_UPDATES";
 const ENV_FORWARD_TOOL_EVENTS: &str = "OXIDE_SEARCH_PROBE_FORWARD_TOOL_EVENTS";
@@ -25,8 +27,10 @@ const ENV_TOOL_ALLOWLIST: &str = "OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST";
 const ENV_DOSSIER_MAX_CHARS: &str = "OXIDE_SEARCH_PROBE_DOSSIER_MAX_CHARS";
 
 const DEFAULT_MAX_GENERATIONS: u8 = 2;
-const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 180;
-const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 480;
+const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 35;
+const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 35;
+const DEFAULT_SOFT_FINALIZE_SECS: u64 = 25;
+const DEFAULT_SEARCH_LIMIT: usize = 6;
 const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
@@ -35,6 +39,8 @@ const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research si
 const GENERATION_PROMPT_HEADER: &str = r#"You are Search Probe, a web-only research sidecar for the web console.
 
 Use only available web research tools. Do not answer the user directly. Produce a compact handoff for the main agent.
+
+You have a strict time and search budget. If tool calls are blocked, the search budget is exceeded, or the runtime reports a timeout, stop searching immediately and synthesize the best possible XML-like handoff from the evidence already available.
 
 Return this XML-like contract at the end of every generation:
 
@@ -88,6 +94,8 @@ pub(crate) struct SearchProbeConfig {
     pub(crate) max_generations: u8,
     pub(crate) per_generation_timeout_secs: u64,
     pub(crate) total_timeout_secs: u64,
+    pub(crate) soft_finalize_secs: u64,
+    pub(crate) search_limit: usize,
     pub(crate) min_effort: WebAgentEffort,
     pub(crate) public_updates: bool,
     pub(crate) forward_tool_events: bool,
@@ -106,6 +114,8 @@ impl SearchProbeConfig {
                 DEFAULT_PER_GENERATION_TIMEOUT_SECS,
             ),
             total_timeout_secs: env_u64(ENV_TOTAL_TIMEOUT_SECS, DEFAULT_TOTAL_TIMEOUT_SECS),
+            soft_finalize_secs: env_u64(ENV_SOFT_FINALIZE_SECS, DEFAULT_SOFT_FINALIZE_SECS),
+            search_limit: env_usize(ENV_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT),
             min_effort: env_effort(ENV_MIN_EFFORT, WebAgentEffort::Heavy),
             public_updates: env_bool_default(ENV_PUBLIC_UPDATES, DEFAULT_PUBLIC_UPDATES),
             forward_tool_events: env_bool_default(
@@ -125,6 +135,8 @@ impl Default for SearchProbeConfig {
             max_generations: DEFAULT_MAX_GENERATIONS,
             per_generation_timeout_secs: DEFAULT_PER_GENERATION_TIMEOUT_SECS,
             total_timeout_secs: DEFAULT_TOTAL_TIMEOUT_SECS,
+            soft_finalize_secs: DEFAULT_SOFT_FINALIZE_SECS,
+            search_limit: DEFAULT_SEARCH_LIMIT,
             min_effort: WebAgentEffort::Heavy,
             public_updates: DEFAULT_PUBLIC_UPDATES,
             forward_tool_events: DEFAULT_FORWARD_TOOL_EVENTS,
@@ -200,6 +212,8 @@ async fn maybe_run_search_probe_with_runtime(
                 max_generations = config.max_generations,
                 per_generation_timeout_secs = config.per_generation_timeout_secs,
                 total_timeout_secs = config.total_timeout_secs,
+                soft_finalize_secs = config.soft_finalize_secs,
+                search_limit = config.search_limit,
                 ?config.min_effort,
                 public_updates = config.public_updates,
                 forward_tool_events = config.forward_tool_events,
@@ -325,7 +339,13 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         let execution = executor.execute_user_input_with_options(
             AgentUserInput::new(prompt),
             Some(probe_tx),
-            probe_execution_options(parent_effort, config.min_effort),
+            probe_execution_options(
+                parent_effort,
+                config.min_effort,
+                config.search_limit,
+                config.soft_finalize_secs,
+                generation_timeout,
+            ),
         );
 
         let result = tokio::select! {
@@ -377,7 +397,10 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
             }
         };
 
-        let handoff = parse_search_probe_contract(generation, &text);
+        let handoff = handoff_from_generation_text(generation, &text);
+        if is_timeout_report(&text) {
+            warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe soft finalize timeout report produced");
+        }
         if config.public_updates
             && let Some(update) = handoff.public_update.as_deref()
         {
@@ -463,6 +486,32 @@ fn parse_search_probe_contract(generation: u8, text: &str) -> SearchProbeHandoff
         handoff,
         decision,
     }
+}
+
+fn handoff_from_generation_text(generation: u8, text: &str) -> SearchProbeHandoff {
+    let mut handoff = parse_search_probe_contract(generation, text);
+    if is_timeout_report(text) {
+        handoff.public_update = handoff.public_update.or_else(|| {
+            Some(
+                "Search Probe reached its soft time budget; passing partial findings to the main runtime."
+                    .to_owned(),
+            )
+        });
+        handoff.decision = SearchProbeDecision::Stop;
+    }
+    handoff
+}
+
+fn is_timeout_report(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(|status| status.as_str())
+                .map(|status| status == "timeout")
+        })
+        .unwrap_or(false)
 }
 
 fn extract_tag(text: &str, tag: &str) -> Option<String> {
@@ -642,11 +691,21 @@ impl SearchProbeDecision {
 fn probe_execution_options(
     parent_effort: Option<WebAgentEffort>,
     min_effort: WebAgentEffort,
+    search_limit: usize,
+    soft_finalize_secs: u64,
+    generation_timeout: std::time::Duration,
 ) -> AgentExecutionOptions {
+    let hard_secs = generation_timeout.as_secs().max(1);
+    let soft_secs = soft_finalize_secs
+        .max(1)
+        .min(hard_secs.saturating_sub(1).max(1));
+
     AgentExecutionOptions::with_effort(web_effort_to_core(max_effort(
         parent_effort.unwrap_or(WebAgentEffort::Standard),
         min_effort,
     )))
+    .with_timeout_secs(soft_secs)
+    .with_search_limit(search_limit.max(1))
 }
 
 const fn max_effort(left: WebAgentEffort, right: WebAgentEffort) -> WebAgentEffort {
@@ -832,6 +891,8 @@ mod tests {
         ENV_MAX_GENERATIONS,
         ENV_PER_GENERATION_TIMEOUT_SECS,
         ENV_TOTAL_TIMEOUT_SECS,
+        ENV_SOFT_FINALIZE_SECS,
+        ENV_SEARCH_LIMIT,
         ENV_MIN_EFFORT,
         ENV_PUBLIC_UPDATES,
         ENV_FORWARD_TOOL_EVENTS,
@@ -1072,8 +1133,10 @@ mod tests {
 
         assert!(!config.enabled);
         assert_eq!(config.max_generations, 2);
-        assert_eq!(config.per_generation_timeout_secs, 180);
-        assert_eq!(config.total_timeout_secs, 480);
+        assert_eq!(config.per_generation_timeout_secs, 35);
+        assert_eq!(config.total_timeout_secs, 35);
+        assert_eq!(config.soft_finalize_secs, 25);
+        assert_eq!(config.search_limit, 6);
         assert_eq!(config.min_effort, WebAgentEffort::Heavy);
         assert!(config.public_updates);
         assert!(config.forward_tool_events);
@@ -1091,6 +1154,8 @@ mod tests {
         test_set_env(ENV_MAX_GENERATIONS, "9");
         test_set_env(ENV_PER_GENERATION_TIMEOUT_SECS, "11");
         test_set_env(ENV_TOTAL_TIMEOUT_SECS, "22");
+        test_set_env(ENV_SOFT_FINALIZE_SECS, "7");
+        test_set_env(ENV_SEARCH_LIMIT, "4");
         test_set_env(ENV_MIN_EFFORT, "extended");
         test_set_env(ENV_PUBLIC_UPDATES, "false");
         test_set_env(ENV_FORWARD_TOOL_EVENTS, "false");
@@ -1106,6 +1171,8 @@ mod tests {
         assert_eq!(config.max_generations, 3);
         assert_eq!(config.per_generation_timeout_secs, 11);
         assert_eq!(config.total_timeout_secs, 22);
+        assert_eq!(config.soft_finalize_secs, 7);
+        assert_eq!(config.search_limit, 4);
         assert_eq!(config.min_effort, WebAgentEffort::Extended);
         assert!(!config.public_updates);
         assert!(!config.forward_tool_events);
@@ -1351,6 +1418,28 @@ after
     }
 
     #[test]
+    fn timeout_report_becomes_stopping_handoff_with_public_update() {
+        let parsed = handoff_from_generation_text(
+            1,
+            r#"{
+  "status": "timeout",
+  "note": "Partial results included.",
+  "recent_messages": [{"role":"tool","content":"source clue"}]
+}"#,
+        );
+
+        assert_eq!(parsed.generation, 1);
+        assert_eq!(parsed.decision, SearchProbeDecision::Stop);
+        assert!(parsed.handoff.contains("Partial results included"));
+        assert_eq!(
+            parsed.public_update.as_deref(),
+            Some(
+                "Search Probe reached its soft time budget; passing partial findings to the main runtime."
+            )
+        );
+    }
+
+    #[test]
     fn dossier_renderer_returns_none_without_handoffs() {
         assert_eq!(render_search_probe_dossier(&[], 80_000), None);
 
@@ -1440,13 +1529,52 @@ after
     #[test]
     fn probe_effort_uses_configured_minimum() {
         assert_eq!(
-            probe_execution_options(Some(WebAgentEffort::Standard), WebAgentEffort::Heavy).effort,
+            probe_execution_options(
+                Some(WebAgentEffort::Standard),
+                WebAgentEffort::Heavy,
+                6,
+                25,
+                Duration::from_secs(35),
+            )
+            .effort,
             AgentExecutionEffort::Heavy
         );
         assert_eq!(
-            probe_execution_options(Some(WebAgentEffort::Heavy), WebAgentEffort::Extended).effort,
+            probe_execution_options(
+                Some(WebAgentEffort::Heavy),
+                WebAgentEffort::Extended,
+                6,
+                25,
+                Duration::from_secs(35),
+            )
+            .effort,
             AgentExecutionEffort::Heavy
         );
+    }
+
+    #[test]
+    fn probe_execution_options_apply_soft_timeout_and_search_limit() {
+        let options = probe_execution_options(
+            Some(WebAgentEffort::Standard),
+            WebAgentEffort::Heavy,
+            6,
+            25,
+            Duration::from_secs(35),
+        );
+
+        assert_eq!(options.timeout_secs, Some(25));
+        assert_eq!(options.search_limit, Some(6));
+
+        let options = probe_execution_options(
+            Some(WebAgentEffort::Standard),
+            WebAgentEffort::Heavy,
+            0,
+            25,
+            Duration::from_secs(10),
+        );
+
+        assert_eq!(options.timeout_secs, Some(9));
+        assert_eq!(options.search_limit, Some(1));
     }
 
     #[tokio::test]

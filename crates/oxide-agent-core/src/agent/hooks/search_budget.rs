@@ -40,6 +40,8 @@ impl SearchBudgetHook {
                 | "duckduckgo_news"
                 | "brave_search"
                 | "searxng_search"
+                | "crawl4ai_markdown"
+                | "web_markdown"
         )
     }
 
@@ -171,7 +173,7 @@ impl Hook for SearchBudgetHook {
                 }
 
                 if self.is_search_tool(tool_name) {
-                    let limit = context.search_limit.unwrap_or(self.limit).max(self.limit);
+                    let limit = context.search_limit.unwrap_or(self.limit);
                     let current = self.count.fetch_add(1, Ordering::SeqCst) + 1;
                     if current > limit {
                         return HookResult::Block {
@@ -274,6 +276,58 @@ mod tests {
         );
 
         assert!(matches!(result, HookResult::Block { .. }));
+    }
+
+    #[test]
+    fn counts_web_fetchers_against_budget() {
+        let hook = SearchBudgetHook::new(1);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let first = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "crawl4ai_markdown".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+        let second = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "web_markdown".to_string(),
+                arguments: r#"{"url":"https://example.com"}"#.to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(first, HookResult::Continue));
+        assert!(matches!(second, HookResult::Block { .. }));
+    }
+
+    #[test]
+    fn context_search_limit_can_lower_hook_default() {
+        let hook = SearchBudgetHook::new(10);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1).with_search_limit(1);
+
+        let first = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "searxng_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+        let second = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "searxng_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(first, HookResult::Continue));
+        assert!(matches!(second, HookResult::Block { .. }));
     }
 
     #[test]
@@ -392,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn web_markdown_does_not_consume_search_budget() {
+    fn web_markdown_consumes_search_budget() {
         let hook = SearchBudgetHook::new(1);
         let todos = TodoList::new();
         let memory = AgentMemory::new(1024);
@@ -414,7 +468,7 @@ mod tests {
         );
 
         assert!(matches!(markdown, HookResult::Continue));
-        assert!(matches!(search, HookResult::Continue));
+        assert!(matches!(search, HookResult::Block { .. }));
     }
 
     #[test]

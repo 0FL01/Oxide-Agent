@@ -531,15 +531,19 @@ impl AgentExecutor {
             .map_or_else(get_agent_continuation_limit, |minimum| {
                 get_agent_continuation_limit().max(minimum)
             });
-        let timeout_secs = options.min_timeout_secs().map_or_else(
-            || self.settings.get_agent_timeout_secs(),
-            |minimum| self.settings.get_agent_timeout_secs().max(minimum),
-        );
-        let search_limit = options
-            .min_search_limit()
-            .map_or_else(get_agent_search_limit, |minimum| {
-                get_agent_search_limit().max(minimum)
-            });
+        let timeout_secs = options.timeout_secs.unwrap_or_else(|| {
+            options.min_timeout_secs().map_or_else(
+                || self.settings.get_agent_timeout_secs(),
+                |minimum| self.settings.get_agent_timeout_secs().max(minimum),
+            )
+        });
+        let search_limit = options.search_limit.unwrap_or_else(|| {
+            options
+                .min_search_limit()
+                .map_or_else(get_agent_search_limit, |minimum| {
+                    get_agent_search_limit().max(minimum)
+                })
+        });
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
