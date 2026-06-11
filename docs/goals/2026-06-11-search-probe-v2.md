@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 18:52 +03
+Last updated: 2026-06-11 19:14 +03
 
 ## Objective
 
@@ -107,7 +107,7 @@ Out of scope:
 - G8: Main runtime receives compact dossier plus original prompt only
   - Source: `docs/prd/plan-search-probe.md` sections 13 and 14.
   - Requirement: Render handoffs into `SearchProbeDossier`, inject it into `AgentUserInput.content`, preserve attachments, and avoid passing raw probe transcript to main runtime.
-  - Acceptance: main input contains dossier and original task; attachments unchanged; no probe internal message history is injected.
+  - Acceptance: main input contains original task first and an appended XML-like `<search_probe_dossier>` only when handoffs exist; attachments unchanged; no probe internal message history, raw tool outputs, reasoning, or event stream is injected.
   - Evidence required: unit tests for renderer/injection and attachment preservation.
   - Status: pending
   - Evidence collected:
@@ -122,7 +122,7 @@ Out of scope:
 
 - Q1: Main runtime prompt cache friendliness is preserved
   - Source: `docs/prd/plan-search-probe.md` section 15.
-  - Acceptance: Search Probe does not modify core prompt composer or inject volatile probe data into system prompt/stable prefix; dossier is user input/runtime content only.
+  - Acceptance: Search Probe does not modify core prompt composer or inject volatile probe data into system prompt/stable prefix; dossier is user input/runtime content only and is appended after the original prompt.
   - Evidence required: diff audit and a focused assertion/test if prompt path is touched.
   - Status: in_progress
   - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged.
@@ -203,14 +203,16 @@ Out of scope:
 ### Checkpoint 4: Dossier render and main input injection
 - Audit IDs: G8, Q1, N1, V1.
 - Expected changes:
-  - Render `SearchProbeDossier` from generation results.
-  - Inject dossier into `AgentUserInput.content` while preserving attachments.
-  - Ensure probe transcript is not passed to main runtime.
+  - Render an XML-like `<search_probe_dossier>` from compact generation handoffs, optional useful public updates, final synthesis, final decision, and truncation marker.
+  - Inject dossier after the original `AgentUserInput.content` while preserving attachments.
+  - No-op when Search Probe produced no handoffs.
+  - Preserve newest handoffs first and set an explicit truncated marker when `dossier_max_chars` is exceeded.
+  - Ensure full probe transcript, raw tool outputs, internal reasoning, and internal event stream are not passed to main runtime.
   - Keep probe data out of the main system prompt/cacheable prefix.
 - Validation:
   - `cargo check -p oxide-agent-transport-web`
   - Renderer/injection tests, attachment preservation test, prompt-path diff audit.
-- Exit condition: main runtime receives only dossier + original task and starts clean.
+- Exit condition: main runtime receives original task plus compact dossier only, or unchanged input when no handoffs exist, and starts clean.
 
 ### Checkpoint 5: End-to-end web validation and final audit
 - Audit IDs: all G*, Q*, N*, V*.
@@ -248,6 +250,7 @@ Out of scope:
 - 2026-06-11: Remove deterministic research logic from the plan. Reason: user wants agentic probe behavior, not Rust heuristics or query templates.
 - 2026-06-11: Preserve main runtime cache-hit by injecting probe output as user/runtime input only, not into stable system prompt.
 - 2026-06-11: Checkpoint 1 required user review before implementation; user approved it and requested work on `feature/search-probe` from `dev`.
+- 2026-06-11: User approved Checkpoint 4 dossier policy: append an XML-like dossier after the original prompt; include only compact handoffs, optional useful public updates, final synthesis, decision, and truncation marker; skip injection when no handoffs exist; preserve attachments unchanged; keep probe transcript, raw tool outputs, internal reasoning, and events out of main runtime.
 
 ## Progress Log
 

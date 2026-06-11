@@ -522,47 +522,84 @@ Reasoning: TL;DR: ...
 
 Main agent не получает probe transcript.
 
-Main agent получает только compact dossier:
+Main agent получает только original user prompt plus compact dossier. Original prompt stays first; dossier is appended as auxiliary context so user intent remains primary.
 
 ```text
-### Search Probe Dossier
+{original_user_prompt}
 
+<search_probe_dossier>
 Generated before the main agent runtime by web Search Probe.
 Treat this as research grounding and leads, not as final truth.
 Verify important claims before final answer.
 
-## Generation 1 public update
+<generation index="1">
+<public_update>
 ...
-
-## Generation 1 handoff
+</public_update>
+<handoff>
 ...
+</handoff>
+</generation>
 
-## Generation 2 public update
+<generation index="2">
+<public_update>
 ...
-
-## Generation 2 handoff
+</public_update>
+<handoff>
 ...
+</handoff>
+</generation>
 
-## Working conclusion
+<final_synthesis>
 ...
+</final_synthesis>
 
-## Sources mentioned by probe
-- ...
+<decision>
+stop
+</decision>
 
-## Uncertainties and blockers
-- ...
+<truncated>
+false
+</truncated>
 
-## Instructions for main runtime
+<instructions_for_main_runtime>
 - Use this as starting context, not as proof.
 - Verify source-backed claims before final answer.
 - Do not repeat unsupported assumptions.
 - If sources are insufficient, say so explicitly.
+</instructions_for_main_runtime>
+</search_probe_dossier>
+```
 
----
+Dossier content rules:
 
-### Original user task
+```text
+1. Include compact generation handoffs, public updates only if useful, final synthesis, and final decision.
+2. Do not include full probe transcript, raw tool outputs, internal reasoning, or internal event stream.
+3. If there are no handoffs, do not inject a dossier; run the main runtime with unchanged input.
+4. If `dossier_max_chars` is exceeded, preserve the newest handoffs first and set `<truncated>true</truncated>`.
+5. Renderer is deterministic formatting only. It does not interpret research content.
+```
 
+Failure dossier uses the same XML-like envelope:
+
+```text
 {original_user_prompt}
+
+<search_probe_dossier>
+<partial_failure>true</partial_failure>
+<failure_summary>
+Search probe was attempted but failed or returned partial output.
+</failure_summary>
+<generation index="1">
+<handoff>
+partial notes if available
+</handoff>
+</generation>
+<instructions_for_main_runtime>
+Main runtime should perform its own verification.
+</instructions_for_main_runtime>
+</search_probe_dossier>
 ```
 
 Renderer is deterministic formatting only. It does not interpret research content.
@@ -583,18 +620,22 @@ crates/oxide-agent-core/src/agent/executor.rs:100
 crates/oxide-agent-core/src/agent/executor.rs:121
 ```
 
-Helper:
+Helper shape:
 
 ```rust
 fn inject_search_probe_dossier(
     mut input: AgentUserInput,
     dossier: &SearchProbeDossier,
 ) -> AgentUserInput {
+    if dossier.is_empty() {
+        return input;
+    }
+
     let original = input.content;
     input.content = format!(
-        "{}\n\n---\n\n### Original user task\n\n{}",
-        dossier.render_for_main_runtime(),
+        "{}\n\n{}",
         original,
+        dossier.render_for_main_runtime(),
     );
     input
 }
@@ -614,7 +655,7 @@ Rules:
 1. Не менять core prompt composer для MVP.
 2. Не добавлять SearchProbeDossier в system prompt.
 3. Не добавлять probe results в stable prefix.
-4. Inject dossier only into user input.
+4. Inject dossier only into user input after the original user prompt.
 5. Main executor keeps the same system prompt/tool schema path.
 6. Probe instructions should be stable across requests.
 7. Dynamic probe data stays in generation user input and final dossier.
@@ -677,19 +718,30 @@ If probe fails:
 
 Main runtime still starts.
 
-Dossier becomes:
+Dossier, if there is at least one partial handoff, uses the approved XML-like envelope after the original prompt:
 
 ```text
-### Search Probe Dossier
+{original_user_prompt}
 
+<search_probe_dossier>
+<partial_failure>true</partial_failure>
+<failure_summary>
 Search probe was attempted but failed or returned partial output.
+</failure_summary>
 
-Failures:
-- generation 1: timeout
-- generation 2: skipped
+<generation index="1">
+<handoff>
+partial notes if available
+</handoff>
+</generation>
 
+<instructions_for_main_runtime>
 Main runtime should perform its own verification.
+</instructions_for_main_runtime>
+</search_probe_dossier>
 ```
+
+If probe produces no handoffs at all, do not inject a dossier; start main runtime with unchanged input.
 
 Exception: if user cancels task while probe is running, main runtime must not start.
 
@@ -749,6 +801,7 @@ pub(crate) struct SearchProbeDossier {
     pub original_task_preview: String,
     pub generations: Vec<SearchProbeGenerationResult>,
     pub partial_failure: bool,
+    pub truncated: bool,
 }
 ```
 
