@@ -739,6 +739,16 @@ fn verifier_started_event_title(event: &PersistedTaskEvent) -> String {
     let max_rounds = payload_u64_event(event, "max_rounds").unwrap_or(0);
     let evidence_docs = payload_u64_event(event, "evidence_document_count").unwrap_or(0);
     if round > 0 && max_rounds > 0 {
+        if event
+            .payload
+            .get("proof_not_found_mode")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return format!(
+                "Checking proof-not-found answer · attempt {round}/{max_rounds} · {evidence_docs} evidence docs"
+            );
+        }
         return format!(
             "Checking final draft · round {round}/{max_rounds} · {evidence_docs} evidence docs"
         );

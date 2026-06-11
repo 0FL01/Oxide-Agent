@@ -11,12 +11,12 @@ use crate::agent::providers::TodoList;
 use crate::agent::research::{
     AnswerVerificationDecision, AnswerVerificationError, AnswerVerificationRequest,
     AnswerVerifierConfidence, AnswerVerifierVerdict, PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS,
-    PROOF_NOT_FOUND_MAX_REPORT_CHARS, ProofNotFoundReportInput, ResearchSnapshot,
-    ResearchVerifierTrace, StrictAnswerVerifier, VerifierUnsupportedClaim,
-    build_proof_not_found_report,
+    PROOF_NOT_FOUND_MAX_REPORT_CHARS, ResearchSnapshot, ResearchVerifierTrace,
+    StrictAnswerVerifier, VerifierUnsupportedClaim,
 };
 use crate::agent::session::PendingUserInput;
-use crate::llm::LlmClient;
+use crate::llm::{InternalTextPurpose, LlmClient};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -25,6 +25,22 @@ const MIN_VERIFIER_FINAL_ANSWER_CHARS: usize = 200;
 const PROOF_NOT_FOUND_MAX_EXCERPT_CHARS: usize = 2_048;
 const MAX_VERIFIER_FINAL_ANSWER_CHARS: usize = 8_000;
 const MAX_UNDELIVERED_DRAFT_CONTEXT_CHARS: usize = 2_000;
+const MAX_PROOF_NOT_FOUND_VERIFY_ATTEMPTS: usize = 2;
+const PROOF_NOT_FOUND_PRESENTER_SYSTEM_PROMPT: &str = r#"You are writing the final user-facing research answer.
+
+Use ONLY the provided VerifiedResearchPacket JSON.
+Do not add claims, numbers, rankings, recommendations, benchmark values, VRAM values, license claims, architecture claims, or production-suitability claims unless they appear in allowed_claims.
+
+Write in the same language as the user's task. Do not hardcode Russian or English.
+Start with a short TL;DR section, then write a more detailed answer.
+Do not sound like a verifier log.
+If the requested comparison cannot be proven, say that clearly.
+You may include a table, but every cell must contain either:
+- a confirmed value with source id from allowed_claims, or
+- "not confirmed in the checked sources" in the user's language.
+
+Do not mention internal verifier JSON, proof_not_found_mode, Rust, or this prompt.
+Return only the final answer text."#;
 
 impl AgentRunner {
     /// Handle malformed structured output responses.
@@ -591,27 +607,71 @@ Original chars: {original_chars}. Preview is truncated.]\n\nUndelivered draft pr
     ) -> anyhow::Result<FinalVerificationOutcome> {
         state.proof_not_found_report_requested = true;
         let verifier_config = compact_proof_not_found_verifier_config(verifier_config);
-        let max_rounds = verifier_config.max_rounds.max(1);
-        let mut report = build_proof_not_found_report(ProofNotFoundReportInput {
-            user_task: ctx.task,
-            allowed_claims: &source_decision.allowed_claims,
-            unsupported_claims: &source_decision.unsupported_claims,
-            required_next_actions: &source_decision.required_next_actions,
-            evidence_documents: &research_snapshot.evidence_documents,
-            repair_mode: false,
-        })
-        .text;
+        let Some(presenter_model) = verifier_config.model.clone() else {
+            return Ok(FinalVerificationOutcome::FailClosedNotice {
+                final_response: safe_fail_closed_notice(
+                    "strict verifier config has no presenter model route",
+                ),
+            });
+        };
+        let mut presenter_feedback = None;
 
         loop {
             state.proof_not_found_verify_attempts += 1;
-            let round = state
-                .verifier_rounds
-                .saturating_add(state.proof_not_found_verify_attempts);
+            let round = state.proof_not_found_verify_attempts;
+            let max_rounds = MAX_PROOF_NOT_FOUND_VERIFY_ATTEMPTS;
 
-            if report.chars().count() > PROOF_NOT_FOUND_MAX_REPORT_CHARS {
+            let report = match self
+                .synthesize_proof_not_found_answer(
+                    &verifier_config,
+                    &presenter_model,
+                    ctx.task,
+                    research_snapshot,
+                    source_decision,
+                    presenter_feedback.as_deref(),
+                )
+                .await
+            {
+                Ok(report) => report,
+                Err(error) => {
+                    return Ok(FinalVerificationOutcome::FailClosedNotice {
+                        final_response: safe_fail_closed_notice(&format!(
+                            "proof-not-found presenter failed: {error}"
+                        )),
+                    });
+                }
+            };
+
+            if report.trim().chars().count() < MIN_VERIFIER_FINAL_ANSWER_CHARS {
+                if !state.proof_not_found_repair_used {
+                    state.proof_not_found_repair_used = true;
+                    state.proof_not_found_repair_attempt_used = true;
+                    presenter_feedback = Some(format!(
+                        "Previous presenter answer was too short for verification ({} chars). Write a substantive user-facing answer from the packet.",
+                        report.trim().chars().count()
+                    ));
+                    continue;
+                }
                 return Ok(FinalVerificationOutcome::FailClosedNotice {
                     final_response: safe_fail_closed_notice(
-                        "deterministic proof-not-found report exceeded length limit",
+                        "proof-not-found presenter produced repeated short answers",
+                    ),
+                });
+            }
+
+            if report.chars().count() > MAX_VERIFIER_FINAL_ANSWER_CHARS {
+                if !state.proof_not_found_repair_used {
+                    state.proof_not_found_repair_used = true;
+                    state.proof_not_found_repair_attempt_used = true;
+                    presenter_feedback = Some(format!(
+                        "Previous presenter answer was too long for strict verification ({} chars). Rewrite it more concisely without adding facts.",
+                        report.chars().count()
+                    ));
+                    continue;
+                }
+                return Ok(FinalVerificationOutcome::FailClosedNotice {
+                    final_response: safe_fail_closed_notice(
+                        "proof-not-found presenter answer exceeded verifier input limit",
                     ),
                 });
             }
@@ -685,15 +745,8 @@ Original chars: {original_chars}. Preview is truncated.]\n\nUndelivered draft pr
                     if repairable && !state.proof_not_found_repair_used {
                         state.proof_not_found_repair_used = true;
                         state.proof_not_found_repair_attempt_used = true;
-                        report = build_proof_not_found_report(ProofNotFoundReportInput {
-                            user_task: ctx.task,
-                            allowed_claims: &[],
-                            unsupported_claims: &decision.unsupported_claims,
-                            required_next_actions: &decision.required_next_actions,
-                            evidence_documents: &research_snapshot.evidence_documents,
-                            repair_mode: true,
-                        })
-                        .text;
+                        presenter_feedback =
+                            Some(proof_not_found_presenter_repair_feedback(&decision));
                         continue;
                     }
 
@@ -725,6 +778,43 @@ Original chars: {original_chars}. Preview is truncated.]\n\nUndelivered draft pr
                 }
             }
         }
+    }
+
+    async fn synthesize_proof_not_found_answer(
+        &self,
+        verifier_config: &crate::agent::research::ResearchVerifierConfig,
+        presenter_model: &crate::config::ModelInfo,
+        user_task: &str,
+        research_snapshot: &ResearchSnapshot,
+        source_decision: &AnswerVerificationDecision,
+        repair_feedback: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let packet = verified_research_packet_json(
+            user_task,
+            research_snapshot,
+            source_decision,
+            repair_feedback,
+        );
+        let llm = self.llm_client();
+        let result = tokio::time::timeout(
+            verifier_config.timeout,
+            llm.complete_internal_text(
+                InternalTextPurpose::ProofNotFoundPresentation,
+                PROOF_NOT_FOUND_PRESENTER_SYSTEM_PROMPT,
+                &packet,
+                presenter_model,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("presenter timed out after {:?}", verifier_config.timeout))?
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+        let trimmed = result.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("presenter returned an empty answer"));
+        }
+
+        Ok(trimmed.to_string())
     }
 
     /// Handle a blocked response that requires more user input.
@@ -1063,6 +1153,173 @@ fn proof_not_found_source_decision(summary: &str) -> AnswerVerificationDecision 
     }
 }
 
+fn verified_research_packet_json(
+    user_task: &str,
+    research_snapshot: &ResearchSnapshot,
+    source_decision: &AnswerVerificationDecision,
+    repair_feedback: Option<&str>,
+) -> String {
+    let checked_sources = research_snapshot
+        .evidence_documents
+        .iter()
+        .take(PROOF_NOT_FOUND_MAX_EVIDENCE_DOCS)
+        .enumerate()
+        .map(|(index, doc)| {
+            json!({
+                "id": format!("doc-{}", index + 1),
+                "url": doc.final_url.as_deref().unwrap_or(doc.url.as_str()),
+                "status_code": doc.status_code,
+                "source_kind": doc.source_kind.as_deref().unwrap_or("unknown"),
+                "truncated": doc.truncated,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let missing_dimensions = missing_dimensions_from_decision(source_decision);
+    let forbidden_claims = forbidden_claims_from_decision(source_decision);
+
+    serde_json::to_string_pretty(&json!({
+        "packet_type": "VerifiedResearchPacket",
+        "user_task": user_task,
+        "instructions": {
+            "same_language_as_user_task": true,
+            "start_with_tldr": true,
+            "then_write_detailed_answer": true,
+            "do_not_sound_like_verifier_log": true,
+            "no_character_limit_instruction": true,
+            "facts_must_come_only_from_allowed_claims": true,
+            "unsupported_claims_are_not_facts": true,
+            "if_requested_comparison_cannot_be_proven_explain_clearly": true,
+            "table_cells_must_be_confirmed_or_not_confirmed": true
+        },
+        "allowed_claims": source_decision.allowed_claims,
+        "unsupported_claims": source_decision.unsupported_claims,
+        "missing_evidence_by_dimension": missing_dimensions,
+        "required_next_actions": source_decision.required_next_actions,
+        "checked_sources": checked_sources,
+        "forbidden_claims": forbidden_claims,
+        "repair_feedback": repair_feedback,
+    }))
+    .unwrap_or_else(|_| {
+        json!({
+            "packet_type": "VerifiedResearchPacket",
+            "user_task": user_task,
+            "allowed_claims": [],
+            "unsupported_claims": [],
+            "required_next_actions": source_decision.required_next_actions,
+            "repair_feedback": repair_feedback,
+        })
+        .to_string()
+    })
+}
+
+fn missing_dimensions_from_decision(decision: &AnswerVerificationDecision) -> Vec<Value> {
+    let dimensions = [
+        (
+            "generation_speed",
+            &["tok/s", "throughput", "generation", "скорост"][..],
+        ),
+        (
+            "prompt_eval_latency",
+            &["ttft", "latency", "prompt eval", "prefill", "prompt"][..],
+        ),
+        ("vram_memory", &["vram", "memory", "gb", "памят"][..]),
+        ("quality", &["quality", "benchmark", "качест"][..]),
+        ("license", &["license", "лиценз"][..]),
+        (
+            "recommendation_or_winner",
+            &["recommend", "winner", "better", "лучше", "рекоменд"][..],
+        ),
+        (
+            "architecture_or_quantization",
+            &["architecture", "quant", "nvfp4", "bf16", "moe", "архитект"][..],
+        ),
+    ];
+
+    let unsupported_text = decision
+        .unsupported_claims
+        .iter()
+        .map(|claim| format!("{} {}", claim.claim, claim.reason).to_lowercase())
+        .collect::<Vec<_>>();
+
+    let mut output = Vec::new();
+    for (dimension, needles) in dimensions {
+        let related_claims = decision
+            .unsupported_claims
+            .iter()
+            .zip(unsupported_text.iter())
+            .filter(|(_, text)| needles.iter().any(|needle| text.contains(needle)))
+            .map(|(claim, _)| crate::utils::truncate_str(&claim.claim, 260))
+            .collect::<Vec<_>>();
+
+        if !related_claims.is_empty() {
+            output.push(json!({
+                "dimension": dimension,
+                "status": "not_confirmed_in_checked_sources",
+                "related_unsupported_claims": related_claims,
+            }));
+        }
+    }
+
+    if output.is_empty() && !decision.unsupported_claims.is_empty() {
+        output.push(json!({
+            "dimension": "requested_comparison",
+            "status": "not_confirmed_in_checked_sources",
+            "related_unsupported_claims": decision
+                .unsupported_claims
+                .iter()
+                .map(|claim| crate::utils::truncate_str(&claim.claim, 260))
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    output
+}
+
+fn forbidden_claims_from_decision(decision: &AnswerVerificationDecision) -> Vec<String> {
+    let mut forbidden = decision
+        .unsupported_claims
+        .iter()
+        .map(|claim| crate::utils::truncate_str(&claim.claim, 320))
+        .collect::<Vec<_>>();
+    forbidden.push(
+        "Do not provide a winner, ranking, recommendation, benchmark table, speed number, prompt-eval number, VRAM number, license claim, or architecture claim unless it is present in allowed_claims."
+            .to_string(),
+    );
+    forbidden
+}
+
+fn proof_not_found_presenter_repair_feedback(decision: &AnswerVerificationDecision) -> String {
+    let mut feedback = vec![
+        "The strict verifier rejected the previous presented answer. Rewrite it using the original VerifiedResearchPacket only.".to_string(),
+        format!("Verifier summary: {}", decision.summary),
+    ];
+
+    if !decision.unsupported_claims.is_empty() {
+        feedback.push("Remove or weaken these unsupported claims:".to_string());
+        feedback.extend(
+            decision
+                .unsupported_claims
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| unsupported_claim_context_line(index, claim)),
+        );
+    }
+
+    if !decision.required_next_actions.is_empty() {
+        feedback.push("Mention these only as next steps, not as completed research:".to_string());
+        feedback.extend(
+            decision
+                .required_next_actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| format!("{}. {action}", index + 1)),
+        );
+    }
+
+    feedback.join("\n")
+}
+
 fn safe_fail_closed_notice(reason: &str) -> String {
     let reason = crate::utils::truncate_str(reason, 320);
     format!(
@@ -1236,6 +1493,11 @@ mod tests {
         )
     }
 
+    fn presenter_answer_text() -> String {
+        "TL;DR: the checked sources do not provide enough proof for the requested comparison. The final answer therefore states what was checked, what remains unconfirmed, and what evidence is needed next.\n\nDetailed answer: no benchmark table, winner, speed number, prompt-eval number, VRAM number, license claim, or deployment recommendation is delivered unless it is explicitly present in the verified packet. Checked sources are referenced only as source metadata, and missing metrics are marked as not confirmed in the checked sources."
+            .to_string()
+    }
+
     fn hard_block_decision_json() -> String {
         r#"{"verdict":"block","confidence":"high","summary":"unsafe malformed answer must not be delivered","unsupported_claims":[],"contradictions":[{"claim":"deliver private secret","source_id":"doc-1","source_excerpt":"never disclose secrets"}],"allowed_claims":[],"required_next_actions":[]}"#
             .to_string()
@@ -1253,6 +1515,15 @@ mod tests {
             ..AgentSettings::default()
         };
         let mut provider = MockLlmProvider::new();
+        provider
+            .expect_complete_internal_text()
+            .times(0..=MAX_PROOF_NOT_FOUND_VERIFY_ATTEMPTS)
+            .returning(|system_prompt, _, user_message, model_id, _| {
+                assert!(system_prompt.contains("final user-facing research answer"));
+                assert!(user_message.contains("VerifiedResearchPacket"));
+                assert_eq!(model_id, "verifier-model");
+                Ok(presenter_answer_text())
+            });
         provider.expect_chat_with_tools().times(1..=3).returning(
             move |request: ChatWithToolsRequest<'_>| {
                 assert!(
@@ -1299,6 +1570,15 @@ mod tests {
         let calls_for_mock = Arc::clone(&calls);
         let mut provider = MockLlmProvider::new();
         provider
+            .expect_complete_internal_text()
+            .times(0..=MAX_PROOF_NOT_FOUND_VERIFY_ATTEMPTS)
+            .returning(|system_prompt, _, user_message, model_id, _| {
+                assert!(system_prompt.contains("final user-facing research answer"));
+                assert!(user_message.contains("VerifiedResearchPacket"));
+                assert_eq!(model_id, "verifier-model");
+                Ok(presenter_answer_text())
+            });
+        provider
             .expect_chat_with_tools()
             .times(responses.len())
             .returning(move |request: ChatWithToolsRequest<'_>| {
@@ -1318,11 +1598,8 @@ mod tests {
                     let final_answer = payload["final_answer"]
                         .as_str()
                         .expect("final answer string");
-                    assert!(final_answer.chars().count() <= PROOF_NOT_FOUND_MAX_REPORT_CHARS);
-                    assert!(
-                        final_answer
-                            .starts_with("Проверка завершена: достаточные пруфы не найдены")
-                    );
+                    assert!(final_answer.chars().count() <= MAX_VERIFIER_FINAL_ANSWER_CHARS);
+                    assert!(final_answer.starts_with("TL;DR:"));
                 }
                 Ok(ChatResponse {
                     content: Some(raw_response.clone()),
@@ -1346,6 +1623,14 @@ mod tests {
             ..AgentSettings::default()
         };
         let mut provider = MockLlmProvider::new();
+        provider.expect_complete_internal_text().times(1).returning(
+            |system_prompt, _, user_message, model_id, _| {
+                assert!(system_prompt.contains("final user-facing research answer"));
+                assert!(user_message.contains("VerifiedResearchPacket"));
+                assert_eq!(model_id, "verifier-model");
+                Ok(presenter_answer_text())
+            },
+        );
         provider.expect_chat_with_tools().times(3).returning(
             |request: ChatWithToolsRequest<'_>| {
                 assert!(request.json_mode);
@@ -1369,6 +1654,14 @@ mod tests {
             ..AgentSettings::default()
         };
         let mut provider = MockLlmProvider::new();
+        provider.expect_complete_internal_text().times(1).returning(
+            |system_prompt, _, user_message, model_id, _| {
+                assert!(system_prompt.contains("final user-facing research answer"));
+                assert!(user_message.contains("VerifiedResearchPacket"));
+                assert_eq!(model_id, "verifier-model");
+                Ok(presenter_answer_text())
+            },
+        );
         provider.expect_chat_with_tools().times(1).returning(
             |request: ChatWithToolsRequest<'_>| {
                 assert!(request.json_mode);
@@ -1989,15 +2282,14 @@ mod tests {
         )
         .await;
 
-        let final_response = match result.expect("exhaustion should deliver deterministic report") {
+        let final_response = match result.expect("exhaustion should deliver presenter report") {
             Some(AgentRunResult::Final(response)) => response,
-            _ => panic!("expected deterministic proof-not-found final response"),
+            _ => panic!("expected proof-not-found presenter final response"),
         };
         assert_eq!(state.continuation_count, 0);
         assert!(state.proof_not_found_report_requested);
         assert_eq!(state.proof_not_found_verify_attempts, 1);
-        assert!(final_response.starts_with("Проверка завершена: достаточные пруфы не найдены"));
-        assert!(final_response.chars().count() <= PROOF_NOT_FOUND_MAX_REPORT_CHARS);
+        assert!(final_response.starts_with("TL;DR:"));
         assert!(memory.iter().any(|message| {
             message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
         }));
@@ -2024,16 +2316,13 @@ mod tests {
         match result.expect("verified proof_not_found report should deliver") {
             Some(AgentRunResult::Final(response)) => {
                 assert_ne!(response, report);
-                assert!(response.starts_with("Проверка завершена: достаточные пруфы не найдены"));
-                assert!(response.chars().count() <= PROOF_NOT_FOUND_MAX_REPORT_CHARS);
+                assert!(response.starts_with("TL;DR:"));
             }
             _ => panic!("expected proof-not-found final response"),
         }
         assert!(memory.iter().any(|message| {
             message.resolved_kind() == AgentMessageKind::AssistantResponse
-                && message
-                    .content
-                    .starts_with("Проверка завершена: достаточные пруфы не найдены")
+                && message.content.starts_with("TL;DR:")
         }));
     }
 
@@ -2136,11 +2425,10 @@ mod tests {
 
         match result.expect("long root proof report should be ignored") {
             Some(AgentRunResult::Final(response)) => {
-                assert!(response.starts_with("Проверка завершена: достаточные пруфы не найдены"));
-                assert!(response.chars().count() <= PROOF_NOT_FOUND_MAX_REPORT_CHARS);
+                assert!(response.starts_with("TL;DR:"));
                 assert_ne!(response, long_report);
             }
-            _ => panic!("expected deterministic proof-not-found final response"),
+            _ => panic!("expected proof-not-found presenter final response"),
         }
         assert!(!state.proof_not_found_repair_attempt_used);
     }
@@ -2213,11 +2501,10 @@ mod tests {
 
         match result.expect("repair should verify") {
             Some(AgentRunResult::Final(response)) => {
-                assert!(response.starts_with("Проверка завершена: достаточные пруфы не найдены"));
-                assert!(response.contains("Нет предметных утверждений"));
-                assert!(!response.contains("Подтверждено:\n- Model X"));
+                assert!(response.starts_with("TL;DR:"));
+                assert!(!response.contains("Model X has 97% F1"));
             }
-            _ => panic!("expected deterministic proof-not-found final response"),
+            _ => panic!("expected proof-not-found presenter final response"),
         }
         assert!(state.proof_not_found_repair_used);
         assert_eq!(state.proof_not_found_verify_attempts, 2);
@@ -2240,10 +2527,10 @@ mod tests {
 
         match result.expect("proof-not-found report should deliver") {
             Some(AgentRunResult::Final(response)) => {
-                assert!(response.contains("Документы-доказательства отсутствуют"));
-                assert!(response.contains("Нет предметных утверждений"));
+                assert!(response.starts_with("TL;DR:"));
+                assert!(response.contains("not confirmed in the checked sources"));
             }
-            _ => panic!("expected deterministic proof-not-found final response"),
+            _ => panic!("expected proof-not-found presenter final response"),
         }
     }
 
