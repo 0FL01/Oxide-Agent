@@ -2,7 +2,8 @@
 
 use super::AgentRunner;
 use super::types::{
-    AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
+    AgentRunResult, AgentRunnerContext, FinalResponseInput, PendingFinalDraftDecision, RunState,
+    StructuredOutputFailure,
 };
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMemory;
@@ -152,27 +153,42 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
 
         let mut final_response = input.final_answer;
         let mut reasoning = input.reasoning;
-        if let Some(draft) = state.pending_final_draft.take() {
-            if draft.should_replace_final_response(&final_response) {
-                info!(
-                    task_id = ctx.task_id,
-                    draft_len = draft.content_len(),
-                    short_final_len = final_response.len(),
-                    source_iteration = draft.source_iteration,
-                    source_tool_name = draft.source_tool_name,
-                    "using pending final draft instead of short final response"
-                );
-                final_response = draft.content;
-                reasoning = None;
-            } else {
-                tracing::debug!(
-                    task_id = ctx.task_id,
-                    draft_len = draft.content_len(),
-                    final_response_len = final_response.len(),
-                    source_iteration = draft.source_iteration,
-                    source_tool_name = draft.source_tool_name,
-                    "discarding pending final draft because final response is substantive"
-                );
+        if let Some(draft) = state.pending_final_draft.as_ref() {
+            match draft.final_response_decision(&final_response) {
+                PendingFinalDraftDecision::UseDraft => {
+                    info!(
+                        task_id = ctx.task_id,
+                        draft_len = draft.content_len(),
+                        short_final_len = final_response.len(),
+                        source_iteration = draft.source_iteration,
+                        source_tool_name = draft.source_tool_name,
+                        "using pending final draft instead of short final response"
+                    );
+                    final_response = draft.content.clone();
+                    reasoning = None;
+                }
+                PendingFinalDraftDecision::MergeDraftAndFinal => {
+                    info!(
+                        task_id = ctx.task_id,
+                        draft_len = draft.content_len(),
+                        final_response_len = final_response.len(),
+                        source_iteration = draft.source_iteration,
+                        source_tool_name = draft.source_tool_name,
+                        "merging pending final draft with short addendum final response"
+                    );
+                    final_response = draft.merge_with_final_response(&final_response);
+                    reasoning = None;
+                }
+                PendingFinalDraftDecision::UseFinal => {
+                    tracing::debug!(
+                        task_id = ctx.task_id,
+                        draft_len = draft.content_len(),
+                        final_response_len = final_response.len(),
+                        source_iteration = draft.source_iteration,
+                        source_tool_name = draft.source_tool_name,
+                        "discarding pending final draft because final response is substantive"
+                    );
+                }
             }
         }
 
@@ -231,6 +247,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         }
 
         self.save_final_response(ctx, &final_response, reasoning);
+        state.pending_final_draft = None;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -447,6 +464,126 @@ mod tests {
             message.resolved_kind() == AgentMessageKind::AssistantResponse
                 && message.content == long_draft.trim()
         }));
+    }
+
+    #[tokio::test]
+    async fn pending_final_draft_merges_short_addendum_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(16_384);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "pending-final-draft-merge-addendum",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 16_384),
+        };
+        let long_draft = format!(
+            "## Расчёт пропускной способности\n\n{}",
+            "- Подробная строка расчёта с исходными данными и выводами.\n".repeat(220)
+        );
+        let addendum = format!(
+            "Уровень уверенности по ключевым утверждениям:\n\n| Утверждение | Уверенность |\n|---|---|\n{}",
+            "| Q4 помещается | Высокая |\n".repeat(35)
+        );
+        let mut state = RunState::new();
+        state.pending_final_draft =
+            PendingFinalDraft::from_write_todos_content(long_draft.clone(), 18);
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: addendum.clone(),
+                    reasoning: Some("final addendum reasoning".to_string()),
+                },
+            )
+            .await
+            .expect("final response should be handled");
+
+        let expected = format!("{}\n\n---\n\n{}", long_draft.trim(), addendum.trim());
+        match result {
+            Some(AgentRunResult::Final(response)) => assert_eq!(response, expected),
+            _ => panic!("expected final response"),
+        }
+        assert!(state.pending_final_draft.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == expected
+        }));
+    }
+
+    #[tokio::test]
+    async fn pending_final_draft_survives_forced_iteration() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+
+        let mut session = EphemeralSession::new(8192);
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem::new("finish work"));
+        session.memory_mut().todos = todos.clone();
+        let todos_arc = Arc::new(Mutex::new(todos));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "pending-final-draft-force-iteration",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 8192),
+        };
+        let long_draft = format!("## Итоговый отчёт\n\n{}", "draft line\n".repeat(160));
+        let mut state = RunState::new();
+        state.pending_final_draft =
+            PendingFinalDraft::from_write_todos_content(long_draft.clone(), 18);
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Короткий финал.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("forced final response should continue");
+
+        assert!(result.is_none());
+        assert_eq!(
+            state
+                .pending_final_draft
+                .as_ref()
+                .expect("draft must survive forced iteration")
+                .content,
+            long_draft.trim()
+        );
     }
 
     #[tokio::test]

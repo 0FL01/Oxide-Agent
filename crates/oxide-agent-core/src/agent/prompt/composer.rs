@@ -160,6 +160,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "For complex or multi-step work, call `write_todos` before starting.".to_string(),
                 "Keep exactly one task `in_progress`; keep the rest `pending`, `completed`, `cancelled`, or `blocked_on_user`.".to_string(),
                 "Update tasks as work changes; mark `completed` only after the step is actually done and verified when applicable.".to_string(),
+                "When the final `write_todos` update completes all work, return the complete final answer in the next assistant message; do not return only a summary or addendum.".to_string(),
                 "If blocked waiting for the user, mark the relevant task `blocked_on_user` before asking for input.".to_string(),
             ],
         );

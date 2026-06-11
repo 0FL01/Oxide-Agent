@@ -199,15 +199,6 @@ impl AgentRunner {
         let finish_after_todo_update = tool_calls
             .iter()
             .all(|tool_call| tool_call.function.name == "write_todos");
-        if let Some(draft) = state.pending_final_draft.take() {
-            tracing::debug!(
-                task_id = ctx.task_id,
-                draft_len = draft.content_len(),
-                source_iteration = draft.source_iteration,
-                source_tool_name = draft.source_tool_name,
-                "clearing pending final draft before another tool-call turn"
-            );
-        }
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
         let native_assistant_content = assistant_content.assistant_content();
