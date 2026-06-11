@@ -5,7 +5,7 @@ Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 19:38 +03
+Last updated: 2026-06-11 21:40 +03
 
 ## Objective
 
@@ -252,6 +252,7 @@ Out of scope:
 - 2026-06-11: Checkpoint 1 required user review before implementation; user approved it and requested work on `feature/search-probe` from `dev`.
 - 2026-06-11: User approved Checkpoint 4 dossier policy: append an XML-like dossier after the original prompt; include only compact handoffs, optional useful public updates, final synthesis, decision, and truncation marker; skip injection when no handoffs exist; preserve attachments unchanged; keep probe transcript, raw tool outputs, internal reasoning, and events out of main runtime.
 - 2026-06-11: Final workspace clippy evidence uses `profile-full`. Reason: the no-feature workspace clippy command reaches pre-existing Telegram tests whose modules are gated behind `storage-sqlx`; the repository guidance says full/lite profiles are the supported workspace-wide validation shape for feature-gated crates.
+- 2026-06-11: After manual runs, tune Search Probe defaults to `search_limit=3`, `soft_finalize=35s`, and hard per-generation/total timeouts of `60s`. Reason: `25s/35s` could be consumed by one slow web-tool retry, preventing graceful soft-finalize handoff.
 
 ## Progress Log
 
@@ -297,12 +298,19 @@ Out of scope:
   - Audit IDs updated: all Completion Audit items verified; goal marked complete.
   - Next: open PR or run manual browser verification before enabling `OXIDE_SEARCH_PROBE_ENABLED=true` in a real environment.
 
+- 2026-06-11 21:40 +03 Post-completion runtime tuning
+  - Changed: adjusted default Search Probe bounds to a smaller search budget and wider soft/hard timeout gap; updated source plan config defaults.
+  - Evidence: production log showed `25s/35s` could hard-timeout during a slow `searxng_search` retry before the soft-timeout report returned.
+  - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local enabled_probe_runs_generations_emits_events_and_injects_dossier --lib`; `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: none; this is runtime tuning after verified MVP completion.
+  - Next: manual browser verification with `OXIDE_SEARCH_PROBE_ENABLED=true`.
+
 ## Risks and Blockers
 
-- Existing search budget hook may constrain probe too much
-  - Impact: probe may stop before useful research if default search budget applies too aggressively.
-  - Evidence: plan allows search-budget relaxation only if needed.
-  - Mitigation or requested decision: first try existing effort/min-effort controls; relax or disable `search_budget` for probe only if tests/manual runs prove it blocks the intended behavior.
+- Search Probe bounds may need deployment-specific tuning
+  - Impact: slow search providers can consume the soft-finalize window before a useful handoff is returned.
+  - Evidence: manual logs showed one slow `searxng_search` retry consumed enough time for the previous `25s/35s` defaults to hard-timeout without a dossier.
+  - Mitigation or requested decision: defaults now use `search_limit=3`, `soft_finalize=35s`, and hard timeouts of `60s`; tune env vars per deployment if providers are slower.
   - Audit IDs affected: G3, G5, Q2.
 
 ## Final Verification

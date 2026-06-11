@@ -27,10 +27,10 @@ const ENV_TOOL_ALLOWLIST: &str = "OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST";
 const ENV_DOSSIER_MAX_CHARS: &str = "OXIDE_SEARCH_PROBE_DOSSIER_MAX_CHARS";
 
 const DEFAULT_MAX_GENERATIONS: u8 = 2;
-const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 35;
-const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 35;
-const DEFAULT_SOFT_FINALIZE_SECS: u64 = 25;
-const DEFAULT_SEARCH_LIMIT: usize = 6;
+const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_SOFT_FINALIZE_SECS: u64 = 35;
+const DEFAULT_SEARCH_LIMIT: usize = 3;
 const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
@@ -41,6 +41,8 @@ const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research si
 const GENERATION_PROMPT_HEADER: &str = r#"You are Search Probe, a web-only research sidecar for the web console.
 
 Use only available web research tools. Do not answer the user directly. Produce a compact handoff for the main agent.
+
+Do at most 2-3 web tool calls by default, then synthesize. Prefer one broad search plus one targeted fetch over many narrow searches.
 
 You have a strict time and search budget. If tool calls are blocked, the search budget is exceeded, or the runtime reports a timeout, stop searching immediately and synthesize the best possible XML-like handoff from the evidence already available.
 
@@ -1384,10 +1386,10 @@ mod tests {
 
         assert!(!config.enabled);
         assert_eq!(config.max_generations, 2);
-        assert_eq!(config.per_generation_timeout_secs, 35);
-        assert_eq!(config.total_timeout_secs, 35);
-        assert_eq!(config.soft_finalize_secs, 25);
-        assert_eq!(config.search_limit, 6);
+        assert_eq!(config.per_generation_timeout_secs, 60);
+        assert_eq!(config.total_timeout_secs, 60);
+        assert_eq!(config.soft_finalize_secs, 35);
+        assert_eq!(config.search_limit, 3);
         assert_eq!(config.min_effort, WebAgentEffort::Heavy);
         assert!(config.public_updates);
         assert!(config.forward_tool_events);
@@ -1818,9 +1820,9 @@ after
             probe_execution_options(
                 Some(WebAgentEffort::Standard),
                 WebAgentEffort::Heavy,
-                6,
-                25,
-                Duration::from_secs(35),
+                3,
+                35,
+                Duration::from_secs(60),
             )
             .effort,
             AgentExecutionEffort::Heavy
@@ -1829,9 +1831,9 @@ after
             probe_execution_options(
                 Some(WebAgentEffort::Heavy),
                 WebAgentEffort::Extended,
-                6,
-                25,
-                Duration::from_secs(35),
+                3,
+                35,
+                Duration::from_secs(60),
             )
             .effort,
             AgentExecutionEffort::Heavy
@@ -1843,19 +1845,19 @@ after
         let options = probe_execution_options(
             Some(WebAgentEffort::Standard),
             WebAgentEffort::Heavy,
-            6,
-            25,
-            Duration::from_secs(35),
+            3,
+            35,
+            Duration::from_secs(60),
         );
 
-        assert_eq!(options.timeout_secs, Some(25));
-        assert_eq!(options.search_limit, Some(6));
+        assert_eq!(options.timeout_secs, Some(35));
+        assert_eq!(options.search_limit, Some(3));
 
         let options = probe_execution_options(
             Some(WebAgentEffort::Standard),
             WebAgentEffort::Heavy,
             0,
-            25,
+            35,
             Duration::from_secs(10),
         );
 
