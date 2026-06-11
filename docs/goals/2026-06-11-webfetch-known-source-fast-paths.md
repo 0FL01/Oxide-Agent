@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-webfetch-known-source-fast-paths.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to extend `webfetch_md` fast paths after `a53799f4 feat(webfetch): add fast README fetch paths`
 Goal doc owner: Codex
-Last updated: 2026-06-11 00:00
+Last updated: 2026-06-11 00:15
 
 ## Objective
 
@@ -17,8 +17,12 @@ Done when every required Completion Audit item is verified by its listed evidenc
 
 In scope:
 - `crates/oxide-agent-core/src/agent/providers/webfetch_md/fetch.rs` -- keep dispatch and fetch orchestration small.
-- `crates/oxide-agent-core/src/agent/providers/webfetch_md/known_sources.rs` -- expected new module for URL classification, direct README rewrites, and API-backed source plans.
-- `crates/oxide-agent-core/src/agent/providers/webfetch_md/mod.rs` -- module declaration only if `known_sources.rs` is added.
+- `crates/oxide-agent-core/src/agent/providers/webfetch_md/known_sources/` -- expected directory-module for known-source handling:
+  - `mod.rs` -- shared source-plan enum, `classify()` entry point, and small shared helpers only.
+  - `repo_hosts.rs` -- direct README rewrites for GitHub, HuggingFace, GitLab, Gitea/Forgejo/Codeberg.
+  - `rust_packages.rs` -- `crates.io` and `docs.rs` URL classification, minimal crates.io JSON parsing/render helpers.
+  - `pypi.rs` -- PyPI project URL classification, minimal PyPI JSON parsing/render helpers.
+- `crates/oxide-agent-core/src/agent/providers/webfetch_md/mod.rs` -- module declaration only if `known_sources/` is added.
 - `crates/oxide-agent-core/src/agent/providers/webfetch_md/tests.rs` -- mapping and minimal local-server tests for API-backed sources.
 - `crates/oxide-agent-core/src/agent/prompt/composer.rs` -- only if tool guidance needs a small wording update for the new source set.
 
@@ -48,9 +52,9 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
 
 ## Completion Audit
 
-- G1: Move known-source classification out of `fetch.rs` if implementation grows beyond current GitHub/HuggingFace mapping
-  - Source: user-approved plan and current file growth after `a53799f4`
-  - Acceptance: source matching lives in `known_sources.rs` or another focused webfetch submodule; `fetch.rs` remains responsible for orchestration and response reading, not a large list of per-site matchers
+- G1: Known-source logic is sliced by domain
+  - Source: user-approved slicing review after Checkpoint 0
+  - Acceptance: `fetch.rs` contains no host-specific matchers except calling `known_sources::classify()` and executing returned plans; direct repository hosts live in `known_sources/repo_hosts.rs`; `crates.io`/`docs.rs` logic lives in `known_sources/rust_packages.rs`; PyPI logic lives in `known_sources/pypi.rs`; no single known-source slice exceeds ~220 lines excluding tests unless justified in Decisions
   - Evidence required: code inspection with file paths and line ranges; `cargo check` passes
   - Status: pending
   - Evidence collected:
@@ -111,6 +115,13 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Status: pending
   - Evidence collected:
 
+- Q4: Slice boundaries stay locally understandable
+  - Source: project anti-overengineering rules and user concern about one-file "каша"
+  - Acceptance: no generic provider trait, registry framework, macros, or router abstraction; each known-source module exposes small plain functions and focused data structs/enums only when needed by `fetch.rs`
+  - Evidence required: code inspection and absence of new dependencies/framework-style abstractions
+  - Status: pending
+  - Evidence collected:
+
 - V1: Required validation passes
   - Source: repo validation conventions and previous webfetch checkpoint
   - Acceptance: listed validation commands pass, except documented unrelated workspace-wide clippy failures if re-run
@@ -133,27 +144,27 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
 - Validation: `git diff --check`, inspect doc diff
 - Exit condition: committed goal doc with first implementation checkpoint clearly identified
 
-### Checkpoint 1: extract known source classifier
-- Audit IDs: G1, Q1, Q2, N1
-- Expected changes: add `known_sources.rs`, move existing GitHub/HuggingFace classifier from `fetch.rs`, keep behavior identical, update imports/tests only as needed
+### Checkpoint 1: create known_sources directory and move existing GitHub/HuggingFace
+- Audit IDs: G1, Q1, Q2, Q4, N1
+- Expected changes: add `known_sources/mod.rs` and `known_sources/repo_hosts.rs`; move existing GitHub/HuggingFace classifier from `fetch.rs`; make `fetch.rs` call `known_sources::classify()`; keep behavior identical; update imports/tests only as needed; do not add new source support yet
 - Validation: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`
 - Exit condition: GitHub/HuggingFace tests still pass and `fetch.rs` is smaller/cleaner before adding new sources
 
 ### Checkpoint 2: direct forge README fast paths
 - Audit IDs: G2, G3, Q1, Q2, N1
-- Expected changes: add GitLab, Codeberg/Gitea/Forgejo direct README/source rewrites and tests
+- Expected changes: add GitLab, Codeberg/Gitea/Forgejo direct README/source rewrites and tests in `known_sources/repo_hosts.rs`
 - Validation: targeted webfetch tests, targeted check, targeted clippy
 - Exit condition: direct forge mapping and negative tests pass
 
 ### Checkpoint 3: crates.io and docs.rs API-backed README fast paths
 - Audit IDs: G4, G5, Q1, Q2, Q3
-- Expected changes: introduce source plan variant for crates.io README flow, parse minimal JSON metadata, render source-transparent output
+- Expected changes: implement `known_sources/rust_packages.rs`; introduce source plan variant for crates.io README flow; parse minimal JSON metadata; render source-transparent output
 - Validation: mapping tests, local-server async test, targeted webfetch tests/check/clippy
 - Exit condition: crates.io/docs.rs flows are verified without live network dependency in tests
 
 ### Checkpoint 4: PyPI API-backed project description fast path
 - Audit IDs: G6, Q1, Q2, Q3
-- Expected changes: introduce PyPI source plan variant, parse minimal JSON, render Markdown metadata and description, fallback on unusable JSON/description
+- Expected changes: implement `known_sources/pypi.rs`; introduce PyPI source plan variant; parse minimal JSON; render Markdown metadata and description; fallback on unusable JSON/description
 - Validation: mapping tests, local-server async test, targeted webfetch tests/check/clippy
 - Exit condition: PyPI flow is verified without live network dependency in tests
 
@@ -178,10 +189,11 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
 
 ## Decisions
 
-- 2026-06-11: Use a focused `known_sources.rs` module because adding GitLab/Gitea/crates/docs.rs/PyPI directly to `fetch.rs` would make the fetch orchestration file a per-site matcher.
+- 2026-06-11: Use a focused `known_sources/` directory-module because adding GitLab/Gitea/crates/docs.rs/PyPI directly to `fetch.rs` would make the fetch orchestration file a per-site matcher, while one monolithic `known_sources.rs` would become a mixed host/API parser.
 - 2026-06-11: Use crates.io README API for both `crates.io` and `docs.rs` because it returns README content directly and avoids docs.rs HTML/source pages.
 - 2026-06-11: Use PyPI JSON API and render `info.description` locally because PyPI project pages are HTML shells while the JSON API exposes project metadata and long description directly.
 - 2026-06-11: Avoid arbitrary-host root guessing for self-hosted forges; only explicit forge path patterns are safe enough without configuration.
+- 2026-06-11: Keep known-source slices boring and explicit: no traits, registry framework, macros, or generic router until real duplication proves they are needed.
 
 ## Progress Log
 
@@ -191,6 +203,13 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Commands: `git status --short && git log --oneline -5`; read `docs/goals`; inspected current `fetch.rs` and tests; web probes verified GitLab raw, Codeberg raw, and crates.io README API patterns
   - Audit IDs updated: none, planning checkpoint only
   - Next: commit this goal document and stop for user review before Checkpoint 1
+
+- 2026-06-11 00:15: Slicing plan tightened after user review
+  - Changed: replaced monolithic `known_sources.rs` plan with `known_sources/` directory-module boundaries; made G1 stricter; added Q4 anti-overengineering slice-boundary requirement; clarified Checkpoints 1-4 ownership by slice
+  - Evidence: doc diff reviewed before commit
+  - Commands: `git status --short && git log --oneline -5`; read current goal document
+  - Audit IDs updated: G1, Q4, checkpoint plan
+  - Next: commit goal update and wait for implementation approval
 
 ## Risks and Blockers
 
