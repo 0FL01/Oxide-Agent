@@ -61,31 +61,25 @@ impl WebFetchMdProvider {
         }
 
         // Reddit thread shortcut: fetch Atom RSS feed directly instead of
-        // hitting the HTML page (which is typically blocked by anti-bot).
+        // hitting the HTML page (which is typically blocked by anti-bot/403).
         if let Some(rss_url) = reddit_thread_rss_url(&url) {
-            match self
+            let markdown = self
                 .fetch_reddit_rss(&url, &rss_url, timeout_secs, cancellation_token)
                 .await
-            {
-                Ok(markdown) => {
-                    let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-                    let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
-                    return Ok(format_web_markdown_output(
-                        &[("URL", url.as_str()), ("Content-Type", "text/plain")],
-                        Some(0),
-                        truncated_label,
-                        &truncated.text,
-                    ));
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        url = url.as_str(),
-                        rss_url = rss_url.as_str(),
-                        error = %error,
-                        "reddit rss fallback failed, trying normal fetch"
-                    );
-                }
-            }
+                .context("reddit rss fast-path failed")?;
+            let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+            let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+            return Ok(format_web_markdown_output(
+                &[
+                    ("URL", rss_url.as_str()),
+                    ("Source-URL", url.as_str()),
+                    ("Mode", "reddit_rss_fast_path"),
+                    ("Content-Type", "text/plain"),
+                ],
+                Some(0),
+                truncated_label,
+                &truncated.text,
+            ));
         }
 
         let fetched = self

@@ -85,6 +85,42 @@ async fn serve_http_once(body: &'static str, content_type: &'static str) -> Sock
     addr
 }
 
+async fn serve_http_status_once(
+    status: &'static str,
+    body: &'static str,
+    content_type: &'static str,
+) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local test server");
+    let addr = listener.local_addr().expect("local address");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).await.expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write response");
+    });
+    addr
+}
+
 async fn serve_http_sequence(responses: Vec<(&'static str, &'static str)>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -434,6 +470,19 @@ fn builds_rss_url_from_reddit_thread() {
 }
 
 #[test]
+fn builds_rss_url_from_localllama_thread() {
+    let url = Url::parse(
+        "https://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/",
+    )
+    .expect("url");
+    let rss = reddit_thread_rss_url(&url).expect("rss url");
+    assert_eq!(
+        rss.as_str(),
+        "https://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/.rss"
+    );
+}
+
+#[test]
 fn strips_query_and_fragment_from_rss_url() {
     let url = Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1").expect("url");
     let rss = reddit_thread_rss_url(&url).expect("rss url");
@@ -499,8 +548,71 @@ fn renders_reddit_atom_markdown() {
     assert!(md.contains("### 2. Comment 2"));
     assert!(!md.contains("Author: \n"));
     assert!(md.contains(&format!("Source: {target}")));
-    assert!(md.contains("Mode: reddit_rss_fallback"));
+    assert!(md.contains("Mode: reddit_rss_fast_path"));
     assert!(md.contains("Entries: 3"));
+}
+
+#[tokio::test]
+async fn fetches_reddit_thread_via_rss_fast_path() {
+    let atom = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>StepFun 3.7 Flash speed benchmark : r/LocalLLaMA</title>
+  <entry>
+    <title>StepFun 3.7 Flash speed benchmark in M5 Max</title>
+    <author><name>op_user</name></author>
+    <content type="html">&lt;p&gt;Benchmark body from RSS.&lt;/p&gt;</content>
+  </entry>
+</feed>"#;
+    let addr = serve_http_once(atom, "application/atom+xml; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("www.reddit.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("Reddit RSS fast path succeeds");
+
+    assert!(output.contains("URL: http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/.rss"));
+    assert!(output.contains("Source-URL: http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/"));
+    assert!(output.contains("Mode: reddit_rss_fast_path"));
+    assert!(output.contains("StepFun 3.7 Flash speed benchmark"));
+    assert!(output.contains("Benchmark body from RSS."));
+}
+
+#[tokio::test]
+async fn reddit_rss_failure_does_not_fall_back_to_html() {
+    let addr =
+        serve_http_status_once("500 Internal Server Error", "rss failed", "text/plain").await;
+    let client = reqwest::Client::builder()
+        .resolve("www.reddit.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect_err("Reddit RSS failure is returned directly");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("reddit rss fast-path failed"));
+    assert!(error.contains("reddit rss returned non-success status: 500 Internal Server Error"));
+    assert!(!error.contains("web_markdown fetch failed"));
 }
 
 #[test]
