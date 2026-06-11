@@ -165,7 +165,7 @@ impl SearchProbeConfig {
                 WebAgentEffort::Standard,
             ),
             search_limit: env_usize(ENV_SEARCH_LIMIT, DEFAULT_SEARCH_LIMIT),
-            min_effort: env_effort(ENV_MIN_EFFORT, WebAgentEffort::Heavy),
+            min_effort: env_effort(ENV_MIN_EFFORT, WebAgentEffort::Standard),
             public_updates: env_bool_default(ENV_PUBLIC_UPDATES, DEFAULT_PUBLIC_UPDATES),
             forward_tool_events: env_bool_default(
                 ENV_FORWARD_TOOL_EVENTS,
@@ -188,7 +188,7 @@ impl Default for SearchProbeConfig {
             forced_finalize_timeout_secs: DEFAULT_FORCED_FINALIZE_TIMEOUT_SECS,
             forced_finalize_effort: WebAgentEffort::Standard,
             search_limit: DEFAULT_SEARCH_LIMIT,
-            min_effort: WebAgentEffort::Heavy,
+            min_effort: WebAgentEffort::Standard,
             public_updates: DEFAULT_PUBLIC_UPDATES,
             forward_tool_events: DEFAULT_FORWARD_TOOL_EVENTS,
             tool_allowlist: DEFAULT_TOOL_ALLOWLIST
@@ -1228,6 +1228,7 @@ fn probe_execution_options(
     )))
     .with_timeout_secs(soft_secs)
     .with_search_limit(search_limit.max(1))
+    .with_reasoning_effort("medium")
 }
 
 fn forced_finalize_execution_options(
@@ -1237,6 +1238,7 @@ fn forced_finalize_execution_options(
     AgentExecutionOptions::with_effort(web_effort_to_core(effort))
         .with_timeout_secs(timeout.as_secs().max(1))
         .with_search_limit(1)
+        .with_reasoning_effort("medium")
 }
 
 const fn max_effort(left: WebAgentEffort, right: WebAgentEffort) -> WebAgentEffort {
@@ -1672,7 +1674,7 @@ mod tests {
         assert_eq!(config.forced_finalize_timeout_secs, 20);
         assert_eq!(config.forced_finalize_effort, WebAgentEffort::Standard);
         assert_eq!(config.search_limit, 3);
-        assert_eq!(config.min_effort, WebAgentEffort::Heavy);
+        assert_eq!(config.min_effort, WebAgentEffort::Standard);
         assert!(config.public_updates);
         assert!(config.forward_tool_events);
         assert_eq!(
@@ -2255,6 +2257,17 @@ after
             .effort,
             AgentExecutionEffort::Heavy
         );
+        assert_eq!(
+            probe_execution_options(
+                Some(WebAgentEffort::Heavy),
+                WebAgentEffort::Standard,
+                3,
+                35,
+                Duration::from_secs(60),
+            )
+            .reasoning_effort_override,
+            Some("medium")
+        );
     }
 
     #[test]
@@ -2269,6 +2282,7 @@ after
 
         assert_eq!(options.timeout_secs, Some(35));
         assert_eq!(options.search_limit, Some(3));
+        assert_eq!(options.reasoning_effort_override, Some("medium"));
 
         let options = probe_execution_options(
             Some(WebAgentEffort::Standard),
@@ -2290,6 +2304,7 @@ after
         assert_eq!(options.effort, AgentExecutionEffort::Standard);
         assert_eq!(options.timeout_secs, Some(20));
         assert_eq!(options.search_limit, Some(1));
+        assert_eq!(options.reasoning_effort_override, Some("medium"));
     }
 
     #[tokio::test]

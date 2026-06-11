@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-12-search-probe-effort-controls.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-approved plan in chat on 2026-06-12
 Goal doc owner: Codex
-Last updated: 2026-06-12 01:11 +03
+Last updated: 2026-06-12 01:15 +03
 
 ## Objective
 
@@ -52,8 +52,8 @@ Out of scope:
   - Requirement: Default Search Probe `min_effort` must be `WebAgentEffort::Standard`, while env override `OXIDE_SEARCH_PROBE_MIN_EFFORT` still works.
   - Acceptance: `SearchProbeConfig::from_env()` fallback and `Default` use `Standard`; tests assert the default.
   - Evidence required: implementation diff and focused Search Probe config test.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `SearchProbeConfig::from_env()` fallback and `Default` now use `WebAgentEffort::Standard`; `cargo test -p oxide-agent-transport-web search_probe --lib` passed.
 
 - G2: Per-run model reasoning override exists independently from execution effort
   - Source: user requirement that main agent can remain high while probe/finalizer use medium.
@@ -68,16 +68,16 @@ Out of scope:
   - Requirement: `probe_execution_options(...)` must set explicit model reasoning effort `medium` independent of parent/main effort.
   - Acceptance: even when parent effort is `Heavy`, probe execution options resolve model reasoning effort to `Some("medium")`.
   - Evidence required: focused Search Probe options test.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `probe_execution_options(...)` applies `.with_reasoning_effort("medium")`; focused Search Probe tests assert `reasoning_effort_override == Some("medium")` even when parent effort is `Heavy`.
 
 - G4: Forced finalizer uses model reasoning effort medium
   - Source: user request and approved plan.
   - Requirement: `forced_finalize_execution_options(...)` must set explicit model reasoning effort `medium`.
   - Acceptance: forced finalizer execution options resolve model reasoning effort to `Some("medium")`.
   - Evidence required: focused Search Probe forced-finalize options test.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `forced_finalize_execution_options(...)` applies `.with_reasoning_effort("medium")`; focused Search Probe test asserts the override while preserving finalizer timeout/search limit.
 
 - Q1: Main agent model reasoning behavior is preserved
   - Source: architectural constraint and user question.
@@ -90,21 +90,21 @@ Out of scope:
   - Source: repository `AGENTS.md` over-engineering constraints.
   - Acceptance: no new crates, no provider abstractions, no broad fallback framework, no storage/schema changes.
   - Evidence required: `git diff --name-only` review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `git diff` reviewed; changed files are limited to `AgentExecutionOptions`, Search Probe options/tests, and this goal doc; no new dependencies, providers, storage, or fallback framework added.
 
 - N1: No deterministic research logic
   - Source: explicit user constraint: regex/deterministic are forbidden.
   - Must preserve: no regex/entity/query planning/scoring logic added for Search Probe research behavior.
   - Evidence required: diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `git diff` reviewed; Search Probe changes only adjust effort defaults/options and focused assertions, with no research planning/parsing/scoring logic added.
 
 - V1: Focused validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo test -p oxide-agent-core <focused-test> --lib` if core tests are added, `cargo test -p oxide-agent-transport-web search_probe --lib`, and `cargo check -p oxide-agent-transport-web`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo test -p oxide-agent-core execution_options --lib`; `cargo check -p oxide-agent-core`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo check -p oxide-agent-transport-web`.
 
 - V2: Final quality gates pass or blockers are documented
   - Source: repository `AGENTS.md`.
@@ -196,6 +196,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core execution_options --lib`; `cargo check -p oxide-agent-core`.
   - Audit IDs updated: G2 verified, Q1 verified; Q2/N1 unchanged and preserved by diff review.
   - Next: Checkpoint 3 Search Probe defaults and `medium` model reasoning.
+
+- 2026-06-12 01:15 +03: Checkpoint 3 completed
+  - Changed: Search Probe default minimum runtime effort is now `standard`; probe generation and forced finalizer set model reasoning override to `medium`.
+  - Evidence: focused Search Probe tests assert default effort and both reasoning overrides.
+  - Commands: `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo check -p oxide-agent-transport-web`.
+  - Audit IDs updated: G1, G3, G4, Q2, N1, V1 verified.
+  - Next: Checkpoint 4 final audit and quality gates.
 
 ## Risks and Blockers
 
