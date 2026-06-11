@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-12-search-probe-effort-controls.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-approved plan in chat on 2026-06-12
 Goal doc owner: Codex
-Last updated: 2026-06-12 00:00 +03
+Last updated: 2026-06-12 01:11 +03
 
 ## Objective
 
@@ -60,8 +60,8 @@ Out of scope:
   - Requirement: `AgentExecutionOptions` must support an explicit model reasoning effort override without changing existing effort-derived behavior when unset.
   - Acceptance: unset override preserves current mapping; explicit override returns the override for runner config.
   - Evidence required: core unit test or focused existing test update proving both paths.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `AgentExecutionOptions` now has `reasoning_effort_override` and `with_reasoning_effort(...)`; `cargo test -p oxide-agent-core execution_options --lib` passed.
 
 - G3: Search Probe generation uses model reasoning effort medium
   - Source: user request: hardcode model effort to `medium` for Search Probe stage.
@@ -83,8 +83,8 @@ Out of scope:
   - Source: architectural constraint and user question.
   - Acceptance: normal `AgentExecutionOptions::with_effort(Extended/Heavy)` still maps to `Some("high")` when no override is set; `Standard` remains `None` when no override is set.
   - Evidence required: core test and diff review showing only override path changes behavior.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `execution_options_preserve_effort_derived_reasoning_when_unset` asserts `Standard -> None` and `Extended`/`Heavy -> Some("high")` with no override.
 
 - Q2: Simple maintainable implementation
   - Source: repository `AGENTS.md` over-engineering constraints.
@@ -189,6 +189,13 @@ Out of scope:
   - Commands: `git status --short`, `git branch --show-current`, `git log -3 --oneline`, `git diff --no-index -- /dev/null docs/goals/2026-06-12-search-probe-effort-controls.md || true`.
   - Audit IDs updated: Q2, N1 scoped for implementation audit.
   - Next: commit this goal doc, then start Checkpoint 2 after user review.
+
+- 2026-06-12 01:11 +03: Checkpoint 2 completed
+  - Changed: added per-run model reasoning override to `AgentExecutionOptions` and focused core tests for unset and overridden behavior.
+  - Evidence: `git diff` reviewed; no Search Probe research logic, providers, storage, or dependencies changed.
+  - Commands: `cargo test -p oxide-agent-core execution_options --lib`; `cargo check -p oxide-agent-core`.
+  - Audit IDs updated: G2 verified, Q1 verified; Q2/N1 unchanged and preserved by diff review.
+  - Next: Checkpoint 3 Search Probe defaults and `medium` model reasoning.
 
 ## Risks and Blockers
 

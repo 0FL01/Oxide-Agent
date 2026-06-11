@@ -159,6 +159,32 @@ async fn prepare_execution_heavy_effort_raises_runner_budgets() {
     assert!(prepared.system_prompt.contains("Before final answer"));
 }
 
+#[test]
+fn execution_options_preserve_effort_derived_reasoning_when_unset() {
+    assert_eq!(AgentExecutionOptions::default().reasoning_effort(), None);
+    assert_eq!(
+        AgentExecutionOptions::with_effort(AgentExecutionEffort::Standard).reasoning_effort(),
+        None
+    );
+    assert_eq!(
+        AgentExecutionOptions::with_effort(AgentExecutionEffort::Extended).reasoning_effort(),
+        Some("high")
+    );
+    assert_eq!(
+        AgentExecutionOptions::with_effort(AgentExecutionEffort::Heavy).reasoning_effort(),
+        Some("high")
+    );
+}
+
+#[test]
+fn execution_options_reasoning_override_wins_over_runtime_effort() {
+    let options = AgentExecutionOptions::with_effort(AgentExecutionEffort::Heavy)
+        .with_reasoning_effort("medium");
+
+    assert_eq!(options.reasoning_effort(), Some("medium"));
+    assert_eq!(options.effort, AgentExecutionEffort::Heavy);
+}
+
 #[cfg(feature = "tool-wiki-memory")]
 #[test]
 fn executor_exposes_wiki_memory_tools_when_store_configured() {

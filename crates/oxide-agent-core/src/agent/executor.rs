@@ -44,6 +44,8 @@ pub struct AgentExecutionOptions {
     pub timeout_secs: Option<u64>,
     /// Exact per-run search tool call limit override.
     pub search_limit: Option<usize>,
+    /// Explicit per-run provider reasoning effort override.
+    pub reasoning_effort_override: Option<&'static str>,
 }
 
 impl AgentExecutionOptions {
@@ -54,6 +56,7 @@ impl AgentExecutionOptions {
             effort,
             timeout_secs: None,
             search_limit: None,
+            reasoning_effort_override: None,
         }
     }
 
@@ -68,6 +71,13 @@ impl AgentExecutionOptions {
     #[must_use]
     pub const fn with_search_limit(mut self, search_limit: usize) -> Self {
         self.search_limit = Some(search_limit);
+        self
+    }
+
+    /// Set an explicit per-run provider reasoning effort override.
+    #[must_use]
+    pub const fn with_reasoning_effort(mut self, reasoning_effort: &'static str) -> Self {
+        self.reasoning_effort_override = Some(reasoning_effort);
         self
     }
 
@@ -104,9 +114,12 @@ impl AgentExecutionOptions {
     }
 
     pub(crate) const fn reasoning_effort(self) -> Option<&'static str> {
-        match self.effort {
-            AgentExecutionEffort::Standard => None,
-            AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
+        match self.reasoning_effort_override {
+            Some(reasoning_effort) => Some(reasoning_effort),
+            None => match self.effort {
+                AgentExecutionEffort::Standard => None,
+                AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
+            },
         }
     }
 }
