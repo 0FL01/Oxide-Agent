@@ -6,6 +6,7 @@
 mod convert;
 mod error;
 mod fetch;
+mod known_sources;
 mod reddit;
 mod url;
 

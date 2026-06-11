@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-webfetch-known-source-fast-paths.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to extend `webfetch_md` fast paths after `a53799f4 feat(webfetch): add fast README fetch paths`
 Goal doc owner: Codex
-Last updated: 2026-06-11 00:15
+Last updated: 2026-06-11 00:35
 
 ## Objective
 
@@ -40,7 +40,7 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
 ## Repository Context
 
 - Current fast-path dispatch lives in `crates/oxide-agent-core/src/agent/providers/webfetch_md/fetch.rs:47`.
-- Current known-source mapping for GitHub and HuggingFace lives in `crates/oxide-agent-core/src/agent/providers/webfetch_md/fetch.rs:260`.
+- Current known-source mapping for GitHub and HuggingFace lives in `crates/oxide-agent-core/src/agent/providers/webfetch_md/known_sources/repo_hosts.rs` after Checkpoint 1.
 - Current known-source tests start at `crates/oxide-agent-core/src/agent/providers/webfetch_md/tests.rs:481`.
 - `web_markdown` and `crawl4ai_markdown` are both enabled in the web compose profile after `docker-compose.web.yml:66`.
 - Existing validation commands for this area:
@@ -56,8 +56,8 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: user-approved slicing review after Checkpoint 0
   - Acceptance: `fetch.rs` contains no host-specific matchers except calling `known_sources::classify()` and executing returned plans; direct repository hosts live in `known_sources/repo_hosts.rs`; `crates.io`/`docs.rs` logic lives in `known_sources/rust_packages.rs`; PyPI logic lives in `known_sources/pypi.rs`; no single known-source slice exceeds ~220 lines excluding tests unless justified in Decisions
   - Evidence required: code inspection with file paths and line ranges; `cargo check` passes
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 moved existing GitHub/HuggingFace matching to `known_sources/repo_hosts.rs`; `fetch.rs` now calls `known_sources::classify()`. Future `rust_packages.rs` and `pypi.rs` remain pending for later checkpoints.
 
 - G2: GitLab fast path
   - Source: user request: "gitlab"
@@ -98,15 +98,15 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: project principle and user goal to speed fetch tools without losing Crawl4AI fallback
   - Acceptance: every fast path failure logs a warning and falls back to the original URL fetch; normal `web_markdown` anti-bot failure behavior remains unchanged
   - Evidence required: code inspection and existing anti-bot tests still pass
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 preserved existing fallback flow; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md` passed 28/28.
 
 - Q2: No new dependencies or over-engineering
   - Source: `AGENTS.md` project rules
   - Acceptance: no `Cargo.toml` changes; no new services/caches/queues; JSON parsing uses existing `serde_json`
   - Evidence required: `git diff -- Cargo.toml` empty; code inspection
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added only local Rust modules; no `Cargo.toml` changes.
 
 - Q3: Output remains agent-readable and source-transparent
   - Source: previous implementation contract from `a53799f4`
@@ -119,8 +119,8 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Source: project anti-overengineering rules and user concern about one-file "каша"
   - Acceptance: no generic provider trait, registry framework, macros, or router abstraction; each known-source module exposes small plain functions and focused data structs/enums only when needed by `fetch.rs`
   - Evidence required: code inspection and absence of new dependencies/framework-style abstractions
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 introduced plain `known_sources/mod.rs` and `known_sources/repo_hosts.rs`; no traits, macros, registry framework, or new dependency.
 
 - V1: Required validation passes
   - Source: repo validation conventions and previous webfetch checkpoint
@@ -210,6 +210,13 @@ None. Low-risk defaults are recorded in Decisions and can be revised before impl
   - Commands: `git status --short && git log --oneline -5`; read current goal document
   - Audit IDs updated: G1, Q4, checkpoint plan
   - Next: commit goal update and wait for implementation approval
+
+- 2026-06-11 00:35: Checkpoint 1 implemented
+  - Changed: added `known_sources/mod.rs` and `known_sources/repo_hosts.rs`; moved existing GitHub/HuggingFace classifier out of `fetch.rs`; updated tests to call `known_sources::classify()`
+  - Evidence: `fetch.rs` line count reduced to 285; `known_sources/mod.rs` is 45 lines; `known_sources/repo_hosts.rs` is 94 lines
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-webfetch-md --lib webfetch_md`; `cargo check -p oxide-agent-core --no-default-features --features "tool-webfetch-md tool-crawl4ai-markdown"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-webfetch-md --all-targets -- -D warnings`
+  - Audit IDs updated: G1(in_progress), Q1(in_progress), Q2(in_progress), Q4(in_progress)
+  - Next: Checkpoint 2 direct forge README fast paths
 
 ## Risks and Blockers
 

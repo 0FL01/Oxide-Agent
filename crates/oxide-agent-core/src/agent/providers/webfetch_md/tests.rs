@@ -1,6 +1,6 @@
 use super::convert::{html_to_markdown, truncate_chars};
 use super::error::reject_anti_bot_challenge;
-use super::fetch::known_markdown_source;
+use super::known_sources::{KnownMarkdownSource, classify as classify_known_source};
 use super::reddit::{
     RedditAtomEntry, parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown,
     xml_tag_block, xml_tag_text,
@@ -483,51 +483,52 @@ fn xml_tag_block_extracts_inner_content() {
 #[test]
 fn maps_github_repo_root_to_raw_readme() {
     let url = Url::parse("https://github.com/owner/repo").expect("url");
-    let source = known_markdown_source(&url).expect("known markdown source");
+    let source = classify_known_source(&url).expect("known markdown source");
 
-    assert_eq!(source.source_url, url);
+    assert_eq!(source.source_url(), &url);
     assert_eq!(
-        source.fetch_url.as_str(),
+        source.fetch_url().as_str(),
         "https://raw.githubusercontent.com/owner/repo/HEAD/README.md"
     );
-    assert_eq!(source.mode, "github_readme_fast_path");
+    assert!(matches!(source, KnownMarkdownSource::DirectReadme { .. }));
+    assert_eq!(source.mode(), "github_readme_fast_path");
 }
 
 #[test]
 fn maps_github_readme_blob_to_raw_url() {
     let url = Url::parse("https://github.com/owner/repo/blob/main/docs/README.md").expect("url");
-    let source = known_markdown_source(&url).expect("known markdown source");
+    let source = classify_known_source(&url).expect("known markdown source");
 
     assert_eq!(
-        source.fetch_url.as_str(),
+        source.fetch_url().as_str(),
         "https://raw.githubusercontent.com/owner/repo/main/docs/README.md"
     );
-    assert_eq!(source.mode, "github_blob_fast_path");
+    assert_eq!(source.mode(), "github_blob_fast_path");
 }
 
 #[test]
 fn maps_huggingface_model_root_to_resolve_readme() {
     let url = Url::parse("https://huggingface.co/owner/model").expect("url");
-    let source = known_markdown_source(&url).expect("known markdown source");
+    let source = classify_known_source(&url).expect("known markdown source");
 
     assert_eq!(
-        source.fetch_url.as_str(),
+        source.fetch_url().as_str(),
         "https://huggingface.co/owner/model/resolve/main/README.md"
     );
-    assert_eq!(source.mode, "huggingface_readme_fast_path");
+    assert_eq!(source.mode(), "huggingface_readme_fast_path");
 }
 
 #[test]
 fn maps_huggingface_dataset_blob_to_resolve_readme() {
     let url =
         Url::parse("https://huggingface.co/datasets/owner/data/blob/dev/README.md").expect("url");
-    let source = known_markdown_source(&url).expect("known markdown source");
+    let source = classify_known_source(&url).expect("known markdown source");
 
     assert_eq!(
-        source.fetch_url.as_str(),
+        source.fetch_url().as_str(),
         "https://huggingface.co/datasets/owner/data/resolve/dev/README.md"
     );
-    assert_eq!(source.mode, "huggingface_blob_fast_path");
+    assert_eq!(source.mode(), "huggingface_blob_fast_path");
 }
 
 #[test]
@@ -540,7 +541,7 @@ fn ignores_non_readme_known_source_pages() {
     ] {
         let url = Url::parse(raw).expect("url");
         assert!(
-            known_markdown_source(&url).is_none(),
+            classify_known_source(&url).is_none(),
             "expected no known markdown source for {raw}"
         );
     }
