@@ -38,6 +38,7 @@ const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
 const DEFAULT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_markdown"];
+const SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI: &str = "crawl4ai_markdown";
 const TIMEOUT_REPORT_MAX_ITEMS: usize = 6;
 const TIMEOUT_REPORT_SNIPPET_CHARS: usize = 220;
 const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research sidecar. Use only the tools available to you and return compact handoff notes for the main agent.";
@@ -1383,6 +1384,7 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
                 .split(',')
                 .map(str::trim)
                 .filter(|tool| !tool.is_empty())
+                .filter(|tool| *tool != SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI)
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
         })
@@ -1719,7 +1721,7 @@ mod tests {
         assert!(!config.forward_tool_events);
         assert_eq!(
             config.tool_allowlist,
-            vec!["searxng_search", "crawl4ai_markdown", "web_markdown"]
+            vec!["searxng_search", "web_markdown"]
         );
         assert_eq!(config.dossier_max_chars, 12_345);
     }

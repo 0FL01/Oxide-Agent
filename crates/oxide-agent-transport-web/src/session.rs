@@ -1080,6 +1080,7 @@ fn search_probe_execution_profile(options: SearchProbeRuntimeOptions) -> AgentEx
         .into_iter()
         .map(|tool| tool.trim().to_string())
         .filter(|tool| !tool.is_empty())
+        .filter(|tool| tool != "crawl4ai_markdown")
         .collect::<HashSet<_>>();
     AgentExecutionProfile::new(
         Some("search-probe".to_string()),
@@ -1510,6 +1511,28 @@ mod tests {
             .expect("probe executor should be created for existing web session");
 
         assert!(probe.current_tool_definitions().is_empty());
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-tool-policy-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec![
+                        "web_markdown".to_string(),
+                        "crawl4ai_markdown".to_string(),
+                    ],
+                    prompt_instructions: None,
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+
+        let tool_names = probe
+            .current_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(tool_names.contains("web_markdown"));
+        assert!(!tool_names.contains("crawl4ai_markdown"));
     }
 
     #[tokio::test]

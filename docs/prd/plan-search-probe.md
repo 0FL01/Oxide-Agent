@@ -4,7 +4,7 @@
 
 Старый план про deterministic `SearchProbe` нужно считать obsolete и заменить полностью.
 
-Новая цель: перед основным агентом в web transport запускать короткий agentic research sidecar из 1-3 свежих probe-сессий. Каждая probe-сессия использует тот же core runtime path, наследует выбранную модель/route, работает с ограниченным набором web-research tools (`searxng_search`, `crawl4ai_markdown`, fallback `web_markdown`), сама решает что искать, отдаёт пользователю короткий промежуточный TL;DR и возвращает компактный handoff. После этого main agent стартует с чистым attention и получает только original user prompt + `SearchProbeDossier`, без transcript шума от probe.
+Новая цель: перед основным агентом в web transport запускать короткий agentic research sidecar из 1-3 свежих probe-сессий. Каждая probe-сессия использует тот же core runtime path, наследует выбранную модель/route, работает с ограниченным набором web-research tools (`searxng_search`, `web_markdown`), сама решает что искать, отдаёт пользователю короткий промежуточный TL;DR и возвращает компактный handoff. После этого main agent стартует с чистым attention и получает только original user prompt + `SearchProbeDossier`, без transcript шума от probe.
 
 MVP строго web-only.
 
@@ -418,11 +418,10 @@ MVP allowlist:
 
 ```text
 searxng_search
-crawl4ai_markdown
 web_markdown
 ```
 
-`web_markdown` нужен только как fallback, потому что `webfetch_md` и `crawl4ai_markdown` mutually exclusive at runtime. Если Crawl4AI включён, основным extraction tool будет `crawl4ai_markdown`; если нет — `web_markdown`.
+`web_markdown` — основной lightweight extraction tool для probe. `crawl4ai_markdown` запрещён для probe, чтобы браузерный рендеринг оставался у main/sub-agents и не раздувал probe stage.
 
 Не давать probe tools, которые мутируют состояние или расширяют blast radius:
 
@@ -869,7 +868,7 @@ Create `AgentExecutionProfile` with:
 ```text
 - agent_id = search_probe
 - prompt_instructions = stable Search Probe instructions
-- tool_policy = allowlist(searxng_search, crawl4ai_markdown, web_markdown)
+- tool_policy = allowlist(searxng_search, web_markdown)
 - hook policy = default, except optional search_budget relaxation if needed
 ```
 
@@ -976,7 +975,7 @@ The feature is acceptable when:
 - enabling env var causes web Execute tasks to run 1-3 probe generations before main runtime;
 - user sees short probe TL;DR updates before main answer;
 - probe uses selected model route;
-- probe can call searxng_search and crawl4ai_markdown/web_markdown;
+- probe can call searxng_search and web_markdown, but not crawl4ai_markdown;
 - main runtime receives only SearchProbeDossier + original prompt;
 - main runtime starts with clean attention, no probe transcript in memory;
 - attachments are preserved for main runtime;
