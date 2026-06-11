@@ -166,7 +166,7 @@ async fn maybe_run_search_probe_with_config(
     run_request: TaskRunRequest,
     config: &SearchProbeConfig,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
-    let (progress_tx, cancellation_token) = (mpsc::channel(1).0, CancellationToken::new());
+    let (progress_tx, cancellation_token) = (mpsc::channel(100).0, CancellationToken::new());
     maybe_run_search_probe_with_runtime(
         session_manager,
         session_id,
@@ -287,6 +287,14 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
             &format!("search_probe_generation_{generation}_started"),
         )
         .await;
+        if config.public_updates {
+            send_probe_update(
+                &progress_tx,
+                generation,
+                "Starting web research before the main answer.",
+            )
+            .await;
+        }
 
         let Some(mut executor) = session_manager
             .create_search_probe_executor(
@@ -299,6 +307,14 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
             .await
         else {
             warn!(session_id = %session_id, task_id = %task_id, "Search Probe parent session not found");
+            if config.public_updates {
+                send_probe_update(
+                    &progress_tx,
+                    generation,
+                    "Search Probe could not start; launching the main runtime without probe handoff.",
+                )
+                .await;
+            }
             break;
         };
         executor.session_mut().cancellation_token = cancellation_token.child_token();
@@ -324,15 +340,39 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
             Ok(Ok(AgentExecutionOutcome::Completed(text))) => text,
             Ok(Ok(AgentExecutionOutcome::WaitingForUserInput(_))) => {
                 warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe unexpectedly requested user input");
+                if config.public_updates {
+                    send_probe_update(
+                        &progress_tx,
+                        generation,
+                        "Search Probe requested extra input unexpectedly; launching the main runtime without a completed probe handoff.",
+                    )
+                    .await;
+                }
                 break;
             }
             Ok(Err(error)) => {
                 warn!(session_id = %session_id, task_id = %task_id, generation, error = %error, "Search Probe generation failed");
+                if config.public_updates {
+                    send_probe_update(
+                        &progress_tx,
+                        generation,
+                        "Search Probe could not complete this web pass; the main runtime will continue without a completed probe handoff.",
+                    )
+                    .await;
+                }
                 break;
             }
             Err(_) => {
                 executor.session_mut().cancellation_token.cancel();
                 warn!(session_id = %session_id, task_id = %task_id, generation, "Search Probe generation timed out");
+                if config.public_updates {
+                    send_probe_update(
+                        &progress_tx,
+                        generation,
+                        "Search Probe did not finish before its timeout; launching the main runtime now.",
+                    )
+                    .await;
+                }
                 break;
             }
         };
@@ -341,7 +381,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         if config.public_updates
             && let Some(update) = handoff.public_update.as_deref()
         {
-            send_reasoning(&progress_tx, update).await;
+            send_probe_update(&progress_tx, generation, update).await;
         }
         send_milestone(
             &progress_tx,
@@ -692,11 +732,11 @@ async fn send_milestone(progress_tx: &mpsc::Sender<AgentEvent>, name: &str) {
         .await;
 }
 
-async fn send_reasoning(progress_tx: &mpsc::Sender<AgentEvent>, summary: &str) {
+async fn send_probe_update(progress_tx: &mpsc::Sender<AgentEvent>, generation: u8, summary: &str) {
     let _ = progress_tx
         .send(AgentEvent::Reasoning {
             source: AgentEventSource::Root,
-            summary: format!("Search Probe: {summary}"),
+            summary: format!("Search Probe #{generation}: {summary}"),
         })
         .await;
 }
@@ -1014,7 +1054,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
     fn reasoning_summaries(events: &[AgentEvent]) -> Vec<String> {
         events
             .iter()
@@ -1220,12 +1259,12 @@ stop
         assert!(
             reasoning
                 .iter()
-                .any(|summary| summary.contains("Search Probe: TL;DR: first pass"))
+                .any(|summary| summary.contains("Search Probe #1: TL;DR: first pass"))
         );
         assert!(
             reasoning
                 .iter()
-                .any(|summary| summary.contains("Search Probe: TL;DR: second pass"))
+                .any(|summary| summary.contains("Search Probe #2: TL;DR: second pass"))
         );
     }
 
@@ -1262,6 +1301,16 @@ stop
         assert!(milestones.contains(&"search_probe_started".to_string()));
         assert!(milestones.contains(&"search_probe_generation_1_started".to_string()));
         assert!(milestones.contains(&"search_probe_completed".to_string()));
+
+        let reasoning = reasoning_summaries(&events);
+        assert!(
+            reasoning
+                .iter()
+                .any(|summary| summary.contains("Search Probe #1: Starting web research"))
+        );
+        assert!(reasoning.iter().any(|summary| {
+            summary.contains("Search Probe #1: Search Probe could not complete this web pass")
+        }));
     }
 
     #[test]
@@ -1404,14 +1453,14 @@ after
     async fn public_update_uses_reasoning_event() {
         let (tx, mut rx) = mpsc::channel(2);
 
-        send_reasoning(&tx, "TL;DR: checked the docs.").await;
+        send_probe_update(&tx, 2, "TL;DR: checked the docs.").await;
         drop(tx);
 
         let event = rx.recv().await.expect("reasoning event");
         match event {
             AgentEvent::Reasoning { source, summary } => {
                 assert_eq!(source, AgentEventSource::Root);
-                assert!(summary.contains("Search Probe: TL;DR: checked the docs."));
+                assert_eq!(summary, "Search Probe #2: TL;DR: checked the docs.");
             }
             other => panic!("unexpected event: {other:?}"),
         }
