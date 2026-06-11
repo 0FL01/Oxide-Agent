@@ -6,6 +6,7 @@
 use super::{
     AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord, markdown_preview,
     pending_user_input_view, progress_snapshot_from_serializable,
+    search_probe::maybe_run_search_probe,
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
@@ -285,6 +286,8 @@ async fn execute_agent_task(
         executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
         "web task executor latency"
     );
+    let run_request = maybe_run_search_probe(session_id, task_id, run_request).await;
+
     spawn_executor_task(ExecutorTaskCtx {
         session_manager,
         session_id: session_id.to_string(),

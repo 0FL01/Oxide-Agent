@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11
+Last updated: 2026-06-11 18:22 +03
 
 ## Objective
 
@@ -33,10 +33,7 @@ Out of scope:
 
 ## Missing Inputs
 
-- User review is required before starting Checkpoint 1 implementation.
-  - Impact: implementation should not begin until the user confirms the checkpoint ordering and boundaries.
-  - Low-risk assumption or fallback: keep the goal active and stop at the documented first checkpoint.
-  - User/external action needed: approve or adjust Checkpoint 1.
+- None for the current checkpoint. User approved starting Checkpoint 1 on `feature/search-probe`.
 
 ## Repository Context
 
@@ -56,16 +53,16 @@ Out of scope:
   - Requirement: Add web transport orchestration that can run Search Probe before main `Execute` tasks and leave `ResumeUserInput` unchanged.
   - Acceptance: `TaskRunRequest::Execute` goes through `maybe_run_search_probe` when enabled; `ResumeUserInput` bypasses probe; disabled config leaves requests unchanged.
   - Evidence required: implementation diff, focused unit tests for enabled/disabled/Resume behavior, and `cargo check -p oxide-agent-transport-web`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added `crates/oxide-agent-transport-web/src/server/search_probe.rs`, wired `TaskRunRequest::Execute` through `maybe_run_search_probe`, left `ResumeUserInput` as a no-op skip, and verified disabled/enabled shell behavior with `cargo test -p oxide-agent-transport-web search_probe --lib`.
 
 - G2: Probe runs before parent executor write-lock
   - Source: `docs/prd/plan-search-probe.md` section 4.
   - Requirement: Probe pipeline must not hold the main session executor write-lock while performing search/research.
   - Acceptance: code path invokes probe before `executor_arc.write().await`; test or instrumentation proves probe-start event precedes lock-acquired marker.
   - Evidence required: diff review and focused test or event-order assertion.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 calls `maybe_run_search_probe` after event collector creation and before `spawn_executor_task`; the main execution write-lock remains inside `spawn_executor_task`.
 
 - G3: Probe generations use fresh ephemeral agent runtimes
   - Source: `docs/prd/plan-search-probe.md` sections 2, 8, and 9.
@@ -127,35 +124,35 @@ Out of scope:
   - Source: `docs/prd/plan-search-probe.md` section 15.
   - Acceptance: Search Probe does not modify core prompt composer or inject volatile probe data into system prompt/stable prefix; dossier is user input/runtime content only.
   - Evidence required: diff audit and a focused assertion/test if prompt path is touched.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged.
 
 - Q2: Simple MVP architecture
   - Source: repository `AGENTS.md` over-engineering constraints and `docs/prd/plan-search-probe.md` section 22.
   - Acceptance: no new crates, services, queues, storage tables, custom search clients, broad abstractions, or transport-wide rewrites.
   - Evidence required: dependency diff and file-scope diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added one web-transport module, no new crates, no dependency changes, no storage changes, and no new services.
 
 - N1: No deterministic research logic
   - Source: `docs/prd/plan-search-probe.md` sections 1 and 22.
   - Must preserve: no `should_probe`, entity extractor, exact/near-miss scorer, query template planner, or Rust-owned research heuristics.
   - Evidence required: diff review and test names/content review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 config parses only lifecycle/safety knobs; no query planner, entity extraction, scorers, or `should_probe` logic were added.
 
 - N2: Non-web transports remain untouched
   - Source: `docs/prd/plan-search-probe.md` section 3.
   - Must preserve: Telegram transport and transport-agnostic core/runtime behavior are not changed for MVP except using existing public APIs.
   - Evidence required: `git diff --name-only` review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 diff is limited to `crates/oxide-agent-transport-web/src/server/` and this goal document.
 
 - V1: Focused web transport validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo check -p oxide-agent-transport-web` and focused web transport tests for Search Probe.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`.
 
 - V2: Final workspace quality gates pass
   - Source: repository `AGENTS.md`.
@@ -250,7 +247,7 @@ Out of scope:
 - 2026-06-11: MVP is web-only. Reason: user explicitly requested only web transport for MVP, and it minimizes blast radius.
 - 2026-06-11: Remove deterministic research logic from the plan. Reason: user wants agentic probe behavior, not Rust heuristics or query templates.
 - 2026-06-11: Preserve main runtime cache-hit by injecting probe output as user/runtime input only, not into stable system prompt.
-- 2026-06-11: Implementation must pause before Checkpoint 1 until user reviews this goal and the first checkpoint.
+- 2026-06-11: Checkpoint 1 required user review before implementation; user approved it and requested work on `feature/search-probe` from `dev`.
 
 ## Progress Log
 
@@ -261,13 +258,14 @@ Out of scope:
   - Audit IDs updated: none; implementation not started.
   - Next: user review before Checkpoint 1.
 
-## Risks and Blockers
+- 2026-06-11 18:22 +03 Checkpoint 1: Web orchestrator skeleton and config
+  - Changed: created `server/search_probe.rs`, wired `server/mod.rs`, and inserted `maybe_run_search_probe` before `spawn_executor_task` in `task_executor.rs`.
+  - Evidence: config defaults disabled, env parsing/clamping, enabled no-op shell, disabled no-op shell, and `ResumeUserInput` skip covered by focused tests.
+  - Commands: `cargo fmt --all`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Audit IDs updated: G1, G2, Q1, Q2, N1, N2, V1 moved to `in_progress` with Checkpoint 1 evidence.
+  - Next: Checkpoint 2, ephemeral probe executor factory.
 
-- User review before implementation
-  - Impact: Checkpoint 1 should not start until the user approves or adjusts the sequence.
-  - Evidence: explicit user request to mention first checkpoint for review before starting it.
-  - Mitigation or requested decision: user approves Checkpoint 1 or edits scope/checkpoint order.
-  - Audit IDs affected: all implementation audit IDs.
+## Risks and Blockers
 
 - Ephemeral executor creation may expose private `session.rs` route-selection boundaries
   - Impact: naive implementation could duplicate model selection logic or widen APIs unnecessarily.

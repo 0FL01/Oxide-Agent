@@ -25,6 +25,7 @@ mod auto_title;
 mod converters;
 mod model_routes;
 mod router;
+mod search_probe;
 mod session_routes;
 mod settings_routes;
 mod sse;
