@@ -119,9 +119,9 @@ pub(in crate::agent::providers::webfetch_md) fn pypi_project_parts(
             package_name,
             mode,
         } => Ok((source_url, metadata_url, package_name.as_str(), mode)),
-        KnownMarkdownSource::DirectReadme { .. } | KnownMarkdownSource::CrateReadme { .. } => {
-            bail!("not a PyPI project source")
-        }
+        KnownMarkdownSource::DirectReadme { .. }
+        | KnownMarkdownSource::CrateReadme { .. }
+        | KnownMarkdownSource::GitHubGist { .. } => bail!("not a PyPI project source"),
     }
 }
 

@@ -544,6 +544,37 @@ fn maps_github_readme_blob_to_raw_url() {
 }
 
 #[test]
+fn maps_github_gist_to_api_plan() {
+    let url = Url::parse("https://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0")
+        .expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(source.source_url(), &url);
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://api.github.com/gists/a02a4c0c0a57e43ff4f038b46ca66ae0"
+    );
+    assert!(matches!(source, KnownMarkdownSource::GitHubGist { .. }));
+    assert_eq!(source.mode(), "github_gist_fast_path");
+}
+
+#[test]
+fn maps_github_gist_permalink_comment_to_api_plan() {
+    let url = Url::parse(
+        "https://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304",
+    )
+    .expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    match source {
+        KnownMarkdownSource::GitHubGist { comment_id, .. } => {
+            assert_eq!(comment_id.as_deref(), Some("5946304"));
+        }
+        _ => panic!("expected GitHub Gist source"),
+    }
+}
+
+#[test]
 fn maps_huggingface_model_root_to_resolve_readme() {
     let url = Url::parse("https://huggingface.co/owner/model").expect("url");
     let source = classify_known_source(&url).expect("known markdown source");
@@ -720,6 +751,109 @@ async fn fetches_crates_io_readme_via_metadata_api() {
     assert!(output.contains("Version: 1.2.3"));
     assert!(output.contains("# Demo crate"));
     assert!(output.contains("README from API."));
+}
+
+#[tokio::test]
+async fn fetches_github_gist_files_and_permalink_comment_via_api() {
+    let metadata_json = r##"{
+        "files": {
+            "README.md": {
+                "filename": "README.md",
+                "type": "text/markdown",
+                "language": "Markdown",
+                "raw_url": "http://gist.githubusercontent.com/DocShotgun/raw/readme",
+                "size": 28,
+                "truncated": false,
+                "content": "# Demo gist\n\nGist file body."
+            },
+            "image.png": {
+                "filename": "image.png",
+                "type": "image/png",
+                "raw_url": "http://gist.githubusercontent.com/DocShotgun/raw/image",
+                "truncated": false
+            }
+        }
+    }"##;
+    let comment_json = r##"{"body":"Comment **markdown** body."}"##;
+    let addr = serve_http_sequence(vec![
+        (metadata_json, "application/json"),
+        (comment_json, "application/json"),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("api.github.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("GitHub Gist fast path succeeds");
+
+    assert!(output.contains("URL: http://api.github.com/gists/a02a4c0c0a57e43ff4f038b46ca66ae0"));
+    assert!(output.contains("Source-URL: http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304"));
+    assert!(output.contains("Mode: github_gist_fast_path"));
+    assert!(output.contains("Owner: DocShotgun"));
+    assert!(output.contains("Gist-ID: a02a4c0c0a57e43ff4f038b46ca66ae0"));
+    assert!(output.contains("Comment-ID: 5946304"));
+    assert!(output.contains("Files: README.md"));
+    assert!(output.contains("### File: README.md"));
+    assert!(output.contains("# Demo gist"));
+    assert!(output.contains("### Permalink Comment"));
+    assert!(output.contains("Comment **markdown** body."));
+    assert!(!output.contains("image.png"));
+}
+
+#[tokio::test]
+async fn fetches_github_gist_truncated_file_from_raw_url() {
+    let metadata_json = r##"{
+        "files": {
+            "long.md": {
+                "filename": "long.md",
+                "type": "text/markdown",
+                "language": "Markdown",
+                "raw_url": "http://gist.githubusercontent.com/DocShotgun/raw/long",
+                "size": 2000000,
+                "truncated": true,
+                "content": "partial"
+            }
+        }
+    }"##;
+    let addr = serve_http_sequence(vec![
+        (metadata_json, "application/json"),
+        ("# Full raw gist\n\nFetched from raw_url.", "text/markdown"),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("api.github.com", addr)
+        .resolve("gist.githubusercontent.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0"
+                    .to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("GitHub Gist raw_url fallback succeeds");
+
+    assert!(output.contains("Files: long.md"));
+    assert!(output.contains("# Full raw gist"));
+    assert!(output.contains("Fetched from raw_url."));
+    assert!(!output.contains("partial"));
 }
 
 #[tokio::test]

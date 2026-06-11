@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use super::convert::{html_to_markdown, truncate_chars};
 use super::error::{display_content_type, is_html_content_type, reject_anti_bot_challenge};
 use super::known_sources::{
-    KnownMarkdownSource, classify as classify_known_source, pypi, rust_packages,
+    KnownMarkdownSource, classify as classify_known_source, github_gist, pypi, rust_packages,
 };
 use super::reddit::{
     parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown, xml_tag_text,
@@ -134,6 +134,11 @@ impl WebFetchMdProvider {
                     .fetch_pypi_project(source, timeout_secs, cancellation_token)
                     .await;
             }
+            KnownMarkdownSource::GitHubGist { .. } => {
+                return self
+                    .fetch_github_gist(source, timeout_secs, cancellation_token)
+                    .await;
+            }
             KnownMarkdownSource::DirectReadme { .. } => {}
         }
 
@@ -244,6 +249,89 @@ impl WebFetchMdProvider {
         ))
     }
 
+    async fn fetch_github_gist(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let gist = github_gist::gist_parts(source)?;
+
+        reject_unsafe_url(gist.api_url)?;
+        let metadata = self
+            .fetch_github_api_text(gist.api_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("GitHub Gist metadata fetch failed")?;
+        reject_unsafe_url(&metadata.final_url)?;
+
+        let files = github_gist::selected_gist_files(&metadata.text)?;
+        let mut bytes_read = metadata.bytes_read;
+        let mut rendered_files = Vec::new();
+        let mut file_names = Vec::new();
+
+        for file in files {
+            let content = if file.truncated {
+                let raw_url = file
+                    .raw_url
+                    .clone()
+                    .context("GitHub Gist truncated file did not include raw_url")?;
+                reject_unsafe_url(&raw_url)?;
+                let raw = self
+                    .fetch_text(raw_url, timeout_secs, cancellation_token)
+                    .await
+                    .context("GitHub Gist raw file fetch failed")?;
+                reject_unsafe_url(&raw.final_url)?;
+                bytes_read += raw.bytes_read;
+                raw.text
+            } else {
+                file.content.clone().unwrap_or_default()
+            };
+
+            if content.trim().is_empty() {
+                continue;
+            }
+            file_names.push(file.filename.clone());
+            rendered_files.push(format!("### File: {}\n\n{}", file.filename, content.trim()));
+        }
+
+        if rendered_files.is_empty() {
+            bail!("GitHub Gist did not include usable file content");
+        }
+
+        let comment_id = gist
+            .comment
+            .as_ref()
+            .map(|comment| comment.comment_id.clone());
+        if let Some(comment) = gist.comment {
+            reject_unsafe_url(&comment.api_url)?;
+            let fetched = self
+                .fetch_github_api_text(comment.api_url, timeout_secs, cancellation_token)
+                .await
+                .context("GitHub Gist comment fetch failed")?;
+            reject_unsafe_url(&fetched.final_url)?;
+            bytes_read += fetched.bytes_read;
+            let body = github_gist::parse_gist_comment_body(&fetched.text)?;
+            rendered_files.push(format!("### Permalink Comment\n\n{}", body.trim()));
+        }
+
+        let content = rendered_files.join("\n\n");
+        let truncated = truncate_chars(content.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(github_gist::render_gist(github_gist::GistRender {
+            source_url: gist.source_url,
+            api_url: &metadata.final_url,
+            mode: gist.mode,
+            owner: gist.owner,
+            gist_id: gist.gist_id,
+            comment_id: comment_id.as_deref(),
+            files: &file_names,
+            bytes_read,
+            truncated: truncated_label,
+            content: &truncated.text,
+        }))
+    }
+
     /// Fetch a Reddit thread via its Atom RSS feed and render as Markdown.
     async fn fetch_reddit_rss(
         &self,
@@ -339,6 +427,64 @@ impl WebFetchMdProvider {
 
         if !status.is_success() {
             bail!("server returned non-success status: {status}");
+        }
+
+        Ok(FetchResult {
+            final_url,
+            content_type,
+            bytes_read,
+            text,
+        })
+    }
+
+    async fn fetch_github_api_text(
+        &self,
+        url: Url,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<FetchResult> {
+        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+            bail!("web_markdown cancelled before GitHub API request");
+        }
+
+        let response = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(timeout_secs))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .header(USER_AGENT, BROWSER_USER_AGENT)
+            .send()
+            .await
+            .context("GitHub API request failed")?;
+
+        let status = response.status();
+        let final_url = response.url().clone();
+        let headers = response.headers().clone();
+        let content_type = headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if let Some(content_length) = response.content_length()
+            && content_length > MAX_RESPONSE_BYTES as u64
+        {
+            bail!(
+                "response too large by content-length: {} bytes; max is {}",
+                content_length,
+                MAX_RESPONSE_BYTES
+            );
+        }
+
+        let body = read_limited_body(response, cancellation_token).await?;
+        let bytes_read = body.len();
+        let text = String::from_utf8_lossy(&body).into_owned();
+
+        reject_anti_bot_challenge(&headers, &text)?;
+
+        if !status.is_success() {
+            bail!("GitHub API returned non-success status: {status}");
         }
 
         Ok(FetchResult {

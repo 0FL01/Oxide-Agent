@@ -1,5 +1,6 @@
 //! Known source fast paths for URLs whose Markdown can be fetched directly.
 
+pub(super) mod github_gist;
 pub(super) mod pypi;
 mod repo_hosts;
 pub(super) mod rust_packages;
@@ -23,6 +24,14 @@ pub(super) enum KnownMarkdownSource {
         source_url: Url,
         metadata_url: Url,
         package_name: String,
+        mode: &'static str,
+    },
+    GitHubGist {
+        source_url: Url,
+        api_url: Url,
+        owner: String,
+        gist_id: String,
+        comment_id: Option<String>,
         mode: &'static str,
     },
 }
@@ -66,11 +75,30 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn github_gist(
+        source_url: Url,
+        api_url: Url,
+        owner: String,
+        gist_id: String,
+        comment_id: Option<String>,
+        mode: &'static str,
+    ) -> Self {
+        Self::GitHubGist {
+            source_url,
+            api_url,
+            owner,
+            gist_id,
+            comment_id,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
             Self::CrateReadme { source_url, .. } => source_url,
             Self::PypiProject { source_url, .. } => source_url,
+            Self::GitHubGist { source_url, .. } => source_url,
         }
     }
 
@@ -79,6 +107,7 @@ impl KnownMarkdownSource {
             Self::DirectReadme { fetch_url, .. } => fetch_url,
             Self::CrateReadme { metadata_url, .. } => metadata_url,
             Self::PypiProject { metadata_url, .. } => metadata_url,
+            Self::GitHubGist { api_url, .. } => api_url,
         }
     }
 
@@ -87,12 +116,14 @@ impl KnownMarkdownSource {
             Self::DirectReadme { mode, .. } => mode,
             Self::CrateReadme { mode, .. } => mode,
             Self::PypiProject { mode, .. } => mode,
+            Self::GitHubGist { mode, .. } => mode,
         }
     }
 }
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
-    repo_hosts::classify(url)
+    github_gist::classify(url)
+        .or_else(|| repo_hosts::classify(url))
         .or_else(|| rust_packages::classify(url))
         .or_else(|| pypi::classify(url))
 }
