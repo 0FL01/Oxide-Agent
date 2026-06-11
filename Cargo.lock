@@ -3434,6 +3434,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "tokio-util",
  "tower 0.4.13",
  "tower-http",
  "tracing",

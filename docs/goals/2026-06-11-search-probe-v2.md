@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 18:33 +03
+Last updated: 2026-06-11 18:52 +03
 
 ## Objective
 
@@ -78,7 +78,7 @@ Out of scope:
   - Acceptance: selected web model route override is applied to probe executor; standard requests can be elevated to configured probe minimum effort.
   - Evidence required: focused tests for selected route inheritance and effort mapping.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 reuses existing web model-route selection logic for probe executors and verifies selected route inheritance. Effort elevation remains for the generation runner checkpoint.
+  - Evidence collected: Checkpoint 2 reuses existing web model-route selection logic for probe executors and verifies selected route inheritance. Checkpoint 3 maps parent effort through the configured probe minimum and covers that mapping with a focused test.
 
 - G5: Probe tool policy is web-research-only
   - Source: `docs/prd/plan-search-probe.md` section 10.
@@ -93,16 +93,16 @@ Out of scope:
   - Requirement: Parse `search_probe_public_update`, `search_probe_handoff`, and `search_probe_decision`; safely fall back when sections are missing.
   - Acceptance: valid contract extracts all fields; invalid/missing contract produces a raw-response handoff and safe decision behavior.
   - Evidence required: parser unit tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 added the XML-like contract parser for `search_probe_public_update`, `search_probe_handoff`, and `search_probe_decision`; focused tests cover valid extraction and raw-text fallback.
 
 - G7: User-visible progress updates are emitted through existing events
   - Source: `docs/prd/plan-search-probe.md` section 12.
   - Requirement: Send started/completed/failure milestones and short public TL;DR updates without introducing new `AgentEvent` variants in MVP.
   - Acceptance: web task stream shows probe generation progress and public updates; optional tool-event forwarding works when enabled.
   - Evidence required: event collector test or persisted event inspection in focused web transport tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 emits `Milestone` events for probe/generation lifecycle and `Reasoning` events for public TL;DR updates; focused tests assert public updates use existing `Reasoning` events.
 
 - G8: Main runtime receives compact dossier plus original prompt only
   - Source: `docs/prd/plan-search-probe.md` sections 13 and 14.
@@ -117,8 +117,8 @@ Out of scope:
   - Requirement: Probe errors/timeouts do not fail the task; user cancellation during probe prevents main runtime start.
   - Acceptance: partial/failure dossier or unchanged input allows main runtime to start after probe failure; cancellation stops the pipeline and marks task cancelled via existing flow.
   - Evidence required: focused async tests for failure and cancellation paths.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 treats probe errors/timeouts as non-fatal fallback, adds per-generation/total timeout budgeting, and stops before main runtime when the parent cancellation token is cancelled; focused tests cover cancellation and timeout budget behavior.
 
 - Q1: Main runtime prompt cache friendliness is preserved
   - Source: `docs/prd/plan-search-probe.md` section 15.
@@ -132,27 +132,27 @@ Out of scope:
   - Acceptance: no new crates, services, queues, storage tables, custom search clients, broad abstractions, or transport-wide rewrites.
   - Evidence required: dependency diff and file-scope diff review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added one web-transport module. Checkpoint 2 reused `WebSessionManager`, existing route selection, `AgentExecutor`, and `ToolAccessPolicy`; no new crates, dependency changes, storage changes, or services.
+  - Evidence collected: Checkpoint 1 added one web-transport module. Checkpoint 2 reused `WebSessionManager`, existing route selection, `AgentExecutor`, and `ToolAccessPolicy`. Checkpoint 3 stayed inside web transport and reused existing `AgentEvent` variants; it added a direct `tokio-util` dependency to the web crate only for the already-used workspace `CancellationToken` type.
 
 - N1: No deterministic research logic
   - Source: `docs/prd/plan-search-probe.md` sections 1 and 22.
   - Must preserve: no `should_probe`, entity extractor, exact/near-miss scorer, query template planner, or Rust-owned research heuristics.
   - Evidence required: diff review and test names/content review.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-2 added lifecycle config and an executor factory only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
+  - Evidence collected: Checkpoints 1-3 added lifecycle config, an executor factory, generation prompts, contract parsing, and event/cancellation handling only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
 
 - N2: Non-web transports remain untouched
   - Source: `docs/prd/plan-search-probe.md` section 3.
   - Must preserve: Telegram transport and transport-agnostic core/runtime behavior are not changed for MVP except using existing public APIs.
   - Evidence required: `git diff --name-only` review.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-2 diff is limited to `crates/oxide-agent-transport-web/src/` and this goal document.
+  - Evidence collected: Checkpoints 1-3 diff is limited to `crates/oxide-agent-transport-web/` and this goal document.
 
 - V1: Focused web transport validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo check -p oxide-agent-transport-web` and focused web transport tests for Search Probe.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-2 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Evidence collected: Checkpoints 1-3 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`; Checkpoint 3 also passed `cargo fmt --all -- --check` and scoped `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`.
 
 - V2: Final workspace quality gates pass
   - Source: repository `AGENTS.md`.
@@ -268,9 +268,16 @@ Out of scope:
 - 2026-06-11 18:33 +03 Checkpoint 2: Ephemeral probe executor factory
   - Changed: added `SearchProbeRuntimeOptions` and `WebSessionManager::create_search_probe_executor`; Search Probe shell now creates and drops an unregistered probe executor when enabled.
   - Evidence: focused tests cover selected model route inheritance, deny-by-default tool policy, no registry insertion, empty fresh memory, and missing parent session handling.
-  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`.
   - Audit IDs updated: G3, G4, G5 moved to `in_progress`; Q2, N1, N2, V1 evidence extended.
   - Next: Checkpoint 3, generation runner, final contract parser, and event updates.
+
+- 2026-06-11 18:52 +03 Checkpoint 3: Generation runner, final contract parser, and event updates
+  - Changed: Search Probe now runs up to 1-3 fresh probe generations, builds stable generation prompts from the original prompt plus previous handoffs, parses the XML-like final contract, emits existing milestone/reasoning events, forwards only optional tool events, and stops before main runtime on cancellation.
+  - Evidence: focused tests cover parser extraction/fallback, configured minimum effort mapping, public update event shape, cancellation before generation, and timeout budget calculation.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Audit IDs updated: G4 evidence extended; G6, G7, G9 moved to `in_progress`; Q2, N1, N2, V1 evidence extended.
+  - Next: Checkpoint 4, dossier render and main input injection.
 
 ## Risks and Blockers
 

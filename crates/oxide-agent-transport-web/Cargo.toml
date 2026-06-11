@@ -18,6 +18,7 @@ oxide-agent-runtime = { path = "../oxide-agent-runtime" }
 oxide-agent-web-contracts = { path = "../oxide-agent-web-contracts" }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 async-stream = "0.3"
 lazy_static = "1.4"
 futures-util = "0.3"
