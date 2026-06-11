@@ -618,6 +618,41 @@ fn maps_huggingface_blog_to_html_fast_path() {
 }
 
 #[test]
+fn maps_huggingface_model_tree_to_api_fast_path() {
+    let url =
+        Url::parse("https://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert!(matches!(
+        source,
+        KnownMarkdownSource::HuggingFaceTree { .. }
+    ));
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://huggingface.co/api/models/stepfun-ai/Step-3.7-Flash-GGUF/tree/main"
+    );
+    assert_eq!(source.mode(), "huggingface_tree_fast_path");
+}
+
+#[test]
+fn maps_huggingface_dataset_tree_subpath_to_api_fast_path() {
+    let url = Url::parse("https://huggingface.co/datasets/owner/data/tree/dev/sub/dir#files")
+        .expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert!(matches!(
+        source,
+        KnownMarkdownSource::HuggingFaceTree { .. }
+    ));
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://huggingface.co/api/datasets/owner/data/tree/dev/sub/dir"
+    );
+    assert_eq!(source.source_url().fragment(), None);
+    assert_eq!(source.mode(), "huggingface_tree_fast_path");
+}
+
+#[test]
 fn maps_gitlab_repo_root_to_raw_readme() {
     let url = Url::parse("https://gitlab.com/gitlab-org/gitlab").expect("url");
     let source = classify_known_source(&url).expect("known markdown source");
@@ -914,6 +949,47 @@ async fn fetches_huggingface_blog_content_despite_waf_markers() {
     assert!(output.contains("The runtime has three practical pieces."));
     assert!(!output.contains("captchaApiKey"));
     assert!(!output.contains("challenge.js"));
+}
+
+#[tokio::test]
+async fn fetches_huggingface_tree_via_json_api() {
+    let tree_json = r#"[
+        {"type":"directory","path":"BF16","size":0},
+        {"type":"directory","path":"IQ4_XS","size":0},
+        {"type":"file","path":"README.md","size":2048},
+        {"type":"file","path":"model.gguf","size":123456,"lfs":{"oid":"abc"}}
+    ]"#;
+    let addr = serve_http_once(tree_json, "application/json; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("huggingface.co", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("HuggingFace tree fast path succeeds");
+
+    assert!(output.contains(
+        "URL: http://huggingface.co/api/models/stepfun-ai/Step-3.7-Flash-GGUF/tree/main"
+    ));
+    assert!(
+        output
+            .contains("Source-URL: http://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main")
+    );
+    assert!(output.contains("Mode: huggingface_tree_fast_path"));
+    assert!(output.contains("Repository: `stepfun-ai/Step-3.7-Flash-GGUF`"));
+    assert!(output.contains("Revision: `main`"));
+    assert!(output.contains("- `BF16/`"));
+    assert!(output.contains("- `README.md` — 2048 bytes"));
+    assert!(output.contains("- `model.gguf` — 123456 bytes — LFS"));
 }
 
 #[tokio::test]

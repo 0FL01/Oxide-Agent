@@ -122,7 +122,8 @@ pub(in crate::agent::providers::webfetch_md) fn pypi_project_parts(
         KnownMarkdownSource::DirectReadme { .. }
         | KnownMarkdownSource::CrateReadme { .. }
         | KnownMarkdownSource::GitHubGist { .. }
-        | KnownMarkdownSource::HuggingFaceBlog { .. } => bail!("not a PyPI project source"),
+        | KnownMarkdownSource::HuggingFaceBlog { .. }
+        | KnownMarkdownSource::HuggingFaceTree { .. } => bail!("not a PyPI project source"),
     }
 }
 

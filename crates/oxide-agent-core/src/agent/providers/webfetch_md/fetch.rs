@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use reqwest::Url;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT};
+use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -142,6 +143,11 @@ impl WebFetchMdProvider {
             KnownMarkdownSource::HuggingFaceBlog { .. } => {
                 return self
                     .fetch_huggingface_blog(source, timeout_secs, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::HuggingFaceTree { .. } => {
+                return self
+                    .fetch_huggingface_tree(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::DirectReadme { .. } => {}
@@ -363,6 +369,47 @@ impl WebFetchMdProvider {
 
         let article_html = extract_huggingface_blog_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
+    async fn fetch_huggingface_tree(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::HuggingFaceTree {
+            source_url,
+            api_url,
+            repo_id,
+            revision,
+            tree_path,
+            mode,
+        } = source
+        else {
+            bail!("not a HuggingFace tree source");
+        };
+
+        let fetched = self
+            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("HuggingFace tree API fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = render_huggingface_tree_json(&fetched.text, repo_id, revision, tree_path)?;
         let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
         let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
 
@@ -608,6 +655,72 @@ fn extract_huggingface_blog_html(html: &str) -> Result<&str> {
         bail!("HuggingFace Blog HTML did not include a usable article body");
     }
     Ok(&html[start..end])
+}
+
+fn render_huggingface_tree_json(
+    tree_json: &str,
+    repo_id: &str,
+    revision: &str,
+    tree_path: &Option<String>,
+) -> Result<String> {
+    let value: Value = serde_json::from_str(tree_json).context("invalid HuggingFace tree JSON")?;
+    let entries = value
+        .as_array()
+        .context("HuggingFace tree JSON was not an array")?;
+
+    let mut output = String::new();
+    output.push_str("# HuggingFace repository tree\n\n");
+    output.push_str("Repository: `");
+    output.push_str(repo_id);
+    output.push_str("`\n");
+    output.push_str("Revision: `");
+    output.push_str(revision);
+    output.push_str("`\n");
+    if let Some(path) = tree_path {
+        output.push_str("Path: `");
+        output.push_str(path);
+        output.push_str("`\n");
+    }
+    output.push('\n');
+
+    if entries.is_empty() {
+        output.push_str("_No entries returned._");
+        return Ok(output);
+    }
+
+    for entry in entries {
+        let path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("HuggingFace tree entry did not include path")?;
+        let entry_type = entry.get("type").and_then(Value::as_str).unwrap_or("file");
+        let suffix = if entry_type == "directory" { "/" } else { "" };
+
+        output.push_str("- `");
+        output.push_str(path);
+        output.push_str(suffix);
+        output.push('`');
+        if entry_type != "file" && entry_type != "directory" {
+            output.push_str(" (");
+            output.push_str(entry_type);
+            output.push(')');
+        }
+        if let Some(size) = entry.get("size").and_then(Value::as_u64)
+            && size > 0
+        {
+            output.push_str(" — ");
+            output.push_str(&size.to_string());
+            output.push_str(" bytes");
+        }
+        if entry.get("lfs").is_some() {
+            output.push_str(" — LFS");
+        }
+        output.push('\n');
+    }
+
+    Ok(output)
 }
 
 async fn read_limited_body(

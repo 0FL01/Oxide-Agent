@@ -39,6 +39,14 @@ pub(super) enum KnownMarkdownSource {
         fetch_url: Url,
         mode: &'static str,
     },
+    HuggingFaceTree {
+        source_url: Url,
+        api_url: Url,
+        repo_id: String,
+        revision: String,
+        tree_path: Option<String>,
+        mode: &'static str,
+    },
 }
 
 impl KnownMarkdownSource {
@@ -106,6 +114,24 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn huggingface_tree(
+        source_url: Url,
+        api_url: Url,
+        repo_id: String,
+        revision: String,
+        tree_path: Option<String>,
+        mode: &'static str,
+    ) -> Self {
+        Self::HuggingFaceTree {
+            source_url,
+            api_url,
+            repo_id,
+            revision,
+            tree_path,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
@@ -113,6 +139,7 @@ impl KnownMarkdownSource {
             Self::PypiProject { source_url, .. } => source_url,
             Self::GitHubGist { source_url, .. } => source_url,
             Self::HuggingFaceBlog { source_url, .. } => source_url,
+            Self::HuggingFaceTree { source_url, .. } => source_url,
         }
     }
 
@@ -123,6 +150,7 @@ impl KnownMarkdownSource {
             Self::PypiProject { metadata_url, .. } => metadata_url,
             Self::GitHubGist { api_url, .. } => api_url,
             Self::HuggingFaceBlog { fetch_url, .. } => fetch_url,
+            Self::HuggingFaceTree { api_url, .. } => api_url,
         }
     }
 
@@ -133,6 +161,7 @@ impl KnownMarkdownSource {
             Self::PypiProject { mode, .. } => mode,
             Self::GitHubGist { mode, .. } => mode,
             Self::HuggingFaceBlog { mode, .. } => mode,
+            Self::HuggingFaceTree { mode, .. } => mode,
         }
     }
 }

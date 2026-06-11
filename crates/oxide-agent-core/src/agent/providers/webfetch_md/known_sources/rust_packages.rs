@@ -160,6 +160,7 @@ pub(in crate::agent::providers::webfetch_md) fn crate_readme_parts(
         KnownMarkdownSource::DirectReadme { .. }
         | KnownMarkdownSource::PypiProject { .. }
         | KnownMarkdownSource::GitHubGist { .. }
-        | KnownMarkdownSource::HuggingFaceBlog { .. } => bail!("not a crate README source"),
+        | KnownMarkdownSource::HuggingFaceBlog { .. }
+        | KnownMarkdownSource::HuggingFaceTree { .. } => bail!("not a crate README source"),
     }
 }

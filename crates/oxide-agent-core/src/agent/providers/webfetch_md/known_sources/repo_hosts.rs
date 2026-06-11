@@ -63,10 +63,23 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
             huggingface_resolve_url(&[*owner, *repo], "main", "README.md")?,
             "huggingface_readme_fast_path",
         ),
+        [owner, repo, "tree", revision, path @ ..] if is_huggingface_revision(revision) => {
+            return huggingface_tree_source(url, &[*owner, *repo], revision, path);
+        }
         [kind @ ("datasets" | "spaces"), owner, repo] => (
             huggingface_resolve_url(&[*kind, *owner, *repo], "main", "README.md")?,
             "huggingface_readme_fast_path",
         ),
+        [
+            kind @ ("datasets" | "spaces"),
+            owner,
+            repo,
+            "tree",
+            revision,
+            path @ ..,
+        ] if is_huggingface_revision(revision) => {
+            return huggingface_tree_source(url, &[*kind, *owner, *repo], revision, path);
+        }
         [owner, repo, "blob", branch, path @ ..] if is_readme_path(path) => (
             huggingface_resolve_url(&[*owner, *repo], branch, &path.join("/"))?,
             "huggingface_blob_fast_path",
@@ -100,10 +113,61 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
     ))
 }
 
+fn huggingface_tree_source(
+    url: &Url,
+    prefix: &[&str],
+    revision: &str,
+    path: &[&str],
+) -> Option<KnownMarkdownSource> {
+    if path
+        .iter()
+        .any(|segment| !is_huggingface_tree_path_segment(segment))
+    {
+        return None;
+    }
+    let tree_path = (!path.is_empty()).then(|| path.join("/"));
+    let api_url = huggingface_tree_api_url(url.scheme(), prefix, revision, tree_path.as_deref())?;
+
+    Some(KnownMarkdownSource::huggingface_tree(
+        url_without_fragment(url),
+        api_url,
+        prefix.join("/"),
+        revision.to_string(),
+        tree_path,
+        "huggingface_tree_fast_path",
+    ))
+}
+
 fn huggingface_resolve_url(prefix: &[&str], branch: &str, path: &str) -> Option<Url> {
     let mut resolve = Url::parse("https://huggingface.co").ok()?;
     resolve.set_path(&format!("/{}/resolve/{branch}/{path}", prefix.join("/")));
     Some(resolve)
+}
+
+fn huggingface_tree_api_url(
+    scheme: &str,
+    prefix: &[&str],
+    revision: &str,
+    path: Option<&str>,
+) -> Option<Url> {
+    let api_kind = match prefix {
+        ["datasets", ..] => "datasets",
+        ["spaces", ..] => "spaces",
+        _ => "models",
+    };
+    let repo_id = match prefix {
+        ["datasets" | "spaces", owner, repo] => format!("{owner}/{repo}"),
+        [owner, repo] => format!("{owner}/{repo}"),
+        _ => return None,
+    };
+    let suffix = path
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("/{value}"))
+        .unwrap_or_default();
+    Url::parse(&format!(
+        "{scheme}://huggingface.co/api/{api_kind}/{repo_id}/tree/{revision}{suffix}"
+    ))
+    .ok()
 }
 
 fn url_without_fragment(url: &Url) -> Url {
@@ -126,6 +190,18 @@ fn is_huggingface_blog_slug(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_huggingface_revision(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn is_huggingface_tree_path_segment(value: &str) -> bool {
+    !value.is_empty() && value != "." && value != ".."
 }
 
 fn gitlab_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {

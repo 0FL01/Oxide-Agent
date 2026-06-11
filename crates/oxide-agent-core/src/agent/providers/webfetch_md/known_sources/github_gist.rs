@@ -99,7 +99,8 @@ pub(in crate::agent::providers::webfetch_md) fn gist_parts(
         KnownMarkdownSource::DirectReadme { .. }
         | KnownMarkdownSource::CrateReadme { .. }
         | KnownMarkdownSource::PypiProject { .. }
-        | KnownMarkdownSource::HuggingFaceBlog { .. } => bail!("not a GitHub Gist source"),
+        | KnownMarkdownSource::HuggingFaceBlog { .. }
+        | KnownMarkdownSource::HuggingFaceTree { .. } => bail!("not a GitHub Gist source"),
     }
 }
 
