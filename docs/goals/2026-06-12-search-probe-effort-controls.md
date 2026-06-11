@@ -1,11 +1,11 @@
 # Goal: Search Probe Effort Controls
 
 Date started: 2026-06-12
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-12-search-probe-effort-controls.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-approved plan in chat on 2026-06-12
 Goal doc owner: Codex
-Last updated: 2026-06-12 01:15 +03
+Last updated: 2026-06-12 01:19 +03
 
 ## Objective
 
@@ -109,8 +109,8 @@ Out of scope:
 - V2: Final quality gates pass or blockers are documented
   - Source: repository `AGENTS.md`.
   - Evidence required: `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo fmt --all -- --check` passed; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings` passed.
 
 ## Implementation Plan
 
@@ -204,6 +204,13 @@ Out of scope:
   - Audit IDs updated: G1, G3, G4, Q2, N1, V1 verified.
   - Next: Checkpoint 4 final audit and quality gates.
 
+- 2026-06-12 01:19 +03: Checkpoint 4 completed
+  - Changed: completed final audit and marked the goal complete.
+  - Evidence: all Completion Audit items are verified; final quality gates passed.
+  - Commands: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`.
+  - Audit IDs updated: V2 verified; final verification filled.
+  - Next: no remaining goal checkpoint.
+
 ## Risks and Blockers
 
 - Some providers may reject explicit `reasoning_effort="medium"`.
@@ -214,11 +221,9 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all G*, Q*, N*, and V* items are verified.
+- Commands run: `cargo test -p oxide-agent-core execution_options --lib`; `cargo check -p oxide-agent-core`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo check -p oxide-agent-transport-web`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`.
+- Artifacts inspected: implementation diffs for `crates/oxide-agent-core/src/agent/executor.rs`, `crates/oxide-agent-core/src/agent/executor/tests/basics.rs`, and `crates/oxide-agent-transport-web/src/server/search_probe.rs`; goal document evidence ledger.
+- Remaining gaps: none for this goal. Unsupported-provider fallback, typed runtime search-budget enforcement, and hard-timeout forced-finalize remain explicitly out of scope.
+- User-accepted exceptions: none.
+- Final status: complete.
