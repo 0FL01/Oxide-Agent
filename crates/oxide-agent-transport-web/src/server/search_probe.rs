@@ -767,10 +767,20 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::in_memory_storage::InMemoryStorage;
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMessageAttachment;
     use oxide_agent_core::config::AgentSettings;
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    use oxide_agent_core::config::ModelInfo;
     use oxide_agent_core::llm::LlmClient;
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    use oxide_agent_core::llm::{
+        ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage,
+    };
     use oxide_agent_runtime::SessionRegistry;
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
@@ -790,6 +800,67 @@ mod tests {
     ];
 
     struct EnvGuard(MutexGuard<'static, ()>);
+
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    struct SequencedTestProvider {
+        responses: tokio::sync::Mutex<VecDeque<ChatResponse>>,
+    }
+
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    impl SequencedTestProvider {
+        fn new(responses: Vec<ChatResponse>) -> Self {
+            Self {
+                responses: tokio::sync::Mutex::new(responses.into()),
+            }
+        }
+    }
+
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[async_trait]
+    impl LlmProvider for SequencedTestProvider {
+        async fn complete_internal_text(
+            &self,
+            _system_prompt: &str,
+            _history: &[Message],
+            _user_message: &str,
+            _model_id: &str,
+            _max_tokens: u32,
+        ) -> Result<String, LlmError> {
+            Ok("test internal summary".to_string())
+        }
+
+        async fn chat_with_tools<'a>(
+            &self,
+            _request: ChatWithToolsRequest<'a>,
+        ) -> Result<ChatResponse, LlmError> {
+            self.responses
+                .lock()
+                .await
+                .pop_front()
+                .ok_or_else(|| LlmError::ApiError("No test response available".to_string()))
+        }
+
+        async fn transcribe_audio(
+            &self,
+            _audio_bytes: Vec<u8>,
+            _mime_type: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown("transcribe not implemented".to_string()))
+        }
+
+        async fn analyze_image(
+            &self,
+            _image_bytes: Vec<u8>,
+            _text_prompt: &str,
+            _system_prompt: &str,
+            _model_id: &str,
+        ) -> Result<String, LlmError> {
+            Err(LlmError::Unknown(
+                "analyze_image not implemented".to_string(),
+            ))
+        }
+    }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
@@ -843,6 +914,60 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    fn test_session_manager_with_responses(responses: Vec<ChatResponse>) -> WebSessionManager {
+        let model_id = "opencode-go/deepseek-v4-flash".to_string();
+        let settings = Arc::new(AgentSettings {
+            agent_model_id: Some(model_id.clone()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            agent_model_routes: Some(vec![ModelInfo {
+                id: model_id,
+                provider: "opencode-go".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]),
+            agent_timeout_secs: Some(5),
+            ..AgentSettings::default()
+        });
+        let scripted = Arc::new(SequencedTestProvider::new(responses));
+        let mut llm = LlmClient::new(settings.as_ref());
+        llm.register_provider("opencode_go".to_string(), scripted.clone());
+        llm.register_provider("opencode-go".to_string(), scripted.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), scripted);
+
+        WebSessionManager::new_with_storage(
+            SessionRegistry::new(),
+            Arc::new(llm),
+            settings,
+            Arc::new(InMemoryStorage::new()),
+        )
+    }
+
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    fn structured_final_answer_response(final_answer: &str) -> ChatResponse {
+        ChatResponse {
+            content: Some(
+                serde_json::json!({
+                    "thought": "done",
+                    "tool_call": null,
+                    "final_answer": final_answer,
+                    "awaiting_user_input": null,
+                })
+                .to_string(),
+            ),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..TokenUsage::default()
+            }),
+        }
+    }
+
     async fn create_parent_session(session_manager: &WebSessionManager) {
         session_manager
             .create_session_with_id(
@@ -868,6 +993,36 @@ mod tests {
             handoff: handoff.to_owned(),
             decision,
         }
+    }
+
+    async fn collect_probe_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await
+        {
+            events.push(event);
+        }
+        events
+    }
+
+    fn milestone_names(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Milestone { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    fn reasoning_summaries(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Reasoning { summary, .. } => Some(summary.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -991,6 +1146,122 @@ mod tests {
         assert_eq!(request_content(&result), "resume prompt");
         assert!(outcome.handoffs.is_empty());
         assert!(!outcome.cancelled);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    async fn enabled_probe_runs_generations_emits_events_and_injects_dossier() {
+        let session_manager = test_session_manager_with_responses(vec![
+            structured_final_answer_response(
+                r#"<search_probe_public_update>
+TL;DR: first pass found source shape.
+</search_probe_public_update>
+<search_probe_handoff>
+generation one handoff with source leads
+</search_probe_handoff>
+<search_probe_decision>
+continue
+</search_probe_decision>"#,
+            ),
+            structured_final_answer_response(
+                r#"<search_probe_public_update>
+TL;DR: second pass has enough context.
+</search_probe_public_update>
+<search_probe_handoff>
+generation two final synthesis
+</search_probe_handoff>
+<search_probe_decision>
+stop
+</search_probe_decision>"#,
+            ),
+        ]);
+        create_parent_session(&session_manager).await;
+        let config = SearchProbeConfig {
+            enabled: true,
+            max_generations: 3,
+            per_generation_timeout_secs: 5,
+            total_timeout_secs: 10,
+            forward_tool_events: false,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(32);
+
+        let (result, outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("original prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        assert!(!outcome.cancelled);
+        assert_eq!(outcome.handoffs.len(), 2);
+        assert!(matches!(result, TaskRunRequest::Execute { .. }));
+        assert!(request_content(&result).starts_with("original prompt\n\n<search_probe_dossier>"));
+        assert!(request_content(&result).contains("generation one handoff with source leads"));
+        assert!(request_content(&result).contains("generation two final synthesis"));
+        assert!(
+            request_content(&result).contains("<final_synthesis>\ngeneration two final synthesis")
+        );
+
+        let milestones = milestone_names(&events);
+        assert!(milestones.contains(&"search_probe_started".to_string()));
+        assert!(milestones.contains(&"search_probe_generation_1_started".to_string()));
+        assert!(milestones.contains(&"search_probe_generation_1_completed".to_string()));
+        assert!(milestones.contains(&"search_probe_generation_2_started".to_string()));
+        assert!(milestones.contains(&"search_probe_generation_2_completed".to_string()));
+        assert!(milestones.contains(&"search_probe_completed".to_string()));
+
+        let reasoning = reasoning_summaries(&events);
+        assert!(
+            reasoning
+                .iter()
+                .any(|summary| summary.contains("Search Probe: TL;DR: first pass"))
+        );
+        assert!(
+            reasoning
+                .iter()
+                .any(|summary| summary.contains("Search Probe: TL;DR: second pass"))
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_probe_generation_failure_leaves_input_unchanged() {
+        let session_manager = test_session_manager();
+        create_parent_session(&session_manager).await;
+        let config = SearchProbeConfig {
+            enabled: true,
+            max_generations: 2,
+            per_generation_timeout_secs: 5,
+            total_timeout_secs: 10,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(16);
+
+        let (result, outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("original prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        assert!(!outcome.cancelled);
+        assert!(outcome.handoffs.is_empty());
+        assert_eq!(request_content(&result), "original prompt");
+
+        let milestones = milestone_names(&events);
+        assert!(milestones.contains(&"search_probe_started".to_string()));
+        assert!(milestones.contains(&"search_probe_generation_1_started".to_string()));
+        assert!(milestones.contains(&"search_probe_completed".to_string()));
     }
 
     #[test]

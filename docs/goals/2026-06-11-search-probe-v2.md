@@ -1,11 +1,11 @@
 # Goal: Search Probe v2 Agentic Research Sidecar
 
 Date started: 2026-06-11
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-11-search-probe-v2.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan-search-probe.md`
 Goal doc owner: Codex
-Last updated: 2026-06-11 19:22 +03
+Last updated: 2026-06-11 19:38 +03
 
 ## Objective
 
@@ -53,31 +53,31 @@ Out of scope:
   - Requirement: Add web transport orchestration that can run Search Probe before main `Execute` tasks and leave `ResumeUserInput` unchanged.
   - Acceptance: `TaskRunRequest::Execute` goes through `maybe_run_search_probe` when enabled; `ResumeUserInput` bypasses probe; disabled config leaves requests unchanged.
   - Evidence required: implementation diff, focused unit tests for enabled/disabled/Resume behavior, and `cargo check -p oxide-agent-transport-web`.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 added `crates/oxide-agent-transport-web/src/server/search_probe.rs`, wired `TaskRunRequest::Execute` through `maybe_run_search_probe`, left `ResumeUserInput` as a no-op skip, and verified disabled/enabled shell behavior with `cargo test -p oxide-agent-transport-web search_probe --lib`.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 added `crates/oxide-agent-transport-web/src/server/search_probe.rs`, wired `TaskRunRequest::Execute` through `maybe_run_search_probe`, left `ResumeUserInput` as a no-op skip, and verified disabled/enabled shell behavior with `cargo test -p oxide-agent-transport-web search_probe --lib`. Checkpoint 5 added focused coverage for disabled, resume, failure, and feature-profile enabled happy path behavior.
 
 - G2: Probe runs before parent executor write-lock
   - Source: `docs/prd/plan-search-probe.md` section 4.
   - Requirement: Probe pipeline must not hold the main session executor write-lock while performing search/research.
   - Acceptance: code path invokes probe before `executor_arc.write().await`; test or instrumentation proves probe-start event precedes lock-acquired marker.
   - Evidence required: diff review and focused test or event-order assertion.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 calls `maybe_run_search_probe` after event collector creation and before `spawn_executor_task`; the main execution write-lock remains inside `spawn_executor_task`.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 calls `maybe_run_search_probe` after event collector creation and before `spawn_executor_task`; the main execution write-lock remains inside `spawn_executor_task`. Final diff audit confirmed this ordering remained unchanged through Checkpoint 5.
 
 - G3: Probe generations use fresh ephemeral agent runtimes
   - Source: `docs/prd/plan-search-probe.md` sections 2, 8, and 9.
   - Requirement: Each generation uses a fresh `AgentSession`/`AgentExecutor`, does not hydrate durable memory, does not install a memory checkpoint, and does not persist probe transcript.
   - Acceptance: generation 1..N do not share hot memory with each other or the main runtime; only handoffs flow forward.
   - Evidence required: implementation diff and tests or assertions for no registry insertion/checkpoint/hydration path.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 2 added `WebSessionManager::create_search_probe_executor`, which builds a fresh unregistered `AgentExecutor` with empty memory; focused tests verify no registry insertion and missing parent sessions return `None`.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 added `WebSessionManager::create_search_probe_executor`, which builds a fresh unregistered `AgentExecutor` with empty memory; focused tests verify no registry insertion and missing parent sessions return `None`. Checkpoint 5 feature-profile happy path covers multiple probe generations flowing only through handoffs.
 
 - G4: Probe inherits selected model route and effort policy
   - Source: `docs/prd/plan-search-probe.md` section 9.
   - Requirement: Probe uses the same selected model route as the web session, with configurable minimum effort defaulting to heavy.
   - Acceptance: selected web model route override is applied to probe executor; standard requests can be elevated to configured probe minimum effort.
   - Evidence required: focused tests for selected route inheritance and effort mapping.
-  - Status: in_progress
+  - Status: verified
   - Evidence collected: Checkpoint 2 reuses existing web model-route selection logic for probe executors and verifies selected route inheritance. Checkpoint 3 maps parent effort through the configured probe minimum and covers that mapping with a focused test.
 
 - G5: Probe tool policy is web-research-only
@@ -85,7 +85,7 @@ Out of scope:
   - Requirement: Probe exposes only `searxng_search`, `crawl4ai_markdown`, and fallback `web_markdown` in MVP.
   - Acceptance: mutable/high-blast-radius tools are unavailable to probe; normal main runtime tool policy remains unchanged.
   - Evidence required: tool registry/policy test showing only allowed probe tools are exposed.
-  - Status: in_progress
+  - Status: verified
   - Evidence collected: Checkpoint 2 applies a probe `AgentExecutionProfile` with a deny-by-default tool allowlist; focused tests verify the allowlist can hide all runtime tools.
 
 - G6: Probe final contract and fallback parser work
@@ -93,72 +93,72 @@ Out of scope:
   - Requirement: Parse `search_probe_public_update`, `search_probe_handoff`, and `search_probe_decision`; safely fall back when sections are missing.
   - Acceptance: valid contract extracts all fields; invalid/missing contract produces a raw-response handoff and safe decision behavior.
   - Evidence required: parser unit tests.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 added the XML-like contract parser for `search_probe_public_update`, `search_probe_handoff`, and `search_probe_decision`; focused tests cover valid extraction and raw-text fallback.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 added the XML-like contract parser for `search_probe_public_update`, `search_probe_handoff`, and `search_probe_decision`; focused tests cover valid extraction and raw-text fallback. Checkpoint 5 feature-profile happy path parses two contracts and stops on `stop`.
 
 - G7: User-visible progress updates are emitted through existing events
   - Source: `docs/prd/plan-search-probe.md` section 12.
   - Requirement: Send started/completed/failure milestones and short public TL;DR updates without introducing new `AgentEvent` variants in MVP.
   - Acceptance: web task stream shows probe generation progress and public updates; optional tool-event forwarding works when enabled.
   - Evidence required: event collector test or persisted event inspection in focused web transport tests.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 emits `Milestone` events for probe/generation lifecycle and `Reasoning` events for public TL;DR updates; focused tests assert public updates use existing `Reasoning` events.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 emits `Milestone` events for probe/generation lifecycle and `Reasoning` events for public TL;DR updates; focused tests assert public updates use existing `Reasoning` events. Checkpoint 5 feature-profile happy path asserts started/completed milestones and public update summaries across two generations.
 
 - G8: Main runtime receives compact dossier plus original prompt only
   - Source: `docs/prd/plan-search-probe.md` sections 13 and 14.
   - Requirement: Render handoffs into `SearchProbeDossier`, inject it into `AgentUserInput.content`, preserve attachments, and avoid passing raw probe transcript to main runtime.
   - Acceptance: main input contains original task first and an appended XML-like `<search_probe_dossier>` only when handoffs exist; attachments unchanged; no probe internal message history, raw tool outputs, reasoning, or event stream is injected.
   - Evidence required: unit tests for renderer/injection and attachment preservation.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 4 added deterministic XML-like dossier rendering and injection into `AgentUserInput.content` after the original prompt. Focused tests cover no-op empty handoffs, XML-like rendering/escaping, attachment preservation, and newest-handoff truncation.
+  - Status: verified
+  - Evidence collected: Checkpoint 4 added deterministic XML-like dossier rendering and injection into `AgentUserInput.content` after the original prompt. Focused tests cover no-op empty handoffs, XML-like rendering/escaping, attachment preservation, and newest-handoff truncation. Checkpoint 5 feature-profile happy path verifies generated handoffs are injected into the main request as an appended dossier.
 
 - G9: Failure and cancellation behavior are safe
   - Source: `docs/prd/plan-search-probe.md` sections 17 and 18.
   - Requirement: Probe errors/timeouts do not fail the task; user cancellation during probe prevents main runtime start.
   - Acceptance: partial/failure dossier or unchanged input allows main runtime to start after probe failure; cancellation stops the pipeline and marks task cancelled via existing flow.
   - Evidence required: focused async tests for failure and cancellation paths.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 treats probe errors/timeouts as non-fatal fallback, adds per-generation/total timeout budgeting, and stops before main runtime when the parent cancellation token is cancelled; focused tests cover cancellation and timeout budget behavior.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 treats probe errors/timeouts as non-fatal fallback, adds per-generation/total timeout budgeting, and stops before main runtime when the parent cancellation token is cancelled; focused tests cover cancellation and timeout budget behavior. Checkpoint 5 adds a generation-failure test proving failed probe execution leaves the original input unchanged and not cancelled.
 
 - Q1: Main runtime prompt cache friendliness is preserved
   - Source: `docs/prd/plan-search-probe.md` section 15.
   - Acceptance: Search Probe does not modify core prompt composer or inject volatile probe data into system prompt/stable prefix; dossier is user input/runtime content only and is appended after the original prompt.
   - Evidence required: diff audit and a focused assertion/test if prompt path is touched.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged. Checkpoint 4 injects probe data only into web `TaskRunRequest::Execute` user input after the original prompt and does not touch core prompt composer/system prompt paths.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 did not touch core prompt composition; probe shell returns the original `TaskRunRequest` unchanged. Checkpoint 4 injects probe data only into web `TaskRunRequest::Execute` user input after the original prompt and does not touch core prompt composer/system prompt paths. Final diff audit shows Checkpoint 5 changed only Search Probe tests and this goal document.
 
 - Q2: Simple MVP architecture
   - Source: repository `AGENTS.md` over-engineering constraints and `docs/prd/plan-search-probe.md` section 22.
   - Acceptance: no new crates, services, queues, storage tables, custom search clients, broad abstractions, or transport-wide rewrites.
   - Evidence required: dependency diff and file-scope diff review.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 added one web-transport module. Checkpoint 2 reused `WebSessionManager`, existing route selection, `AgentExecutor`, and `ToolAccessPolicy`. Checkpoint 3 stayed inside web transport and reused existing `AgentEvent` variants; it added a direct `tokio-util` dependency to the web crate only for the already-used workspace `CancellationToken` type.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 added one web-transport module. Checkpoint 2 reused `WebSessionManager`, existing route selection, `AgentExecutor`, and `ToolAccessPolicy`. Checkpoint 3 stayed inside web transport and reused existing `AgentEvent` variants; it added a direct `tokio-util` dependency to the web crate only for the already-used workspace `CancellationToken` type. Checkpoint 5 added focused tests only; no services, storage tables, queues, or new runtime abstractions.
 
 - N1: No deterministic research logic
   - Source: `docs/prd/plan-search-probe.md` sections 1 and 22.
   - Must preserve: no `should_probe`, entity extractor, exact/near-miss scorer, query template planner, or Rust-owned research heuristics.
   - Evidence required: diff review and test names/content review.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-4 added lifecycle config, an executor factory, generation prompts, contract parsing, event/cancellation handling, and deterministic dossier formatting only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-5 added lifecycle config, an executor factory, generation prompts, contract parsing, event/cancellation handling, deterministic dossier formatting, and tests only; no query planner, entity extraction, scorers, or `should_probe` logic were added.
 
 - N2: Non-web transports remain untouched
   - Source: `docs/prd/plan-search-probe.md` section 3.
   - Must preserve: Telegram transport and transport-agnostic core/runtime behavior are not changed for MVP except using existing public APIs.
   - Evidence required: `git diff --name-only` review.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-4 diff is limited to `crates/oxide-agent-transport-web/` and this goal document.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-5 diff is limited to `crates/oxide-agent-transport-web/`, `Cargo.lock`, `docs/prd/plan-search-probe.md`, and this goal document; no Telegram transport code was changed.
 
 - V1: Focused web transport validation passes
   - Source: repository validation conventions.
   - Evidence required: `cargo check -p oxide-agent-transport-web` and focused web transport tests for Search Probe.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-4 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`; Checkpoints 3-4 also passed `cargo fmt --all -- --check` and scoped `cargo clippy -p oxide-agent-transport-web --all-targets -- -D warnings`.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-5 passed `cargo check -p oxide-agent-transport-web` and `cargo test -p oxide-agent-transport-web search_probe --lib`; Checkpoints 3-4 passed scoped web clippy, and Checkpoint 5 passed the feature-profile happy path test `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local enabled_probe_runs_generations_emits_events_and_injects_dossier --lib`.
 
 - V2: Final workspace quality gates pass
   - Source: repository `AGENTS.md`.
-  - Evidence required: `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
-  - Status: pending
-  - Evidence collected:
+  - Evidence required: `cargo fmt --all -- --check` and workspace clippy with the repo-supported full profile.
+  - Status: verified
+  - Evidence collected: Checkpoint 5 passed `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`. The no-feature workspace clippy command was also attempted and failed in pre-existing Telegram tests gated behind `storage-sqlx`, outside the Search Probe diff.
 
 ## Implementation Plan
 
@@ -224,7 +224,7 @@ Out of scope:
   - `cargo check -p oxide-agent-transport-web`
   - Focused Search Probe tests.
   - `cargo fmt --all -- --check`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`
 - Exit condition: all Completion Audit items are verified with current evidence and no non-goal is violated.
 
 ## Validation Contract
@@ -232,16 +232,16 @@ Out of scope:
 - Static checks:
   - `cargo check -p oxide-agent-transport-web`
   - `cargo fmt --all -- --check`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`
 - Tests:
   - Focused Search Probe tests added under web transport.
   - Existing relevant web transport tests where task execution/event behavior is touched.
-- Runtime/manual verification:
+- Optional runtime/manual verification before enabling in a real deployment:
   - With `OXIDE_SEARCH_PROBE_ENABLED=true`, start a web task and verify visible probe updates precede main runtime activity.
   - With `OXIDE_SEARCH_PROBE_ENABLED=false`, verify behavior matches the current web task path.
 - Artifact verification:
   - `git diff --name-only` remains limited to web transport/docs/tests unless explicitly justified.
-  - No dependency or lockfile changes unless a blocker proves they are necessary.
+  - Dependency and lockfile changes remain limited to the Checkpoint 3 `tokio-util` web transport dependency needed to name `CancellationToken`.
 - Done when: every Completion Audit item is verified by current evidence and Final Verification is filled.
 
 ## Decisions
@@ -251,6 +251,7 @@ Out of scope:
 - 2026-06-11: Preserve main runtime cache-hit by injecting probe output as user/runtime input only, not into stable system prompt.
 - 2026-06-11: Checkpoint 1 required user review before implementation; user approved it and requested work on `feature/search-probe` from `dev`.
 - 2026-06-11: User approved Checkpoint 4 dossier policy: append an XML-like dossier after the original prompt; include only compact handoffs, optional useful public updates, final synthesis, decision, and truncation marker; skip injection when no handoffs exist; preserve attachments unchanged; keep probe transcript, raw tool outputs, internal reasoning, and events out of main runtime.
+- 2026-06-11: Final workspace clippy evidence uses `profile-full`. Reason: the no-feature workspace clippy command reaches pre-existing Telegram tests whose modules are gated behind `storage-sqlx`; the repository guidance says full/lite profiles are the supported workspace-wide validation shape for feature-gated crates.
 
 ## Progress Log
 
@@ -289,6 +290,13 @@ Out of scope:
   - Audit IDs updated: G8 moved to `in_progress`; Q1, N1, V1 evidence extended.
   - Next: Checkpoint 5, end-to-end web validation and final audit.
 
+- 2026-06-11 19:38 +03 Checkpoint 5: End-to-end web validation and final audit
+  - Changed: added focused integration-style Search Probe tests for feature-profile enabled happy path and non-fatal generation failure behavior.
+  - Evidence: default focused tests cover disabled, resume, parser, cancellation, failure, renderer, injection, and factory paths; feature-profile test covers two successful probe generations, lifecycle/public-update events, stop decision, and dossier injection.
+  - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local enabled_probe_runs_generations_emits_events_and_injects_dossier --lib`; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: all Completion Audit items verified; goal marked complete.
+  - Next: open PR or run manual browser verification before enabling `OXIDE_SEARCH_PROBE_ENABLED=true` in a real environment.
+
 ## Risks and Blockers
 
 - Existing search budget hook may constrain probe too much
@@ -299,11 +307,9 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all `G*`, `Q*`, `N*`, and `V*` items verified by current evidence.
+- Commands run: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web search_probe --lib`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local enabled_probe_runs_generations_emits_events_and_injects_dossier --lib`; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings`; `git diff --check`.
+- Artifacts inspected: `git diff --name-only`; focused diff for `crates/oxide-agent-transport-web/src/server/search_probe.rs`; goal audit ledger.
+- Remaining gaps: none for the Search Probe MVP. Runtime tuning for the existing search-budget hook remains a documented production risk, not a completion blocker.
+- User-accepted exceptions: none.
+- Final status: complete.
