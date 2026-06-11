@@ -69,9 +69,11 @@ impl WebFetchMdProvider {
                 Ok(markdown) => {
                     let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
                     let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
-                    return Ok(format!(
-                        "## Web Markdown\n\nURL: {}\nContent-Type: text/plain\nFetched-Bytes: 0\nTruncated: {}\n\n{}",
-                        url, truncated_label, truncated.text
+                    return Ok(format_web_markdown_output(
+                        &[("URL", url.as_str()), ("Content-Type", "text/plain")],
+                        Some(0),
+                        truncated_label,
+                        &truncated.text,
                     ));
                 }
                 Err(error) => {
@@ -101,13 +103,14 @@ impl WebFetchMdProvider {
         let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
         let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
 
-        Ok(format!(
-            "## Web Markdown\n\nURL: {}\nContent-Type: {}\nFetched-Bytes: {}\nTruncated: {}\n\n{}",
-            fetched.final_url,
-            display_content_type(&fetched.content_type),
-            fetched.bytes_read,
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
             truncated_label,
-            truncated.text
+            &truncated.text,
         ))
     }
 
@@ -150,15 +153,16 @@ impl WebFetchMdProvider {
         let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
         let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
 
-        Ok(format!(
-            "## Web Markdown\n\nURL: {}\nSource-URL: {}\nMode: {}\nContent-Type: {}\nFetched-Bytes: {}\nTruncated: {}\n\n{}",
-            fetched.final_url,
-            source.source_url(),
-            source.mode(),
-            display_content_type(&fetched.content_type),
-            fetched.bytes_read,
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source.source_url().as_str()),
+                ("Mode", source.mode()),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
             truncated_label,
-            truncated.text
+            &truncated.text,
         ))
     }
 
@@ -344,6 +348,31 @@ impl WebFetchMdProvider {
             text,
         })
     }
+}
+
+fn format_web_markdown_output(
+    metadata: &[(&str, &str)],
+    fetched_bytes: Option<usize>,
+    truncated: &str,
+    markdown: &str,
+) -> String {
+    let mut output = String::from("## Web Markdown\n\n");
+    for (key, value) in metadata {
+        output.push_str(key);
+        output.push_str(": ");
+        output.push_str(value);
+        output.push('\n');
+    }
+    if let Some(bytes) = fetched_bytes {
+        output.push_str("Fetched-Bytes: ");
+        output.push_str(&bytes.to_string());
+        output.push('\n');
+    }
+    output.push_str("Truncated: ");
+    output.push_str(truncated);
+    output.push_str("\n\n### Content\n\n");
+    output.push_str(markdown);
+    output
 }
 
 async fn read_limited_body(

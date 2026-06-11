@@ -104,7 +104,7 @@ pub(in crate::agent::providers::webfetch_md) fn render_project(
         output.push_str(project_url);
     }
 
-    output.push_str("\n\n");
+    output.push_str("\n\n### Content\n\n");
     output.push_str(description);
     output
 }

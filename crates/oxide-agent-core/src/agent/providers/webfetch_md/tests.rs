@@ -155,7 +155,10 @@ async fn typed_runtime_executor_fetches_web_markdown() {
 
     assert_eq!(output.status, ToolOutputStatus::Success);
     let stdout = output.stdout.text.as_deref().expect("stdout text");
+    assert!(stdout.starts_with("## Web Markdown"));
     assert!(stdout.contains("URL: http://example.test/article"));
+    assert!(stdout.contains("Fetched-Bytes:"));
+    assert!(stdout.contains("### Content"));
     assert!(stdout.contains("# Hello"));
     assert!(stdout.contains("Readable page."));
 }

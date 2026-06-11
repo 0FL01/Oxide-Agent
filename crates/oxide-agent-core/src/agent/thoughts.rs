@@ -19,6 +19,7 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("duckduckgo_search", "Searching the web: {query}"),
     ("duckduckgo_news", "Searching news: {query}"),
     ("searxng_search", "Searching the web: {query}"),
+    ("web_markdown", "Opening web page as markdown: {url}"),
     (
         "crawl4ai_markdown",
         "Opening page with browser rendering: {url}",
@@ -253,6 +254,15 @@ mod tests {
         assert_eq!(
             thought,
             Some("Searching news: rust async programming".to_string())
+        );
+    }
+
+    #[test]
+    fn test_infer_thought_web_markdown() {
+        let thought = infer_thought("web_markdown", r#"{"url": "https://example.com/docs"}"#);
+        assert_eq!(
+            thought,
+            Some("Opening web page as markdown: example.com".to_string())
         );
     }
 

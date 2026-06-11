@@ -64,7 +64,7 @@ pub(in crate::agent::providers::webfetch_md) fn render_readme(
     readme: &str,
 ) -> String {
     format!(
-        "## Web Markdown\n\nURL: {final_url}\nSource-URL: {source_url}\nMode: {mode}\nCrate: {crate_name}\nVersion: {version}\nContent-Type: {content_type}\nFetched-Bytes: {bytes_read}\nTruncated: {truncated}\n\n{readme}"
+        "## Web Markdown\n\nURL: {final_url}\nSource-URL: {source_url}\nMode: {mode}\nCrate: {crate_name}\nVersion: {version}\nContent-Type: {content_type}\nFetched-Bytes: {bytes_read}\nTruncated: {truncated}\n\n### Content\n\n{readme}"
     )
 }
 

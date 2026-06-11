@@ -321,6 +321,8 @@ fn chars_label(count: u64) -> String {
 #[derive(Clone, Default)]
 struct WebMarkdownOutput {
     url: Option<String>,
+    source_url: Option<String>,
+    mode: Option<String>,
     content_type: Option<String>,
     fetched_bytes: Option<u64>,
     truncated: bool,
@@ -341,6 +343,8 @@ fn parse_web_markdown_stdout(text: &str) -> Option<WebMarkdownOutput> {
 
         match key.trim() {
             "URL" if !value.is_empty() => parsed.url = Some(value.to_string()),
+            "Source-URL" if !value.is_empty() => parsed.source_url = Some(value.to_string()),
+            "Mode" if !value.is_empty() => parsed.mode = Some(value.to_string()),
             "Content-Type" if !value.is_empty() => parsed.content_type = Some(value.to_string()),
             "Fetched-Bytes" => parsed.fetched_bytes = value.parse::<u64>().ok(),
             "Truncated" => {
@@ -352,6 +356,7 @@ fn parse_web_markdown_stdout(text: &str) -> Option<WebMarkdownOutput> {
         }
     }
 
+    let body = body.strip_prefix("### Content\n\n").unwrap_or(body);
     if !body.is_empty() {
         parsed.markdown = Some(body.to_string());
     }
@@ -388,6 +393,8 @@ fn WebMarkdownToolCard(
     let content_type = web_markdown
         .as_ref()
         .and_then(|doc| doc.content_type.clone());
+    let source_url = web_markdown.as_ref().and_then(|doc| doc.source_url.clone());
+    let mode = web_markdown.as_ref().and_then(|doc| doc.mode.clone());
     let fetched_bytes = web_markdown.as_ref().and_then(|doc| doc.fetched_bytes);
     let truncated = web_markdown
         .as_ref()
@@ -437,6 +444,8 @@ fn WebMarkdownToolCard(
         {preview_text.map(tool_preview)}
         <ToolDetails open=default_open>
             {url.clone().map(|u| tool_query_row("URL", u))}
+            {source_url.map(|u| tool_query_row("Source URL", u))}
+            {mode.map(|value| tool_query_row("Mode", value))}
             {content_type.map(|value| tool_query_row("Content-Type", value))}
             {fetched_bytes.map(|bytes| tool_query_row("Fetched", format!("{bytes} bytes")))}
             {parsed_header.then(|| {
@@ -489,12 +498,13 @@ fn CrawlToolCard(
         .cloned();
     let crawl = crawl_from_stdout.or(crawl_from_display);
     let show_raw_stdout_fallback = success && crawl.is_none();
-    let url: Option<String> = crawl.as_ref().and_then(|v| {
-        v.get("final_url")
-            .or_else(|| v.get("url"))
-            .and_then(Value::as_str)
-            .map(String::from)
-    });
+    let requested_url: Option<String> = crawl
+        .as_ref()
+        .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from));
+    let final_url: Option<String> = crawl
+        .as_ref()
+        .and_then(|v| v.get("final_url").and_then(Value::as_str).map(String::from));
+    let url: Option<String> = final_url.clone().or_else(|| requested_url.clone());
     let markdown: Option<String> = crawl
         .as_ref()
         .and_then(|v| v.get("markdown").and_then(Value::as_str).map(String::from));
@@ -588,6 +598,9 @@ fn CrawlToolCard(
     if let Some(chars) = chars_display {
         header_metas.push(tool_meta(chars));
     }
+    if success && let Some(code) = status_code {
+        header_metas.push(tool_meta(format!("status {code}")));
+    }
     if truncated {
         header_metas.push(tool_meta("truncated"));
     }
@@ -599,7 +612,10 @@ fn CrawlToolCard(
         {tool_card_header(icon, "Crawl", header_metas)}
         {preview_text.map(tool_preview)}
         <ToolDetails open=default_open>
-            {url.clone().map(|u| tool_query_row("URL", u))}
+            {requested_url.clone().map(|u| tool_query_row("URL", u))}
+            {final_url
+                .filter(|final_url| requested_url.as_deref() != Some(final_url.as_str()))
+                .map(|u| tool_query_row("Final URL", u))}
             {status_code.map(|code| tool_query_row("Status", code.to_string()))}
             {markdown_kind.map(|kind| tool_query_row("Markdown", kind))}
             {fresh.map(|fresh| tool_query_row("Fresh", if fresh { "yes" } else { "no" }.to_string()))}
