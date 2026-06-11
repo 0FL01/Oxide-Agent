@@ -23,6 +23,12 @@ struct FetchResult {
     text: String,
 }
 
+pub(super) struct KnownMarkdownSource {
+    pub source_url: Url,
+    pub fetch_url: Url,
+    pub mode: &'static str,
+}
+
 impl WebFetchMdProvider {
     pub(super) async fn fetch_markdown(
         &self,
@@ -37,6 +43,24 @@ impl WebFetchMdProvider {
             .timeout_secs
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
+
+        if let Some(source) = known_markdown_source(&url) {
+            match self
+                .fetch_known_markdown(&source, timeout_secs, cancellation_token)
+                .await
+            {
+                Ok(output) => return Ok(output),
+                Err(error) => {
+                    tracing::warn!(
+                        url = url.as_str(),
+                        fetch_url = source.fetch_url.as_str(),
+                        mode = source.mode,
+                        error = %error,
+                        "known markdown fast-path failed, trying normal fetch"
+                    );
+                }
+            }
+        }
 
         // Reddit thread shortcut: fetch Atom RSS feed directly instead of
         // hitting the HTML page (which is typically blocked by anti-bot).
@@ -83,6 +107,43 @@ impl WebFetchMdProvider {
         Ok(format!(
             "## Web Markdown\n\nURL: {}\nContent-Type: {}\nFetched-Bytes: {}\nTruncated: {}\n\n{}",
             fetched.final_url,
+            display_content_type(&fetched.content_type),
+            fetched.bytes_read,
+            truncated_label,
+            truncated.text
+        ))
+    }
+
+    /// Fetch known Markdown sources directly, without fetching their HTML shell.
+    async fn fetch_known_markdown(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        reject_unsafe_url(&source.fetch_url)?;
+
+        let fetched = self
+            .fetch_text(source.fetch_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("known markdown fetch failed")?;
+
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = if is_html_content_type(&fetched.content_type) {
+            html_to_markdown(&fetched.text)?
+        } else {
+            fetched.text
+        };
+
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(format!(
+            "## Web Markdown\n\nURL: {}\nSource-URL: {}\nMode: {}\nContent-Type: {}\nFetched-Bytes: {}\nTruncated: {}\n\n{}",
+            fetched.final_url,
+            source.source_url,
+            source.mode,
             display_content_type(&fetched.content_type),
             fetched.bytes_read,
             truncated_label,
@@ -194,6 +255,97 @@ impl WebFetchMdProvider {
             text,
         })
     }
+}
+
+pub(super) fn known_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    match host.as_str() {
+        "github.com" => github_markdown_source(url),
+        "huggingface.co" => huggingface_markdown_source(url),
+        _ => None,
+    }
+}
+
+fn github_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let (fetch_url, mode) = match segments.as_slice() {
+        [owner, repo] => (
+            github_raw_url(owner, repo, "HEAD", "README.md")?,
+            "github_readme_fast_path",
+        ),
+        [owner, repo, "blob", branch, path @ ..] if is_readme_path(path) => (
+            github_raw_url(owner, repo, branch, &path.join("/"))?,
+            "github_blob_fast_path",
+        ),
+        _ => return None,
+    };
+
+    Some(KnownMarkdownSource {
+        source_url: url.clone(),
+        fetch_url,
+        mode,
+    })
+}
+
+fn github_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> Option<Url> {
+    let mut raw = Url::parse("https://raw.githubusercontent.com").ok()?;
+    raw.set_path(&format!("/{owner}/{repo}/{branch}/{path}"));
+    Some(raw)
+}
+
+fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let (fetch_url, mode) = match segments.as_slice() {
+        [owner, repo] => (
+            huggingface_resolve_url(&[*owner, *repo], "main", "README.md")?,
+            "huggingface_readme_fast_path",
+        ),
+        [kind @ ("datasets" | "spaces"), owner, repo] => (
+            huggingface_resolve_url(&[*kind, *owner, *repo], "main", "README.md")?,
+            "huggingface_readme_fast_path",
+        ),
+        [owner, repo, "blob", branch, path @ ..] if is_readme_path(path) => (
+            huggingface_resolve_url(&[*owner, *repo], branch, &path.join("/"))?,
+            "huggingface_blob_fast_path",
+        ),
+        [
+            kind @ ("datasets" | "spaces"),
+            owner,
+            repo,
+            "blob",
+            branch,
+            path @ ..,
+        ] if is_readme_path(path) => (
+            huggingface_resolve_url(&[*kind, *owner, *repo], branch, &path.join("/"))?,
+            "huggingface_blob_fast_path",
+        ),
+        _ => return None,
+    };
+
+    Some(KnownMarkdownSource {
+        source_url: url.clone(),
+        fetch_url,
+        mode,
+    })
+}
+
+fn huggingface_resolve_url(prefix: &[&str], branch: &str, path: &str) -> Option<Url> {
+    let mut resolve = Url::parse("https://huggingface.co").ok()?;
+    resolve.set_path(&format!("/{}/resolve/{branch}/{path}", prefix.join("/")));
+    Some(resolve)
+}
+
+fn is_readme_path(path: &[&str]) -> bool {
+    path.last()
+        .is_some_and(|file_name| file_name.eq_ignore_ascii_case("README.md"))
 }
 
 async fn read_limited_body(

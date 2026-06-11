@@ -252,7 +252,12 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Use `web_extract` to read result URLs when snippets are insufficient.".to_string(),
             );
         }
-        if has_tool(&tool_names, "crawl4ai_markdown") {
+        if has_tool(&tool_names, "web_markdown") && has_tool(&tool_names, "crawl4ai_markdown") {
+            lines.push(
+                "Use `web_markdown` first for Reddit threads, GitHub/HuggingFace README pages, Markdown files, and simple static pages; use `crawl4ai_markdown` for pages needing browser rendering, JavaScript, or overlay/consent handling."
+                    .to_string(),
+            );
+        } else if has_tool(&tool_names, "crawl4ai_markdown") {
             lines.push(
                 "Prefer `crawl4ai_markdown` after search when you need to read a specific result URL as Markdown, especially pages needing browser rendering, JavaScript, or overlay/consent handling."
                     .to_string(),
