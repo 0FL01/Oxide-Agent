@@ -1,3 +1,5 @@
+#![cfg(feature = "storage-sqlx")]
+
 use async_trait::async_trait;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::agent::providers::{

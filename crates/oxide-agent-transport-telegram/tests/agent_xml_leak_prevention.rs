@@ -112,7 +112,7 @@ mod integration_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage-sqlx"))]
 mod progress_integration_tests {
     use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
     use oxide_agent_transport_telegram::bot::progress_render::render_progress_html;
