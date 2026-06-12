@@ -502,7 +502,8 @@ impl WebFetchMdProvider {
     ) -> Result<String> {
         let KnownMarkdownSource::HabrArticle {
             source_url,
-            fetch_url,
+            api_url,
+            fallback_url,
             article_id,
             lang,
             company,
@@ -512,13 +513,105 @@ impl WebFetchMdProvider {
             bail!("not a Habr article source");
         };
 
-        let fetched = self
-            .fetch_text(fetch_url.clone(), timeout_secs, cancellation_token)
+        match self
+            .fetch_habr_article_json(
+                source_url,
+                api_url,
+                article_id,
+                lang,
+                company,
+                mode,
+                timeout_secs,
+                output_window,
+                cancellation_token,
+            )
             .await
-            .context("Habr article fetch failed")?;
+        {
+            Ok(output) => Ok(output),
+            Err(error) => {
+                tracing::warn!(
+                    url = source_url.as_str(),
+                    api_url = api_url.as_str(),
+                    error = %error,
+                    "Habr article JSON fast-path failed, trying article HTML fallback"
+                );
+                self.fetch_habr_article_html_fallback(
+                    source_url,
+                    fallback_url,
+                    article_id,
+                    lang,
+                    company,
+                    timeout_secs,
+                    output_window,
+                    cancellation_token,
+                )
+                .await
+                .context("Habr article HTML fallback failed")
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_habr_article_json(
+        &self,
+        source_url: &Url,
+        api_url: &Url,
+        article_id: &str,
+        lang: &str,
+        company: &Option<String>,
+        mode: &'static str,
+        timeout_secs: u64,
+        output_window: OutputWindow,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let fetched = self
+            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("Habr article API fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = render_habr_article_json(&fetched.text, article_id)?;
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
+
+        let mut metadata = vec![
+            ("URL", fetched.final_url.as_str()),
+            ("Source-URL", source_url.as_str()),
+            ("Mode", mode),
+            ("Habr-Article-ID", article_id),
+            ("Habr-Lang", lang),
+        ];
+        if let Some(company) = company {
+            metadata.push(("Habr-Company", company.as_str()));
+        }
+        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+
+        Ok(format_web_markdown_output(
+            &metadata,
+            Some(fetched.bytes_read),
+            output_window,
+            &windowed,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_habr_article_html_fallback(
+        &self,
+        source_url: &Url,
+        fallback_url: &Url,
+        article_id: &str,
+        lang: &str,
+        company: &Option<String>,
+        timeout_secs: u64,
+        output_window: OutputWindow,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let fetched = self
+            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("Habr article page fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
         if !is_html_content_type(&fetched.content_type) {
-            bail!("Habr article returned non-HTML content");
+            bail!("Habr article page returned non-HTML content");
         }
 
         let article_html = extract_habr_article_html(&fetched.text)?;
@@ -528,9 +621,9 @@ impl WebFetchMdProvider {
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
             ("Source-URL", source_url.as_str()),
-            ("Mode", *mode),
-            ("Habr-Article-ID", article_id.as_str()),
-            ("Habr-Lang", lang.as_str()),
+            ("Mode", "habr_article_html_fallback"),
+            ("Habr-Article-ID", article_id),
+            ("Habr-Lang", lang),
         ];
         if let Some(company) = company {
             metadata.push(("Habr-Company", company.as_str()));
@@ -1004,6 +1097,90 @@ fn extract_habr_comments_html(html: &str) -> Result<&str> {
     Ok(&html[start..end])
 }
 
+fn render_habr_article_json(article_json: &str, article_id: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(article_json).context("invalid Habr article JSON")?;
+    let returned_id = habr_json_string_or_number(value.get("id"))
+        .filter(|value| value == article_id)
+        .context("Habr article JSON did not include matching article id")?;
+
+    let mut output = String::new();
+    let title = value
+        .get("titleHtml")
+        .and_then(Value::as_str)
+        .map(html_to_markdown)
+        .transpose()?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("Habr article {returned_id}"));
+    output.push_str("# ");
+    output.push_str(&title);
+    output.push_str("\n\n");
+
+    output.push_str("Article ID: ");
+    output.push_str(&returned_id);
+    output.push('\n');
+    if let Some(published) = value.get("timePublished").and_then(Value::as_str) {
+        output.push_str("Published: ");
+        output.push_str(published);
+        output.push('\n');
+    }
+    if let Some(reading_time) = habr_json_string_or_number(value.get("readingTime")) {
+        output.push_str("Reading time: ");
+        output.push_str(&reading_time);
+        output.push_str(" min\n");
+    }
+    if let Some(author) = habr_article_author(&value) {
+        output.push_str("Author: ");
+        output.push_str(&author);
+        output.push('\n');
+    }
+    if let Some(hubs) = habr_named_items(&value, "hubs")? {
+        output.push_str("Hubs: ");
+        output.push_str(&hubs);
+        output.push('\n');
+    }
+    if let Some(tags) = habr_named_items(&value, "tags")? {
+        output.push_str("Tags: ");
+        output.push_str(&tags);
+        output.push('\n');
+    }
+    if let Some(comments_count) = value
+        .get("statistics")
+        .and_then(|statistics| habr_json_string_or_number(statistics.get("commentsCount")))
+    {
+        output.push_str("Comments: ");
+        output.push_str(&comments_count);
+        output.push('\n');
+    }
+
+    if let Some(lead_html) = value
+        .get("leadData")
+        .and_then(|lead| lead.get("textHtml"))
+        .and_then(Value::as_str)
+    {
+        let lead = html_to_markdown(lead_html)?.trim().to_string();
+        if !lead.is_empty() {
+            output.push_str("\n## Lead\n\n");
+            output.push_str(&lead);
+            output.push('\n');
+        }
+    }
+
+    let article_html = value
+        .get("textHtml")
+        .and_then(Value::as_str)
+        .context("Habr article JSON did not include textHtml")?;
+    let article = html_to_markdown(article_html)?.trim().to_string();
+    if article.is_empty() {
+        bail!("Habr article JSON textHtml was empty");
+    }
+    output.push_str("\n## Article\n\n");
+    output.push_str(&article);
+    output.push('\n');
+
+    Ok(output)
+}
+
 fn render_habr_comments_json(comments_json: &str, article_id: &str) -> Result<String> {
     let value: Value = serde_json::from_str(comments_json).context("invalid Habr comments JSON")?;
     let comments = value
@@ -1094,6 +1271,15 @@ fn habr_comment_sort_key(comment: &Value) -> String {
 
 fn habr_comment_author(comment: &Value) -> Option<String> {
     let author = comment.get("author")?;
+    habr_author_name(author)
+}
+
+fn habr_article_author(article: &Value) -> Option<String> {
+    let author = article.get("author")?;
+    habr_author_name(author)
+}
+
+fn habr_author_name(author: &Value) -> Option<String> {
     author
         .get("alias")
         .and_then(Value::as_str)
@@ -1105,6 +1291,33 @@ fn habr_comment_author(comment: &Value) -> Option<String> {
                 .filter(|value| !value.is_empty())
         })
         .map(str::to_string)
+}
+
+fn habr_named_items(value: &Value, field: &str) -> Result<Option<String>> {
+    let Some(items) = value.get(field).and_then(Value::as_array) else {
+        return Ok(None);
+    };
+
+    let mut names = Vec::new();
+    for item in items {
+        let Some(raw_name) = item
+            .get("titleHtml")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("title").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let name = html_to_markdown(raw_name)?.trim().to_string();
+        if !name.is_empty() {
+            names.push(name);
+        }
+    }
+
+    if names.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(names.join(", ")))
+    }
 }
 
 fn habr_json_string_or_number(value: Option<&Value>) -> Option<String> {

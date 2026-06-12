@@ -35,6 +35,7 @@ pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
 
     Some(KnownMarkdownSource::habr_article(
         url.clone(),
+        habr_article_api_url(url.scheme(), parsed.lang, parsed.article_id)?,
         normalized_habr_url(
             url,
             parsed.lang,
@@ -46,7 +47,7 @@ pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
         parsed.article_id.to_string(),
         parsed.lang.to_string(),
         parsed.company.map(str::to_string),
-        "habr_article_fast_path",
+        "habr_article_json_fast_path",
     ))
 }
 
@@ -165,6 +166,13 @@ fn normalized_habr_url(
 fn habr_comments_api_url(scheme: &str, lang: &str, article_id: &str) -> Option<Url> {
     Url::parse(&format!(
         "{scheme}://habr.com/kek/v2/articles/{article_id}/comments/?fl={lang}&hl={lang}"
+    ))
+    .ok()
+}
+
+fn habr_article_api_url(scheme: &str, lang: &str, article_id: &str) -> Option<Url> {
+    Url::parse(&format!(
+        "{scheme}://habr.com/kek/v2/articles/{article_id}/?fl={lang}&hl={lang}"
     ))
     .ok()
 }

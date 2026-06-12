@@ -57,7 +57,8 @@ pub(super) enum KnownMarkdownSource {
     },
     HabrArticle {
         source_url: Url,
-        fetch_url: Url,
+        api_url: Url,
+        fallback_url: Url,
         article_id: String,
         lang: String,
         company: Option<String>,
@@ -175,7 +176,8 @@ impl KnownMarkdownSource {
 
     pub(super) fn habr_article(
         source_url: Url,
-        fetch_url: Url,
+        api_url: Url,
+        fallback_url: Url,
         article_id: String,
         lang: String,
         company: Option<String>,
@@ -183,7 +185,8 @@ impl KnownMarkdownSource {
     ) -> Self {
         Self::HabrArticle {
             source_url,
-            fetch_url,
+            api_url,
+            fallback_url,
             article_id,
             lang,
             company,
@@ -234,7 +237,7 @@ impl KnownMarkdownSource {
             Self::GitHubGist { api_url, .. } => api_url,
             Self::HuggingFaceBlog { fetch_url, .. } => fetch_url,
             Self::HuggingFaceTree { api_url, .. } => api_url,
-            Self::HabrArticle { fetch_url, .. } => fetch_url,
+            Self::HabrArticle { api_url, .. } => api_url,
             Self::HabrComments { api_url, .. } => api_url,
         }
     }
