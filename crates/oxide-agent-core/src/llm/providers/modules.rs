@@ -12,6 +12,7 @@ use crate::llm::LlmProvider;
     feature = "llm-mistral",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -24,6 +25,7 @@ pub(crate) struct LlmProviderBuildContext {
         feature = "llm-mistral",
         feature = "llm-zai",
         feature = "llm-nvidia",
+        feature = "llm-openai-base",
         feature = "llm-opencode-go",
         feature = "llm-openrouter"
     ))]
@@ -38,6 +40,7 @@ impl LlmProviderBuildContext {
                 feature = "llm-mistral",
                 feature = "llm-zai",
                 feature = "llm-nvidia",
+                feature = "llm-openai-base",
                 feature = "llm-opencode-go",
                 feature = "llm-openrouter"
             ))]
@@ -207,6 +210,8 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     modules.push(Box::new(super::zai::ZaiProviderModule));
     #[cfg(feature = "llm-nvidia")]
     modules.push(Box::new(super::nvidia::NvidiaProviderModule));
+    #[cfg(feature = "llm-openai-base")]
+    modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
     #[cfg(feature = "llm-opencode-go")]

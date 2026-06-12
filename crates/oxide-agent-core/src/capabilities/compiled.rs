@@ -148,6 +148,20 @@ const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
         .with_default("https://integrate.api.nvidia.com/v1"),
 ];
 #[allow(dead_code)]
+const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string(
+        "api_key",
+        "Optional bearer token for a generic OpenAI-compatible API.",
+    )
+    .with_env("OPENAI_BASE_API_KEY")
+    .secret(),
+    ModuleConfigProperty::string(
+        "api_base",
+        "Generic OpenAI-compatible API base URL or chat completions endpoint.",
+    )
+    .with_env("OPENAI_BASE_API_BASE"),
+];
+#[allow(dead_code)]
 const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     ModuleConfigProperty::string(
         "api_key",
@@ -359,6 +373,14 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/nvidia"],
         NVIDIA_CONFIG_PROPERTIES
+    );
+    push_module_with_config!(
+        modules,
+        "llm-openai-base",
+        "llm-provider/openai-base",
+        LlmProvider,
+        ["llm-provider/openai-base"],
+        OPENAI_BASE_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

@@ -93,9 +93,6 @@ impl AgentRunner {
     }
 
     fn route_supports_native_image_parts(route: &ModelInfo) -> bool {
-        if !Self::is_opencode_go_provider_name(&route.provider) {
-            return false;
-        }
         crate::llm::provider_media_capabilities_for_model(route).supports_image_understanding
     }
 
@@ -1086,6 +1083,14 @@ mod tests {
         assert_eq!(fileops.read_count(), 0);
         assert!(messages[0].content_parts.is_empty());
         assert_eq!(messages[0].text_projection(), "What is shown in the image?");
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_route_supports_native_image_parts_by_capability() {
+        let route = test_route("openai_base", "local-vision-model");
+
+        assert!(AgentRunner::route_supports_native_image_parts(&route));
     }
 
     #[tokio::test]

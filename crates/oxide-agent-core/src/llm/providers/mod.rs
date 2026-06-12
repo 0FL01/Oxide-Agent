@@ -11,6 +11,9 @@ pub(crate) mod modules;
 #[cfg(feature = "llm-nvidia")]
 pub mod nvidia;
 #[allow(missing_docs)]
+#[cfg(feature = "llm-openai-base")]
+pub mod openai_base;
+#[allow(missing_docs)]
 #[cfg(feature = "llm-opencode-go")]
 pub mod opencode_go;
 #[allow(missing_docs)]
@@ -22,6 +25,7 @@ pub mod openrouter;
     feature = "llm-minimax",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -33,6 +37,7 @@ mod protocol_profiles;
     feature = "llm-minimax",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -44,6 +49,7 @@ mod tool_call_adapter;
     feature = "llm-minimax",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -55,6 +61,7 @@ mod tool_call_encoder;
     feature = "llm-minimax",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -66,6 +73,7 @@ mod tool_correlation;
     feature = "llm-minimax",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -83,6 +91,8 @@ pub use minimax::MiniMaxProvider;
 pub use mistral::MistralProvider;
 #[cfg(feature = "llm-nvidia")]
 pub use nvidia::NvidiaProvider;
+#[cfg(feature = "llm-openai-base")]
+pub use openai_base::OpenAIBaseProvider;
 #[cfg(feature = "llm-opencode-go")]
 pub use opencode_go::OpenCodeGoProvider;
 #[cfg(feature = "llm-openrouter")]

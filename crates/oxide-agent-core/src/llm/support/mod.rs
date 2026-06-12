@@ -7,6 +7,7 @@ pub(crate) mod history;
     feature = "llm-mistral",
     feature = "llm-zai",
     feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]

@@ -83,6 +83,7 @@ profile-full = [
     "llm-minimax",
     "llm-zai",
     "llm-nvidia",
+    "llm-openai-base",
     "llm-opencode-go",
     "llm-openrouter",
     "tool-todos",
@@ -206,6 +207,7 @@ profile-host-bwrap = [
     "storage-sqlx",
     "llm-opencode-go",
     "llm-openrouter",
+    "llm-openai-base",
     "tool-todos",
     "tool-compression",
     "tool-delegation",
@@ -240,6 +242,7 @@ llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]
 llm-zai = ["dep:zai-rs", "dep:reqwest"]
 llm-nvidia = ["dep:reqwest"]
+llm-openai-base = ["dep:reqwest"]
 llm-opencode-go = ["dep:reqwest"]
 llm-openrouter = ["dep:reqwest"]
 
