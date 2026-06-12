@@ -897,7 +897,7 @@ async fn fetches_google_blog_article_fast_path() {
     <section class="article-hero">
       <h1>Diffusion Gemma is here</h1>
     </section>
-    <div class="article-body">
+    <div class="article-body" data-component="uni-article-body">
       <p>Useful Google Blog body.</p>
       <p>Another article paragraph.</p>
     </div>
@@ -927,11 +927,58 @@ async fn fetches_google_blog_article_fast_path() {
     assert!(output.contains("URL: http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/"));
     assert!(output.contains("Source-URL: http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/"));
     assert!(output.contains("Mode: google_blog_html_fast_path"));
-    assert!(output.contains("# Diffusion Gemma is here"));
     assert!(output.contains("Useful Google Blog body."));
     assert!(output.contains("Another article paragraph."));
     assert!(!output.contains("Chrome header"));
     assert!(!output.contains("Footer chrome"));
+}
+
+#[tokio::test]
+async fn google_blog_prefers_body_over_css_marker_and_share_chrome() {
+    let html = r#"<html><head>
+<style>.uni-article-wrapper .article-video-special{padding:0}</style>
+</head><body>
+<main id="jump-content" class="site-content">
+  <article class="uni-article-wrapper">
+    <section class="article-hero">
+      <h1>DiffusionGemma: 4x faster text generation</h1>
+      <div>Share</div><a>x.com</a><a>Facebook</a><a>LinkedIn</a><a>Mail</a>
+    </section>
+    <div class="uni-blog-article-container" data-component="uni-article-body">
+      <div class="module--text"><p>Today, we’re introducing DiffusionGemma.</p></div>
+      <div class="module--text"><p>Useful live article body.</p></div>
+    </div>
+    <div class="uni-blog-article-tags"><span>POSTED IN:</span><a>Developer tools</a></div>
+    <div class="uni-related-articles-cards"><h2>Related stories</h2></div>
+  </article>
+</main>
+</body></html>"#;
+    let addr = serve_http_once(html, "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("blog.google", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string(),
+                timeout_secs: Some(5),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("Google Blog body extraction succeeds");
+
+    assert!(output.contains("Today, we’re introducing DiffusionGemma."));
+    assert!(output.contains("Useful live article body."));
+    assert!(!output.contains("article-video-special"));
+    assert!(!output.contains("Share"));
+    assert!(!output.contains("x.com"));
+    assert!(!output.contains("POSTED IN"));
+    assert!(!output.contains("Related stories"));
 }
 
 #[tokio::test]

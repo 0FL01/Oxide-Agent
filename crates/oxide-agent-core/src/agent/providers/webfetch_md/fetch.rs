@@ -1236,18 +1236,64 @@ fn extract_google_devsite_html(html: &str) -> Result<&str> {
 }
 
 fn extract_google_blog_html(html: &str) -> Result<&str> {
-    if let Some(article) =
-        extract_html_region(html, "uni-article-wrapper", "<article", "</article>")
-    {
-        return Ok(article);
+    if let Some(article_body) = extract_html_region_until_any(
+        html,
+        "data-component=\"uni-article-body\"",
+        "<div",
+        &[
+            "uni-blog-article-tags",
+            "uni-related-articles",
+            "</article>",
+        ],
+    ) {
+        return Ok(article_body);
     }
 
-    if let Some(article_body) = extract_html_region(html, "article-body", "<div", "</article>") {
+    if let Some(article_body) = extract_html_region_until_any(
+        html,
+        "article-body",
+        "<div",
+        &[
+            "uni-blog-article-tags",
+            "uni-related-articles",
+            "</article>",
+        ],
+    ) {
         return Ok(article_body);
+    }
+
+    if let Some(article) = extract_html_region(
+        html,
+        "<article class=\"uni-article-wrapper\"",
+        "<article",
+        "</article>",
+    ) {
+        return Ok(article);
     }
 
     extract_html_region(html, "id=\"jump-content\"", "<main", "</main>")
         .context("Google Blog HTML did not include article content")
+}
+
+fn extract_html_region_until_any<'a>(
+    html: &'a str,
+    marker: &str,
+    start_tag: &str,
+    end_markers: &[&str],
+) -> Option<&'a str> {
+    let marker_index = html.find(marker)?;
+    let start = html[..marker_index]
+        .rfind(start_tag)
+        .unwrap_or(marker_index);
+    let tail = &html[marker_index..];
+    let end = end_markers
+        .iter()
+        .filter_map(|marker| tail.find(marker).map(|offset| marker_index + offset))
+        .min()
+        .or_else(|| tail.find("</body>").map(|offset| marker_index + offset))
+        .unwrap_or(html.len());
+
+    (end > start).then_some(&html[start..end])
 }
 
 fn extract_html_region<'a>(
