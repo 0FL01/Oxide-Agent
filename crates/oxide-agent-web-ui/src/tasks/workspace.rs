@@ -17,7 +17,8 @@ use super::composer::{
     AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, submit_parent_form_on_ctrl_enter,
+    persist_default_effort, submit_parent_form_on_ctrl_enter, task_input_limit_error,
+    task_input_too_long,
 };
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
@@ -216,6 +217,10 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         if !can_submit_input(&text, &files) {
             return;
         }
+        if let Some(message) = task_input_limit_error(&text) {
+            set_error.set(Some(message));
+            return;
+        }
         set_loading.set(true);
         set_error.set(None);
         let agent_profile_selection = agent_profile_selection_from_value(&selected_profile.get());
@@ -344,8 +349,13 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             attachments=pending_files
                             set_attachments=set_pending_files
                         />
+                        {move || {
+                            task_input_limit_error(&input.get()).map(|message| {
+                                view! { <p class="composer-validation error">{message}</p> }
+                            })
+                        }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get())>
+                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) || task_input_too_long(&input.get())>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -384,7 +394,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || !can_submit_input(&input.get(), &pending_files.get())
+                                    disabled=move || loading.get() || !can_submit_input(&input.get(), &pending_files.get()) || task_input_too_long(&input.get())
                                     class="btn-primary"
                                 >
                                     "Send"
@@ -664,6 +674,10 @@ fn SessionWorkspace(
         if !can_submit_input(&text, &files) {
             return;
         }
+        if let Some(message) = task_input_limit_error(&text) {
+            set_error.set(Some(message));
+            return;
+        }
         set_loading.set(true);
         set_error.set(None);
         // Clear stale activity for the new task
@@ -936,8 +950,13 @@ fn SessionWorkspace(
                             attachments=pending_files
                             set_attachments=set_pending_files
                         />
+                        {move || {
+                            task_input_limit_error(&input.get()).map(|message| {
+                                view! { <p class="composer-validation error">{message}</p> }
+                            })
+                        }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) && !is_waiting()>
+                            <div class="composer-actions" class:btn-hidden=move || task_input_too_long(&input.get()) || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -974,7 +993,7 @@ fn SessionWorkspace(
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || is_running() || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                    disabled=move || loading.get() || is_running() || task_input_too_long(&input.get()) || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
                                     class="btn-primary"
                                     style=move || if is_running() { "display:none" } else { "" }
                                 >

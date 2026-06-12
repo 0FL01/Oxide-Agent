@@ -9,6 +9,8 @@ use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
 };
 
+pub(super) const MAX_TASK_INPUT_CHARS: usize = 65_536;
+
 #[derive(Clone)]
 pub(super) struct PendingAttachmentFile {
     id: usize,
@@ -192,6 +194,23 @@ pub(super) fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoV
 
 pub(super) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile]) -> bool {
     !input.trim().is_empty() || !attachments.is_empty()
+}
+
+pub(super) fn task_input_char_count(input: &str) -> usize {
+    input.chars().count()
+}
+
+pub(super) fn task_input_too_long(input: &str) -> bool {
+    task_input_char_count(input) > MAX_TASK_INPUT_CHARS
+}
+
+pub(super) fn task_input_limit_error(input: &str) -> Option<String> {
+    let count = task_input_char_count(input);
+    (count > MAX_TASK_INPUT_CHARS).then(|| {
+        format!(
+            "Message is too large ({count}/{MAX_TASK_INPUT_CHARS} characters). Large-input attachments are not available yet."
+        )
+    })
 }
 
 pub(super) fn handle_composer_drag(
