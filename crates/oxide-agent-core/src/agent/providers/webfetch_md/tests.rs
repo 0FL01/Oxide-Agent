@@ -627,6 +627,195 @@ fn xml_tag_block_extracts_inner_content() {
     assert_eq!(xml_tag_block(input, "content"), Some("hello world"));
 }
 
+// -- Habr fast-path tests --
+
+#[test]
+fn maps_habr_article_urls_to_article_fast_path() {
+    let cases = [
+        (
+            "https://habr.com/ru/articles/911280/",
+            "https://habr.com/ru/articles/911280/",
+            "911280",
+            None,
+        ),
+        (
+            "https://habr.ru/ru/news/1013616/",
+            "https://habr.com/ru/news/1013616/",
+            "1013616",
+            None,
+        ),
+        (
+            "https://habr.com/ru/companies/edison/articles/280434/",
+            "https://habr.com/ru/companies/edison/articles/280434/",
+            "280434",
+            Some("edison"),
+        ),
+    ];
+
+    for (raw, expected_fetch_url, expected_article_id, expected_company) in cases {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("Habr source");
+        let KnownMarkdownSource::HabrArticle {
+            fetch_url,
+            article_id,
+            company,
+            mode,
+            ..
+        } = source
+        else {
+            panic!("expected HabrArticle for {raw}");
+        };
+
+        assert_eq!(fetch_url.as_str(), expected_fetch_url);
+        assert_eq!(article_id, expected_article_id);
+        assert_eq!(company.as_deref(), expected_company);
+        assert_eq!(mode, "habr_article_fast_path");
+    }
+}
+
+#[test]
+fn maps_habr_comments_urls_to_comments_api_fast_path() {
+    let cases = [
+        (
+            "https://habr.com/ru/news/1013616/comments/",
+            "https://habr.com/kek/v2/articles/1013616/comments/?fl=ru&hl=ru",
+            "https://habr.com/ru/news/1013616/comments/",
+        ),
+        (
+            "https://habr.com/en/articles/911280/comments/",
+            "https://habr.com/kek/v2/articles/911280/comments/?fl=en&hl=en",
+            "https://habr.com/en/articles/911280/comments/",
+        ),
+    ];
+
+    for (raw, expected_api_url, expected_fallback_url) in cases {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("Habr source");
+        let KnownMarkdownSource::HabrComments {
+            api_url,
+            fallback_url,
+            mode,
+            ..
+        } = source
+        else {
+            panic!("expected HabrComments for {raw}");
+        };
+
+        assert_eq!(api_url.as_str(), expected_api_url);
+        assert_eq!(fallback_url.as_str(), expected_fallback_url);
+        assert_eq!(mode, "habr_comments_json_fast_path");
+    }
+}
+
+#[tokio::test]
+async fn fetches_habr_article_body_fast_path() {
+    let html = r#"<html><body><header>Chrome</header><main><article>
+<h1>Palantir title</h1>
+<div id="post-content-body"><div><div class="article-formatted-body article-formatted-body_version-2">
+<div xmlns="http://www.w3.org/1999/xhtml"><p>Useful article body.</p></div>
+</div></div></div>
+</article></main><footer>Footer</footer></body></html>"#;
+    let addr = serve_http_once(html, "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("habr.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://habr.com/ru/articles/911280/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("Habr article fast path succeeds");
+
+    assert!(output.contains("Mode: habr_article_fast_path"));
+    assert!(output.contains("Habr-Article-ID: 911280"));
+    assert!(output.contains("Useful article body."));
+    assert!(!output.contains("Chrome"));
+}
+
+#[tokio::test]
+async fn fetches_habr_comments_via_json_api() {
+    let json = r#"{
+  "comments": {
+    "29709472": {
+      "id": "29709472",
+      "parentId": null,
+      "level": 0,
+      "score": 3,
+      "timePublished": "2026-06-12T07:21:25+00:00",
+      "message": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Structured comment body.</p></div>",
+      "author": {"alias": "mrhearthstone", "fullname": ""}
+    }
+  }
+}"#;
+    let addr = serve_http_once(json, "application/json; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("habr.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://habr.com/ru/news/1013616/comments/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("Habr comments JSON fast path succeeds");
+
+    assert!(output.contains("URL: http://habr.com/kek/v2/articles/1013616/comments/?fl=ru&hl=ru"));
+    assert!(output.contains("Source-URL: http://habr.com/ru/news/1013616/comments/"));
+    assert!(output.contains("Mode: habr_comments_json_fast_path"));
+    assert!(output.contains("Habr-Article-ID: 1013616"));
+    assert!(output.contains("Comments: 1"));
+    assert!(output.contains("## Comment 29709472"));
+    assert!(output.contains("Author: mrhearthstone"));
+    assert!(output.contains("Structured comment body."));
+}
+
+#[tokio::test]
+async fn habr_comments_json_failure_falls_back_to_comments_html() {
+    let html = r#"<html><body><main><div class="tm-comments-wrapper">
+<h2>Комментарии <span>1</span></h2>
+<div class="tm-comment"><div class="tm-comment__body-content"><p>Fallback comment body.</p></div></div>
+</div></main></body></html>"#;
+    let addr = serve_http_sequence(vec![
+        ("not json", "application/json; charset=utf-8"),
+        (html, "text/html; charset=utf-8"),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("habr.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://habr.com/ru/articles/911280/comments/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("Habr comments HTML fallback succeeds");
+
+    assert!(output.contains("URL: http://habr.com/ru/articles/911280/comments/"));
+    assert!(output.contains("Mode: habr_comments_html_fallback"));
+    assert!(output.contains("Habr-Article-ID: 911280"));
+    assert!(output.contains("Fallback comment body."));
+}
+
 // -- Known Markdown source tests --
 
 #[test]

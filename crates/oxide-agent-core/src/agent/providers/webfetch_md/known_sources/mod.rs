@@ -1,6 +1,7 @@
 //! Known source fast paths for URLs whose Markdown can be fetched directly.
 
 pub(super) mod github_gist;
+pub(super) mod habr;
 pub(super) mod pypi;
 mod repo_hosts;
 pub(super) mod rust_packages;
@@ -52,6 +53,23 @@ pub(super) enum KnownMarkdownSource {
         repo_id: String,
         revision: String,
         tree_path: Option<String>,
+        mode: &'static str,
+    },
+    HabrArticle {
+        source_url: Url,
+        fetch_url: Url,
+        article_id: String,
+        lang: String,
+        company: Option<String>,
+        mode: &'static str,
+    },
+    HabrComments {
+        source_url: Url,
+        api_url: Url,
+        fallback_url: Url,
+        article_id: String,
+        lang: String,
+        company: Option<String>,
         mode: &'static str,
     },
 }
@@ -155,6 +173,44 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn habr_article(
+        source_url: Url,
+        fetch_url: Url,
+        article_id: String,
+        lang: String,
+        company: Option<String>,
+        mode: &'static str,
+    ) -> Self {
+        Self::HabrArticle {
+            source_url,
+            fetch_url,
+            article_id,
+            lang,
+            company,
+            mode,
+        }
+    }
+
+    pub(super) fn habr_comments(
+        source_url: Url,
+        api_url: Url,
+        fallback_url: Url,
+        article_id: String,
+        lang: String,
+        company: Option<String>,
+        mode: &'static str,
+    ) -> Self {
+        Self::HabrComments {
+            source_url,
+            api_url,
+            fallback_url,
+            article_id,
+            lang,
+            company,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
@@ -164,6 +220,8 @@ impl KnownMarkdownSource {
             Self::GitHubGist { source_url, .. } => source_url,
             Self::HuggingFaceBlog { source_url, .. } => source_url,
             Self::HuggingFaceTree { source_url, .. } => source_url,
+            Self::HabrArticle { source_url, .. } => source_url,
+            Self::HabrComments { source_url, .. } => source_url,
         }
     }
 
@@ -176,6 +234,8 @@ impl KnownMarkdownSource {
             Self::GitHubGist { api_url, .. } => api_url,
             Self::HuggingFaceBlog { fetch_url, .. } => fetch_url,
             Self::HuggingFaceTree { api_url, .. } => api_url,
+            Self::HabrArticle { fetch_url, .. } => fetch_url,
+            Self::HabrComments { api_url, .. } => api_url,
         }
     }
 
@@ -188,12 +248,17 @@ impl KnownMarkdownSource {
             Self::GitHubGist { mode, .. } => mode,
             Self::HuggingFaceBlog { mode, .. } => mode,
             Self::HuggingFaceTree { mode, .. } => mode,
+            Self::HabrArticle { mode, .. } => mode,
+            Self::HabrComments { mode, .. } => mode,
         }
     }
 
     pub(super) fn is_authoritative(&self) -> bool {
         match self {
-            Self::GitHubReadme { .. } | Self::GitHubGist { .. } => true,
+            Self::GitHubReadme { .. }
+            | Self::GitHubGist { .. }
+            | Self::HabrArticle { .. }
+            | Self::HabrComments { .. } => true,
             Self::DirectReadme { mode, .. } => {
                 mode.starts_with("github_") || mode.starts_with("huggingface_")
             }
@@ -207,6 +272,7 @@ impl KnownMarkdownSource {
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
     github_gist::classify(url)
+        .or_else(|| habr::classify(url))
         .or_else(|| repo_hosts::classify(url))
         .or_else(|| rust_packages::classify(url))
         .or_else(|| pypi::classify(url))

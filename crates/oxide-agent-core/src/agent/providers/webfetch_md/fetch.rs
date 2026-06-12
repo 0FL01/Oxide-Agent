@@ -152,6 +152,16 @@ impl WebFetchMdProvider {
                     .fetch_huggingface_tree(source, timeout_secs, cancellation_token)
                     .await;
             }
+            KnownMarkdownSource::HabrArticle { .. } => {
+                return self
+                    .fetch_habr_article(source, timeout_secs, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::HabrComments { .. } => {
+                return self
+                    .fetch_habr_comments(source, timeout_secs, cancellation_token)
+                    .await;
+            }
             KnownMarkdownSource::DirectReadme { .. } => {}
         }
 
@@ -483,6 +493,199 @@ impl WebFetchMdProvider {
         ))
     }
 
+    async fn fetch_habr_article(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::HabrArticle {
+            source_url,
+            fetch_url,
+            article_id,
+            lang,
+            company,
+            mode,
+        } = source
+        else {
+            bail!("not a Habr article source");
+        };
+
+        let fetched = self
+            .fetch_text(fetch_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("Habr article fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+        if !is_html_content_type(&fetched.content_type) {
+            bail!("Habr article returned non-HTML content");
+        }
+
+        let article_html = extract_habr_article_html(&fetched.text)?;
+        let markdown = html_to_markdown(article_html)?;
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        let mut metadata = vec![
+            ("URL", fetched.final_url.as_str()),
+            ("Source-URL", source_url.as_str()),
+            ("Mode", *mode),
+            ("Habr-Article-ID", article_id.as_str()),
+            ("Habr-Lang", lang.as_str()),
+        ];
+        if let Some(company) = company {
+            metadata.push(("Habr-Company", company.as_str()));
+        }
+        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+
+        Ok(format_web_markdown_output(
+            &metadata,
+            Some(fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
+    async fn fetch_habr_comments(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::HabrComments {
+            source_url,
+            api_url,
+            fallback_url,
+            article_id,
+            lang,
+            company,
+            mode,
+        } = source
+        else {
+            bail!("not a Habr comments source");
+        };
+
+        match self
+            .fetch_habr_comments_json(
+                source_url,
+                api_url,
+                article_id,
+                lang,
+                company,
+                mode,
+                timeout_secs,
+                cancellation_token,
+            )
+            .await
+        {
+            Ok(output) => Ok(output),
+            Err(error) => {
+                tracing::warn!(
+                    url = source_url.as_str(),
+                    api_url = api_url.as_str(),
+                    error = %error,
+                    "Habr comments JSON fast-path failed, trying comments HTML fallback"
+                );
+                self.fetch_habr_comments_html_fallback(
+                    source_url,
+                    fallback_url,
+                    article_id,
+                    lang,
+                    company,
+                    timeout_secs,
+                    cancellation_token,
+                )
+                .await
+                .context("Habr comments HTML fallback failed")
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_habr_comments_json(
+        &self,
+        source_url: &Url,
+        api_url: &Url,
+        article_id: &str,
+        lang: &str,
+        company: &Option<String>,
+        mode: &'static str,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let fetched = self
+            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("Habr comments API fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = render_habr_comments_json(&fetched.text, article_id)?;
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        let mut metadata = vec![
+            ("URL", fetched.final_url.as_str()),
+            ("Source-URL", source_url.as_str()),
+            ("Mode", mode),
+            ("Habr-Article-ID", article_id),
+            ("Habr-Lang", lang),
+        ];
+        if let Some(company) = company {
+            metadata.push(("Habr-Company", company.as_str()));
+        }
+        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+
+        Ok(format_web_markdown_output(
+            &metadata,
+            Some(fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
+    async fn fetch_habr_comments_html_fallback(
+        &self,
+        source_url: &Url,
+        fallback_url: &Url,
+        article_id: &str,
+        lang: &str,
+        company: &Option<String>,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let fetched = self
+            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("Habr comments page fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+        if !is_html_content_type(&fetched.content_type) {
+            bail!("Habr comments page returned non-HTML content");
+        }
+
+        let comments_html = extract_habr_comments_html(&fetched.text)?;
+        let markdown = html_to_markdown(comments_html)?;
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        let mut metadata = vec![
+            ("URL", fetched.final_url.as_str()),
+            ("Source-URL", source_url.as_str()),
+            ("Mode", "habr_comments_html_fallback"),
+            ("Habr-Article-ID", article_id),
+            ("Habr-Lang", lang),
+        ];
+        if let Some(company) = company {
+            metadata.push(("Habr-Company", company.as_str()));
+        }
+        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+
+        Ok(format_web_markdown_output(
+            &metadata,
+            Some(fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
     /// Fetch a Reddit thread via its Atom RSS feed and render as Markdown.
     async fn fetch_reddit_rss(
         &self,
@@ -723,6 +926,159 @@ fn extract_huggingface_blog_html(html: &str) -> Result<&str> {
         bail!("HuggingFace Blog HTML did not include a usable article body");
     }
     Ok(&html[start..end])
+}
+
+fn extract_habr_article_html(html: &str) -> Result<&str> {
+    let marker = html
+        .find("article-formatted-body")
+        .or_else(|| html.find("post-content-body"))
+        .context("Habr article HTML did not include article body")?;
+    let start = html[..marker].rfind("<div").unwrap_or(marker);
+    let tail = &html[marker..];
+    let end = tail
+        .find("</article>")
+        .map(|offset| marker + offset)
+        .or_else(|| {
+            tail.find("tm-article-presenter__meta")
+                .map(|offset| marker + offset)
+        })
+        .or_else(|| tail.find("</main>").map(|offset| marker + offset))
+        .or_else(|| tail.find("</body>").map(|offset| marker + offset))
+        .unwrap_or(html.len());
+
+    if end <= start {
+        bail!("Habr article HTML did not include a usable article body");
+    }
+    Ok(&html[start..end])
+}
+
+fn extract_habr_comments_html(html: &str) -> Result<&str> {
+    let marker = html
+        .find("tm-comments-wrapper")
+        .context("Habr comments HTML did not include comments wrapper")?;
+    let start = html[..marker].rfind("<div").unwrap_or(marker);
+    let tail = &html[marker..];
+    let end = tail
+        .find("</main>")
+        .map(|offset| marker + offset)
+        .or_else(|| tail.find("</body>").map(|offset| marker + offset))
+        .unwrap_or(html.len());
+
+    if end <= start {
+        bail!("Habr comments HTML did not include a usable comments body");
+    }
+    Ok(&html[start..end])
+}
+
+fn render_habr_comments_json(comments_json: &str, article_id: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(comments_json).context("invalid Habr comments JSON")?;
+    let comments = value
+        .get("comments")
+        .context("Habr comments JSON did not include comments")?;
+
+    let mut entries = match comments {
+        Value::Array(items) => items.iter().collect::<Vec<_>>(),
+        Value::Object(map) => map.values().collect::<Vec<_>>(),
+        _ => bail!("Habr comments JSON comments field was not an array or object"),
+    };
+
+    entries.sort_by(|left, right| {
+        let left_key = habr_comment_sort_key(left);
+        let right_key = habr_comment_sort_key(right);
+        left_key.cmp(&right_key)
+    });
+
+    let mut output = String::new();
+    output.push_str("# Habr comments for article ");
+    output.push_str(article_id);
+    output.push_str("\n\nComments: ");
+    output.push_str(&entries.len().to_string());
+    output.push_str("\n\n");
+
+    if entries.is_empty() {
+        output.push_str("_No comments returned._");
+        return Ok(output);
+    }
+
+    for entry in entries {
+        let comment_id =
+            habr_json_string_or_number(entry.get("id")).unwrap_or_else(|| "unknown".to_string());
+        output.push_str("## Comment ");
+        output.push_str(&comment_id);
+        output.push_str("\n\n");
+
+        if let Some(author) = habr_comment_author(entry) {
+            output.push_str("Author: ");
+            output.push_str(&author);
+            output.push('\n');
+        }
+        if let Some(parent_id) = habr_json_string_or_number(entry.get("parentId")) {
+            output.push_str("Parent: ");
+            output.push_str(&parent_id);
+            output.push('\n');
+        }
+        if let Some(level) = habr_json_string_or_number(entry.get("level")) {
+            output.push_str("Level: ");
+            output.push_str(&level);
+            output.push('\n');
+        }
+        if let Some(score) = habr_json_string_or_number(entry.get("score")) {
+            output.push_str("Score: ");
+            output.push_str(&score);
+            output.push('\n');
+        }
+        if let Some(published) = entry.get("timePublished").and_then(Value::as_str) {
+            output.push_str("Published: ");
+            output.push_str(published);
+            output.push('\n');
+        }
+
+        let message_html = entry
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let message = html_to_markdown(message_html)?.trim().to_string();
+        if !message.is_empty() {
+            output.push('\n');
+            output.push_str(&message);
+            output.push('\n');
+        }
+        output.push('\n');
+    }
+
+    Ok(output)
+}
+
+fn habr_comment_sort_key(comment: &Value) -> String {
+    comment
+        .get("timePublished")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| habr_json_string_or_number(comment.get("id")))
+        .unwrap_or_default()
+}
+
+fn habr_comment_author(comment: &Value) -> Option<String> {
+    let author = comment.get("author")?;
+    author
+        .get("alias")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            author
+                .get("fullname")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .map(str::to_string)
+}
+
+fn habr_json_string_or_number(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(value) if !value.is_empty() => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn render_huggingface_tree_json(
