@@ -185,6 +185,7 @@ pub(in crate::agent::providers::webfetch_md) fn crate_readme_parts(
         | KnownMarkdownSource::HuggingFaceTree { .. }
         | KnownMarkdownSource::HabrArticle { .. }
         | KnownMarkdownSource::HabrComments { .. }
-        | KnownMarkdownSource::GoogleDevSite { .. } => bail!("not a crate README source"),
+        | KnownMarkdownSource::GoogleDevSite { .. }
+        | KnownMarkdownSource::GoogleBlog { .. } => bail!("not a crate README source"),
     }
 }

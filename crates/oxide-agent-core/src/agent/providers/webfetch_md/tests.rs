@@ -864,6 +864,103 @@ async fn google_devsite_404_is_not_reported_as_redirect_loop() {
     assert!(!error.contains("302"));
 }
 
+// -- Google Blog fast-path tests --
+
+#[test]
+fn maps_google_blog_urls_to_html_fast_path() {
+    let raw = "https://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/";
+    let url = Url::parse(raw).expect("url");
+    let source = classify_known_source(&url).expect("Google Blog source");
+    let KnownMarkdownSource::GoogleBlog {
+        source_url,
+        fetch_url,
+        mode,
+    } = source
+    else {
+        panic!("expected GoogleBlog for {raw}");
+    };
+
+    assert_eq!(source_url.as_str(), raw);
+    assert_eq!(fetch_url.as_str(), raw);
+    assert_eq!(mode, "google_blog_html_fast_path");
+
+    let root_url = Url::parse("https://blog.google/").expect("url");
+    assert!(classify_known_source(&root_url).is_none());
+}
+
+#[tokio::test]
+async fn fetches_google_blog_article_fast_path() {
+    let html = r#"<html><body>
+<header>Chrome header</header>
+<main id="jump-content" class="site-content">
+  <article class="uni-article-wrapper">
+    <section class="article-hero">
+      <h1>Diffusion Gemma is here</h1>
+    </section>
+    <div class="article-body">
+      <p>Useful Google Blog body.</p>
+      <p>Another article paragraph.</p>
+    </div>
+  </article>
+</main>
+<footer>Footer chrome</footer>
+</body></html>"#;
+    let addr = serve_http_once(html, "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("blog.google", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string(),
+                timeout_secs: Some(5),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("Google Blog fast path succeeds");
+
+    assert!(output.contains("URL: http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/"));
+    assert!(output.contains("Source-URL: http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/"));
+    assert!(output.contains("Mode: google_blog_html_fast_path"));
+    assert!(output.contains("# Diffusion Gemma is here"));
+    assert!(output.contains("Useful Google Blog body."));
+    assert!(output.contains("Another article paragraph."));
+    assert!(!output.contains("Chrome header"));
+    assert!(!output.contains("Footer chrome"));
+}
+
+#[tokio::test]
+async fn google_blog_without_article_body_returns_clear_error() {
+    let html = r#"<html><body><main><h1>No article layout</h1></main></body></html>"#;
+    let addr = serve_http_once(html, "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("blog.google", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://blog.google/innovation-and-ai/example/".to_string(),
+                timeout_secs: Some(5),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("Google Blog without article markers fails clearly");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("known markdown fast-path failed"));
+    assert!(error.contains("Google Blog HTML did not include article content"));
+}
+
 // -- Habr fast-path tests --
 
 #[test]

@@ -105,7 +105,8 @@ pub(in crate::agent::providers::webfetch_md) fn gist_parts(
         | KnownMarkdownSource::HuggingFaceTree { .. }
         | KnownMarkdownSource::HabrArticle { .. }
         | KnownMarkdownSource::HabrComments { .. }
-        | KnownMarkdownSource::GoogleDevSite { .. } => bail!("not a GitHub Gist source"),
+        | KnownMarkdownSource::GoogleDevSite { .. }
+        | KnownMarkdownSource::GoogleBlog { .. } => bail!("not a GitHub Gist source"),
     }
 }
 

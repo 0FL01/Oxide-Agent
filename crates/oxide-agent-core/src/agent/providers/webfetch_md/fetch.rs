@@ -168,6 +168,11 @@ impl WebFetchMdProvider {
                     .fetch_google_devsite(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
+            KnownMarkdownSource::GoogleBlog { .. } => {
+                return self
+                    .fetch_google_blog(source, timeout_secs, output_window, cancellation_token)
+                    .await;
+            }
             KnownMarkdownSource::DirectReadme { .. } => {}
         }
 
@@ -881,6 +886,53 @@ impl WebFetchMdProvider {
         ))
     }
 
+    async fn fetch_google_blog(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        output_window: OutputWindow,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::GoogleBlog {
+            source_url,
+            fetch_url,
+            mode,
+        } = source
+        else {
+            bail!("not a Google Blog source");
+        };
+
+        let fetched = self
+            .fetch_text_with_user_agent(
+                fetch_url.clone(),
+                timeout_secs,
+                cancellation_token,
+                SIMPLE_BOT_USER_AGENT,
+            )
+            .await
+            .context("Google Blog fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+        if !is_html_content_type(&fetched.content_type) {
+            bail!("Google Blog returned non-HTML content");
+        }
+
+        let article_html = extract_google_blog_html(&fetched.text)?;
+        let markdown = html_to_markdown(article_html)?;
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
+
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
+            output_window,
+            &windowed,
+        ))
+    }
+
     async fn fetch_text(
         &self,
         url: Url,
@@ -1181,6 +1233,21 @@ fn extract_google_devsite_html(html: &str) -> Result<&str> {
     extract_html_region(html, "id=\"main-content\"", "<main", "</main>")
         .or_else(|| extract_html_region(html, "devsite-main-content", "<main", "</main>"))
         .context("Google DevSite HTML did not include main article content")
+}
+
+fn extract_google_blog_html(html: &str) -> Result<&str> {
+    if let Some(article) =
+        extract_html_region(html, "uni-article-wrapper", "<article", "</article>")
+    {
+        return Ok(article);
+    }
+
+    if let Some(article_body) = extract_html_region(html, "article-body", "<div", "</article>") {
+        return Ok(article_body);
+    }
+
+    extract_html_region(html, "id=\"jump-content\"", "<main", "</main>")
+        .context("Google Blog HTML did not include article content")
 }
 
 fn extract_html_region<'a>(

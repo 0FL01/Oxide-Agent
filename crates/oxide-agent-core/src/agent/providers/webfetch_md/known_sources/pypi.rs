@@ -146,7 +146,8 @@ pub(in crate::agent::providers::webfetch_md) fn pypi_project_parts(
         | KnownMarkdownSource::HuggingFaceTree { .. }
         | KnownMarkdownSource::HabrArticle { .. }
         | KnownMarkdownSource::HabrComments { .. }
-        | KnownMarkdownSource::GoogleDevSite { .. } => bail!("not a PyPI project source"),
+        | KnownMarkdownSource::GoogleDevSite { .. }
+        | KnownMarkdownSource::GoogleBlog { .. } => bail!("not a PyPI project source"),
     }
 }
 
