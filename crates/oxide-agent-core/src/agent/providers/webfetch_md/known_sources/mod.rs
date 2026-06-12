@@ -1,6 +1,7 @@
 //! Known source fast paths for URLs whose Markdown can be fetched directly.
 
 pub(super) mod github_gist;
+pub(super) mod google_devsite;
 pub(super) mod habr;
 pub(super) mod pypi;
 mod repo_hosts;
@@ -71,6 +72,11 @@ pub(super) enum KnownMarkdownSource {
         article_id: String,
         lang: String,
         company: Option<String>,
+        mode: &'static str,
+    },
+    GoogleDevSite {
+        source_url: Url,
+        fetch_url: Url,
         mode: &'static str,
     },
 }
@@ -214,6 +220,14 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn google_devsite(source_url: Url, fetch_url: Url, mode: &'static str) -> Self {
+        Self::GoogleDevSite {
+            source_url,
+            fetch_url,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
@@ -225,6 +239,7 @@ impl KnownMarkdownSource {
             Self::HuggingFaceTree { source_url, .. } => source_url,
             Self::HabrArticle { source_url, .. } => source_url,
             Self::HabrComments { source_url, .. } => source_url,
+            Self::GoogleDevSite { source_url, .. } => source_url,
         }
     }
 
@@ -239,6 +254,7 @@ impl KnownMarkdownSource {
             Self::HuggingFaceTree { api_url, .. } => api_url,
             Self::HabrArticle { api_url, .. } => api_url,
             Self::HabrComments { api_url, .. } => api_url,
+            Self::GoogleDevSite { fetch_url, .. } => fetch_url,
         }
     }
 
@@ -253,6 +269,7 @@ impl KnownMarkdownSource {
             Self::HuggingFaceTree { mode, .. } => mode,
             Self::HabrArticle { mode, .. } => mode,
             Self::HabrComments { mode, .. } => mode,
+            Self::GoogleDevSite { mode, .. } => mode,
         }
     }
 
@@ -261,7 +278,8 @@ impl KnownMarkdownSource {
             Self::GitHubReadme { .. }
             | Self::GitHubGist { .. }
             | Self::HabrArticle { .. }
-            | Self::HabrComments { .. } => true,
+            | Self::HabrComments { .. }
+            | Self::GoogleDevSite { .. } => true,
             Self::DirectReadme { mode, .. } => {
                 mode.starts_with("github_") || mode.starts_with("huggingface_")
             }
@@ -275,6 +293,7 @@ impl KnownMarkdownSource {
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
     github_gist::classify(url)
+        .or_else(|| google_devsite::classify(url))
         .or_else(|| habr::classify(url))
         .or_else(|| repo_hosts::classify(url))
         .or_else(|| rust_packages::classify(url))

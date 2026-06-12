@@ -36,6 +36,7 @@ const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+const SIMPLE_BOT_USER_AGENT: &str = "oxide-agent-webfetch/0.1";
 const ANTI_BOT_ERROR: &str = "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA challenges";
 
 /// Local provider for fetching a single URL as Markdown.

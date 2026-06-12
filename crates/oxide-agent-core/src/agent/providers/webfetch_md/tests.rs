@@ -121,6 +121,43 @@ async fn serve_http_status_once(
     addr
 }
 
+async fn serve_devsite_user_agent_once(body: &'static str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local test server");
+    let addr = listener.local_addr().expect("local address");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).await.expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+
+        let response = if request.contains("user-agent: oxide-agent-webfetch/0.1") {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        } else {
+            "HTTP/1.1 302 Found\r\nLocation: /oauth2authorize\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+        };
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write response");
+    });
+    addr
+}
+
 async fn serve_http_sequence(responses: Vec<(&'static str, &'static str)>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -715,6 +752,116 @@ fn xml_tag_text_decodes_html_entities() {
 fn xml_tag_block_extracts_inner_content() {
     let input = "<content type=\"html\">hello world</content>";
     assert_eq!(xml_tag_block(input, "content"), Some("hello world"));
+}
+
+// -- Google DevSite fast-path tests --
+
+#[test]
+fn maps_google_devsite_urls_to_html_fast_path() {
+    let cases = [
+        "https://ai.google.dev/gemma/docs/core",
+        "https://developers.google.com/search/docs/fundamentals/seo-starter-guide",
+        "https://developer.android.com/develop",
+        "https://firebase.google.com/docs",
+        "https://docs.cloud.google.com/docs",
+        "https://cloud.google.com/docs",
+    ];
+
+    for raw in cases {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("Google DevSite source");
+        let KnownMarkdownSource::GoogleDevSite {
+            source_url,
+            fetch_url,
+            mode,
+        } = source
+        else {
+            panic!("expected GoogleDevSite for {raw}");
+        };
+
+        assert_eq!(source_url.as_str(), raw);
+        assert_eq!(fetch_url.as_str(), raw);
+        assert_eq!(mode, "google_devsite_html_fast_path");
+    }
+
+    let url = Url::parse("https://cloud.google.com/products").expect("url");
+    assert!(classify_known_source(&url).is_none());
+}
+
+#[tokio::test]
+async fn fetches_google_devsite_article_with_simple_user_agent() {
+    let html = r#"<html><body>
+<nav>DevSite nav chrome</nav>
+<main id="main-content" class="devsite-main-content">
+  <div devsite-content>
+    <article class="devsite-article">
+      <h1>Gemma 4 model overview</h1>
+      <div class="devsite-article-body">
+        <p>Useful DevSite body.</p>
+        <table><tr><th>Model</th></tr><tr><td>Gemma</td></tr></table>
+      </div>
+    </article>
+  </div>
+</main>
+<footer>Footer chrome</footer>
+</body></html>"#;
+    let addr = serve_devsite_user_agent_once(html).await;
+    let client = reqwest::Client::builder()
+        .resolve("ai.google.dev", addr)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://ai.google.dev/gemma/docs/core".to_string(),
+                timeout_secs: Some(5),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("Google DevSite fast path succeeds");
+
+    assert!(output.contains("URL: http://ai.google.dev/gemma/docs/core"));
+    assert!(output.contains("Source-URL: http://ai.google.dev/gemma/docs/core"));
+    assert!(output.contains("Mode: google_devsite_html_fast_path"));
+    assert!(output.contains("# Gemma 4 model overview"));
+    assert!(output.contains("Useful DevSite body."));
+    assert!(output.contains("Gemma"));
+    assert!(!output.contains("DevSite nav chrome"));
+    assert!(!output.contains("Footer chrome"));
+}
+
+#[tokio::test]
+async fn google_devsite_404_is_not_reported_as_redirect_loop() {
+    let addr =
+        serve_http_status_once("404 Not Found", "not found", "text/html; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("ai.google.dev", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://ai.google.dev/gemma/docs/gemma-4".to_string(),
+                timeout_secs: Some(5),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect_err("stale DevSite URL returns direct status failure");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("known markdown fast-path failed"));
+    assert!(error.contains("Google DevSite fetch failed"));
+    assert!(error.contains("server returned non-success status: 404 Not Found"));
+    assert!(!error.contains("302"));
 }
 
 // -- Habr fast-path tests --

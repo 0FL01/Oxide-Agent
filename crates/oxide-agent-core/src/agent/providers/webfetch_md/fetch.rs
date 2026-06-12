@@ -18,7 +18,7 @@ use super::url::{parse_web_url, reject_media_url, reject_unsafe_url};
 use super::{
     BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_OFFSET_CHARS,
     MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECS,
-    MIN_OUTPUT_CHARS, WebFetchMdProvider, WebMarkdownArgs,
+    MIN_OUTPUT_CHARS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
 };
 
 struct FetchResult {
@@ -161,6 +161,11 @@ impl WebFetchMdProvider {
             KnownMarkdownSource::HabrComments { .. } => {
                 return self
                     .fetch_habr_comments(source, timeout_secs, output_window, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::GoogleDevSite { .. } => {
+                return self
+                    .fetch_google_devsite(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::DirectReadme { .. } => {}
@@ -829,14 +834,67 @@ impl WebFetchMdProvider {
         ))
     }
 
+    async fn fetch_google_devsite(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        output_window: OutputWindow,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::GoogleDevSite {
+            source_url,
+            fetch_url,
+            mode,
+        } = source
+        else {
+            bail!("not a Google DevSite source");
+        };
+
+        let fetched = self
+            .fetch_text_with_user_agent(
+                fetch_url.clone(),
+                timeout_secs,
+                cancellation_token,
+                SIMPLE_BOT_USER_AGENT,
+            )
+            .await
+            .context("Google DevSite fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+        if !is_html_content_type(&fetched.content_type) {
+            bail!("Google DevSite returned non-HTML content");
+        }
+
+        let article_html = extract_google_devsite_html(&fetched.text)?;
+        let markdown = html_to_markdown(article_html)?;
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
+
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
+            output_window,
+            &windowed,
+        ))
+    }
+
     async fn fetch_text(
         &self,
         url: Url,
         timeout_secs: u64,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<FetchResult> {
-        self.fetch_text_inner(url, timeout_secs, cancellation_token, true)
-            .await
+        self.fetch_text_inner(
+            url,
+            timeout_secs,
+            cancellation_token,
+            true,
+            BROWSER_USER_AGENT,
+        )
+        .await
     }
 
     async fn fetch_text_without_antibot(
@@ -845,7 +903,24 @@ impl WebFetchMdProvider {
         timeout_secs: u64,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<FetchResult> {
-        self.fetch_text_inner(url, timeout_secs, cancellation_token, false)
+        self.fetch_text_inner(
+            url,
+            timeout_secs,
+            cancellation_token,
+            false,
+            BROWSER_USER_AGENT,
+        )
+        .await
+    }
+
+    async fn fetch_text_with_user_agent(
+        &self,
+        url: Url,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+        user_agent: &'static str,
+    ) -> Result<FetchResult> {
+        self.fetch_text_inner(url, timeout_secs, cancellation_token, true, user_agent)
             .await
     }
 
@@ -855,6 +930,7 @@ impl WebFetchMdProvider {
         timeout_secs: u64,
         cancellation_token: Option<&CancellationToken>,
         reject_antibot: bool,
+        user_agent: &'static str,
     ) -> Result<FetchResult> {
         if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
             bail!("web_markdown cancelled before request");
@@ -865,7 +941,7 @@ impl WebFetchMdProvider {
             .get(url)
             .timeout(Duration::from_secs(timeout_secs))
             .header(ACCEPT, MARKDOWN_ACCEPT_HEADER)
-            .header(USER_AGENT, BROWSER_USER_AGENT)
+            .header(USER_AGENT, user_agent)
             .header(ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .send()
             .await
@@ -1095,6 +1171,36 @@ fn extract_habr_comments_html(html: &str) -> Result<&str> {
         bail!("Habr comments HTML did not include a usable comments body");
     }
     Ok(&html[start..end])
+}
+
+fn extract_google_devsite_html(html: &str) -> Result<&str> {
+    if let Some(article) = extract_html_region(html, "devsite-article", "<article", "</article>") {
+        return Ok(article);
+    }
+
+    extract_html_region(html, "id=\"main-content\"", "<main", "</main>")
+        .or_else(|| extract_html_region(html, "devsite-main-content", "<main", "</main>"))
+        .context("Google DevSite HTML did not include main article content")
+}
+
+fn extract_html_region<'a>(
+    html: &'a str,
+    marker: &str,
+    start_tag: &str,
+    end_tag: &str,
+) -> Option<&'a str> {
+    let marker_index = html.find(marker)?;
+    let start = html[..marker_index]
+        .rfind(start_tag)
+        .unwrap_or(marker_index);
+    let tail = &html[marker_index..];
+    let end = tail
+        .find(end_tag)
+        .map(|offset| marker_index + offset + end_tag.len())
+        .or_else(|| tail.find("</body>").map(|offset| marker_index + offset))
+        .unwrap_or(html.len());
+
+    (end > start).then_some(&html[start..end])
 }
 
 fn render_habr_article_json(article_json: &str, article_id: &str) -> Result<String> {
