@@ -1,4 +1,4 @@
-use super::convert::{html_to_markdown, truncate_chars};
+use super::convert::{OutputWindow, html_to_markdown, window_chars};
 use super::error::reject_anti_bot_challenge;
 use super::known_sources::{KnownMarkdownSource, classify as classify_known_source};
 use super::reddit::{
@@ -348,11 +348,86 @@ fn allows_regular_html_without_antibot_markers() {
 }
 
 #[test]
-fn truncates_long_output() {
-    let output = truncate_chars("abcdef".to_string(), 3);
+fn windows_long_output() {
+    let output = window_chars(
+        "abcdef".to_string(),
+        OutputWindow {
+            max_chars: 3,
+            offset_chars: 2,
+        },
+    );
 
     assert!(output.was_truncated);
-    assert_eq!(output.text, "abc\n\n... (truncated)");
+    assert_eq!(output.text, "cde\n\n... (truncated)");
+    assert_eq!(output.markdown_chars, 6);
+    assert_eq!(output.returned_chars, 3);
+    assert_eq!(output.remaining_chars, 1);
+    assert_eq!(output.next_offset_chars, Some(5));
+}
+
+#[tokio::test]
+async fn fetch_markdown_applies_max_chars_and_offset_window() {
+    let body = "a".repeat(1_100);
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let addr = serve_http_once(body, "text/plain; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("example.test", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://example.test/long.txt".to_string(),
+                timeout_secs: Some(5),
+                max_chars: Some(10),
+                offset_chars: Some(10),
+            },
+            None,
+        )
+        .await
+        .expect("generic web_markdown succeeds");
+
+    assert!(output.contains("Max-Chars: 1000"));
+    assert!(output.contains("Offset-Chars: 10"));
+    assert!(output.contains("Markdown-Chars: 1100"));
+    assert!(output.contains("Returned-Chars: 1000"));
+    assert!(output.contains("Remaining-Chars: 90"));
+    assert!(output.contains("Next-Offset-Chars: 1010"));
+    assert!(output.contains("Truncated: yes"));
+    assert!(output.contains("... (truncated)"));
+}
+
+#[tokio::test]
+async fn fetch_markdown_reports_empty_window_when_offset_is_past_end() {
+    let addr = serve_http_once("short body", "text/plain; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("example.test", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://example.test/short.txt".to_string(),
+                timeout_secs: Some(5),
+                max_chars: Some(8_000),
+                offset_chars: Some(50),
+            },
+            None,
+        )
+        .await
+        .expect("generic web_markdown succeeds");
+
+    assert!(output.contains("Max-Chars: 8000"));
+    assert!(output.contains("Offset-Chars: 50"));
+    assert!(output.contains("Markdown-Chars: 10"));
+    assert!(output.contains("Returned-Chars: 0"));
+    assert!(output.contains("Remaining-Chars: 0"));
+    assert!(output.contains("Next-Offset-Chars: none"));
+    assert!(output.contains("Truncated: no"));
 }
 
 #[tokio::test]
@@ -575,6 +650,7 @@ async fn fetches_reddit_thread_via_rss_fast_path() {
             WebMarkdownArgs {
                 url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -603,6 +679,7 @@ async fn reddit_rss_failure_does_not_fall_back_to_html() {
             WebMarkdownArgs {
                 url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -727,6 +804,7 @@ async fn fetches_habr_article_body_fast_path() {
             WebMarkdownArgs {
                 url: "http://habr.com/ru/articles/911280/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -766,6 +844,7 @@ async fn fetches_habr_comments_via_json_api() {
             WebMarkdownArgs {
                 url: "http://habr.com/ru/news/1013616/comments/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -804,6 +883,7 @@ async fn habr_comments_json_failure_falls_back_to_comments_html() {
             WebMarkdownArgs {
                 url: "http://habr.com/ru/articles/911280/comments/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1170,6 +1250,7 @@ async fn fetches_crates_io_readme_via_metadata_api() {
             WebMarkdownArgs {
                 url: "http://crates.io/crates/demo".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1212,6 +1293,7 @@ async fn fetches_github_repo_readme_via_api() {
             WebMarkdownArgs {
                 url: "http://github.com/owner/repo".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1246,6 +1328,7 @@ async fn github_repo_readme_api_failure_does_not_fall_back_to_html() {
             WebMarkdownArgs {
                 url: "http://github.com/google-gemma/gemma4".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1298,6 +1381,7 @@ async fn fetches_github_gist_files_and_permalink_comment_via_api() {
             WebMarkdownArgs {
                 url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1351,6 +1435,7 @@ async fn fetches_github_gist_truncated_file_from_raw_url() {
                 url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0"
                     .to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1392,6 +1477,7 @@ async fn fetches_huggingface_blog_content_despite_waf_markers() {
                 url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
                     .to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1425,6 +1511,7 @@ async fn fetches_huggingface_tree_via_json_api() {
             WebMarkdownArgs {
                 url: "http://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1462,6 +1549,7 @@ async fn fetches_huggingface_text_blob_via_resolve_url() {
                 url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
                     .to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1496,6 +1584,7 @@ async fn huggingface_resolve_failure_does_not_fall_back_to_html() {
                 url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
                     .to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1535,6 +1624,7 @@ async fn huggingface_blog_without_blog_content_falls_back_to_antibot_failure() {
                 url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
                     .to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )
@@ -1570,6 +1660,7 @@ async fn fetches_pypi_project_description_via_json_api() {
             WebMarkdownArgs {
                 url: "http://pypi.org/project/demo-pkg/".to_string(),
                 timeout_secs: Some(5),
+                ..Default::default()
             },
             None,
         )

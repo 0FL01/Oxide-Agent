@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use super::convert::{html_to_markdown, truncate_chars};
+use super::convert::{OutputWindow, WindowedOutput, html_to_markdown, window_chars};
 use super::error::{display_content_type, is_html_content_type, reject_anti_bot_challenge};
 use super::known_sources::{
     KnownMarkdownSource, classify as classify_known_source, github_gist, pypi, rust_packages,
@@ -16,8 +16,9 @@ use super::reddit::{
 };
 use super::url::{parse_web_url, reject_media_url, reject_unsafe_url};
 use super::{
-    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_OUTPUT_CHARS,
-    MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECS, WebFetchMdProvider, WebMarkdownArgs,
+    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_OFFSET_CHARS,
+    MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECS,
+    MIN_OUTPUT_CHARS, WebFetchMdProvider, WebMarkdownArgs,
 };
 
 struct FetchResult {
@@ -41,10 +42,11 @@ impl WebFetchMdProvider {
             .timeout_secs
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
+        let output_window = resolve_output_window(&args);
 
         if let Some(source) = classify_known_source(&url) {
             match self
-                .fetch_known_markdown(&source, timeout_secs, cancellation_token)
+                .fetch_known_markdown(&source, timeout_secs, output_window, cancellation_token)
                 .await
             {
                 Ok(output) => return Ok(output),
@@ -70,8 +72,7 @@ impl WebFetchMdProvider {
                 .fetch_reddit_rss(&url, &rss_url, timeout_secs, cancellation_token)
                 .await
                 .context("reddit rss fast-path failed")?;
-            let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-            let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+            let windowed = window_chars(markdown.trim().to_string(), output_window);
             return Ok(format_web_markdown_output(
                 &[
                     ("URL", rss_url.as_str()),
@@ -80,8 +81,8 @@ impl WebFetchMdProvider {
                     ("Content-Type", "text/plain"),
                 ],
                 Some(0),
-                truncated_label,
-                &truncated.text,
+                output_window,
+                &windowed,
             ));
         }
 
@@ -98,8 +99,7 @@ impl WebFetchMdProvider {
             fetched.text
         };
 
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         Ok(format_web_markdown_output(
             &[
@@ -107,8 +107,8 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -117,6 +117,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         reject_unsafe_url(source.fetch_url())?;
@@ -124,42 +125,42 @@ impl WebFetchMdProvider {
         match source {
             KnownMarkdownSource::CrateReadme { .. } => {
                 return self
-                    .fetch_crate_readme(source, timeout_secs, cancellation_token)
+                    .fetch_crate_readme(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::PypiProject { .. } => {
                 return self
-                    .fetch_pypi_project(source, timeout_secs, cancellation_token)
+                    .fetch_pypi_project(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GitHubGist { .. } => {
                 return self
-                    .fetch_github_gist(source, timeout_secs, cancellation_token)
+                    .fetch_github_gist(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GitHubReadme { .. } => {
                 return self
-                    .fetch_github_readme(source, timeout_secs, cancellation_token)
+                    .fetch_github_readme(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HuggingFaceBlog { .. } => {
                 return self
-                    .fetch_huggingface_blog(source, timeout_secs, cancellation_token)
+                    .fetch_huggingface_blog(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HuggingFaceTree { .. } => {
                 return self
-                    .fetch_huggingface_tree(source, timeout_secs, cancellation_token)
+                    .fetch_huggingface_tree(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HabrArticle { .. } => {
                 return self
-                    .fetch_habr_article(source, timeout_secs, cancellation_token)
+                    .fetch_habr_article(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HabrComments { .. } => {
                 return self
-                    .fetch_habr_comments(source, timeout_secs, cancellation_token)
+                    .fetch_habr_comments(source, timeout_secs, output_window, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::DirectReadme { .. } => {}
@@ -178,8 +179,7 @@ impl WebFetchMdProvider {
             fetched.text
         };
 
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         Ok(format_web_markdown_output(
             &[
@@ -189,8 +189,8 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -198,6 +198,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let (source_url, metadata_url, crate_name, requested_version, mode) =
@@ -225,8 +226,7 @@ impl WebFetchMdProvider {
         } else {
             fetched.text
         };
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         Ok(rust_packages::render_readme(
             source_url,
@@ -236,8 +236,8 @@ impl WebFetchMdProvider {
             &version,
             display_content_type(&fetched.content_type),
             fetched.bytes_read,
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -245,6 +245,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let (source_url, metadata_url, package_name, mode) = pypi::pypi_project_parts(source)?;
@@ -257,8 +258,7 @@ impl WebFetchMdProvider {
         reject_unsafe_url(&fetched.final_url)?;
 
         let metadata = pypi::parse_project_metadata(&fetched.text, package_name)?;
-        let truncated = truncate_chars(metadata.description.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(metadata.description.trim().to_string(), output_window);
 
         Ok(pypi::render_project(
             source_url,
@@ -267,8 +267,8 @@ impl WebFetchMdProvider {
             &metadata,
             display_content_type(&fetched.content_type),
             fetched.bytes_read,
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -276,6 +276,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let gist = github_gist::gist_parts(source)?;
@@ -338,8 +339,7 @@ impl WebFetchMdProvider {
         }
 
         let content = rendered_files.join("\n\n");
-        let truncated = truncate_chars(content.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(content.trim().to_string(), output_window);
 
         Ok(github_gist::render_gist(github_gist::GistRender {
             source_url: gist.source_url,
@@ -350,8 +350,8 @@ impl WebFetchMdProvider {
             comment_id: comment_id.as_deref(),
             files: &file_names,
             bytes_read,
-            truncated: truncated_label,
-            content: &truncated.text,
+            output_window,
+            windowed: &windowed,
         }))
     }
 
@@ -359,6 +359,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let KnownMarkdownSource::GitHubReadme {
@@ -392,8 +393,7 @@ impl WebFetchMdProvider {
         } else {
             fetched.text
         };
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
         let repo_label = format!("{owner}/{repo}");
 
         Ok(format_web_markdown_output(
@@ -405,8 +405,8 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(metadata.bytes_read + fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -414,6 +414,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let KnownMarkdownSource::HuggingFaceBlog {
@@ -436,8 +437,7 @@ impl WebFetchMdProvider {
 
         let article_html = extract_huggingface_blog_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         Ok(format_web_markdown_output(
             &[
@@ -447,8 +447,8 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -456,6 +456,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let KnownMarkdownSource::HuggingFaceTree {
@@ -477,8 +478,7 @@ impl WebFetchMdProvider {
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_huggingface_tree_json(&fetched.text, repo_id, revision, tree_path)?;
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         Ok(format_web_markdown_output(
             &[
@@ -488,8 +488,8 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -497,6 +497,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let KnownMarkdownSource::HabrArticle {
@@ -522,8 +523,7 @@ impl WebFetchMdProvider {
 
         let article_html = extract_habr_article_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -540,8 +540,8 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -549,6 +549,7 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let KnownMarkdownSource::HabrComments {
@@ -573,6 +574,7 @@ impl WebFetchMdProvider {
                 company,
                 mode,
                 timeout_secs,
+                output_window,
                 cancellation_token,
             )
             .await
@@ -592,6 +594,7 @@ impl WebFetchMdProvider {
                     lang,
                     company,
                     timeout_secs,
+                    output_window,
                     cancellation_token,
                 )
                 .await
@@ -610,6 +613,7 @@ impl WebFetchMdProvider {
         company: &Option<String>,
         mode: &'static str,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let fetched = self
@@ -619,8 +623,7 @@ impl WebFetchMdProvider {
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_habr_comments_json(&fetched.text, article_id)?;
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -637,8 +640,8 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -650,6 +653,7 @@ impl WebFetchMdProvider {
         lang: &str,
         company: &Option<String>,
         timeout_secs: u64,
+        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
         let fetched = self
@@ -663,8 +667,7 @@ impl WebFetchMdProvider {
 
         let comments_html = extract_habr_comments_html(&fetched.text)?;
         let markdown = html_to_markdown(comments_html)?;
-        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
-        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -681,8 +684,8 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            truncated_label,
-            &truncated.text,
+            output_window,
+            &windowed,
         ))
     }
 
@@ -876,8 +879,8 @@ impl WebFetchMdProvider {
 fn format_web_markdown_output(
     metadata: &[(&str, &str)],
     fetched_bytes: Option<usize>,
-    truncated: &str,
-    markdown: &str,
+    output_window: OutputWindow,
+    windowed: &WindowedOutput,
 ) -> String {
     let mut output = String::from("## Web Markdown\n\n");
     for (key, value) in metadata {
@@ -891,11 +894,42 @@ fn format_web_markdown_output(
         output.push_str(&bytes.to_string());
         output.push('\n');
     }
+    output.push_str("Max-Chars: ");
+    output.push_str(&output_window.max_chars.to_string());
+    output.push('\n');
+    output.push_str("Offset-Chars: ");
+    output.push_str(&output_window.offset_chars.to_string());
+    output.push('\n');
+    output.push_str("Markdown-Chars: ");
+    output.push_str(&windowed.markdown_chars.to_string());
+    output.push('\n');
+    output.push_str("Returned-Chars: ");
+    output.push_str(&windowed.returned_chars.to_string());
+    output.push('\n');
+    output.push_str("Remaining-Chars: ");
+    output.push_str(&windowed.remaining_chars.to_string());
+    output.push('\n');
+    output.push_str("Next-Offset-Chars: ");
+    match windowed.next_offset_chars {
+        Some(offset) => output.push_str(&offset.to_string()),
+        None => output.push_str("none"),
+    }
+    output.push('\n');
     output.push_str("Truncated: ");
-    output.push_str(truncated);
+    output.push_str(if windowed.was_truncated { "yes" } else { "no" });
     output.push_str("\n\n### Content\n\n");
-    output.push_str(markdown);
+    output.push_str(&windowed.text);
     output
+}
+
+fn resolve_output_window(args: &WebMarkdownArgs) -> OutputWindow {
+    OutputWindow {
+        max_chars: args
+            .max_chars
+            .unwrap_or(MAX_OUTPUT_CHARS)
+            .clamp(MIN_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST),
+        offset_chars: args.offset_chars.unwrap_or(0).min(MAX_OFFSET_CHARS),
+    }
 }
 
 fn github_readme_download_url(metadata_json: &str) -> Result<Url> {

@@ -29,6 +29,9 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 20_000;
+const MIN_OUTPUT_CHARS: usize = 1_000;
+const MAX_OUTPUT_CHARS_REQUEST: usize = 100_000;
+const MAX_OFFSET_CHARS: usize = 1_000_000;
 const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
@@ -40,11 +43,15 @@ pub struct WebFetchMdProvider {
     client: reqwest::Client,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 struct WebMarkdownArgs {
     url: String,
     #[serde(default)]
     timeout_secs: Option<u64>,
+    #[serde(default)]
+    max_chars: Option<usize>,
+    #[serde(default)]
+    offset_chars: Option<usize>,
 }
 
 impl WebFetchMdProvider {
@@ -103,6 +110,14 @@ impl WebFetchMdProvider {
                     "timeout_secs": {
                         "type": "integer",
                         "description": "Optional request timeout in seconds, clamped to 1..120"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional maximum Markdown output characters, clamped to 1000..100000; default is 20000"
+                    },
+                    "offset_chars": {
+                        "type": "integer",
+                        "description": "Optional character offset into extracted Markdown for reading later chunks; default is 0"
                     }
                 },
                 "required": ["url"]

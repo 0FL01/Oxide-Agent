@@ -3,6 +3,7 @@ use reqwest::Url;
 use serde_json::Value;
 
 use super::KnownMarkdownSource;
+use crate::agent::providers::webfetch_md::convert::{OutputWindow, WindowedOutput};
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
     let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
@@ -60,12 +61,31 @@ pub(in crate::agent::providers::webfetch_md) fn render_readme(
     version: &str,
     content_type: &str,
     bytes_read: usize,
-    truncated: &str,
-    readme: &str,
+    output_window: OutputWindow,
+    windowed: &WindowedOutput,
 ) -> String {
     format!(
-        "## Web Markdown\n\nURL: {final_url}\nSource-URL: {source_url}\nMode: {mode}\nCrate: {crate_name}\nVersion: {version}\nContent-Type: {content_type}\nFetched-Bytes: {bytes_read}\nTruncated: {truncated}\n\n### Content\n\n{readme}"
+        "## Web Markdown\n\nURL: {final_url}\nSource-URL: {source_url}\nMode: {mode}\nCrate: {crate_name}\nVersion: {version}\nContent-Type: {content_type}\nFetched-Bytes: {bytes_read}\nMax-Chars: {}\nOffset-Chars: {}\nMarkdown-Chars: {}\nReturned-Chars: {}\nRemaining-Chars: {}\nNext-Offset-Chars: {}\nTruncated: {}\n\n### Content\n\n{}",
+        output_window.max_chars,
+        output_window.offset_chars,
+        windowed.markdown_chars,
+        windowed.returned_chars,
+        windowed.remaining_chars,
+        next_offset_label(windowed),
+        truncated_label(windowed),
+        windowed.text
     )
+}
+
+fn next_offset_label(windowed: &WindowedOutput) -> String {
+    windowed
+        .next_offset_chars
+        .map(|offset| offset.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn truncated_label(windowed: &WindowedOutput) -> &'static str {
+    if windowed.was_truncated { "yes" } else { "no" }
 }
 
 fn crates_io_source(url: &Url) -> Option<KnownMarkdownSource> {
