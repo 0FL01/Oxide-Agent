@@ -120,6 +120,7 @@ pub(in crate::agent::providers::webfetch_md) fn pypi_project_parts(
             mode,
         } => Ok((source_url, metadata_url, package_name.as_str(), mode)),
         KnownMarkdownSource::DirectReadme { .. }
+        | KnownMarkdownSource::GitHubReadme { .. }
         | KnownMarkdownSource::CrateReadme { .. }
         | KnownMarkdownSource::GitHubGist { .. }
         | KnownMarkdownSource::HuggingFaceBlog { .. }

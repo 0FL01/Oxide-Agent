@@ -20,10 +20,15 @@ fn github_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
         .collect::<Vec<_>>();
 
     let (fetch_url, mode) = match segments.as_slice() {
-        [owner, repo] => (
-            github_raw_url(owner, repo, "HEAD", "README.md")?,
-            "github_readme_fast_path",
-        ),
+        [owner, repo] => {
+            return Some(KnownMarkdownSource::github_readme(
+                url.clone(),
+                github_readme_api_url(url.scheme(), owner, repo)?,
+                (*owner).to_string(),
+                (*repo).to_string(),
+                "github_readme_fast_path",
+            ));
+        }
         [owner, repo, "blob", branch, path @ ..] if is_text_blob_path(path) => (
             github_raw_url(owner, repo, branch, &path.join("/"))?,
             "github_blob_fast_path",
@@ -36,6 +41,13 @@ fn github_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
         fetch_url,
         mode,
     ))
+}
+
+fn github_readme_api_url(scheme: &str, owner: &str, repo: &str) -> Option<Url> {
+    Url::parse(&format!(
+        "{scheme}://api.github.com/repos/{owner}/{repo}/readme"
+    ))
+    .ok()
 }
 
 fn github_raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> Option<Url> {

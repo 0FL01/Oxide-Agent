@@ -49,6 +49,9 @@ impl WebFetchMdProvider {
             {
                 Ok(output) => return Ok(output),
                 Err(error) => {
+                    if source.is_authoritative() {
+                        return Err(error).context("known markdown fast-path failed");
+                    }
                     tracing::warn!(
                         url = url.as_str(),
                         fetch_url = source.fetch_url().as_str(),
@@ -132,6 +135,11 @@ impl WebFetchMdProvider {
             KnownMarkdownSource::GitHubGist { .. } => {
                 return self
                     .fetch_github_gist(source, timeout_secs, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::GitHubReadme { .. } => {
+                return self
+                    .fetch_github_readme(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HuggingFaceBlog { .. } => {
@@ -335,6 +343,61 @@ impl WebFetchMdProvider {
             truncated: truncated_label,
             content: &truncated.text,
         }))
+    }
+
+    async fn fetch_github_readme(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let KnownMarkdownSource::GitHubReadme {
+            source_url,
+            api_url,
+            owner,
+            repo,
+            mode,
+        } = source
+        else {
+            bail!("not a GitHub README source");
+        };
+
+        reject_unsafe_url(api_url)?;
+        let metadata = self
+            .fetch_github_api_text(api_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("GitHub README metadata fetch failed")?;
+        reject_unsafe_url(&metadata.final_url)?;
+
+        let download_url = github_readme_download_url(&metadata.text)?;
+        reject_unsafe_url(&download_url)?;
+        let fetched = self
+            .fetch_text(download_url, timeout_secs, cancellation_token)
+            .await
+            .context("GitHub README raw fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let markdown = if is_html_content_type(&fetched.content_type) {
+            html_to_markdown(&fetched.text)?
+        } else {
+            fetched.text
+        };
+        let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+        let repo_label = format!("{owner}/{repo}");
+
+        Ok(format_web_markdown_output(
+            &[
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("GitHub-Repo", &repo_label),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(metadata.bytes_read + fetched.bytes_read),
+            truncated_label,
+            &truncated.text,
+        ))
     }
 
     async fn fetch_huggingface_blog(
@@ -630,6 +693,17 @@ fn format_web_markdown_output(
     output.push_str("\n\n### Content\n\n");
     output.push_str(markdown);
     output
+}
+
+fn github_readme_download_url(metadata_json: &str) -> Result<Url> {
+    let value: Value = serde_json::from_str(metadata_json).context("invalid GitHub README JSON")?;
+    let raw = value
+        .get("download_url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .context("GitHub README metadata did not include download_url")?;
+
+    Url::parse(raw).context("GitHub README metadata included invalid download_url")
 }
 
 fn extract_huggingface_blog_html(html: &str) -> Result<&str> {

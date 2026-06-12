@@ -13,6 +13,13 @@ pub(super) enum KnownMarkdownSource {
         fetch_url: Url,
         mode: &'static str,
     },
+    GitHubReadme {
+        source_url: Url,
+        api_url: Url,
+        owner: String,
+        repo: String,
+        mode: &'static str,
+    },
     CrateReadme {
         source_url: Url,
         metadata_url: Url,
@@ -54,6 +61,22 @@ impl KnownMarkdownSource {
         Self::DirectReadme {
             source_url,
             fetch_url,
+            mode,
+        }
+    }
+
+    pub(super) fn github_readme(
+        source_url: Url,
+        api_url: Url,
+        owner: String,
+        repo: String,
+        mode: &'static str,
+    ) -> Self {
+        Self::GitHubReadme {
+            source_url,
+            api_url,
+            owner,
+            repo,
             mode,
         }
     }
@@ -135,6 +158,7 @@ impl KnownMarkdownSource {
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
+            Self::GitHubReadme { source_url, .. } => source_url,
             Self::CrateReadme { source_url, .. } => source_url,
             Self::PypiProject { source_url, .. } => source_url,
             Self::GitHubGist { source_url, .. } => source_url,
@@ -146,6 +170,7 @@ impl KnownMarkdownSource {
     pub(super) fn fetch_url(&self) -> &Url {
         match self {
             Self::DirectReadme { fetch_url, .. } => fetch_url,
+            Self::GitHubReadme { api_url, .. } => api_url,
             Self::CrateReadme { metadata_url, .. } => metadata_url,
             Self::PypiProject { metadata_url, .. } => metadata_url,
             Self::GitHubGist { api_url, .. } => api_url,
@@ -157,11 +182,23 @@ impl KnownMarkdownSource {
     pub(super) fn mode(&self) -> &'static str {
         match self {
             Self::DirectReadme { mode, .. } => mode,
+            Self::GitHubReadme { mode, .. } => mode,
             Self::CrateReadme { mode, .. } => mode,
             Self::PypiProject { mode, .. } => mode,
             Self::GitHubGist { mode, .. } => mode,
             Self::HuggingFaceBlog { mode, .. } => mode,
             Self::HuggingFaceTree { mode, .. } => mode,
+        }
+    }
+
+    pub(super) fn is_authoritative(&self) -> bool {
+        match self {
+            Self::GitHubReadme { .. } | Self::GitHubGist { .. } => true,
+            Self::DirectReadme { mode, .. } => mode.starts_with("github_"),
+            Self::CrateReadme { .. }
+            | Self::PypiProject { .. }
+            | Self::HuggingFaceBlog { .. }
+            | Self::HuggingFaceTree { .. } => false,
         }
     }
 }

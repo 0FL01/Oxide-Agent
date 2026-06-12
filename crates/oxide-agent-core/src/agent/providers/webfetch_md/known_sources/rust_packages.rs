@@ -158,6 +158,7 @@ pub(in crate::agent::providers::webfetch_md) fn crate_readme_parts(
             mode,
         )),
         KnownMarkdownSource::DirectReadme { .. }
+        | KnownMarkdownSource::GitHubReadme { .. }
         | KnownMarkdownSource::PypiProject { .. }
         | KnownMarkdownSource::GitHubGist { .. }
         | KnownMarkdownSource::HuggingFaceBlog { .. }

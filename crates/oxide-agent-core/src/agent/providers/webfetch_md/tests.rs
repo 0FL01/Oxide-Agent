@@ -630,16 +630,16 @@ fn xml_tag_block_extracts_inner_content() {
 // -- Known Markdown source tests --
 
 #[test]
-fn maps_github_repo_root_to_raw_readme() {
+fn maps_github_repo_root_to_readme_api() {
     let url = Url::parse("https://github.com/owner/repo").expect("url");
     let source = classify_known_source(&url).expect("known markdown source");
 
     assert_eq!(source.source_url(), &url);
     assert_eq!(
         source.fetch_url().as_str(),
-        "https://raw.githubusercontent.com/owner/repo/HEAD/README.md"
+        "https://api.github.com/repos/owner/repo/readme"
     );
-    assert!(matches!(source, KnownMarkdownSource::DirectReadme { .. }));
+    assert!(matches!(source, KnownMarkdownSource::GitHubReadme { .. }));
     assert_eq!(source.mode(), "github_readme_fast_path");
 }
 
@@ -957,6 +957,81 @@ async fn fetches_crates_io_readme_via_metadata_api() {
     assert!(output.contains("Version: 1.2.3"));
     assert!(output.contains("# Demo crate"));
     assert!(output.contains("README from API."));
+}
+
+#[tokio::test]
+async fn fetches_github_repo_readme_via_api() {
+    let metadata_json = r#"{
+        "name": "README.md",
+        "path": "README.md",
+        "download_url": "http://raw.githubusercontent.com/owner/repo/main/README.md"
+    }"#;
+    let addr = serve_http_sequence(vec![
+        (metadata_json, "application/json"),
+        (
+            "# Demo repo\n\nREADME from GitHub API.",
+            "text/markdown; charset=utf-8",
+        ),
+    ])
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("api.github.com", addr)
+        .resolve("raw.githubusercontent.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://github.com/owner/repo".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("GitHub README fast path succeeds");
+
+    assert!(output.contains("URL: http://raw.githubusercontent.com/owner/repo/main/README.md"));
+    assert!(output.contains("Source-URL: http://github.com/owner/repo"));
+    assert!(output.contains("Mode: github_readme_fast_path"));
+    assert!(output.contains("GitHub-Repo: owner/repo"));
+    assert!(output.contains("# Demo repo"));
+    assert!(output.contains("README from GitHub API."));
+}
+
+#[tokio::test]
+async fn github_repo_readme_api_failure_does_not_fall_back_to_html() {
+    let addr = serve_http_status_once(
+        "404 Not Found",
+        r#"{"message":"Not Found"}"#,
+        "application/json",
+    )
+    .await;
+    let client = reqwest::Client::builder()
+        .resolve("api.github.com", addr)
+        .resolve("github.com", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://github.com/google-gemma/gemma4".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect_err("GitHub README API failure is returned directly");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("known markdown fast-path failed"));
+    assert!(error.contains("GitHub README metadata fetch failed"));
+    assert!(error.contains("GitHub API returned non-success status: 404 Not Found"));
+    assert!(!error.contains("web_markdown fetch failed"));
+    assert!(!error.contains("anti-bot"));
 }
 
 #[tokio::test]

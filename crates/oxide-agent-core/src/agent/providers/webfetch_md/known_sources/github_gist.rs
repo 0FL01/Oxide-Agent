@@ -97,6 +97,7 @@ pub(in crate::agent::providers::webfetch_md) fn gist_parts(
             mode,
         }),
         KnownMarkdownSource::DirectReadme { .. }
+        | KnownMarkdownSource::GitHubReadme { .. }
         | KnownMarkdownSource::CrateReadme { .. }
         | KnownMarkdownSource::PypiProject { .. }
         | KnownMarkdownSource::HuggingFaceBlog { .. }
