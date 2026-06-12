@@ -1,3 +1,7 @@
+// This allow is permitted only in test code: these async tests intentionally hold
+// the global process-env mutex across awaits to keep env-mutating bwrap scenarios serialized.
+#![allow(clippy::await_holding_lock)]
+
 use super::workspace::resolve_workspace_path;
 use super::{
     BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager, WORKSPACE_PREFIX, host_arch,
@@ -66,24 +70,34 @@ impl Drop for EnvGuard {
     }
 }
 
+fn expect_error<T, E: std::fmt::Display>(result: Result<T, E>, message: &str) -> String {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(error) => error.to_string(),
+    }
+}
+
 #[test]
 fn workspace_path_accepts_relative_and_workspace_absolute_paths() {
     let workspace = Path::new("/tmp/scope/workspace");
 
     assert_eq!(
-        resolve_workspace_path(workspace, "foo.txt").unwrap(),
+        resolve_workspace_path(workspace, "foo.txt").expect("relative path should resolve"),
         Path::new("/tmp/scope/workspace/foo.txt")
     );
     assert_eq!(
-        resolve_workspace_path(workspace, "dir/foo.txt").unwrap(),
+        resolve_workspace_path(workspace, "dir/foo.txt")
+            .expect("nested relative path should resolve"),
         Path::new("/tmp/scope/workspace/dir/foo.txt")
     );
     assert_eq!(
-        resolve_workspace_path(workspace, "/workspace/foo.txt").unwrap(),
+        resolve_workspace_path(workspace, "/workspace/foo.txt")
+            .expect("workspace absolute path should resolve"),
         Path::new("/tmp/scope/workspace/foo.txt")
     );
     assert_eq!(
-        resolve_workspace_path(workspace, "/workspace/dir/foo.txt").unwrap(),
+        resolve_workspace_path(workspace, "/workspace/dir/foo.txt")
+            .expect("nested workspace absolute path should resolve"),
         Path::new("/tmp/scope/workspace/dir/foo.txt")
     );
 }
@@ -110,19 +124,25 @@ fn workspace_path_rejects_escape_forms() {
 #[test]
 fn bwrap_modes_parse_valid_values() {
     assert_eq!(
-        "host".parse::<BwrapNetworkMode>().unwrap(),
+        "host"
+            .parse::<BwrapNetworkMode>()
+            .expect("host network mode"),
         BwrapNetworkMode::Host
     );
     assert_eq!(
-        "none".parse::<BwrapNetworkMode>().unwrap(),
+        "none"
+            .parse::<BwrapNetworkMode>()
+            .expect("none network mode"),
         BwrapNetworkMode::None
     );
     assert_eq!(
-        "overlay-rw".parse::<BwrapRootMode>().unwrap(),
+        "overlay-rw"
+            .parse::<BwrapRootMode>()
+            .expect("overlay root mode"),
         BwrapRootMode::OverlayRw
     );
     assert_eq!(
-        "ro".parse::<BwrapRootMode>().unwrap(),
+        "ro".parse::<BwrapRootMode>().expect("readonly root mode"),
         BwrapRootMode::ReadOnly
     );
 }
@@ -156,40 +176,50 @@ async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
     test_remove_env("SANDBOX_EXEC_TIMEOUT_SECS");
 
     let scope = SandboxScope::new(42, "topic-alpha").with_transport_metadata(Some(1001), Some(77));
-    let mut manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+    let mut manager = BwrapSandboxManager::new(scope.clone())
+        .await
+        .expect("bwrap manager");
 
-    manager.create_sandbox().await.unwrap();
+    manager.create_sandbox().await.expect("create sandbox");
     assert!(manager.is_running());
     assert_eq!(
-        manager.current_record().unwrap().container_name,
+        manager
+            .current_record()
+            .expect("current record")
+            .container_name,
         scope.stable_name()
     );
 
     manager
         .write_file("notes/todo.txt", b"hello")
         .await
-        .unwrap();
+        .expect("write workspace file");
     assert_eq!(
         manager
             .read_file("/workspace/notes/todo.txt")
             .await
-            .unwrap(),
+            .expect("read workspace file"),
         b"hello"
     );
-    let listing = manager.list_files("/workspace").await.unwrap();
+    let listing = manager
+        .list_files("/workspace")
+        .await
+        .expect("list workspace");
     assert!(listing.listing.contains("/workspace/notes/"));
     assert!(listing.listing.contains("/workspace/notes/todo.txt"));
     assert_eq!(
         manager
             .file_size_bytes("notes/todo.txt", None)
             .await
-            .unwrap(),
+            .expect("file size"),
         5
     );
 
-    manager.recreate().await.unwrap();
+    manager.recreate().await.expect("recreate sandbox");
     assert!(manager.read_file("notes/todo.txt").await.is_err());
-    let record = manager.current_record().unwrap();
+    let record = manager
+        .current_record()
+        .expect("current record after recreate");
     assert_eq!(
         record.container_id,
         format!("bwrap:{}", scope.stable_name())
@@ -199,7 +229,7 @@ async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
         Some(&"bwrap".to_string())
     );
 
-    manager.destroy().await.unwrap();
+    manager.destroy().await.expect("destroy sandbox");
     assert!(
         !temp
             .path()
@@ -227,8 +257,8 @@ async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "topic-symlinks"))
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("bwrap manager");
+    manager.create_sandbox().await.expect("create sandbox");
 
     let outside = temp.path().join("outside");
     std::fs::create_dir_all(&outside).expect("outside dir");
@@ -273,13 +303,16 @@ async fn bwrap_apply_file_edit_is_guarded_under_scope_lock() {
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "topic-apply-edit"))
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("bwrap manager");
+    manager.create_sandbox().await.expect("create sandbox");
     manager
         .write_file("notes.txt", b"alpha\nbeta\n")
         .await
-        .unwrap();
-    let current = manager.read_file("notes.txt").await.unwrap();
+        .expect("write notes file");
+    let current = manager
+        .read_file("notes.txt")
+        .await
+        .expect("read notes file");
     let read_guard = SandboxEditReadGuard {
         sha256: format!("{:x}", Sha256::digest(&current)),
         bytes: current.len(),
@@ -296,19 +329,22 @@ async fn bwrap_apply_file_edit_is_guarded_under_scope_lock() {
             Some(read_guard.clone()),
         )
         .await
-        .unwrap();
+        .expect("apply file edit");
     assert!(result.changed);
     assert_eq!(result.replacements, 1);
     assert_eq!(result.previous_sha256, read_guard.sha256);
     assert_eq!(
-        manager.read_file("notes.txt").await.unwrap(),
+        manager
+            .read_file("notes.txt")
+            .await
+            .expect("read edited notes"),
         b"alpha\ngamma\n"
     );
 
     manager
         .write_file("notes.txt", b"changed elsewhere\n")
         .await
-        .unwrap();
+        .expect("write changed notes");
     let stale_error = manager
         .apply_file_edit(
             "notes.txt",
@@ -320,12 +356,14 @@ async fn bwrap_apply_file_edit_is_guarded_under_scope_lock() {
             Some(read_guard),
         )
         .await
-        .err()
-        .expect("stale read guard should fail")
+        .expect_err("stale read guard should fail")
         .to_string();
     assert!(stale_error.contains("file changed after last read"));
 
-    let fresh = manager.read_file("notes.txt").await.unwrap();
+    let fresh = manager
+        .read_file("notes.txt")
+        .await
+        .expect("read fresh notes");
     let fresh_guard = SandboxEditReadGuard {
         sha256: format!("{:x}", Sha256::digest(&fresh)),
         bytes: fresh.len(),
@@ -341,12 +379,14 @@ async fn bwrap_apply_file_edit_is_guarded_under_scope_lock() {
             Some(fresh_guard),
         )
         .await
-        .err()
-        .expect("replacement count mismatch should fail")
+        .expect_err("replacement count mismatch should fail")
         .to_string();
     assert!(count_error.contains("expected 1 replacements, found 0"));
     assert_eq!(
-        manager.read_file("notes.txt").await.unwrap(),
+        manager
+            .read_file("notes.txt")
+            .await
+            .expect("read unchanged notes"),
         b"changed elsewhere\n"
     );
 }
@@ -372,10 +412,10 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
     test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
     let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-overlay-host"))
         .await
-        .unwrap();
+        .expect("overlay manager");
     let work_dir = overlay_manager
         .prepare_overlay_workdir()
-        .unwrap()
+        .expect("prepare overlay workdir")
         .expect("overlay mode should create a workdir");
     let overlay_args = args_to_strings(overlay_manager.bwrap_args(Some(&work_dir), None, "true"));
 
@@ -395,17 +435,19 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
     assert_args_do_not_bind_host_control_paths(&overlay_args);
 
     if Path::new("/etc/resolv.conf").exists() {
-        overlay_manager.ensure_scope_dirs_locked().unwrap();
+        overlay_manager
+            .ensure_scope_dirs_locked()
+            .expect("ensure scope dirs");
         let staged_resolv = overlay_manager
             .prepare_resolv_conf_bind()
-            .unwrap()
+            .expect("prepare resolv bind")
             .expect("auto resolver should stage a bind source");
         assert!(staged_resolv.starts_with(&overlay_manager.state.scope_dir));
         assert_ne!(staged_resolv, PathBuf::from("/etc/resolv.conf"));
         assert!(
             !staged_resolv
                 .symlink_metadata()
-                .unwrap()
+                .expect("staged resolv metadata")
                 .file_type()
                 .is_symlink()
         );
@@ -426,7 +468,7 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
     test_set_env("BWRAP_ROOT_MODE", "ro");
     let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-ro-none"))
         .await
-        .unwrap();
+        .expect("readonly manager");
     let readonly_args = args_to_strings(readonly_manager.bwrap_args(None, None, "printf ok"));
 
     assert!(readonly_args.contains(&"--unshare-net".to_string()));
@@ -468,19 +510,21 @@ async fn bwrap_auto_resolver_creates_overlay_bind_target_when_rootfs_file_is_mis
     test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
     let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-overlay"))
         .await
-        .unwrap();
-    overlay_manager.ensure_scope_dirs_locked().unwrap();
+        .expect("overlay manager");
+    overlay_manager
+        .ensure_scope_dirs_locked()
+        .expect("ensure overlay scope dirs");
 
     if Path::new("/etc/resolv.conf").exists() {
         let staged_resolv = overlay_manager
             .prepare_resolv_conf_bind()
-            .unwrap()
+            .expect("prepare resolv bind")
             .expect("auto resolver should stage a bind source");
         let upper_target = overlay_manager.state.system_upper.join("etc/resolv.conf");
         assert!(upper_target.is_file());
         assert_eq!(
-            std::fs::read(&upper_target).unwrap(),
-            std::fs::read(staged_resolv).unwrap()
+            std::fs::read(&upper_target).expect("read upper resolv target"),
+            std::fs::read(staged_resolv).expect("read staged resolv")
         );
     }
 
@@ -490,14 +534,15 @@ async fn bwrap_auto_resolver_creates_overlay_bind_target_when_rootfs_file_is_mis
     test_set_env("BWRAP_ROOT_MODE", "ro");
     let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-ro"))
         .await
-        .unwrap();
-    readonly_manager.ensure_scope_dirs_locked().unwrap();
+        .expect("readonly manager");
+    readonly_manager
+        .ensure_scope_dirs_locked()
+        .expect("ensure readonly scope dirs");
 
     if Path::new("/etc/resolv.conf").exists() {
         let readonly_error = readonly_manager
             .prepare_resolv_conf_bind()
-            .err()
-            .expect("missing readonly resolver target should fail")
+            .expect_err("missing readonly resolver target should fail")
             .to_string();
         assert!(readonly_error.contains("BWRAP_ROOT_MODE=overlay-rw"));
         assert!(readonly_error.contains("/etc/resolv.conf"));
@@ -519,21 +564,19 @@ async fn bwrap_config_errors_are_actionable() {
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_BIN", temp.path().join("missing-bwrap"));
-    let missing_bwrap = BwrapSandboxManager::new(SandboxScope::new(42, "missing-bwrap"))
-        .await
-        .err()
-        .expect("missing bwrap should fail")
-        .to_string();
+    let missing_bwrap = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "missing-bwrap")).await,
+        "missing bwrap should fail",
+    );
     assert!(missing_bwrap.contains("BWRAP_BIN"));
     assert!(missing_bwrap.contains("Install bubblewrap"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_ROOTFS", temp.path().join("missing-rootfs"));
-    let missing_rootfs = BwrapSandboxManager::new(SandboxScope::new(42, "missing-rootfs"))
-        .await
-        .err()
-        .expect("missing rootfs should fail")
-        .to_string();
+    let missing_rootfs = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "missing-rootfs")).await,
+        "missing rootfs should fail",
+    );
     assert!(missing_rootfs.contains("rootfs not found"));
     assert!(missing_rootfs.contains("scripts/build-bwrap-rootfs-debian.sh"));
 
@@ -541,21 +584,19 @@ async fn bwrap_config_errors_are_actionable() {
     let rootfs_symlink = temp.path().join("rootfs-symlink");
     symlink(&rootfs, &rootfs_symlink).expect("rootfs symlink");
     test_set_env("BWRAP_ROOTFS", &rootfs_symlink);
-    let rootfs_symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-symlink"))
-        .await
-        .err()
-        .expect("rootfs symlink should fail")
-        .to_string();
+    let rootfs_symlink_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-symlink")).await,
+        "rootfs symlink should fail",
+    );
     assert!(rootfs_symlink_error.contains("BWRAP_ROOTFS"));
     assert!(rootfs_symlink_error.contains("must not be a symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_RESOLV_CONF", temp.path());
-    let resolv_dir_error = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-dir"))
-        .await
-        .err()
-        .expect("resolv dir should fail")
-        .to_string();
+    let resolv_dir_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "resolv-dir")).await,
+        "resolv dir should fail",
+    );
     assert!(resolv_dir_error.contains("BWRAP_RESOLV_CONF"));
     assert!(resolv_dir_error.contains("regular file"));
 
@@ -565,11 +606,10 @@ async fn bwrap_config_errors_are_actionable() {
     let resolv_symlink = temp.path().join("resolv-link.conf");
     symlink(&resolv_file, &resolv_symlink).expect("resolv symlink");
     test_set_env("BWRAP_RESOLV_CONF", &resolv_symlink);
-    let resolv_symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-symlink"))
-        .await
-        .err()
-        .expect("resolv symlink should fail")
-        .to_string();
+    let resolv_symlink_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "resolv-symlink")).await,
+        "resolv symlink should fail",
+    );
     assert!(resolv_symlink_error.contains("BWRAP_RESOLV_CONF"));
     assert!(resolv_symlink_error.contains("must not be a symlink"));
 
@@ -577,11 +617,10 @@ async fn bwrap_config_errors_are_actionable() {
     test_remove_env("BWRAP_ROOTFS");
     test_set_env("BWRAP_IMAGE_STORE", temp.path().join("empty-images"));
     test_set_env("SANDBOX_IMAGE", "agent-sandbox:custom");
-    let docker_image_only = BwrapSandboxManager::new(SandboxScope::new(42, "docker-image-only"))
-        .await
-        .err()
-        .expect("missing bwrap image should fail")
-        .to_string();
+    let docker_image_only = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "docker-image-only")).await,
+        "missing bwrap image should fail",
+    );
     assert!(docker_image_only.contains("Bwrap image manifest not found"));
     assert!(docker_image_only.contains("BWRAP_IMAGE/BWRAP_ROOTFS"));
     assert!(docker_image_only.contains("SANDBOX_IMAGE is Docker-only"));
@@ -609,23 +648,19 @@ async fn bwrap_config_errors_are_actionable() {
     test_remove_env("BWRAP_ROOTFS");
     test_set_env("BWRAP_IMAGE_STORE", &image_store);
     test_set_env("BWRAP_IMAGE", "unsafe-rootfs-link");
-    let unsafe_rootfs_symlink =
-        BwrapSandboxManager::new(SandboxScope::new(42, "unsafe-rootfs-symlink"))
-            .await
-            .err()
-            .expect("unsafe rootfs symlink should fail")
-            .to_string();
+    let unsafe_rootfs_symlink = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "unsafe-rootfs-symlink")).await,
+        "unsafe rootfs symlink should fail",
+    );
     assert!(unsafe_rootfs_symlink.contains("resolves outside image directory"));
     assert!(unsafe_rootfs_symlink.contains("unsafe rootfs symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_ROOT_MODE", "tmp-overlay");
-    let unsupported_root_mode =
-        BwrapSandboxManager::new(SandboxScope::new(42, "unsupported-root-mode"))
-            .await
-            .err()
-            .expect("unsupported root mode should fail")
-            .to_string();
+    let unsupported_root_mode = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "unsupported-root-mode")).await,
+        "unsupported root mode should fail",
+    );
     assert!(unsupported_root_mode.contains("tmp-overlay is not supported"));
     assert!(unsupported_root_mode.contains("overlay-rw, ro"));
 }
@@ -648,16 +683,15 @@ async fn bwrap_lock_timeout_defaults_to_command_timeout_plus_five_and_rejects_ze
     test_remove_env("BWRAP_RECREATE_LOCK_TIMEOUT_SECS");
     let manager = BwrapSandboxManager::new(SandboxScope::new(42, "default-lock-timeout"))
         .await
-        .unwrap();
+        .expect("manager with default lock timeout");
     assert_eq!(manager.config.lock_timeout, Duration::from_secs(12));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_RECREATE_LOCK_TIMEOUT_SECS", "0");
-    let zero_lock_timeout = BwrapSandboxManager::new(SandboxScope::new(42, "zero-lock-timeout"))
-        .await
-        .err()
-        .expect("zero lock timeout should fail")
-        .to_string();
+    let zero_lock_timeout = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "zero-lock-timeout")).await,
+        "zero lock timeout should fail",
+    );
     assert!(zero_lock_timeout.contains("BWRAP_RECREATE_LOCK_TIMEOUT_SECS"));
     assert!(zero_lock_timeout.contains("greater than zero"));
 }
@@ -701,9 +735,9 @@ async fn bwrap_metadata_reports_manifest_path_package_manager_and_sha() {
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "metadata-status"))
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
-    let record = manager.current_record().unwrap();
+        .expect("metadata manager");
+    manager.create_sandbox().await.expect("create sandbox");
+    let record = manager.current_record().expect("current record");
 
     assert_eq!(
         record.labels.get("agent.image_manifest_path"),
@@ -749,12 +783,12 @@ async fn bwrap_image_bootstrap_download_creates_image() {
 
     let manager = BwrapSandboxManager::new(SandboxScope::new(42, "bootstrap-download"))
         .await
-        .unwrap();
+        .expect("bootstrap manager");
     assert_eq!(manager.config.image_id, "bootstrap-test");
     let image_dir = temp.path().join("images/bootstrap-test");
     assert!(image_dir.join("image.json").is_file());
     assert!(image_dir.join("rootfs/bin/sh").is_file());
-    let (manifest, _) = load_manifest(&image_dir.join("image.json")).unwrap();
+    let (manifest, _) = load_manifest(&image_dir.join("image.json")).expect("load manifest");
     assert_eq!(manifest.package_manager.as_deref(), Some("apk"));
 }
 
@@ -780,11 +814,10 @@ async fn bwrap_image_bootstrap_rejects_bad_sha256() {
         "bootstrap-bad-sha",
     );
 
-    let error = BwrapSandboxManager::new(SandboxScope::new(42, "bootstrap-bad-sha"))
-        .await
-        .err()
-        .expect("bad checksum should fail")
-        .to_string();
+    let error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "bootstrap-bad-sha")).await,
+        "bad checksum should fail",
+    );
     assert!(error.contains("Checksum mismatch"));
     assert!(!temp.path().join("images/bootstrap-bad-sha").exists());
 }
@@ -813,7 +846,7 @@ async fn bwrap_image_bootstrap_noops_when_manifest_exists() {
 
     let manager = BwrapSandboxManager::new(SandboxScope::new(42, "bootstrap-existing"))
         .await
-        .unwrap();
+        .expect("existing image manager");
     assert_eq!(manager.config.image_id, "existing-image");
 }
 
@@ -836,12 +869,11 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     test_set_env("BWRAP_STATE_DIR", &state_file);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-dir"))
         .await
-        .unwrap();
+        .expect("bad state dir manager");
     let state_error = manager
         .create_sandbox()
         .await
-        .err()
-        .expect("state file should fail")
+        .expect_err("state file should fail")
         .to_string();
     assert!(state_error.contains("BWRAP_STATE_DIR"));
     assert!(state_error.contains("must be a directory"));
@@ -854,12 +886,11 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     test_set_env("BWRAP_STATE_DIR", &state_symlink);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-symlink"))
         .await
-        .unwrap();
+        .expect("bad state symlink manager");
     let state_symlink_error = manager
         .create_sandbox()
         .await
-        .err()
-        .expect("state symlink should fail")
+        .expect_err("state symlink should fail")
         .to_string();
     assert!(state_symlink_error.contains("BWRAP_STATE_DIR"));
     assert!(state_symlink_error.contains("must not be a symlink"));
@@ -870,12 +901,11 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     test_set_env("BWRAP_LOCK_DIR", &lock_file);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-dir"))
         .await
-        .unwrap();
+        .expect("bad lock dir manager");
     let lock_error = manager
         .create_sandbox()
         .await
-        .err()
-        .expect("lock file should fail")
+        .expect_err("lock file should fail")
         .to_string();
     assert!(lock_error.contains("BWRAP_LOCK_DIR"));
     assert!(lock_error.contains("must be a directory"));
@@ -888,12 +918,11 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     test_set_env("BWRAP_LOCK_DIR", &lock_symlink);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-symlink"))
         .await
-        .unwrap();
+        .expect("bad lock symlink manager");
     let lock_symlink_error = manager
         .create_sandbox()
         .await
-        .err()
-        .expect("lock symlink should fail")
+        .expect_err("lock symlink should fail")
         .to_string();
     assert!(lock_symlink_error.contains("BWRAP_LOCK_DIR"));
     assert!(lock_symlink_error.contains("must not be a symlink"));
@@ -916,7 +945,9 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     let root_upper_parent = temp.path().join("root-upper");
     test_set_env("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
     let scope = SandboxScope::new(42, "upper-override");
-    let manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+    let manager = BwrapSandboxManager::new(scope.clone())
+        .await
+        .expect("manager with root upper override");
     assert_eq!(
         manager.state.system_upper,
         root_upper_parent.join(scope.stable_name()).join("upper")
@@ -927,21 +958,23 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     );
     let work_dir = manager
         .prepare_overlay_workdir()
-        .unwrap()
+        .expect("prepare overlay workdir")
         .expect("overlay workdir");
     assert!(work_dir.starts_with(root_upper_parent.join(scope.stable_name()).join("work")));
     let mut manager = manager;
-    manager.create_sandbox().await.unwrap();
+    manager.create_sandbox().await.expect("create sandbox");
     assert!(root_upper_parent.join(scope.stable_name()).exists());
     let changed_root_upper_parent = temp.path().join("changed-root-upper");
     test_set_env("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
-    let pinned_manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+    let pinned_manager = BwrapSandboxManager::new(scope.clone())
+        .await
+        .expect("pinned manager");
     assert_eq!(
         pinned_manager.state.system_dir,
         root_upper_parent.join(scope.stable_name())
     );
     assert!(!changed_root_upper_parent.join(scope.stable_name()).exists());
-    manager.destroy().await.unwrap();
+    manager.destroy().await.expect("destroy sandbox");
     assert!(!root_upper_parent.join(scope.stable_name()).exists());
     assert!(root_upper_parent.exists());
 
@@ -950,13 +983,13 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     let delete_scope = SandboxScope::new(42, "upper-delete");
     let mut manager = BwrapSandboxManager::new(delete_scope.clone())
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("delete-scope manager");
+    manager.create_sandbox().await.expect("create sandbox");
     assert!(root_upper_parent.join(delete_scope.stable_name()).exists());
     assert!(
         BwrapSandboxManager::delete_sandbox_by_name(42, &delete_scope.stable_name())
             .await
-            .unwrap()
+            .expect("delete sandbox by name")
     );
     assert!(!root_upper_parent.join(delete_scope.stable_name()).exists());
 
@@ -965,13 +998,13 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     let changed_delete_scope = SandboxScope::new(42, "upper-delete-after-env-change");
     let mut manager = BwrapSandboxManager::new(changed_delete_scope.clone())
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("changed delete-scope manager");
+    manager.create_sandbox().await.expect("create sandbox");
     test_set_env("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
     assert!(
         BwrapSandboxManager::delete_sandbox_by_name(42, &changed_delete_scope.stable_name())
             .await
-            .unwrap()
+            .expect("delete sandbox after env change")
     );
     assert!(
         !root_upper_parent
@@ -988,11 +1021,10 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     let file_upper = temp.path().join("file-upper");
     std::fs::write(&file_upper, b"file").expect("file upper");
     test_set_env("BWRAP_ROOT_UPPER_DIR", &file_upper);
-    let file_error = BwrapSandboxManager::new(SandboxScope::new(42, "file-upper"))
-        .await
-        .err()
-        .expect("file upper should fail")
-        .to_string();
+    let file_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "file-upper")).await,
+        "file upper should fail",
+    );
     assert!(file_error.contains("BWRAP_ROOT_UPPER_DIR"));
     assert!(file_error.contains("must be a directory"));
 
@@ -1002,21 +1034,19 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     let symlink_upper = temp.path().join("upper-symlink");
     symlink(&symlink_target, &symlink_upper).expect("upper symlink");
     test_set_env("BWRAP_ROOT_UPPER_DIR", &symlink_upper);
-    let symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "symlink-upper"))
-        .await
-        .err()
-        .expect("symlink upper should fail")
-        .to_string();
+    let symlink_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "symlink-upper")).await,
+        "symlink upper should fail",
+    );
     assert!(symlink_error.contains("BWRAP_ROOT_UPPER_DIR"));
     assert!(symlink_error.contains("must not be a symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     test_set_env("BWRAP_ROOT_UPPER_DIR", rootfs.join("unsafe-upper"));
-    let rootfs_error = BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-upper"))
-        .await
-        .err()
-        .expect("rootfs upper should fail")
-        .to_string();
+    let rootfs_error = expect_error(
+        BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-upper")).await,
+        "rootfs upper should fail",
+    );
     assert!(rootfs_error.contains("BWRAP_ROOT_UPPER_DIR"));
     assert!(rootfs_error.contains("must not be inside the bwrap rootfs image"));
 }
@@ -1042,7 +1072,9 @@ fn bwrap_manifest_validation_rejects_unsafe_values() {
         ),
     )
     .expect("manifest");
-    let absolute_rootfs = load_manifest(&manifest_path).unwrap_err().to_string();
+    let absolute_rootfs = load_manifest(&manifest_path)
+        .expect_err("absolute rootfs should fail")
+        .to_string();
     assert!(absolute_rootfs.contains("rootfs must be relative"));
 
     std::fs::write(
@@ -1060,7 +1092,9 @@ fn bwrap_manifest_validation_rejects_unsafe_values() {
         ),
     )
     .expect("manifest");
-    let escaping_rootfs = load_manifest(&manifest_path).unwrap_err().to_string();
+    let escaping_rootfs = load_manifest(&manifest_path)
+        .expect_err("escaping rootfs should fail")
+        .to_string();
     assert!(escaping_rootfs.contains("rootfs must stay under the image directory"));
 
     std::fs::write(
@@ -1078,7 +1112,9 @@ fn bwrap_manifest_validation_rejects_unsafe_values() {
         ),
     )
     .expect("manifest");
-    let bad_workdir = load_manifest(&manifest_path).unwrap_err().to_string();
+    let bad_workdir = load_manifest(&manifest_path)
+        .expect_err("bad workdir should fail")
+        .to_string();
     assert!(bad_workdir.contains("default_workdir must be /workspace"));
 }
 
@@ -1102,8 +1138,11 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-output"))
         .await
-        .unwrap();
-    let output = manager.exec_command("ignored", None).await.unwrap();
+        .expect("exec output manager");
+    let output = manager
+        .exec_command("ignored", None)
+        .await
+        .expect("exec command output");
     assert_eq!(output.exit_code, 7);
     assert_eq!(output.stdout, "abcdefgh");
     assert!(output.stderr.contains("qrstuvwx"));
@@ -1130,12 +1169,11 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
     test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "1");
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-timeout"))
         .await
-        .unwrap();
+        .expect("exec timeout manager");
     let error = manager
         .exec_command("ignored", None)
         .await
-        .err()
-        .expect("sleeping bwrap should time out")
+        .expect_err("sleeping bwrap should time out")
         .to_string();
     assert!(error.contains("timed out after 1s"));
     assert!(error.contains("process group"));
@@ -1179,15 +1217,15 @@ async fn bwrap_smoke_exec_persists_workspace_and_overlay_rw() {
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "smoke-overlay-rw"))
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("smoke overlay manager");
+    manager.create_sandbox().await.expect("create sandbox");
     let first = manager
         .exec_command(
             "pwd && printf persisted >/workspace/hello.txt && printf system >/etc/oxide-test && test ! -S /var/run/docker.sock && test ! -e /run/sandboxd",
             None,
         )
         .await
-        .unwrap();
+        .expect("first smoke exec");
     assert_eq!(first.exit_code, 0, "stderr={}", first.stderr);
     assert_eq!(first.stdout.lines().next(), Some("/workspace"));
 
@@ -1197,7 +1235,7 @@ async fn bwrap_smoke_exec_persists_workspace_and_overlay_rw() {
             None,
         )
         .await
-        .unwrap();
+        .expect("second smoke exec");
     assert_eq!(second.exit_code, 0, "stderr={}", second.stderr);
     assert_eq!(second.stdout, "persisted\nsystem");
 }
@@ -1226,18 +1264,21 @@ async fn bwrap_smoke_ro_root_rejects_system_writes() {
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "smoke-ro"))
         .await
-        .unwrap();
-    manager.create_sandbox().await.unwrap();
+        .expect("smoke readonly manager");
+    manager.create_sandbox().await.expect("create sandbox");
     let output = manager
         .exec_command(
             "printf workspace >/workspace/ok.txt && printf system >/etc/oxide-ro-test",
             None,
         )
         .await
-        .unwrap();
+        .expect("readonly smoke exec");
 
     assert_ne!(output.exit_code, 0, "system write unexpectedly succeeded");
-    assert_eq!(manager.read_file("ok.txt").await.unwrap(), b"workspace");
+    assert_eq!(
+        manager.read_file("ok.txt").await.expect("read smoke file"),
+        b"workspace"
+    );
 }
 
 #[cfg(unix)]
