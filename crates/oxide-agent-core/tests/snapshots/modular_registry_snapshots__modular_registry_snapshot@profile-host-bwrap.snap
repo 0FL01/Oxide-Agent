@@ -7,6 +7,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "compiled_manifest": {
     "capabilities": [
       {
+        "id": "llm-provider/openai-base",
+        "module": "llm-provider/openai-base"
+      },
+      {
         "id": "llm-provider/opencode-go",
         "module": "llm-provider/opencode-go"
       },
@@ -128,6 +132,34 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       }
     ],
     "modules": [
+      {
+        "cargo_feature": "llm-openai-base",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "Generic OpenAI-compatible API base URL or chat completions endpoint.",
+            "env": "OPENAI_BASE_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Optional bearer token for a generic OpenAI-compatible API.",
+            "env": "OPENAI_BASE_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/openai-base",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/openai-base"
+        ],
+        "requires": []
+      },
       {
         "cargo_feature": "llm-opencode-go",
         "config_properties": [
@@ -561,6 +593,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   },
   "enabled_manifest_default_config": {
     "capabilities": [
+      "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
@@ -593,6 +626,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "transport/telegram"
     ],
     "modules": [
+      "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
@@ -641,11 +675,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "write_todos"
   ],
   "registered_llm_provider_ids_dummy_config": [
+    "llm-provider/openai-base",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
     "llm-provider/openrouter"
   ],
   "registered_llm_provider_aliases_dummy_config": [
+    "openai-base",
+    "openai_base",
     "opencode-go",
     "opencode-zen",
     "opencode_go",
@@ -659,6 +696,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "sandbox-backend/bwrap"
   ],
   "external_service_requirements": [
+    {
+      "module_id": "llm-provider/openai-base",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-openai-base",
+      "config_env": [
+        "OPENAI_BASE_API_BASE",
+        "OPENAI_BASE_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
     {
       "module_id": "llm-provider/opencode-go",
       "kind": "llm-provider",

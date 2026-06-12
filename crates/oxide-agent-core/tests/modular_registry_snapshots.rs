@@ -142,6 +142,10 @@ fn settings_with_dummy_provider_config<'a>(
                 "api_key" => {
                     config = config.with_string_value(property.name(), "test-api-key");
                 }
+                "api_base" => {
+                    config = config
+                        .with_string_value(property.name(), "https://test-api.example.com/v1");
+                }
                 "auth_path" => {
                     let auth_file =
                         NamedTempFile::new().expect("dummy ChatGPT auth file should be created");
@@ -582,6 +586,9 @@ fn allowed_provider_names_for_enabled_modules(
             }
             "llm-provider/openrouter" => {
                 allowed.extend(["llm-provider/openrouter", "openrouter"]);
+            }
+            "llm-provider/openai-base" => {
+                allowed.extend(["llm-provider/openai-base", "openai-base", "openai_base"]);
             }
             "llm-provider/zai" => {
                 allowed.extend(["llm-provider/zai", "zai"]);

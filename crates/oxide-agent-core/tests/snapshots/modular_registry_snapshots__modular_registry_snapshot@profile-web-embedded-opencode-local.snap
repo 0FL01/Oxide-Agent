@@ -615,7 +615,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "apply_file_edit",
     "cancel_sub_agents",
     "compress",
-    "crawl4ai_markdown",
     "describe_image_file",
     "describe_video_file",
     "execute_command",

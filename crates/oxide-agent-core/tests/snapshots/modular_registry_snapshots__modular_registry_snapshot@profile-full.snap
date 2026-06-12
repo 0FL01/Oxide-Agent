@@ -108,6 +108,34 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         ]
       },
       {
+        "id": "llm-provider/openai-base",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-openai-base",
+        "provides": [
+          "llm-provider/openai-base"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_base",
+            "value_kind": "string",
+            "description": "Generic OpenAI-compatible API base URL or chat completions endpoint.",
+            "env": "OPENAI_BASE_API_BASE",
+            "secret": false,
+            "default_value": null
+          },
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "Optional bearer token for a generic OpenAI-compatible API.",
+            "env": "OPENAI_BASE_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
+      },
+      {
         "id": "llm-provider/openai-chatgpt",
         "kind": "llm-provider",
         "cargo_feature": "llm-chatgpt",
@@ -738,6 +766,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/nvidia"
       },
       {
+        "id": "llm-provider/openai-base",
+        "module": "llm-provider/openai-base"
+      },
+      {
         "id": "llm-provider/openai-chatgpt",
         "module": "llm-provider/openai-chatgpt"
       },
@@ -943,6 +975,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/minimax",
       "llm-provider/mistral",
       "llm-provider/nvidia",
+      "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
@@ -985,6 +1018,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/minimax",
       "llm-provider/mistral",
       "llm-provider/nvidia",
+      "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
@@ -1072,6 +1106,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "llm-provider/minimax",
     "llm-provider/mistral",
     "llm-provider/nvidia",
+    "llm-provider/openai-base",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
@@ -1083,7 +1118,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "minimax",
     "mistral",
     "nvidia",
+    "openai-base",
     "openai-chatgpt",
+    "openai_base",
     "opencode-go",
     "opencode-zen",
     "opencode_go",
@@ -1145,6 +1182,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "config_env": [
         "NVIDIA_API_BASE",
         "NVIDIA_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/openai-base",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-openai-base",
+      "config_env": [
+        "OPENAI_BASE_API_BASE",
+        "OPENAI_BASE_API_KEY"
       ],
       "requires_capabilities": []
     },

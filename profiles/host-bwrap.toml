@@ -5,6 +5,7 @@ cargo_features = ["profile-host-bwrap"]
 "transport/telegram" = { enabled = true }
 "storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
+"llm-provider/openai-base" = { enabled = true }
 "llm-provider/openrouter" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
 "tool/agents-md" = { enabled = true }

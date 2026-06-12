@@ -8,6 +8,7 @@ cargo_features = ["profile-full"]
 "llm-provider/minimax" = { enabled = true }
 "llm-provider/mistral" = { enabled = true }
 "llm-provider/nvidia" = { enabled = true }
+"llm-provider/openai-base" = { enabled = true }
 "llm-provider/openai-chatgpt" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }
