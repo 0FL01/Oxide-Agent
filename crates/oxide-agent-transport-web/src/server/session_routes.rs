@@ -9,7 +9,8 @@ use oxide_agent_web_contracts::{
     CreateSessionResponse as ApiCreateSessionResponse, ErrorCode, ErrorEnvelope,
     GetSessionResponse, ListSessionsResponse, OkResponse, TaskAttachment,
     UpdateSessionProfileRequest, UpdateSessionRequest, UpdateSessionResponse,
-    UploadTaskAttachmentsResponse, WebSessionRecord,
+    UploadLargeInputRequest, UploadLargeInputResponse, UploadTaskAttachmentsResponse,
+    WebSessionRecord,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,10 +20,11 @@ use crate::session::{WebSessionRuntimeOptions, web_session_sandbox_scope};
 
 use super::task_routes::{abort_task_handle, reject_active_task};
 use super::{
-    AppState, WEB_SESSION_DEFAULT_TITLE, WEB_SESSION_FLOW_ID, WEB_SESSION_SCHEMA_VERSION,
-    api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
-    backend_unavailable_response, canonical_model_selection, default_session_model_selection,
-    load_current_user_record, load_execution_profile_for_agent_profile_id, load_owned_session,
+    AppState, MAX_TASK_INPUT_CHARS, WEB_SESSION_DEFAULT_TITLE, WEB_SESSION_FLOW_ID,
+    WEB_SESSION_SCHEMA_VERSION, api_error, authenticated_user, authenticated_user_with_csrf,
+    auto_title, backend_unavailable_response, canonical_model_selection,
+    default_session_model_selection, load_current_user_record,
+    load_execution_profile_for_agent_profile_id, load_owned_session,
     resolve_session_agent_profile_id, session_detail_from_record, session_summary_from_record,
     store_error_response, validate_optional_agent_profile_id, validate_session_title,
     web_chat_upload_limit_mb,
@@ -205,6 +207,69 @@ async fn stage_task_attachments(
     Ok(attachments)
 }
 
+async fn stage_large_input_attachment(
+    state: &AppState,
+    user_id: i64,
+    session: &WebSessionRecord,
+    input_markdown: String,
+) -> Result<UploadLargeInputResponse, (StatusCode, Json<ErrorEnvelope>)> {
+    let input_markdown = input_markdown.trim().to_string();
+    if input_markdown.chars().count() <= MAX_TASK_INPUT_CHARS {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!("Large input upload requires more than {MAX_TASK_INPUT_CHARS} characters."),
+            false,
+        ));
+    }
+    if !state.large_input_attachments_supported() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Message is too large and sandbox attachments are not available.",
+            false,
+        ));
+    }
+
+    let limit_mb = web_chat_upload_limit_mb();
+    let max_bytes = limit_mb.saturating_mul(1024 * 1024);
+    let bytes = input_markdown.into_bytes();
+    if bytes.len() as u64 > max_bytes {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!("Large input upload size must be at most {limit_mb} MB."),
+            false,
+        ));
+    }
+
+    let file_name = format!("large-input-{}.md", uuid::Uuid::new_v4());
+    let mime_type = Some("text/markdown; charset=utf-8".to_string());
+    let sandbox_scope = web_session_sandbox_scope(user_id, &session.context_key);
+    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let staged = preprocessor
+        .stage_document_upload(bytes, file_name.clone(), mime_type.clone(), None)
+        .await
+        .map_err(|error| {
+            backend_unavailable_response(format!("Failed to stage large input: {error}"))
+        })?;
+    let attachment = TaskAttachment {
+        file_name,
+        mime_type,
+        size_bytes: staged.size_bytes,
+        sandbox_path: staged.sandbox_path,
+    };
+    let input_markdown = format!(
+        "The user's message exceeded {MAX_TASK_INPUT_CHARS} characters and was staged as a sandbox attachment. Read the full input from `{}`.",
+        attachment.sandbox_path
+    );
+
+    Ok(UploadLargeInputResponse {
+        input_markdown,
+        attachment,
+    })
+}
+
 pub(crate) async fn api_list_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -371,6 +436,20 @@ pub(crate) async fn api_upload_task_attachments(
     let session = load_owned_session(&state, user.user_id, &session_id).await?;
     let attachments = stage_task_attachments(&state, user.user_id, &session, multipart).await?;
     Ok(Json(UploadTaskAttachmentsResponse { attachments }))
+}
+
+pub(crate) async fn api_upload_large_input(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<UploadLargeInputRequest>,
+) -> Result<Json<UploadLargeInputResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let session = load_owned_session(&state, user.user_id, &session_id).await?;
+    let response =
+        stage_large_input_attachment(&state, user.user_id, &session, request.input_markdown)
+            .await?;
+    Ok(Json(response))
 }
 
 pub(crate) async fn api_get_session(

@@ -1,4 +1,4 @@
-use crate::auth::AuthContext;
+use crate::auth::{AuthContext, DEFAULT_MAX_TASK_INPUT_CHARS};
 use crate::utils::spawn_ui;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
@@ -9,7 +9,7 @@ use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
 };
 
-pub(super) const MAX_TASK_INPUT_CHARS: usize = 65_536;
+pub(super) const MAX_TASK_INPUT_CHARS: usize = DEFAULT_MAX_TASK_INPUT_CHARS;
 
 #[derive(Clone)]
 pub(super) struct PendingAttachmentFile {
@@ -200,17 +200,35 @@ pub(super) fn task_input_char_count(input: &str) -> usize {
     input.chars().count()
 }
 
-pub(super) fn task_input_too_long(input: &str) -> bool {
-    task_input_char_count(input) > MAX_TASK_INPUT_CHARS
+pub(super) fn task_input_too_long(input: &str, max_chars: usize) -> bool {
+    task_input_char_count(input) > max_chars
 }
 
-pub(super) fn task_input_limit_error(input: &str) -> Option<String> {
+pub(super) fn task_input_limit_notice(
+    input: &str,
+    max_chars: usize,
+    large_input_attachments_supported: bool,
+) -> Option<(String, bool)> {
     let count = task_input_char_count(input);
-    (count > MAX_TASK_INPUT_CHARS).then(|| {
-        format!(
-            "Message is too large ({count}/{MAX_TASK_INPUT_CHARS} characters). Large-input attachments are not available yet."
-        )
-    })
+    if count <= max_chars {
+        return None;
+    }
+
+    if large_input_attachments_supported {
+        Some((
+            format!(
+                "Message is large ({count}/{max_chars} characters) and will be uploaded as a sandbox attachment."
+            ),
+            false,
+        ))
+    } else {
+        Some((
+            format!(
+                "Message is too large ({count}/{max_chars} characters). Sandbox attachments are not available."
+            ),
+            true,
+        ))
+    }
 }
 
 pub(super) fn handle_composer_drag(

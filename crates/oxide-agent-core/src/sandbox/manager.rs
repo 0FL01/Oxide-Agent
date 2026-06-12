@@ -500,6 +500,11 @@ fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
     ))
 }
 
+#[must_use]
+pub fn sandbox_backend_available() -> bool {
+    selected_sandbox_backend().is_ok()
+}
+
 impl SandboxManager {
     #[instrument(skip_all)]
     pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {

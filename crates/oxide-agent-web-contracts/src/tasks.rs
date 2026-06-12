@@ -225,6 +225,19 @@ pub struct UploadTaskAttachmentsResponse {
     pub attachments: Vec<TaskAttachment>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UploadLargeInputRequest {
+    pub input_markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UploadLargeInputResponse {
+    pub input_markdown: String,
+    pub attachment: TaskAttachment,
+}
+
 const fn default_task_version_index() -> u32 {
     1
 }

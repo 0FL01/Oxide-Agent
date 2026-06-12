@@ -54,7 +54,23 @@ pub use diagnostics::SandboxDiagnosticsRuntime;
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
+pub use manager::sandbox_backend_available;
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
+    feature = "sandbox-daemon",
+    feature = "tool-stack-logs"
+))]
 pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
+#[cfg(not(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
+    feature = "sandbox-daemon",
+    feature = "tool-stack-logs"
+)))]
+pub use manager_stub::sandbox_backend_available;
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",

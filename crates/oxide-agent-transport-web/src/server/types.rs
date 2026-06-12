@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
-use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
+use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime, sandbox_backend_available};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
@@ -202,6 +202,7 @@ pub struct AppState {
     pub task_handles: Arc<RwLock<StdHashMap<String, Arc<tokio::task::JoinHandle<()>>>>>,
     /// When `false`, the async auto-title worker is skipped (for tests with scripted LLM).
     pub auto_title_enabled: bool,
+    large_input_attachments_supported: bool,
 }
 
 impl AppState {
@@ -256,6 +257,7 @@ impl AppState {
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
             auto_title_enabled: true,
+            large_input_attachments_supported: sandbox_backend_available(),
         }
     }
 
@@ -311,6 +313,11 @@ impl AppState {
     #[must_use]
     pub(crate) fn sandbox_control(&self) -> Arc<dyn WebSandboxControl> {
         self.sandbox_control.clone()
+    }
+
+    #[must_use]
+    pub const fn large_input_attachments_supported(&self) -> bool {
+        self.large_input_attachments_supported
     }
 
     #[cfg(test)]

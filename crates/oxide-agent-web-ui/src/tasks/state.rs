@@ -41,6 +41,13 @@ pub(super) fn upsert_session_summary(
     });
 }
 
+pub(super) fn remove_session_summary(
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
+    session_id: &str,
+) {
+    set_sessions.update(|items| items.retain(|item| item.session_id != session_id));
+}
+
 pub(super) fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
     SessionSummary {
         session_id: session.session_id,

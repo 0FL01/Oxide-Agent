@@ -9,13 +9,29 @@ use oxide_agent_web_contracts::{
 };
 
 const DEFAULT_PROFILE_NONE: &str = "__none__";
+pub const DEFAULT_MAX_TASK_INPUT_CHARS: usize = 65_536;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthState {
     pub user: Option<CurrentUser>,
     pub csrf_token: Option<String>,
     pub loading: bool,
     pub session_expired: bool,
+    pub max_task_input_chars: usize,
+    pub large_input_attachments_supported: bool,
+}
+
+impl Default for AuthState {
+    fn default() -> Self {
+        Self {
+            user: None,
+            csrf_token: None,
+            loading: false,
+            session_expired: false,
+            max_task_input_chars: DEFAULT_MAX_TASK_INPUT_CHARS,
+            large_input_attachments_supported: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -40,8 +56,11 @@ impl AuthContext {
     }
 
     pub fn clear(self) {
+        let current = self.auth.get();
         self.set_auth.set(AuthState {
             session_expired: true,
+            max_task_input_chars: current.max_task_input_chars,
+            large_input_attachments_supported: current.large_input_attachments_supported,
             ..AuthState::default()
         });
     }

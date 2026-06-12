@@ -105,6 +105,10 @@
   color: var(--danger);
 }
 
+.composer-validation.info {
+  color: var(--fg-muted);
+}
+
 .agent-profile-select {
   width: 150px;
   min-height: 32px;

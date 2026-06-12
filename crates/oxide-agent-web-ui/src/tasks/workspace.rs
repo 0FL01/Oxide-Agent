@@ -7,8 +7,9 @@ use futures_util::join;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
-    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskDetail,
-    TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserSettingsResponse,
+    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskAttachment,
+    TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
+    UploadLargeInputRequest, UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
@@ -17,7 +18,7 @@ use super::composer::{
     AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, submit_parent_form_on_ctrl_enter, task_input_limit_error,
+    persist_default_effort, submit_parent_form_on_ctrl_enter, task_input_limit_notice,
     task_input_too_long,
 };
 use super::profile::{
@@ -25,8 +26,8 @@ use super::profile::{
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
-    upsert_session_summary, upsert_task_summary,
+    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
+    summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -104,6 +105,48 @@ async fn load_latest_task_events(
             TASK_EVENTS_INITIAL_LIMIT,
         )
         .await
+}
+
+async fn prepare_task_input(
+    client: &ApiClient,
+    session_id: &str,
+    text: String,
+    files: &[PendingAttachmentFile],
+    max_task_input_chars: usize,
+    large_input_attachments_supported: bool,
+) -> Result<(String, Vec<TaskAttachment>), String> {
+    if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+        return Err(format!(
+            "Message is too large ({} / {max_task_input_chars} characters). Sandbox attachments are not available.",
+            text.chars().count()
+        ));
+    }
+
+    let mut attachments = if files.is_empty() {
+        Vec::new()
+    } else {
+        client
+            .upload_task_attachments(session_id, &browser_files(files))
+            .await
+            .map_err(|error| error.to_string())?
+            .attachments
+    };
+
+    if task_input_too_long(&text, max_task_input_chars) {
+        let response = client
+            .upload_large_input(
+                session_id,
+                &UploadLargeInputRequest {
+                    input_markdown: text,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        attachments.push(response.attachment);
+        Ok((response.input_markdown, attachments))
+    } else {
+        Ok((text, attachments))
+    }
 }
 
 fn merge_task_events(
@@ -217,8 +260,17 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         if !can_submit_input(&text, &files) {
             return;
         }
-        if let Some(message) = task_input_limit_error(&text) {
-            set_error.set(Some(message));
+        let auth_state = auth.auth.get();
+        let max_task_input_chars = auth_state.max_task_input_chars;
+        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
+        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+            if let Some((message, _)) = task_input_limit_notice(
+                &text,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            ) {
+                set_error.set(Some(message));
+            }
             return;
         }
         set_loading.set(true);
@@ -246,19 +298,23 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                     return;
                 }
             };
-            let attachments = if files.is_empty() {
-                Vec::new()
-            } else {
-                match client
-                    .upload_task_attachments(&session_id, &browser_files(&files))
-                    .await
-                {
-                    Ok(response) => response.attachments,
-                    Err(error) => {
-                        set_error.set(Some(error.to_string()));
-                        set_loading.set(false);
-                        return;
-                    }
+            let (task_input, attachments) = match prepare_task_input(
+                &client,
+                &session_id,
+                text,
+                &files,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            )
+            .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let _ = client.delete_session(&session_id).await;
+                    remove_session_summary(set_sessions, &session_id);
+                    set_error.set(Some(error));
+                    set_loading.set(false);
+                    return;
                 }
             };
             // 2. Create task with the user's message
@@ -266,7 +322,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                 .create_task(
                     &session_id,
                     &CreateTaskRequest {
-                        input_markdown: text,
+                        input_markdown: task_input,
                         attachments,
                         effort: Some(effort),
                     },
@@ -279,6 +335,8 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                     navigate(&format!("/app/session/{session_id}"));
                 }
                 Err(e) => {
+                    let _ = client.delete_session(&session_id).await;
+                    remove_session_summary(set_sessions, &session_id);
                     set_error.set(Some(e.to_string()));
                     set_loading.set(false);
                 }
@@ -350,12 +408,23 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             set_attachments=set_pending_files
                         />
                         {move || {
-                            task_input_limit_error(&input.get()).map(|message| {
-                                view! { <p class="composer-validation error">{message}</p> }
+                            let auth_state = auth.auth.get();
+                            task_input_limit_notice(
+                                &input.get(),
+                                auth_state.max_task_input_chars,
+                                auth_state.large_input_attachments_supported,
+                            )
+                            .map(|(message, is_error)| {
+                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
                             })
                         }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) || task_input_too_long(&input.get())>
+                            <div class="composer-actions" class:btn-hidden=move || {
+                                let auth_state = auth.auth.get();
+                                let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                    && !auth_state.large_input_attachments_supported;
+                                !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
+                            }>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -394,7 +463,12 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || !can_submit_input(&input.get(), &pending_files.get()) || task_input_too_long(&input.get())
+                                    disabled=move || {
+                                        let auth_state = auth.auth.get();
+                                        let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                            && !auth_state.large_input_attachments_supported;
+                                        loading.get() || !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
+                                    }
                                     class="btn-primary"
                                 >
                                     "Send"
@@ -674,8 +748,17 @@ fn SessionWorkspace(
         if !can_submit_input(&text, &files) {
             return;
         }
-        if let Some(message) = task_input_limit_error(&text) {
-            set_error.set(Some(message));
+        let auth_state = auth.auth.get();
+        let max_task_input_chars = auth_state.max_task_input_chars;
+        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
+        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+            if let Some((message, _)) = task_input_limit_notice(
+                &text,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            ) {
+                set_error.set(Some(message));
+            }
             return;
         }
         set_loading.set(true);
@@ -687,19 +770,21 @@ fn SessionWorkspace(
         let effort = selected_effort.get();
         spawn_ui(async move {
             let client = auth.client();
-            let attachments = if files.is_empty() {
-                Vec::new()
-            } else {
-                match client
-                    .upload_task_attachments(&session_id, &browser_files(&files))
-                    .await
-                {
-                    Ok(response) => response.attachments,
-                    Err(error) => {
-                        set_error.set(Some(error.to_string()));
-                        set_loading.set(false);
-                        return;
-                    }
+            let (task_input, attachments) = match prepare_task_input(
+                &client,
+                &session_id,
+                text,
+                &files,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            )
+            .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    set_error.set(Some(error));
+                    set_loading.set(false);
+                    return;
                 }
             };
             let resume_task_id = active_task
@@ -712,7 +797,7 @@ fn SessionWorkspace(
                         &session_id,
                         task_id,
                         &ResumeTaskRequest {
-                            input_markdown: text,
+                            input_markdown: task_input,
                             attachments,
                             effort: Some(effort),
                         },
@@ -723,7 +808,7 @@ fn SessionWorkspace(
                     .create_task(
                         &session_id,
                         &CreateTaskRequest {
-                            input_markdown: text,
+                            input_markdown: task_input,
                             attachments,
                             effort: Some(effort),
                         },
@@ -951,12 +1036,23 @@ fn SessionWorkspace(
                             set_attachments=set_pending_files
                         />
                         {move || {
-                            task_input_limit_error(&input.get()).map(|message| {
-                                view! { <p class="composer-validation error">{message}</p> }
+                            let auth_state = auth.auth.get();
+                            task_input_limit_notice(
+                                &input.get(),
+                                auth_state.max_task_input_chars,
+                                auth_state.large_input_attachments_supported,
+                            )
+                            .map(|(message, is_error)| {
+                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
                             })
                         }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || task_input_too_long(&input.get()) || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())>
+                            <div class="composer-actions" class:btn-hidden=move || {
+                                let auth_state = auth.auth.get();
+                                let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                    && !auth_state.large_input_attachments_supported;
+                                input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                            }>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -993,7 +1089,12 @@ fn SessionWorkspace(
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || is_running() || task_input_too_long(&input.get()) || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                    disabled=move || {
+                                        let auth_state = auth.auth.get();
+                                        let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                            && !auth_state.large_input_attachments_supported;
+                                        loading.get() || is_running() || input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                    }
                                     class="btn-primary"
                                     style=move || if is_running() { "display:none" } else { "" }
                                 >

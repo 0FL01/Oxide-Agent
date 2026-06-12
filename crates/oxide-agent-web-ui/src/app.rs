@@ -2,6 +2,7 @@ use crate::auth::{AuthContext, AuthState, BootstrapPage, LoginPage, RegisterPage
 use crate::components::AppLayout;
 use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
+use futures_util::join;
 use leptos::prelude::*;
 
 #[component]
@@ -22,7 +23,16 @@ pub fn App() -> impl IntoView {
         }
         set_loaded.set(true);
         spawn_ui(async move {
-            match auth_context.client().me().await {
+            let client = auth_context.client();
+            let (config_result, me_result) = join!(client.public_config(), client.me());
+            if let Ok(config) = config_result {
+                auth_context.set_auth.update(|state| {
+                    state.max_task_input_chars = config.max_task_input_chars;
+                    state.large_input_attachments_supported =
+                        config.large_input_attachments_supported;
+                });
+            }
+            match me_result {
                 Ok(response) => {
                     auth_context.set_authenticated(response.user, Some(response.csrf_token))
                 }

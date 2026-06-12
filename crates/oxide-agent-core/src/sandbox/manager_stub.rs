@@ -16,6 +16,11 @@ fn unavailable() -> anyhow::Error {
     )
 }
 
+#[must_use]
+pub const fn sandbox_backend_available() -> bool {
+    false
+}
+
 /// Result of executing a command in the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecResult {
