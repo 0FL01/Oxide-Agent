@@ -753,6 +753,43 @@ fn maps_huggingface_dataset_blob_to_resolve_readme() {
 }
 
 #[test]
+fn maps_huggingface_text_blobs_to_resolve_urls() {
+    for (raw, expected) in [
+        (
+            "https://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json",
+            "https://huggingface.co/google/gemma-4-26B-A4B-it/resolve/main/config.json",
+        ),
+        (
+            "https://huggingface.co/datasets/owner/data/blob/dev/metadata/train.csv",
+            "https://huggingface.co/datasets/owner/data/resolve/dev/metadata/train.csv",
+        ),
+        (
+            "https://huggingface.co/spaces/owner/app/blob/main/chat_template.jinja",
+            "https://huggingface.co/spaces/owner/app/resolve/main/chat_template.jinja",
+        ),
+    ] {
+        let url = Url::parse(raw).expect("url");
+        let source = classify_known_source(&url).expect("known markdown source");
+
+        assert_eq!(source.fetch_url().as_str(), expected);
+        assert_eq!(source.mode(), "huggingface_blob_fast_path");
+    }
+}
+
+#[test]
+fn ignores_huggingface_binary_blobs() {
+    for raw in [
+        "https://huggingface.co/owner/model/blob/main/model.safetensors",
+        "https://huggingface.co/owner/model/blob/main/model.gguf",
+        "https://huggingface.co/owner/model/blob/main/notebook.ipynb",
+    ] {
+        let url = Url::parse(raw).expect("url");
+
+        assert!(classify_known_source(&url).is_none());
+    }
+}
+
+#[test]
 fn maps_huggingface_blog_to_html_fast_path() {
     for raw in [
         "https://huggingface.co/blog/slug-only",
@@ -1221,6 +1258,70 @@ async fn fetches_huggingface_tree_via_json_api() {
 }
 
 #[tokio::test]
+async fn fetches_huggingface_text_blob_via_resolve_url() {
+    let config_json = r#"{"model_type":"gemma4","architectures":["Gemma4ForCausalLM"]}"#;
+    let addr = serve_http_once(config_json, "application/json; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("huggingface.co", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+                    .to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("HuggingFace text blob fast path succeeds");
+
+    assert!(
+        output.contains(
+            "URL: http://huggingface.co/google/gemma-4-26B-A4B-it/resolve/main/config.json"
+        )
+    );
+    assert!(output.contains(
+        "Source-URL: http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+    ));
+    assert!(output.contains("Mode: huggingface_blob_fast_path"));
+    assert!(output.contains("gemma4"));
+    assert!(output.contains("Gemma4ForCausalLM"));
+}
+
+#[tokio::test]
+async fn huggingface_resolve_failure_does_not_fall_back_to_html() {
+    let addr = serve_http_status_once("404 Not Found", "missing", "text/plain").await;
+    let client = reqwest::Client::builder()
+        .resolve("huggingface.co", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let error = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+                    .to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect_err("HuggingFace resolve failure is returned directly");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("known markdown fast-path failed"));
+    assert!(error.contains("known markdown fetch failed"));
+    assert!(error.contains("server returned non-success status: 404 Not Found"));
+    assert!(!error.contains("web_markdown fetch failed"));
+    assert!(!error.contains("anti-bot"));
+}
+
+#[tokio::test]
 async fn huggingface_blog_without_blog_content_falls_back_to_antibot_failure() {
     let waf_html = r#"
         <html>
@@ -1321,7 +1422,7 @@ fn ignores_non_readme_known_source_pages() {
         "https://git.example.test/owner/repo",
         "https://git.example.test/owner/repo/src/branch/main/src/lib.rs",
         "https://huggingface.co/owner/model/discussions/1",
-        "https://huggingface.co/owner/model/blob/main/config.json",
+        "https://huggingface.co/owner/model/blob/main/model.safetensors",
         "https://pypi.org/project/requests/docs/",
         "https://pypi.org/simple/requests/",
     ] {

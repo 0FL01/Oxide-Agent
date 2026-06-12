@@ -72,14 +72,14 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
             (url_without_fragment(url), "huggingface_blog_fast_path")
         }
         [owner, repo] => (
-            huggingface_resolve_url(&[*owner, *repo], "main", "README.md")?,
+            huggingface_resolve_url(url.scheme(), &[*owner, *repo], "main", "README.md")?,
             "huggingface_readme_fast_path",
         ),
         [owner, repo, "tree", revision, path @ ..] if is_huggingface_revision(revision) => {
             return huggingface_tree_source(url, &[*owner, *repo], revision, path);
         }
         [kind @ ("datasets" | "spaces"), owner, repo] => (
-            huggingface_resolve_url(&[*kind, *owner, *repo], "main", "README.md")?,
+            huggingface_resolve_url(url.scheme(), &[*kind, *owner, *repo], "main", "README.md")?,
             "huggingface_readme_fast_path",
         ),
         [
@@ -92,8 +92,8 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
         ] if is_huggingface_revision(revision) => {
             return huggingface_tree_source(url, &[*kind, *owner, *repo], revision, path);
         }
-        [owner, repo, "blob", branch, path @ ..] if is_readme_path(path) => (
-            huggingface_resolve_url(&[*owner, *repo], branch, &path.join("/"))?,
+        [owner, repo, "blob", branch, path @ ..] if is_text_blob_path(path) => (
+            huggingface_resolve_url(url.scheme(), &[*owner, *repo], branch, &path.join("/"))?,
             "huggingface_blob_fast_path",
         ),
         [
@@ -103,8 +103,13 @@ fn huggingface_markdown_source(url: &Url) -> Option<KnownMarkdownSource> {
             "blob",
             branch,
             path @ ..,
-        ] if is_readme_path(path) => (
-            huggingface_resolve_url(&[*kind, *owner, *repo], branch, &path.join("/"))?,
+        ] if is_text_blob_path(path) => (
+            huggingface_resolve_url(
+                url.scheme(),
+                &[*kind, *owner, *repo],
+                branch,
+                &path.join("/"),
+            )?,
             "huggingface_blob_fast_path",
         ),
         _ => return None,
@@ -150,8 +155,8 @@ fn huggingface_tree_source(
     ))
 }
 
-fn huggingface_resolve_url(prefix: &[&str], branch: &str, path: &str) -> Option<Url> {
-    let mut resolve = Url::parse("https://huggingface.co").ok()?;
+fn huggingface_resolve_url(scheme: &str, prefix: &[&str], branch: &str, path: &str) -> Option<Url> {
+    let mut resolve = Url::parse(&format!("{scheme}://huggingface.co")).ok()?;
     resolve.set_path(&format!("/{}/resolve/{branch}/{path}", prefix.join("/")));
     Some(resolve)
 }
@@ -338,6 +343,7 @@ fn is_text_blob_path(path: &[&str]) -> bool {
             | "html"
             | "ini"
             | "java"
+            | "jinja"
             | "jl"
             | "js"
             | "json"

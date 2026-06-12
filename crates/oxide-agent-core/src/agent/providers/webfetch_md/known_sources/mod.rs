@@ -194,11 +194,13 @@ impl KnownMarkdownSource {
     pub(super) fn is_authoritative(&self) -> bool {
         match self {
             Self::GitHubReadme { .. } | Self::GitHubGist { .. } => true,
-            Self::DirectReadme { mode, .. } => mode.starts_with("github_"),
-            Self::CrateReadme { .. }
-            | Self::PypiProject { .. }
-            | Self::HuggingFaceBlog { .. }
-            | Self::HuggingFaceTree { .. } => false,
+            Self::DirectReadme { mode, .. } => {
+                mode.starts_with("github_") || mode.starts_with("huggingface_")
+            }
+            Self::HuggingFaceTree { .. } => true,
+            Self::CrateReadme { .. } | Self::PypiProject { .. } | Self::HuggingFaceBlog { .. } => {
+                false
+            }
         }
     }
 }
