@@ -206,7 +206,10 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                     })
                     .await;
             }
-            let retry_message = format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
+            let retry_message = format!(
+                "[SYSTEM: {reason} Before returning `final_answer`, call `write_todos` to mark any actually completed remaining tasks as `completed`; then return the complete final answer in a later assistant message.]\n\n{}",
+                context.unwrap_or_default()
+            );
             self.save_undelivered_final_response_draft(
                 ctx,
                 &final_response,
@@ -406,6 +409,79 @@ mod tests {
             .expect("undelivered draft should be recorded");
         assert!(draft_message.content.contains("not delivered to the user"));
         assert!(draft_message.content.contains(draft));
+    }
+
+    #[tokio::test]
+    async fn final_answer_with_in_progress_todo_forces_todo_update_instruction() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+
+        let mut session = EphemeralSession::new(8192);
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem {
+            description: "Исследование".to_string(),
+            status: crate::agent::providers::TodoStatus::Completed,
+        });
+        todos.items.push(TodoItem {
+            description: "Финальная синтез и вывод".to_string(),
+            status: crate::agent::providers::TodoStatus::InProgress,
+        });
+        session.memory_mut().todos = todos.clone();
+        let todos_arc = Arc::new(Mutex::new(todos));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce final synthesis",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "in-progress-final-answer-force-iteration",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 8192),
+        };
+        let mut state = RunState::new();
+        let final_answer = "## Итоговый синтез\n\nРабота фактически завершена.";
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: final_answer.to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("incomplete todos should force continuation");
+
+        assert!(result.is_none());
+        assert_eq!(state.continuation_count, 1);
+
+        let memory = ctx.agent.memory().get_messages();
+        let retry_message = memory
+            .iter()
+            .find(|message| {
+                message.resolved_kind() == AgentMessageKind::SystemContext
+                    && message.content.contains("call `write_todos`")
+            })
+            .expect("forced continuation should instruct model to update todos first");
+        assert!(retry_message.content.contains("Финальная синтез и вывод"));
+        assert!(retry_message.content.contains("final_answer"));
+
+        let draft_message = memory
+            .iter()
+            .find(|message| message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft)
+            .expect("undelivered final answer draft should be recorded");
+        assert!(draft_message.content.contains(final_answer));
     }
 
     #[tokio::test]
