@@ -69,7 +69,7 @@ fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_accepts_opencode_go_and_zen_routes() {
+fn v1_tool_runtime_model_detection_accepts_chat_like_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -117,10 +117,34 @@ fn v1_tool_runtime_model_detection_accepts_opencode_go_and_zen_routes() {
             ..ModelInfo::default()
         }
     ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "gemma4-12b-it-q8_0-mtp".to_string(),
+            provider: "openai-base".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "hf.co/test/model".to_string(),
+            provider: "openai_base".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "local-model".to_string(),
+            provider: "llm-provider/openai-base".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_rejects_non_opencode_routes() {
+fn v1_tool_runtime_model_detection_rejects_unsupported_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),

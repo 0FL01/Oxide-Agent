@@ -19,6 +19,9 @@ pub struct LlmClient {
     #[cfg(feature = "llm-opencode-go")]
     opencode_zen_model_catalog:
         Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
+    #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+    openai_base_model_catalog:
+        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -229,6 +232,11 @@ impl LlmClient {
             settings,
             support::http::create_http_client(),
         );
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        let openai_base_model_catalog = providers::openai_base::module::build_model_catalog(
+            settings,
+            support::http::create_http_client(),
+        );
 
         Self {
             providers,
@@ -236,6 +244,8 @@ impl LlmClient {
             opencode_go_model_catalog,
             #[cfg(feature = "llm-opencode-go")]
             opencode_zen_model_catalog,
+            #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+            openai_base_model_catalog,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -345,6 +355,46 @@ impl LlmClient {
             );
         }
         #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
+    }
+
+    /// Returns OpenAI Base discovered models when the provider is compiled and configured.
+    pub async fn openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        {
+            let catalog = self.openai_base_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .models()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
+        {
+            None
+        }
+    }
+
+    /// Refreshes OpenAI Base discovered models when the provider is compiled and configured.
+    pub async fn refresh_openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        {
+            let catalog = self.openai_base_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .refresh()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
         {
             None
         }

@@ -52,7 +52,7 @@ pub(crate) fn build_model_catalog(
     )?;
     let catalog = Arc::new(super::discovery::OpenCodeGoModelCatalog::new(
         http_client,
-        api_key,
+        Some(api_key),
         go_discovery_config(settings, OpenCodeGoProviderModule.provider_id()),
     ));
     Arc::clone(&catalog).spawn_background_refresh();
@@ -70,7 +70,7 @@ pub(crate) fn build_zen_model_catalog(
     )?;
     let catalog = Arc::new(super::discovery::OpenCodeGoModelCatalog::new(
         http_client,
-        api_key,
+        Some(api_key),
         zen_discovery_config(settings, OpenCodeZenProviderModule.provider_id()),
     ));
     Arc::clone(&catalog).spawn_background_refresh();

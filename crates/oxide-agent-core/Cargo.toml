@@ -146,6 +146,7 @@ profile-web-embedded-opencode-local = [
     "transport-web",
     "storage-sqlx",
     "llm-opencode-go",
+    "llm-openai-base",
     "tool-todos",
     "tool-compression",
     "tool-delegation",

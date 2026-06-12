@@ -160,6 +160,17 @@ const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
         "Generic OpenAI-compatible API base URL or chat completions endpoint.",
     )
     .with_env("OPENAI_BASE_API_BASE"),
+    ModuleConfigProperty::string(
+        "models_url",
+        "Optional OpenAI-compatible model discovery endpoint. Defaults to api_base /models.",
+    )
+    .with_env("OPENAI_BASE_MODELS_URL"),
+    ModuleConfigProperty::string(
+        "model_cache_ttl_secs",
+        "OpenAI Base model discovery cache TTL.",
+    )
+    .with_env("OPENAI_BASE_MODEL_CACHE_TTL_SECS")
+    .with_default("1800"),
 ];
 #[allow(dead_code)]
 const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[

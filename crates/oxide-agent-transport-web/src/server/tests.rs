@@ -630,6 +630,8 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
         "OPENCODE_GO_API_KEY",
         "OPENCODE_GO_MODELS_URL",
         "OPENCODE_ZEN_MODELS_URL",
+        "OPENAI_BASE_API_BASE",
+        "OPENAI_BASE_MODELS_URL",
         "LLM_HTTP_TIMEOUT_SECS",
     ]);
     test_set_env("OPENCODE_API_KEY", "test-opencode-key");
@@ -637,6 +639,8 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
     test_remove_env("OPENCODE_GO_API_KEY");
     test_set_env("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
     test_set_env("OPENCODE_ZEN_MODELS_URL", "http://127.0.0.1:9/models");
+    test_remove_env("OPENAI_BASE_API_BASE");
+    test_remove_env("OPENAI_BASE_MODELS_URL");
     test_set_env("LLM_HTTP_TIMEOUT_SECS", "1");
 
     let state = test_app_state();
@@ -790,6 +794,26 @@ async fn api_settings_round_trips_default_model_selection() {
         })
     );
 
+    let axum::Json(updated_openai_base) = api_update_settings(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::Json(UpdateUserSettingsRequest {
+            default_model_selection: Some(ModelSelection {
+                qualified_id: "openai-base/hf.co/test/model".to_string(),
+            }),
+            default_agent_profile_id: None,
+            default_effort: None,
+        }),
+    )
+    .await
+    .expect("update openai base settings");
+    assert_eq!(
+        updated_openai_base.default_model_selection,
+        Some(ModelSelection {
+            qualified_id: "openai-base/hf.co/test/model".to_string(),
+        })
+    );
+
     let (status, axum::Json(error)) = api_update_settings(
         axum::extract::State(state),
         auth_headers(&token, Some(&auth_session.csrf_token)),
@@ -802,7 +826,7 @@ async fn api_settings_round_trips_default_model_selection() {
         }),
     )
     .await
-    .expect_err("non-opencode model selection should fail");
+    .expect_err("unsupported model selection should fail");
     assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(error.error.code, ErrorCode::ValidationError);
 }

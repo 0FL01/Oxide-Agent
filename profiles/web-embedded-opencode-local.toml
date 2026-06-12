@@ -6,6 +6,7 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 "storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }
+"llm-provider/openai-base" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
 "sandbox-backend/sandboxd-client" = { enabled = true }
 "tool/compression" = { enabled = true }

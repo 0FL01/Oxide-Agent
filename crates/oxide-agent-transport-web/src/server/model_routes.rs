@@ -12,6 +12,9 @@ use oxide_agent_web_contracts::{
 use super::{AppState, api_error, authenticated_user, authenticated_user_with_csrf};
 
 const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/kimi-k2.6";
+const OPENCODE_GO_PREFIX: &str = "opencode-go";
+const OPENCODE_ZEN_PREFIX: &str = "opencode-zen";
+const OPENAI_BASE_PREFIX: &str = "openai-base";
 const MAX_MODEL_SELECTION_CHARS: usize = 128;
 
 pub(crate) async fn api_list_model_routes(
@@ -47,15 +50,22 @@ async fn model_routes_response(state: &AppState, refresh: bool) -> ListModelRout
     } {
         models.extend(zen_models);
     }
+    if let Some(openai_base_models) = if refresh {
+        llm.refresh_openai_base_models().await
+    } else {
+        llm.openai_base_models().await
+    } {
+        models.extend(openai_base_models);
+    }
     let routes = models
         .into_iter()
         .map(model_route_view_from_discovered)
         .collect();
 
     ListModelRoutesResponse {
-        provider_id: "opencode".to_string(),
-        provider_available: opencode_provider_available(state),
-        default_model_id: default_opencode_model_id(state),
+        provider_id: "web-models".to_string(),
+        provider_available: web_model_provider_available(state),
+        default_model_id: default_web_model_id(state),
         routes,
     }
 }
@@ -91,27 +101,29 @@ fn model_route_source_view(value: &str) -> ModelRouteSourceView {
     }
 }
 
-fn opencode_provider_available(state: &AppState) -> bool {
+fn web_model_provider_available(state: &AppState) -> bool {
     let llm = state.session_manager.llm_client();
     llm.is_provider_available("opencode-go")
         || llm.is_provider_available("opencode_go")
         || llm.is_provider_available("opencode-zen")
         || llm.is_provider_available("opencode_zen")
+        || llm.is_provider_available("openai-base")
+        || llm.is_provider_available("openai_base")
 }
 
-fn default_opencode_model_id(state: &AppState) -> Option<String> {
+fn default_web_model_id(state: &AppState) -> Option<String> {
     state
         .session_manager
         .agent_settings()
         .get_configured_agent_model_routes()
         .into_iter()
-        .find(|route| opencode_provider_prefix(&route.provider).is_some())
-        .and_then(|route| qualified_opencode_model_id(&route.id, &route.provider))
+        .find(|route| web_model_provider_prefix(&route.provider).is_some())
+        .and_then(|route| qualified_web_model_id(&route.id, &route.provider))
 }
 
 pub(crate) fn default_session_model_selection(state: &AppState) -> ModelSelection {
     ModelSelection {
-        qualified_id: default_opencode_model_id(state)
+        qualified_id: default_web_model_id(state)
             .unwrap_or_else(|| DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID.to_string()),
     }
 }
@@ -128,19 +140,19 @@ pub(crate) fn canonical_model_selection(
             false,
         ));
     }
-    let (prefix, model_id) = parse_opencode_model_selection(qualified_id).ok_or_else(|| {
+    let (prefix, model_id) = parse_web_model_selection(qualified_id).ok_or_else(|| {
         api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
-            "Model selection must be an OpenCode Go or Zen model id.",
+            "Model selection must be an OpenCode Go, OpenCode Zen, or OpenAI Base model id.",
             false,
         )
     })?;
-    if model_id.is_empty() || model_id.contains('/') {
+    if model_id.is_empty() || (prefix != OPENAI_BASE_PREFIX && model_id.contains('/')) {
         return Err(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
-            "Model selection must be an OpenCode Go or Zen model id.",
+            "Model selection must be an OpenCode Go, OpenCode Zen, or OpenAI Base model id.",
             false,
         ));
     }
@@ -149,21 +161,24 @@ pub(crate) fn canonical_model_selection(
     })
 }
 
-fn parse_opencode_model_selection(value: &str) -> Option<(&'static str, &str)> {
+fn parse_web_model_selection(value: &str) -> Option<(&'static str, &str)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
-        return Some(("opencode-go", model_id.trim()));
+        return Some((OPENCODE_GO_PREFIX, model_id.trim()));
     }
     if let Some(model_id) = value.strip_prefix("opencode-zen/") {
-        return Some(("opencode-zen", model_id.trim()));
+        return Some((OPENCODE_ZEN_PREFIX, model_id.trim()));
+    }
+    if let Some(model_id) = value.strip_prefix("openai-base/") {
+        return Some((OPENAI_BASE_PREFIX, model_id.trim()));
     }
     if value.contains('/') {
         return None;
     }
-    Some(("opencode-go", value))
+    Some((OPENCODE_GO_PREFIX, value))
 }
 
-fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
+pub(crate) fn web_model_provider_prefix(provider: &str) -> Option<&'static str> {
     match provider
         .trim()
         .strip_prefix("llm-provider/")
@@ -172,17 +187,21 @@ fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "opencode-go" => Some("opencode-go"),
-        "opencode-zen" => Some("opencode-zen"),
+        "opencode-go" => Some(OPENCODE_GO_PREFIX),
+        "opencode-zen" => Some(OPENCODE_ZEN_PREFIX),
+        "openai-base" => Some(OPENAI_BASE_PREFIX),
         _ => None,
     }
 }
 
-fn qualified_opencode_model_id(model_id: &str, provider: &str) -> Option<String> {
-    let prefix = opencode_provider_prefix(provider)?;
+pub(crate) fn qualified_web_model_id(model_id: &str, provider: &str) -> Option<String> {
+    let prefix = web_model_provider_prefix(provider)?;
     let model_id = model_id.trim();
-    if model_id.starts_with("opencode-go/") || model_id.starts_with("opencode-zen/") {
-        parse_opencode_model_selection(model_id).and_then(|(route_prefix, route_model_id)| {
+    if model_id.starts_with("opencode-go/")
+        || model_id.starts_with("opencode-zen/")
+        || model_id.starts_with("openai-base/")
+    {
+        parse_web_model_selection(model_id).and_then(|(route_prefix, route_model_id)| {
             (route_prefix == prefix).then(|| format!("{route_prefix}/{route_model_id}"))
         })
     } else {

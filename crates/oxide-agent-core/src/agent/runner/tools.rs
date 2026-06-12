@@ -184,7 +184,7 @@ impl AgentRunner {
             .ok_or_else(|| anyhow::anyhow!("typed tool runtime requires an active model route"))?;
         if !v1_tool_runtime_enabled_for_model(&route) {
             return Err(anyhow::anyhow!(
-                "typed tool runtime v1 requires an opencode-go or opencode-zen route; active route is {}/{}",
+                "typed tool runtime v1 requires a chat-like tool route; active route is {}/{}",
                 route.provider,
                 route.id
             ));
@@ -1362,11 +1362,94 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route")
+                .contains("typed tool runtime v1 requires a chat-like tool route")
         );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "unsupported route must not write partial assistant/tool history"
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_path_accepts_openai_base_chat_like_route() {
+        let settings = AgentSettings {
+            agent_model_id: Some("gemma4-12b-it-q8_0-mtp".to_string()),
+            agent_model_provider: Some("openai-base".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(StaticRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "openai base typed runtime route",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-openai-base-route-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("openai-base")
+                .with_model_routes(vec![ModelInfo {
+                    id: "gemma4-12b-it-q8_0-mtp".to_string(),
+                    provider: "openai-base".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "call-read-openai-base",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-read-openai-base")
+                .with_provider_tool_call_id("call-read-openai-base")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(""),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("openai-base chat-like route should execute tools");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+        assert_eq!(
+            memory[1].tool_call_id.as_deref(),
+            Some("invoke-read-openai-base")
+        );
+        assert!(memory[1].content.contains("runtime-ok"));
     }
 }

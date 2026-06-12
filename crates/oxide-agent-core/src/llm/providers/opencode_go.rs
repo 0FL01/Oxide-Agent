@@ -143,7 +143,7 @@ impl OpenCodeGoProvider {
     ) -> Self {
         let model_catalog = Arc::new(OpenCodeGoModelCatalog::new(
             http_client.clone(),
-            api_key.clone(),
+            Some(api_key.clone()),
             discovery_config,
         ));
         Arc::clone(&model_catalog).spawn_background_refresh();

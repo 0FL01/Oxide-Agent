@@ -407,7 +407,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     let save_model_settings = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         if !selected_route_is_runnable(routes, selected_model) {
-            set_error.set(Some("Select a runnable OpenCode model.".to_string()));
+            set_error.set(Some("Select a runnable model.".to_string()));
             return;
         }
         set_saving.set(true);
@@ -481,7 +481,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     view! {
         <form class="panel model-settings-form" on:submit=save_model_settings>
             <h2>"Model"</h2>
-            <p class="muted">"Providers: OpenCode Go / Zen Free"</p>
+            <p class="muted">"Providers: OpenCode Go / Zen Free / OpenAI Base"</p>
             <p class="muted model-settings-note">
                 "Saved web default has priority for new web sessions; .env route remains a fallback."
             </p>
