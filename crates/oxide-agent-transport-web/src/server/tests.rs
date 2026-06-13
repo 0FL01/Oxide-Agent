@@ -34,7 +34,7 @@ use oxide_agent_web_contracts::{
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
     TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
-    UpdateUserSettingsRequest, WebTaskRecord,
+    UpdateUserSettingsRequest, WebSessionRecord, WebTaskRecord,
 };
 #[cfg(feature = "profile-lite")]
 use oxide_agent_web_contracts::{
@@ -110,11 +110,18 @@ impl FakeSandboxControl {
 }
 
 fn fake_sandbox_record(scope: SandboxScope) -> SandboxContainerRecord {
+    fake_sandbox_record_with_created_at(scope, None)
+}
+
+fn fake_sandbox_record_with_created_at(
+    scope: SandboxScope,
+    created_at: Option<i64>,
+) -> SandboxContainerRecord {
     SandboxContainerRecord {
         container_id: scope.stable_name(),
         container_name: scope.container_name(),
         image: Some("fake-image".to_string()),
-        created_at: None,
+        created_at,
         state: Some("running".to_string()),
         status: Some("running".to_string()),
         running: true,
@@ -123,6 +130,32 @@ fn fake_sandbox_record(scope: SandboxScope) -> SandboxContainerRecord {
         chat_id: scope.chat_id(),
         thread_id: scope.thread_id(),
         labels: scope.docker_labels(),
+    }
+}
+
+fn fake_web_session_record(user_id: i64, session_id: &str, context_key: &str) -> WebSessionRecord {
+    let now = chrono::Utc::now();
+    WebSessionRecord {
+        schema_version: super::WEB_SESSION_SCHEMA_VERSION,
+        session_id: session_id.to_string(),
+        user_id,
+        title: "Test session".to_string(),
+        context_key: context_key.to_string(),
+        context_keys: vec![context_key.to_string()],
+        agent_flow_id: super::WEB_SESSION_FLOW_ID.to_string(),
+        model_selection: None,
+        agent_profile_id: None,
+        created_at: now,
+        updated_at: now,
+        active_task_id: None,
+        last_task_status: None,
+        last_preview: None,
+        manually_renamed: false,
+        auto_title_source_message: None,
+        auto_title_replaceable_title: None,
+        auto_title_attempts: 0,
+        auto_title_next_attempt_at: None,
+        auto_title_last_error: None,
     }
 }
 
@@ -1865,6 +1898,229 @@ async fn api_create_session_prunes_orphan_web_sandboxes() {
             format!("web-session-{}", created.session.session_id),
         )
         .container_name()
+    }));
+}
+
+#[tokio::test]
+async fn api_list_sessions_prunes_web_sandboxes_over_limit_oldest_first() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..12 {
+        let session_id = format!("quota-live-{index}");
+        let context_key = format!("web-session-quota-live-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-0").container_name()
+    }));
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-1").container_name()
+    }));
+}
+
+#[tokio::test]
+async fn api_list_sessions_keeps_non_web_sandboxes_when_enforcing_limit() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-bob".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-bob".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..12 {
+        let session_id = format!("quota-web-{index}");
+        let context_key = format!("web-session-quota-web-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    for index in 0..3 {
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, format!("topic-live-{index}")),
+            Some(index),
+        ));
+    }
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    for index in 0..3 {
+        assert!(!deleted_names.iter().any(|name| {
+            name == &SandboxScope::new(user.user_id, format!("topic-live-{index}")).container_name()
+        }));
+    }
+}
+
+#[tokio::test]
+async fn api_list_sessions_prunes_orphans_before_quota() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-carol".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-carol".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..10 {
+        let session_id = format!("quota-live-{index}");
+        let context_key = format!("web-session-quota-live-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    sandboxes.push(fake_sandbox_record_with_created_at(
+        SandboxScope::new(user.user_id, "web-session-quota-orphan-0"),
+        Some(-2),
+    ));
+    sandboxes.push(fake_sandbox_record_with_created_at(
+        SandboxScope::new(user.user_id, "web-session-quota-orphan-1"),
+        Some(-1),
+    ));
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-orphan-0").container_name()
+    }));
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-orphan-1").container_name()
+    }));
+    assert!(!deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-0").container_name()
     }));
 }
 

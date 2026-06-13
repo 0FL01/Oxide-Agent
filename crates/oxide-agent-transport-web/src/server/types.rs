@@ -42,6 +42,7 @@ pub(crate) const TASK_PREVIEW_CHARS: usize = 96;
 pub(crate) const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 pub(crate) const MAX_TASK_EVENTS_LIMIT: usize = 500;
 pub(crate) const DEFAULT_WEB_CHAT_UPLOAD_MAX_MB: u64 = 200;
+pub(crate) const DEFAULT_WEB_MAX_SANDBOX_CONTAINERS_PER_USER: usize = 10;
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -619,6 +620,12 @@ pub(crate) fn web_u64_env(key: &str) -> Option<u64> {
 
 pub(crate) fn web_chat_upload_limit_mb() -> u64 {
     web_u64_env("OXIDE_WEB_CHAT_UPLOAD_MAX_MB").unwrap_or(DEFAULT_WEB_CHAT_UPLOAD_MAX_MB)
+}
+
+pub(crate) fn web_max_sandbox_containers_per_user() -> usize {
+    web_u64_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER")
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(DEFAULT_WEB_MAX_SANDBOX_CONTAINERS_PER_USER)
 }
 
 pub(crate) fn web_bootstrap_required(
