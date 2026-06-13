@@ -1,4 +1,4 @@
-use crate::auth::{AuthContext, DEFAULT_MAX_TASK_INPUT_CHARS};
+use crate::auth::AuthContext;
 use crate::utils::spawn_ui;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
@@ -8,8 +8,6 @@ use oxide_agent_web_contracts::{
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
 };
-
-pub(super) const MAX_TASK_INPUT_CHARS: usize = DEFAULT_MAX_TASK_INPUT_CHARS;
 
 #[derive(Clone)]
 pub(super) struct PendingAttachmentFile {
