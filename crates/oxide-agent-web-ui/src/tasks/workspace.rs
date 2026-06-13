@@ -18,8 +18,8 @@ use super::composer::{
     AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, submit_parent_form_on_ctrl_enter, task_input_limit_notice,
-    task_input_too_long,
+    persist_default_effort, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
+    task_input_limit_notice, task_input_too_long,
 };
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
@@ -235,6 +235,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
     let (effort_touched, set_effort_touched) = signal(false);
+    let textarea_ref = NodeRef::<html::Textarea>::new();
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -331,6 +332,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
             {
                 Ok(_) => {
                     set_input.set(String::new());
+                    reset_composer_textarea_height(textarea_ref);
                     set_pending_files.set(Vec::new());
                     navigate(&format!("/app/session/{session_id}"));
                 }
@@ -385,6 +387,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                         }
                     >
                         <textarea
+                            node_ref=textarea_ref
                             placeholder="Message Oxide Agent…"
                             prop:value=input
                             disabled=loading
@@ -514,6 +517,7 @@ fn SessionWorkspace(
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
     let (effort_touched, set_effort_touched) = signal(false);
+    let textarea_ref = NodeRef::<html::Textarea>::new();
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -821,6 +825,7 @@ fn SessionWorkspace(
                 Ok(task) => {
                     set_drawer_open.set(false);
                     set_input.set(String::new());
+                    reset_composer_textarea_height(textarea_ref);
                     set_pending_files.set(Vec::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
                     set_selected_versions.update(|items| {
@@ -1013,6 +1018,7 @@ fn SessionWorkspace(
                         }
                     >
                         <textarea
+                            node_ref=textarea_ref
                             placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
                             prop:value=input
                             disabled=is_running

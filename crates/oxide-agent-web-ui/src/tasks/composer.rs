@@ -262,6 +262,12 @@ pub(super) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSign
     resize_textarea_from_input_event(ev);
 }
 
+pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textarea>) {
+    if let Some(textarea) = textarea_ref.get() {
+        textarea.style().remove_property("height").ok();
+    }
+}
+
 pub(super) fn handle_composer_paste(
     ev: &leptos::ev::ClipboardEvent,
     next_id: ReadSignal<usize>,
