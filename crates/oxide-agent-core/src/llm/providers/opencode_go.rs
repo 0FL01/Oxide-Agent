@@ -1593,20 +1593,25 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 }
 
 fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
-    let prompt_tokens = value.get("input_tokens")?.as_u64()? as u32;
+    let input_tokens = value.get("input_tokens")?.as_u64()? as u32;
     let completion_tokens = value.get("output_tokens")?.as_u64()? as u32;
+    let cached_tokens = value
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let cache_creation_tokens = value
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let prompt_tokens = input_tokens
+        .saturating_add(cached_tokens.unwrap_or_default())
+        .saturating_add(cache_creation_tokens.unwrap_or_default());
     Some(TokenUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
-        cached_tokens: value
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
-        cache_creation_tokens: value
-            .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
+        cached_tokens,
+        cache_creation_tokens,
     })
 }
 
@@ -2186,8 +2191,8 @@ mod tests {
         }))
         .expect("anthropic usage should parse");
 
-        assert_eq!(usage.prompt_tokens, 3840);
-        assert_eq!(usage.total_tokens, 4352);
+        assert_eq!(usage.prompt_tokens, 6528);
+        assert_eq!(usage.total_tokens, 7040);
         assert_eq!(usage.cached_tokens, Some(2560));
         assert_eq!(usage.cache_creation_tokens, Some(128));
     }
