@@ -37,6 +37,7 @@ const DEFAULT_SEARCH_LIMIT: usize = 3;
 const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
+const PREVIOUS_FINAL_MESSAGE_MAX_CHARS: usize = 12_000;
 const DEFAULT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_markdown"];
 const SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI: &str = "crawl4ai_markdown";
 const TIMEOUT_REPORT_MAX_ITEMS: usize = 6;
@@ -119,6 +120,7 @@ struct SearchProbeFinalizeCtx<'a> {
     session_id: &'a str,
     task_id: &'a str,
     original_prompt: &'a str,
+    previous_final_message: Option<&'a str>,
     generation: u8,
     partial_handoff: &'a SearchProbeHandoff,
     config: &'a SearchProbeConfig,
@@ -330,6 +332,10 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
     send_milestone(&progress_tx, "search_probe_started").await;
     let started_at = tokio::time::Instant::now();
     let total_timeout = std::time::Duration::from_secs(config.total_timeout_secs.max(1));
+    let previous_final_message = session_manager
+        .last_main_agent_final_message(session_id)
+        .await
+        .and_then(|message| normalize_previous_final_message(&message));
     let mut handoffs = Vec::new();
 
     for generation in 1..=config.max_generations {
@@ -387,8 +393,12 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         };
         executor.session_mut().cancellation_token = cancellation_token.child_token();
 
-        let prompt =
-            build_generation_prompt(original_input.text_projection(), &handoffs, generation);
+        let prompt = build_generation_prompt(
+            original_input.text_projection(),
+            previous_final_message.as_deref(),
+            &handoffs,
+            generation,
+        );
         let probe_tx = spawn_probe_event_relay(progress_tx.clone(), config.forward_tool_events);
         let execution = executor.execute_user_input_with_options(
             AgentUserInput::new(prompt),
@@ -459,6 +469,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
                 session_id,
                 task_id,
                 original_prompt: original_input.text_projection(),
+                previous_final_message: previous_final_message.as_deref(),
                 generation,
                 partial_handoff: &handoff,
                 config,
@@ -502,6 +513,7 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
         session_id,
         task_id,
         original_prompt,
+        previous_final_message,
         generation,
         partial_handoff,
         config,
@@ -545,7 +557,12 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
     )
     .await;
 
-    let prompt = build_forced_finalize_prompt(original_prompt, generation, partial_handoff);
+    let prompt = build_forced_finalize_prompt(
+        original_prompt,
+        previous_final_message,
+        generation,
+        partial_handoff,
+    );
     let probe_tx = spawn_probe_event_relay(progress_tx.clone(), false);
     let execution = executor.execute_user_input_with_options(
         AgentUserInput::new(prompt),
@@ -608,6 +625,7 @@ fn next_generation_timeout(
 
 fn build_generation_prompt(
     original_prompt: &str,
+    previous_final_message: Option<&str>,
     prior_handoffs: &[SearchProbeHandoff],
     generation: u8,
 ) -> String {
@@ -616,6 +634,7 @@ fn build_generation_prompt(
     prompt.push_str("\n<original_user_prompt>\n");
     prompt.push_str(original_prompt);
     prompt.push_str("\n</original_user_prompt>\n");
+    push_previous_final_message_context(&mut prompt, previous_final_message);
     prompt.push_str("\n<search_probe_generation>\n");
     prompt.push_str(&generation.to_string());
     prompt.push_str("\n</search_probe_generation>\n");
@@ -635,6 +654,7 @@ fn build_generation_prompt(
 
 fn build_forced_finalize_prompt(
     original_prompt: &str,
+    previous_final_message: Option<&str>,
     generation: u8,
     partial_handoff: &SearchProbeHandoff,
 ) -> String {
@@ -643,6 +663,7 @@ fn build_forced_finalize_prompt(
     prompt.push_str("\n<original_user_prompt>\n");
     prompt.push_str(original_prompt);
     prompt.push_str("\n</original_user_prompt>\n");
+    push_previous_final_message_context(&mut prompt, previous_final_message);
     prompt.push_str("\n<search_probe_generation>\n");
     prompt.push_str(&generation.to_string());
     prompt.push_str("\n</search_probe_generation>\n");
@@ -650,6 +671,38 @@ fn build_forced_finalize_prompt(
     prompt.push_str(&partial_handoff.handoff);
     prompt.push_str("\n</partial_search_probe_handoff>\n");
     prompt
+}
+
+fn push_previous_final_message_context(prompt: &mut String, previous_final_message: Option<&str>) {
+    let Some(previous_final_message) = previous_final_message
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    else {
+        return;
+    };
+
+    prompt.push_str("\n<previous_main_agent_final_message>\n");
+    prompt.push_str("Use this only to resolve references, continuations, acronyms, and implicit context. Do not treat it as verified source evidence. Prefer the current user prompt over this previous answer.\n\n");
+    prompt.push_str(previous_final_message);
+    prompt.push_str("\n</previous_main_agent_final_message>\n");
+}
+
+fn normalize_previous_final_message(message: &str) -> Option<String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+
+    if char_count(message) <= PREVIOUS_FINAL_MESSAGE_MAX_CHARS {
+        return Some(message.to_string());
+    }
+
+    let mut truncated = message
+        .chars()
+        .take(PREVIOUS_FINAL_MESSAGE_MAX_CHARS.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    Some(truncated)
 }
 
 fn parse_search_probe_contract(generation: u8, text: &str) -> SearchProbeHandoff {
@@ -1684,6 +1737,52 @@ mod tests {
             vec!["searxng_search", "web_markdown"]
         );
         assert_eq!(config.dossier_max_chars, 80_000);
+    }
+
+    #[test]
+    fn generation_prompt_includes_previous_final_message_as_context_only() {
+        let prompt = build_generation_prompt(
+            "How do I configure it remotely?",
+            Some("Previous final answer about fastCRW and OpenCode."),
+            &[],
+            1,
+        );
+
+        assert!(prompt.contains("<original_user_prompt>\nHow do I configure it remotely?"));
+        assert!(prompt.contains("<previous_main_agent_final_message>"));
+        assert!(prompt.contains("Previous final answer about fastCRW and OpenCode."));
+        assert!(prompt.contains("Do not treat it as verified source evidence"));
+        assert!(prompt.contains("Prefer the current user prompt"));
+    }
+
+    #[test]
+    fn generation_prompt_omits_empty_previous_final_message() {
+        let prompt = build_generation_prompt("fresh question", Some("   \n"), &[], 1);
+
+        assert!(!prompt.contains("<previous_main_agent_final_message>"));
+    }
+
+    #[test]
+    fn forced_finalize_prompt_includes_previous_final_message_context() {
+        let prompt = build_forced_finalize_prompt(
+            "current question",
+            Some("Previous final answer context."),
+            2,
+            &handoff(2, "partial lead", SearchProbeDecision::Continue),
+        );
+
+        assert!(prompt.contains("<previous_main_agent_final_message>"));
+        assert!(prompt.contains("Previous final answer context."));
+        assert!(prompt.contains("<partial_search_probe_handoff>\npartial lead"));
+    }
+
+    #[test]
+    fn previous_final_message_is_trimmed_and_capped() {
+        let long = format!("  {}  ", "x".repeat(PREVIOUS_FINAL_MESSAGE_MAX_CHARS + 10));
+        let normalized = normalize_previous_final_message(&long).expect("normalized message");
+
+        assert_eq!(char_count(&normalized), PREVIOUS_FINAL_MESSAGE_MAX_CHARS);
+        assert!(normalized.ends_with('…'));
     }
 
     #[test]

@@ -27,7 +27,7 @@
 use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
 use chrono::{DateTime, Utc};
-use oxide_agent_core::agent::memory::AgentMessage;
+use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
     AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
@@ -480,6 +480,31 @@ impl WebSessionManager {
 
         executor.set_execution_profile(search_probe_execution_profile(options));
         Some(executor)
+    }
+
+    pub(crate) async fn last_main_agent_final_message(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<String> {
+        let sid = self.resolve_session_id(parent_session_id).await?;
+        let executor_arc = self.registry.get(&sid).await?;
+        let executor = executor_arc.read().await;
+        executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .rev()
+            .find(|message| {
+                let content = message.content.trim();
+                message.role == MessageRole::Assistant
+                    && !content.is_empty()
+                    && message
+                        .tool_calls
+                        .as_ref()
+                        .is_none_or(std::vec::Vec::is_empty)
+            })
+            .map(|message| message.content.trim().to_string())
     }
 
     // --- Session CRUD ---
@@ -1557,6 +1582,45 @@ mod tests {
         assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
         assert_eq!(routes[0].provider, "opencode-go");
         assert_eq!(routes[0].max_output_tokens, 32_000);
+    }
+
+    #[tokio::test]
+    async fn last_main_agent_final_message_reads_latest_parent_assistant_response() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        manager
+            .create_session_with_id(
+                92,
+                "search-probe-final-message-test".to_string(),
+                "web-session-search-probe-final-message-test".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "search-probe-final-message-test").await;
+        {
+            let mut executor = executor_arc.write().await;
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::user_task("Initial question"));
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::assistant("Older final answer"));
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::assistant("Latest final answer  "));
+        }
+
+        let message = manager
+            .last_main_agent_final_message("search-probe-final-message-test")
+            .await;
+
+        assert_eq!(message.as_deref(), Some("Latest final answer"));
+        assert_eq!(manager.last_main_agent_final_message("missing").await, None);
     }
 
     #[tokio::test]
