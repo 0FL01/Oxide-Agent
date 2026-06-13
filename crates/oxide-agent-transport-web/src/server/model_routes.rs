@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
 
 use super::{AppState, api_error, authenticated_user, authenticated_user_with_csrf};
 
-const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/kimi-k2.6";
+const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/deepseek-v4-flash";
 const OPENCODE_GO_PREFIX: &str = "opencode-go";
 const OPENCODE_ZEN_PREFIX: &str = "opencode-zen";
 const OPENAI_BASE_PREFIX: &str = "openai-base";

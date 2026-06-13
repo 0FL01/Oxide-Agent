@@ -729,7 +729,7 @@ impl AgentSettings {
         }
 
         let route = ModelInfo {
-            id: "opencode-go/kimi-k2.6".to_string(),
+            id: "opencode-go/deepseek-v4-flash".to_string(),
             max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
             context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
             provider: "opencode-go".to_string(),
@@ -1845,7 +1845,7 @@ mod tests {
         let settings = AgentSettings::new()?;
         let primary = settings.get_configured_agent_model();
 
-        assert_eq!(primary.id, "opencode-go/kimi-k2.6");
+        assert_eq!(primary.id, "opencode-go/deepseek-v4-flash");
         assert_eq!(primary.provider, "llm-provider/opencode-go");
         assert_eq!(
             primary.max_output_tokens,
