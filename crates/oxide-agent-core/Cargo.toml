@@ -82,7 +82,6 @@ profile-full = [
     "llm-mistral",
     "llm-minimax",
     "llm-zai",
-    "llm-nvidia",
     "llm-openai-base",
     "llm-opencode-go",
     "llm-openrouter",
@@ -242,7 +241,6 @@ llm-chatgpt = ["dep:reqwest"]
 llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]
 llm-zai = ["dep:zai-rs", "dep:reqwest"]
-llm-nvidia = ["dep:reqwest"]
 llm-openai-base = ["dep:reqwest"]
 llm-opencode-go = ["dep:reqwest"]
 llm-openrouter = ["dep:reqwest"]

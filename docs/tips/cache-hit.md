@@ -12,7 +12,7 @@
 
 5.  **Provider-native prompt caching не используется.** Anthropic-compatible пути (MiniMax через `claudius`, OpenCode Go Anthropic path) не выставляют `cache_control` markers, хотя SDK их поддерживают. OpenAI/OpenRouter не имеют explicit cache markers в запросах.
 
-6.  ~~**Нет telemetry по cache read/write tokens.**~~ **FIXED.** `TokenUsage` расширена полями `cached_tokens: Option<u32>` и `cache_creation_tokens: Option<u32>` (`types.rs`). Все 9 production parse sites обновлены (OpenCode Go, OpenRouter, ChatGPT, Mistral, MiniMax, ZAI, NVIDIA). Метод `cache_hit_rate()` вычисляет miss как `prompt_tokens - cached_tokens`. Тесты: 6 unit tests в `types.rs`, 4 provider tests в `opencode_go.rs`. Commit: `20740c82`.
+6.  ~~**Нет telemetry по cache read/write tokens.**~~ **FIXED.** `TokenUsage` расширена полями `cached_tokens: Option<u32>` и `cache_creation_tokens: Option<u32>` (`types.rs`). Все production parse sites обновлены (OpenCode Go, OpenRouter, ChatGPT, Mistral, MiniMax, ZAI). Метод `cache_hit_rate()` вычисляет miss как `prompt_tokens - cached_tokens`. Тесты: 6 unit tests в `types.rs`, 4 provider tests в `opencode_go.rs`. Commit: `20740c82`.
 
 7.  ~~**Tool schemas дублируются в prompt text и native `tools[]`.**~~ **FIXED.** `build_structured_output_instructions()` (`composer.rs`) теперь рендерит только compact sorted tool-name list (`## Available Tools`). Полные schemas доставляются исключительно через native `tools[]` payload. Prompt: 2673→98 bytes (27x reduction), wire duplication: -48%.
 
@@ -106,7 +106,6 @@ Assembly order: `base + stable + date_suffix + volatile`
 - Mistral: `crates/oxide-agent-core/src/llm/providers/mistral/parsing.rs:9`
 - MiniMax: `crates/oxide-agent-core/src/llm/providers/minimax/response.rs:77`
 - ZAI: `crates/oxide-agent-core/src/llm/providers/zai/sdk.rs:499`
-- NVIDIA: `crates/oxide-agent-core/src/llm/providers/nvidia.rs:319`
 - Tests: 6 unit tests в `types.rs`, 4 provider tests в `opencode_go.rs`
 
 ---
@@ -307,7 +306,6 @@ Provider parsers для cache tokens (**DONE** — все обновлены):
 - ZAI: `zai/sdk.rs:499-504`
 - MiniMax: `minimax/response.rs:77-95`
 - Mistral: `mistral/parsing.rs:8-16`
-- NVIDIA: `nvidia.rs:319-325`
 - ChatGPT: `chatgpt/mod.rs:765`
 
 Формулы (DeepSeek V4 Flash):
@@ -432,7 +430,7 @@ to cacheable prefix. Iter 2+ hit rate would be ~95-99% instead of ~82-86%.
 ## Open questions
 
 - Provider cache usage fields **подтверждены runtime** для OpenCode Go (DeepSeek response). Остальные providers возвращают `None` на текущих routes — парсеры готовы, данные появятся при подключении соответствующих routes.
-- **Нет прямого DeepSeek provider** в repo. DeepSeek-relevant пути: OpenCode Go (`deepseek-v4-flash`), OpenRouter DeepSeek model IDs, NVIDIA NIM DeepSeek model IDs.
+- **Нет прямого DeepSeek provider** в repo. DeepSeek-relevant пути: OpenCode Go (`deepseek-v4-flash`), OpenRouter DeepSeek model IDs.
 - OpenRouter sticky/session routing params **не используются** (`openrouter.rs:382-394`). Поддержка endpoint-ом не проверена.
 - MiniMax/Claude `cache_control` **не доказаны** live. Код явно ставит `cache_control: None` (`minimax/messages.rs:72-89`). Нужен provider-doc confirmation + live test.
 - OpenCode Go Anthropic path: нет explicit cache markers (`opencode_go.rs:823-844`). Поддержка не проверена.

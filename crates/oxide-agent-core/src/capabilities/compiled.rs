@@ -139,15 +139,6 @@ const ZAI_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
         .with_default("https://api.z.ai/api/coding/paas/v4/chat/completions"),
 ];
 #[allow(dead_code)]
-const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "NVIDIA NIM API key.")
-        .with_env("NVIDIA_API_KEY")
-        .secret(),
-    ModuleConfigProperty::string("api_base", "NVIDIA NIM OpenAI-compatible API base URL.")
-        .with_env("NVIDIA_API_BASE")
-        .with_default("https://integrate.api.nvidia.com/v1"),
-];
-#[allow(dead_code)]
 const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     ModuleConfigProperty::string(
         "providers",
@@ -381,14 +372,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/zai"],
         ZAI_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-nvidia",
-        "llm-provider/nvidia",
-        LlmProvider,
-        ["llm-provider/nvidia"],
-        NVIDIA_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

@@ -2,7 +2,7 @@
 
 Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 

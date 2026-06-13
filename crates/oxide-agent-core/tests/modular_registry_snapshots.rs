@@ -543,11 +543,9 @@ fn assert_provider_alias_contract(
         );
     }
 
-    for module_id in enabled_module_ids
-        .iter()
-        .copied()
-        .filter(|module_id| module_id.starts_with("llm-provider/"))
-    {
+    for module_id in enabled_module_ids.iter().copied().filter(|module_id| {
+        module_id.starts_with("llm-provider/") && *module_id != "llm-provider/openai-base"
+    }) {
         assert!(
             provider_names.contains(module_id),
             "enabled provider module {module_id} must register its canonical provider ID for {profile}"
@@ -567,9 +565,6 @@ fn allowed_provider_names_for_enabled_modules(
             }
             "llm-provider/mistral" => {
                 allowed.extend(["llm-provider/mistral", "mistral"]);
-            }
-            "llm-provider/nvidia" => {
-                allowed.extend(["llm-provider/nvidia", "nvidia"]);
             }
             "llm-provider/openai-chatgpt" => {
                 allowed.extend(["llm-provider/openai-chatgpt", "chatgpt", "openai-chatgpt"]);

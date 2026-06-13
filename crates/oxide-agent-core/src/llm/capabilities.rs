@@ -168,33 +168,6 @@ pub fn supports_structured_output_for_model(model_info: &ModelInfo) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "llm-nvidia")]
-    #[test]
-    fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
-        let supported = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-v4-flash".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-        let unsupported = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-r1".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-
-        let supported_capabilities = super::provider_capabilities_for_model(&supported);
-        let unsupported_capabilities = super::provider_capabilities_for_model(&unsupported);
-
-        assert!(supported_capabilities.supports_tool_calling);
-        assert!(supported_capabilities.supports_structured_output);
-        assert!(!unsupported_capabilities.supports_tool_calling);
-        assert!(!unsupported_capabilities.supports_structured_output);
-    }
-
     #[cfg(feature = "llm-chatgpt")]
     #[test]
     fn chatgpt_capabilities_disable_structured_output() {

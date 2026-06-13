@@ -11,7 +11,6 @@ use crate::llm::LlmProvider;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-zai",
-    feature = "llm-nvidia",
     feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
@@ -24,7 +23,6 @@ pub(crate) struct LlmProviderBuildContext {
         feature = "llm-chatgpt",
         feature = "llm-mistral",
         feature = "llm-zai",
-        feature = "llm-nvidia",
         feature = "llm-openai-base",
         feature = "llm-opencode-go",
         feature = "llm-openrouter"
@@ -39,7 +37,6 @@ impl LlmProviderBuildContext {
                 feature = "llm-chatgpt",
                 feature = "llm-mistral",
                 feature = "llm-zai",
-                feature = "llm-nvidia",
                 feature = "llm-openai-base",
                 feature = "llm-opencode-go",
                 feature = "llm-openrouter"
@@ -249,8 +246,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     modules.push(Box::new(super::minimax::MiniMaxProviderModule));
     #[cfg(feature = "llm-zai")]
     modules.push(Box::new(super::zai::ZaiProviderModule));
-    #[cfg(feature = "llm-nvidia")]
-    modules.push(Box::new(super::nvidia::NvidiaProviderModule));
     #[cfg(feature = "llm-openai-base")]
     modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
     #[cfg(feature = "llm-opencode-go")]
@@ -558,24 +553,6 @@ mod tests {
             provider_capabilities_for_model(&route).expect("provider id should resolve");
 
         assert!(capabilities.supports_structured_output);
-    }
-
-    #[cfg(feature = "llm-nvidia")]
-    #[test]
-    fn nvidia_module_owns_model_specific_capabilities() {
-        let route = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-r1".to_string(),
-            provider: "llm-provider/nvidia".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            weight: 1,
-        };
-
-        let capabilities =
-            provider_capabilities_for_model(&route).expect("provider id should resolve");
-
-        assert!(!capabilities.supports_tool_calling);
-        assert!(!capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-openrouter")]

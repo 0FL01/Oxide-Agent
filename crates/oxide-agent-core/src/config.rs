@@ -27,8 +27,6 @@ pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
 pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Default temperature used for OpenRouter text requests.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for NVIDIA NIM text requests.
-pub const NVIDIA_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for generic OpenAI-compatible text requests.
 pub const OPENAI_BASE_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for MiniMax text requests.

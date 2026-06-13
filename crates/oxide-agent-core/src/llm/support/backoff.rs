@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn retry_delay_treats_service_unavailable_text_as_retryable() {
-        let error = LlmError::ApiError("NVIDIA NIM API error: service unavailable".to_string());
+        let error = LlmError::ApiError("LLM API error: service unavailable".to_string());
         let delay = get_retry_delay(&error, 2).expect("retry delay");
 
         assert_eq!(delay, Duration::from_millis(2000));

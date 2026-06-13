@@ -25,7 +25,6 @@ pub use provider::MockLlmProvider;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-zai",
-    feature = "llm-nvidia",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]

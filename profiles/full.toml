@@ -7,7 +7,6 @@ cargo_features = ["profile-full"]
 "integration/ssh-mcp" = { enabled = true }
 "llm-provider/minimax" = { enabled = true }
 "llm-provider/mistral" = { enabled = true }
-"llm-provider/nvidia" = { enabled = true }
 "llm-provider/openai-base" = { enabled = true }
 "llm-provider/openai-chatgpt" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }

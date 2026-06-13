@@ -80,34 +80,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         ]
       },
       {
-        "id": "llm-provider/nvidia",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-nvidia",
-        "provides": [
-          "llm-provider/nvidia"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "NVIDIA NIM OpenAI-compatible API base URL.",
-            "env": "NVIDIA_API_BASE",
-            "secret": false,
-            "default_value": "https://integrate.api.nvidia.com/v1"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "NVIDIA NIM API key.",
-            "env": "NVIDIA_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
         "id": "llm-provider/openai-base",
         "kind": "llm-provider",
         "cargo_feature": "llm-openai-base",
@@ -118,19 +90,43 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "conflicts": [],
         "config_properties": [
           {
-            "name": "api_base",
+            "name": "providers",
             "value_kind": "string",
-            "description": "Generic OpenAI-compatible API base URL or chat completions endpoint.",
-            "env": "OPENAI_BASE_API_BASE",
+            "description": "OpenAI-compatible provider instances configured via OPENAI_BASE_PROVIDERS__N__* env vars.",
+            "env": "OPENAI_BASE_PROVIDERS__N__NAME",
             "secret": false,
             "default_value": null
           },
           {
-            "name": "api_key",
+            "name": "providers.N.api_base",
             "value_kind": "string",
-            "description": "Optional bearer token for a generic OpenAI-compatible API.",
-            "env": "OPENAI_BASE_API_KEY",
+            "description": "OpenAI-compatible API base URL or chat completions endpoint for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_BASE",
+            "secret": false,
+            "default_value": null
+          },
+          {
+            "name": "providers.N.api_key",
+            "value_kind": "string",
+            "description": "Optional bearer token for OpenAI-compatible provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_KEY",
             "secret": true,
+            "default_value": null
+          },
+          {
+            "name": "providers.N.model_cache_ttl_secs",
+            "value_kind": "string",
+            "description": "OpenAI Base model discovery cache TTL for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+            "secret": false,
+            "default_value": "1800"
+          },
+          {
+            "name": "providers.N.models_url",
+            "value_kind": "string",
+            "description": "Optional OpenAI-compatible model discovery endpoint for provider instance N. Defaults to api_base /models.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+            "secret": false,
             "default_value": null
           }
         ]
@@ -666,6 +662,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "cargo_feature": "tool-webfetch-md",
+        "provides": [
+          "tool/web-crawler"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": []
+      },
+      {
         "id": "tool/webfetch-md",
         "kind": "search",
         "cargo_feature": "tool-webfetch-md",
@@ -760,10 +767,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "llm-provider/mistral",
         "module": "llm-provider/mistral"
-      },
-      {
-        "id": "llm-provider/nvidia",
-        "module": "llm-provider/nvidia"
       },
       {
         "id": "llm-provider/openai-base",
@@ -938,6 +941,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/tts-silero"
       },
       {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
+      },
+      {
         "id": "tool/webfetch-md",
         "module": "tool/webfetch-md"
       },
@@ -974,7 +981,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/ssh-mcp",
       "llm-provider/minimax",
       "llm-provider/mistral",
-      "llm-provider/nvidia",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
@@ -1005,6 +1011,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp",
@@ -1017,7 +1024,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/ssh-mcp",
       "llm-provider/minimax",
       "llm-provider/mistral",
-      "llm-provider/nvidia",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
@@ -1061,6 +1067,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp-download",
@@ -1105,8 +1112,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "registered_llm_provider_ids_dummy_config": [
     "llm-provider/minimax",
     "llm-provider/mistral",
-    "llm-provider/nvidia",
-    "llm-provider/openai-base",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
@@ -1117,10 +1122,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "chatgpt",
     "minimax",
     "mistral",
-    "nvidia",
-    "openai-base",
     "openai-chatgpt",
-    "openai_base",
     "opencode-go",
     "opencode-zen",
     "opencode_go",
@@ -1176,22 +1178,15 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "llm-provider/nvidia",
-      "kind": "llm-provider",
-      "cargo_feature": "llm-nvidia",
-      "config_env": [
-        "NVIDIA_API_BASE",
-        "NVIDIA_API_KEY"
-      ],
-      "requires_capabilities": []
-    },
-    {
       "module_id": "llm-provider/openai-base",
       "kind": "llm-provider",
       "cargo_feature": "llm-openai-base",
       "config_env": [
-        "OPENAI_BASE_API_BASE",
-        "OPENAI_BASE_API_KEY"
+        "OPENAI_BASE_PROVIDERS__N__NAME",
+        "OPENAI_BASE_PROVIDERS__N__API_BASE",
+        "OPENAI_BASE_PROVIDERS__N__API_KEY",
+        "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+        "OPENAI_BASE_PROVIDERS__N__MODELS_URL"
       ],
       "requires_capabilities": []
     },
@@ -1312,6 +1307,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/tavily",
       "kind": "search",
       "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },

@@ -9,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **8 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
 
 ### Architecture Highlights
 
@@ -66,7 +66,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Telegram Authorization:** Access control via `TELEGRAM_ALLOWED_USERS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 8 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
+*   **Multi-LLM Support:** 7 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Web Interface:** Browser-based chat with the agent -- Leptos SPA with SSE streaming for real-time responses, dark theme, and markdown rendering.
 *   **Multimedia Processing:**
@@ -95,7 +95,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
 
 ### Supported LLM Providers for Agent Mode
-The bot supports **8 providers** for Agent Mode with tool calling:
+The bot supports **7 providers** for Agent Mode with tool calling:
 
 *   **OpenCode Go** (`OPENCODE_GO_API_KEY`) - **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, reasoning content parsing, adaptive throttling, and unbounded retry.
 *   **OpenCode Zen** - Free-tier filtered variant of OpenCode Go. Same provider code, filtered to free-only models via discovery. Provider alias: `opencode-zen`.
@@ -104,7 +104,6 @@ The bot supports **8 providers** for Agent Mode with tool calling:
 *   **MiniMax** (`MINIMAX_API_KEY`) - Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
 *   **Mistral** (`MISTRAL_API_KEY`) - Cost-effective agent routes and Voxtral audio transcription (`voxtral-mini-latest`).
 *   **OpenRouter** (`OPENROUTER_API_KEY`) - Multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
-*   **NVIDIA NIM** (`NVIDIA_API_KEY`) - Tool calling support for approved model routes, hosted inference.
 
 > [!NOTE]
 > Voice recognition and image analysis require an explicit `MEDIA_MODEL_ID` / `MEDIA_MODEL_PROVIDER` route.
@@ -293,8 +292,6 @@ OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
-NVIDIA_API_KEY=...
-NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=...
 OPENCODE_GO_API_KEY=...
 OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
@@ -389,28 +386,6 @@ AGENT_MODEL_ROUTES__2__WEIGHT=2
 </details>
 
 <details>
-<summary>Weighted failover with NVIDIA NIM</summary>
-
-Use NVIDIA NIM only with the explicit Agent Mode allowlist. If you are unsure, keep NIM behind a proven primary route first:
-
-```dotenv
-NVIDIA_API_KEY=...
-NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
-
-AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
-AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
-AGENT_MODEL_ROUTES__0__WEIGHT=5
-
-AGENT_MODEL_ROUTES__1__ID="deepseek-ai/deepseek-v4-flash"
-AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
-AGENT_MODEL_ROUTES__1__WEIGHT=3
-```
-
-The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execution. Structured output is enabled only for explicitly approved model routes.
-
-</details>
-
-<details>
 <summary>Alternate provider example</summary>
 
 ```
@@ -436,7 +411,6 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 | **MiniMax** | Claude SDK-compatible, high context (MiniMax-M2.7) |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
 | **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
-| **NVIDIA NIM** | Tool calling support, hosted inference |
 
 > **Note:** Gemini-family models are configured through OpenRouter routes, not a direct Google Gemini provider.
 
@@ -736,7 +710,7 @@ crates/
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, nvidia, opencode_go)
+│       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, opencode_go)
 │       │   └── tool_correlation.rs
 │       ├── sandbox/            # Sandbox facade and backends
 │       │   ├── bwrap/          # Bubblewrap backend (14 modules)
@@ -832,7 +806,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 
 | Category | Features |
 |----------|----------|
-| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-nvidia`, `llm-opencode-go`, `llm-openrouter` |
+| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-opencode-go`, `llm-openrouter` |
 | **Search Tools** | `tool-tavily`, `tool-duckduckgo`, `tool-brave-search`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
