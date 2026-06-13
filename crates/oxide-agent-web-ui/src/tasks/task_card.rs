@@ -37,6 +37,8 @@ pub(super) struct TaskCardSignals {
     pub(super) set_selected_versions: WriteSignal<HashMap<String, String>>,
     pub(super) drawer_open: ReadSignal<bool>,
     pub(super) set_drawer_open: WriteSignal<bool>,
+    pub(super) activity_task_id: ReadSignal<Option<String>>,
+    pub(super) set_activity_task_id: WriteSignal<Option<String>>,
     pub(super) stream_signals: StreamUiSignals,
     pub(super) set_error: WriteSignal<Option<String>>,
 }
@@ -54,6 +56,8 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_selected_versions,
         drawer_open,
         set_drawer_open,
+        activity_task_id,
+        set_activity_task_id,
         stream_signals,
         set_error,
     } = signals;
@@ -130,6 +134,19 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
             let search_probe_messages = search_probe_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
+            let activity_open = drawer_open.get() && activity_task_id.get().as_deref() == Some(task.task_id.as_str());
+            let task_id_for_activity = task.task_id.clone();
+            let open_activity = Callback::new(move |_| {
+                if drawer_open.get_untracked()
+                    && activity_task_id.get_untracked().as_deref() == Some(task_id_for_activity.as_str())
+                {
+                    set_drawer_open.set(false);
+                    set_activity_task_id.set(None);
+                } else {
+                    set_activity_task_id.set(Some(task_id_for_activity.clone()));
+                    set_drawer_open.set(true);
+                }
+            });
             let can_select_previous = selected_index > 0;
             let can_select_next = selected_index + 1 < version_count;
             let previous_task = can_select_previous.then(|| versions[selected_index - 1].clone());
@@ -159,11 +176,9 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                     />
                     <ResumeUserMessages messages=resume_messages />
                     <SearchProbeMessages messages=search_probe_messages />
-                    {editable.then(|| view! {
-                        <div class="task-action-row">
-                            <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
-                        </div>
-                    })}
+                    <div class="task-action-row">
+                        <ThinkingButton label=thought_label open=activity_open on_click=open_activity />
+                    </div>
 
                     {final_response_markdown.map(|answer| view! {
                         <AssistantMessage answer=answer files=delivered_files.clone() />

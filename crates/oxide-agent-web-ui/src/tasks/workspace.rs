@@ -38,6 +38,13 @@ const TASK_EVENTS_OLDER_LIMIT: usize = 500;
 const TASKS_PAGE_LIMIT: usize = 20;
 const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
 
+#[derive(Clone, Copy, Default)]
+struct ActivityPageState {
+    before_seq: u64,
+    has_more: bool,
+    loading: bool,
+}
+
 #[derive(Clone)]
 struct SettingsProfilesCacheEntry {
     loaded_at_ms: f64,
@@ -499,9 +506,7 @@ fn SessionWorkspace(
     let (tasks_has_more, set_tasks_has_more) = signal(false);
     let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
     let (loading_older_tasks, set_loading_older_tasks) = signal(false);
-    let (activity_has_older_events, set_activity_has_older_events) = signal(false);
-    let (activity_before_seq, set_activity_before_seq) = signal(0_u64);
-    let (loading_older_activity, set_loading_older_activity) = signal(false);
+    let (activity_pages, set_activity_pages) = signal(HashMap::<String, ActivityPageState>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
@@ -520,6 +525,7 @@ fn SessionWorkspace(
     let textarea_ref = NodeRef::<html::Textarea>::new();
 
     let (drawer_open, set_drawer_open) = signal(false);
+    let (activity_task_id, set_activity_task_id) = signal(None::<String>);
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -548,8 +554,9 @@ fn SessionWorkspace(
         set_active_task.set(None);
         set_streaming_task_id.set(None);
         set_selected_versions.set(HashMap::new());
-        set_activity_has_older_events.set(false);
-        set_activity_before_seq.set(0);
+        set_activity_pages.set(HashMap::new());
+        set_activity_task_id.set(None);
+        set_drawer_open.set(false);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -595,8 +602,16 @@ fn SessionWorkspace(
                         {
                             Ok(response) => {
                                 let last_seq = max_event_seq(&response.events);
-                                set_activity_has_older_events.set(response.has_more);
-                                set_activity_before_seq.set(response.first_seq);
+                                set_activity_pages.update(|items| {
+                                    items.insert(
+                                        task_id.clone(),
+                                        ActivityPageState {
+                                            before_seq: response.first_seq,
+                                            has_more: response.has_more,
+                                            loading: false,
+                                        },
+                                    );
+                                });
                                 merge_task_events(set_events, response.events);
                                 last_seq
                             }
@@ -633,8 +648,9 @@ fn SessionWorkspace(
                         set_events.set(Vec::new());
                         set_progress.set(None);
                         set_active_task.set(None);
-                        set_activity_has_older_events.set(false);
-                        set_activity_before_seq.set(0);
+                        set_activity_pages.set(HashMap::new());
+                        set_activity_task_id.set(None);
+                        set_drawer_open.set(false);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -671,22 +687,30 @@ fn SessionWorkspace(
 
     let session_id_for_load_older_activity = session_id.clone();
     let load_older_activity = Callback::new(move |_| {
-        if loading_older_activity.get_untracked() || !activity_has_older_events.get_untracked() {
-            return;
-        }
-        let Some(task) = latest_task(&tasks.get_untracked()) else {
+        let Some(task_id) = activity_task_id.get_untracked() else {
             return;
         };
-        let before_seq = activity_before_seq.get_untracked();
+        let page_state = activity_pages
+            .get_untracked()
+            .get(&task_id)
+            .copied()
+            .unwrap_or_default();
+        if page_state.loading || !page_state.has_more {
+            return;
+        }
+        let before_seq = page_state.before_seq;
         if before_seq == 0 {
-            set_activity_has_older_events.set(false);
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().has_more = false;
+            });
             return;
         }
 
-        set_loading_older_activity.set(true);
+        set_activity_pages.update(|items| {
+            items.entry(task_id.clone()).or_default().loading = true;
+        });
         set_error.set(None);
         let session_id = session_id_for_load_older_activity.clone();
-        let task_id = task.task_id.clone();
         spawn_ui(async move {
             let client = auth.client();
             match client
@@ -694,13 +718,67 @@ fn SessionWorkspace(
                 .await
             {
                 Ok(response) => {
-                    set_activity_has_older_events.set(response.has_more);
-                    set_activity_before_seq.set(response.first_seq);
+                    set_activity_pages.update(|items| {
+                        items.insert(
+                            task_id.clone(),
+                            ActivityPageState {
+                                before_seq: response.first_seq,
+                                has_more: response.has_more,
+                                loading: false,
+                            },
+                        );
+                    });
                     merge_task_events(set_events, response.events);
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
             }
-            set_loading_older_activity.set(false);
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().loading = false;
+            });
+        });
+    });
+
+    let session_id_for_activity_load = session_id.clone();
+    Effect::new(move |_| {
+        if !drawer_open.get() {
+            return;
+        }
+        let Some(task_id) = activity_task_id.get() else {
+            return;
+        };
+        if activity_pages.get().contains_key(&task_id) {
+            return;
+        }
+        let Some(task) = tasks.get().into_iter().find(|task| task.task_id == task_id) else {
+            return;
+        };
+
+        set_activity_pages.update(|items| {
+            items.entry(task_id.clone()).or_default().loading = true;
+        });
+        let session_id = session_id_for_activity_load.clone();
+        spawn_ui(async move {
+            let client = auth.client();
+            match load_latest_task_events(&client, &session_id, &task_id, task.last_event_seq).await
+            {
+                Ok(response) => {
+                    set_activity_pages.update(|items| {
+                        items.insert(
+                            task_id.clone(),
+                            ActivityPageState {
+                                before_seq: response.first_seq,
+                                has_more: response.has_more,
+                                loading: false,
+                            },
+                        );
+                    });
+                    merge_task_events(set_events, response.events);
+                }
+                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
+            }
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().loading = false;
+            });
         });
     });
 
@@ -770,6 +848,9 @@ fn SessionWorkspace(
         // Clear stale activity for the new task
         set_events.set(Vec::new());
         set_progress.set(None);
+        set_activity_pages.set(HashMap::new());
+        set_activity_task_id.set(None);
+        set_drawer_open.set(false);
         let session_id = session_id_for_submit.clone();
         let effort = selected_effort.get();
         spawn_ui(async move {
@@ -823,7 +904,6 @@ fn SessionWorkspace(
 
             match result {
                 Ok(task) => {
-                    set_drawer_open.set(false);
                     set_input.set(String::new());
                     reset_composer_textarea_height(textarea_ref);
                     set_pending_files.set(Vec::new());
@@ -964,6 +1044,8 @@ fn SessionWorkspace(
                                                     set_selected_versions,
                                                     drawer_open,
                                                     set_drawer_open,
+                                                    activity_task_id,
+                                                    set_activity_task_id,
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
                                                         set_progress,
@@ -989,6 +1071,8 @@ fn SessionWorkspace(
                         active_task=active_task
                         open=drawer_open
                         set_open=set_drawer_open
+                        activity_task_id=activity_task_id
+                        set_activity_task_id=set_activity_task_id
                     />
                 </div>
 
@@ -1124,12 +1208,24 @@ fn SessionWorkspace(
             <ActivityDrawer
                 open=drawer_open
                 set_open=set_drawer_open
+                activity_task_id=activity_task_id
+                set_activity_task_id=set_activity_task_id
                 tasks=tasks
                 active_task=active_task
                 events=events
                 progress=progress
-                has_older_events=activity_has_older_events
-                loading_older_events=loading_older_activity
+                has_older_events=Signal::derive(move || {
+                    activity_task_id
+                        .get()
+                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
+                        .is_some_and(|state| state.has_more)
+                })
+                loading_older_events=Signal::derive(move || {
+                    activity_task_id
+                        .get()
+                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
+                        .is_some_and(|state| state.loading)
+                })
                 load_older_events=load_older_activity
             />
         </section>
