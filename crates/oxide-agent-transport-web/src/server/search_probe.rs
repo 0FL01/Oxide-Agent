@@ -38,7 +38,8 @@ const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
 const PREVIOUS_FINAL_MESSAGE_MAX_CHARS: usize = 12_000;
-const DEFAULT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_markdown", "web_crawler"];
+const DEFAULT_SPLIT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_markdown"];
+const DEFAULT_MERGED_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_crawler"];
 const SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI: &str = "crawl4ai_markdown";
 const TIMEOUT_REPORT_MAX_ITEMS: usize = 6;
 const TIMEOUT_REPORT_SNIPPET_CHARS: usize = 220;
@@ -194,10 +195,7 @@ impl Default for SearchProbeConfig {
             min_effort: WebAgentEffort::Standard,
             public_updates: DEFAULT_PUBLIC_UPDATES,
             forward_tool_events: DEFAULT_FORWARD_TOOL_EVENTS,
-            tool_allowlist: DEFAULT_TOOL_ALLOWLIST
-                .iter()
-                .map(|tool| (*tool).to_owned())
-                .collect(),
+            tool_allowlist: default_tool_allowlist(),
             dossier_max_chars: DEFAULT_DOSSIER_MAX_CHARS,
         }
     }
@@ -1442,12 +1440,17 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .filter(|tools| !tools.is_empty())
-        .unwrap_or_else(|| {
-            DEFAULT_TOOL_ALLOWLIST
-                .iter()
-                .map(|tool| (*tool).to_owned())
-                .collect()
-        })
+        .unwrap_or_else(default_tool_allowlist)
+}
+
+fn default_tool_allowlist() -> Vec<String> {
+    let tools = if oxide_agent_core::config::is_web_crawler_merge_enabled() {
+        DEFAULT_MERGED_TOOL_ALLOWLIST
+    } else {
+        DEFAULT_SPLIT_TOOL_ALLOWLIST
+    };
+
+    tools.iter().map(|tool| (*tool).to_owned()).collect()
 }
 
 #[cfg(test)]
@@ -1488,6 +1491,7 @@ mod tests {
         ENV_FORWARD_TOOL_EVENTS,
         ENV_TOOL_ALLOWLIST,
         ENV_DOSSIER_MAX_CHARS,
+        "OXIDE_WEB_CRAWLER_MERGE",
     ];
 
     struct EnvGuard(MutexGuard<'static, ()>);
@@ -1737,6 +1741,16 @@ mod tests {
             vec!["searxng_search", "web_markdown"]
         );
         assert_eq!(config.dossier_max_chars, 80_000);
+    }
+
+    #[test]
+    fn config_defaults_use_web_crawler_in_merge_mode() {
+        let _guard = lock_env();
+        test_set_env("OXIDE_WEB_CRAWLER_MERGE", "true");
+
+        let config = SearchProbeConfig::from_env();
+
+        assert_eq!(config.tool_allowlist, vec!["searxng_search", "web_crawler"]);
     }
 
     #[test]
