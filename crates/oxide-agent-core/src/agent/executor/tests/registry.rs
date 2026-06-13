@@ -332,10 +332,9 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Ensure crawl4ai is not configured, so webfetch_md wins the precedence.
+    // Crawl4AI configuration must not affect webfetch_md registration.
     test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
     test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -397,13 +396,12 @@ fn typed_runtime_registry_exposes_ytdlp_tools() {
 
 #[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
 #[test]
-fn typed_runtime_registry_drops_webfetch_when_crawl4ai_configured() {
+fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
     test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -418,8 +416,8 @@ fn typed_runtime_registry_drops_webfetch_when_crawl4ai_configured() {
         "crawl4ai_markdown should be registered when OXIDE_CRAWL4AI_BASE_URL is set"
     );
     assert!(
-        !tool_names.contains("web_markdown"),
-        "web_markdown must be suppressed when crawl4ai is configured to avoid duplicate attention cost"
+        tool_names.contains("web_markdown"),
+        "web_markdown should remain registered when crawl4ai is configured"
     );
 
     test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
@@ -433,7 +431,6 @@ fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_unconfigured() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
     test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -445,38 +442,12 @@ fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_unconfigured() {
 
     assert!(
         tool_names.contains("web_markdown"),
-        "web_markdown should be the lightweight fallback when crawl4ai is not configured"
+        "web_markdown should be registered when its feature is compiled"
     );
     assert!(
         !tool_names.contains("crawl4ai_markdown"),
         "crawl4ai_markdown must not be registered without OXIDE_CRAWL4AI_BASE_URL"
     );
-}
-
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-#[test]
-fn typed_runtime_registry_respects_webfetch_md_enabled_override() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Crawl4AI is configured...
-    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    // ...but operator explicitly disabled webfetch_md as a belt-and-braces override.
-    test_set_env("WEBFETCH_MD_ENABLED", "false");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(tool_names.contains("crawl4ai_markdown"));
-    assert!(!tool_names.contains("web_markdown"));
-
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
-    test_remove_env("WEBFETCH_MD_ENABLED");
 }
 
 #[cfg(all(feature = "tool-tts-kokoro", feature = "tool-tts-silero"))]

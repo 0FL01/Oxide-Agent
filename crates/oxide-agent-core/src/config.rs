@@ -2695,19 +2695,6 @@ pub fn is_crawl4ai_markdown_enabled() -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
-/// Determine whether the lightweight `webfetch_md` tool should be registered.
-///
-/// Default-on. Forced off by `WEBFETCH_MD_ENABLED=false`, and automatically
-/// suppressed when Crawl4AI is configured — `crawl4ai_markdown` is preferred
-/// to avoid duplicating the URL-to-Markdown capability.
-#[must_use]
-pub fn is_webfetch_md_enabled() -> bool {
-    if let Some(enabled) = parse_optional_env_bool("WEBFETCH_MD_ENABLED") {
-        return enabled;
-    }
-    !is_crawl4ai_markdown_enabled()
-}
-
 /// Get SearXNG timeout from env or default.
 ///
 /// Environment variable: `SEARXNG_TIMEOUT_SECS`

@@ -719,28 +719,13 @@ impl ToolModule for StackLogsToolModule {
 pub struct WebFetchMdToolModule;
 
 #[cfg(feature = "tool-webfetch-md")]
-impl WebFetchMdToolModule {
-    fn provider(&self) -> Option<WebFetchMdProvider> {
-        if !crate::config::is_webfetch_md_enabled() {
-            tracing::debug!(
-                "webfetch_md disabled: Crawl4AI is configured or WEBFETCH_MD_ENABLED=false"
-            );
-            return None;
-        }
-        Some(WebFetchMdProvider::new())
-    }
-}
-
-#[cfg(feature = "tool-webfetch-md")]
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
+        Arc::new(WebFetchMdProvider::new()).tool_runtime_executors()
     }
 }
 
