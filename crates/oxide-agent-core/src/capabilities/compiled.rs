@@ -150,26 +150,31 @@ const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
 #[allow(dead_code)]
 const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     ModuleConfigProperty::string(
-        "api_key",
-        "Optional bearer token for a generic OpenAI-compatible API.",
+        "providers",
+        "OpenAI-compatible provider instances configured via OPENAI_BASE_PROVIDERS__N__* env vars.",
     )
-    .with_env("OPENAI_BASE_API_KEY")
+    .with_env("OPENAI_BASE_PROVIDERS__N__NAME"),
+    ModuleConfigProperty::string(
+        "providers.N.api_base",
+        "OpenAI-compatible API base URL or chat completions endpoint for provider instance N.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__API_BASE"),
+    ModuleConfigProperty::string(
+        "providers.N.api_key",
+        "Optional bearer token for OpenAI-compatible provider instance N.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__API_KEY")
     .secret(),
     ModuleConfigProperty::string(
-        "api_base",
-        "Generic OpenAI-compatible API base URL or chat completions endpoint.",
+        "providers.N.models_url",
+        "Optional OpenAI-compatible model discovery endpoint for provider instance N. Defaults to api_base /models.",
     )
-    .with_env("OPENAI_BASE_API_BASE"),
+    .with_env("OPENAI_BASE_PROVIDERS__N__MODELS_URL"),
     ModuleConfigProperty::string(
-        "models_url",
-        "Optional OpenAI-compatible model discovery endpoint. Defaults to api_base /models.",
+        "providers.N.model_cache_ttl_secs",
+        "OpenAI Base model discovery cache TTL for provider instance N.",
     )
-    .with_env("OPENAI_BASE_MODELS_URL"),
-    ModuleConfigProperty::string(
-        "model_cache_ttl_secs",
-        "OpenAI Base model discovery cache TTL.",
-    )
-    .with_env("OPENAI_BASE_MODEL_CACHE_TTL_SECS")
+    .with_env("OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS")
     .with_default("1800"),
 ];
 #[allow(dead_code)]

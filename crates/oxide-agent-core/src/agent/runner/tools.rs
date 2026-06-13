@@ -1521,7 +1521,7 @@ mod tests {
     async fn typed_runtime_path_accepts_openai_base_chat_like_route() {
         let settings = AgentSettings {
             agent_model_id: Some("gemma4-12b-it-q8_0-mtp".to_string()),
-            agent_model_provider: Some("openai-base".to_string()),
+            agent_model_provider: Some("openai-base:local".to_string()),
             ..AgentSettings::default()
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
@@ -1552,10 +1552,10 @@ mod tests {
             memory_scope: None,
             memory_behavior: None,
             config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
-                .with_model_provider("openai-base")
+                .with_model_provider("openai-base:local")
                 .with_model_routes(vec![ModelInfo {
                     id: "gemma4-12b-it-q8_0-mtp".to_string(),
-                    provider: "openai-base".to_string(),
+                    provider: "openai-base:local".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
                     weight: 1,

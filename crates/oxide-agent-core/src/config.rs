@@ -6,7 +6,9 @@ use crate::capabilities::{
     CompiledCapabilityManifest, EnabledCapabilityManifest, ManifestError,
     compiled_capability_manifest,
 };
-use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
+use crate::llm::providers::{
+    canonical_route_provider, provider_missing_route_config_message, provider_module_id,
+};
 use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_for_model};
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
@@ -497,11 +499,11 @@ impl AgentSettings {
             let Some(module_id) = provider_module_id(provider) else {
                 continue;
             };
-            if !checked_module_ids.insert(module_id) {
+            if module_id != "llm-provider/openai-base" && !checked_module_ids.insert(module_id) {
                 continue;
             }
             if let Some(message) = provider_missing_route_config_message(provider, self) {
-                return Err(ConfigError::Message(message.to_string()));
+                return Err(ConfigError::Message(message));
             }
         }
 
@@ -628,13 +630,13 @@ impl AgentSettings {
             return Ok(());
         }
 
-        let Some(module_id) = provider_module_id(value) else {
+        let Some(route_provider) = canonical_route_provider(value) else {
             return Err(ConfigError::Message(format!(
                 "Critical: {source} references provider '{value}', but no compiled LLM provider module owns that provider alias or ID"
             )));
         };
 
-        *provider = Some(module_id.to_string());
+        *provider = Some(route_provider);
         Ok(())
     }
 
@@ -648,13 +650,13 @@ impl AgentSettings {
             return Ok(());
         }
 
-        let Some(module_id) = provider_module_id(provider) else {
+        let Some(route_provider) = canonical_route_provider(provider) else {
             return Err(ConfigError::Message(format!(
                 "Critical: {source} references provider '{provider}', but no compiled LLM provider module owns that provider alias or ID"
             )));
         };
 
-        route.provider = module_id.to_string();
+        route.provider = route_provider;
         Ok(())
     }
 

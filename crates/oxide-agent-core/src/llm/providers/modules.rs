@@ -64,8 +64,30 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>>;
 
+    /// Builds named runtime provider instances. Most modules expose one instance
+    /// under their provider ID and aliases; OpenAI Base exposes named instances.
+    fn build_providers(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Vec<(String, Arc<dyn LlmProvider>)> {
+        let Some(provider) = self.build_provider(settings, ctx) else {
+            return Vec::new();
+        };
+        let mut providers = Vec::with_capacity(self.aliases().len() + 1);
+        providers.push((self.provider_id().to_string(), Arc::clone(&provider)));
+        for alias in self.aliases() {
+            providers.push(((*alias).to_string(), Arc::clone(&provider)));
+        }
+        providers
+    }
+
     /// Returns a startup config error when this provider is routed but incomplete.
-    fn missing_route_config_message(&self, _settings: &AgentSettings) -> Option<&'static str> {
+    fn missing_route_config_message(
+        &self,
+        _provider_name: &str,
+        _settings: &AgentSettings,
+    ) -> Option<String> {
         None
     }
 
@@ -107,8 +129,8 @@ pub(crate) fn build_configured_providers(
             continue;
         }
 
-        if let Some(provider) = module.build_provider(settings, &ctx) {
-            insert_provider_aliases(&mut providers, module.as_ref(), provider);
+        for (name, provider) in module.build_providers(settings, &ctx) {
+            insert_provider(&mut providers, &name, provider);
         }
     }
 
@@ -124,7 +146,30 @@ pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapab
 /// Resolves a provider alias or module ID to the compiled provider module ID.
 #[must_use]
 pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::provider_instance_name(provider_name).is_some()
+        || super::openai_base::module::is_legacy_provider_name(provider_name)
+    {
+        return Some("llm-provider/openai-base");
+    }
+
     find_provider_module(provider_name).map(|module| module.provider_id())
+}
+
+/// Returns the canonical runtime provider key for route configuration.
+#[must_use]
+pub(crate) fn canonical_route_provider(provider_name: &str) -> Option<String> {
+    #[cfg(feature = "llm-openai-base")]
+    if let Some(instance) = super::openai_base::module::provider_instance_name(provider_name) {
+        return Some(format!("openai-base:{instance}"));
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::is_legacy_provider_name(provider_name) {
+        return None;
+    }
+
+    provider_module_id(provider_name).map(ToString::to_string)
 }
 
 /// Returns the provider-owned startup config error for a routed provider.
@@ -132,9 +177,9 @@ pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
 pub(crate) fn provider_missing_route_config_message(
     provider_name: &str,
     settings: &AgentSettings,
-) -> Option<&'static str> {
+) -> Option<String> {
     find_provider_module(provider_name)
-        .and_then(|module| module.missing_route_config_message(settings))
+        .and_then(|module| module.missing_route_config_message(provider_name, settings))
 }
 
 /// Returns media capabilities for a compiled provider module.
@@ -163,6 +208,13 @@ pub(crate) fn provider_capabilities_for_model(
 }
 
 fn find_provider_module(provider_name: &str) -> Option<Box<dyn LlmProviderModule>> {
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::provider_instance_name(provider_name).is_some()
+        || super::openai_base::module::is_legacy_provider_name(provider_name)
+    {
+        return Some(Box::new(super::openai_base::OpenAIBaseProviderModule));
+    }
+
     let provider_key = provider_key(provider_name);
     compiled_provider_modules()
         .into_iter()
@@ -175,17 +227,6 @@ fn module_matches_key(module: &dyn LlmProviderModule, expected_key: &str) -> boo
             .aliases()
             .iter()
             .any(|alias| provider_key(alias) == expected_key)
-}
-
-fn insert_provider_aliases(
-    providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
-    module: &dyn LlmProviderModule,
-    provider: Arc<dyn LlmProvider>,
-) {
-    insert_provider(providers, module.provider_id(), Arc::clone(&provider));
-    for alias in module.aliases() {
-        insert_provider(providers, alias, Arc::clone(&provider));
-    }
 }
 
 fn insert_provider(
@@ -236,8 +277,9 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 )]
 mod tests {
     use super::{
-        build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-        provider_key, provider_missing_route_config_message, provider_module_id,
+        build_configured_providers, canonical_route_provider, provider_capabilities,
+        provider_capabilities_for_model, provider_key, provider_missing_route_config_message,
+        provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig, test_env_mutex};
     use crate::testing::{test_remove_env, test_set_env};
@@ -272,6 +314,61 @@ mod tests {
                 "direct Gemini provider alias must stay absent: {provider}"
             );
         }
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_registers_named_env_provider_instances_only() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OPENAI_BASE_API_BASE");
+        test_remove_env("OPENAI_BASE_API_KEY");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "local");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "http://127.0.0.1:8080/v1",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__1__NAME", "groq");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__1__API_BASE",
+            "https://api.groq.com/openai/v1",
+        );
+
+        let providers = build_configured_providers(&AgentSettings::default());
+
+        assert!(providers.contains_key("openai-base:local"));
+        assert!(providers.contains_key("openai-base:groq"));
+        assert!(!providers.contains_key("openai-base"));
+        assert_eq!(
+            canonical_route_provider("llm-provider/openai-base:Groq"),
+            Some("openai-base:groq".to_string())
+        );
+        assert_eq!(canonical_route_provider("openai-base"), None);
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__1__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__1__API_BASE");
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_legacy_env_returns_migration_error() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_API_BASE", "https://api.openai.com/v1");
+
+        assert_eq!(
+            provider_missing_route_config_message("openai-base:openai", &AgentSettings::default()),
+            Some(
+                "Critical: OPENAI_BASE_API_BASE is deprecated. Use OPENAI_BASE_PROVIDERS__N__NAME and OPENAI_BASE_PROVIDERS__N__API_BASE."
+                    .to_string()
+            )
+        );
+
+        test_remove_env("OPENAI_BASE_API_BASE");
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -329,7 +426,7 @@ mod tests {
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
             Some(
-                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
+                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes".to_string()
             )
         );
 
@@ -435,7 +532,7 @@ mod tests {
 
         assert_eq!(
             provider_missing_route_config_message("zai", &settings),
-            Some("Critical: ZAI_API_KEY is required for configured ZAI routes")
+            Some("Critical: ZAI_API_KEY is required for configured ZAI routes".to_string())
         );
 
         let settings = settings_with_provider_key("llm-provider/zai", "test-zai-key");

@@ -182,9 +182,19 @@ impl OpenCodeGoDiscoveryConfig {
 
     #[must_use]
     pub fn new_openai_base(models_url: impl Into<String>, ttl: Duration) -> Self {
+        Self::new_openai_base_for_provider(OPENAI_BASE_PROVIDER_ID, models_url, ttl)
+    }
+
+    #[must_use]
+    pub fn new_openai_base_for_provider(
+        provider_id: impl Into<String>,
+        models_url: impl Into<String>,
+        ttl: Duration,
+    ) -> Self {
+        let provider_id = provider_id.into();
         Self::new_for_provider(
-            OPENAI_BASE_PROVIDER_ID,
-            OPENAI_BASE_PROVIDER_ID,
+            provider_id.clone(),
+            provider_id,
             models_url,
             ttl,
             BTreeMap::new(),

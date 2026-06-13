@@ -588,7 +588,7 @@ fn allowed_provider_names_for_enabled_modules(
                 allowed.extend(["llm-provider/openrouter", "openrouter"]);
             }
             "llm-provider/openai-base" => {
-                allowed.extend(["llm-provider/openai-base", "openai-base", "openai_base"]);
+                allowed.extend(["llm-provider/openai-base"]);
             }
             "llm-provider/zai" => {
                 allowed.extend(["llm-provider/zai", "zai"]);

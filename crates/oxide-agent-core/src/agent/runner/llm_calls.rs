@@ -1088,7 +1088,7 @@ mod tests {
     #[cfg(feature = "llm-openai-base")]
     #[test]
     fn openai_base_route_supports_native_image_parts_by_capability() {
-        let route = test_route("openai_base", "local-vision-model");
+        let route = test_route("openai-base:local", "local-vision-model");
 
         assert!(AgentRunner::route_supports_native_image_parts(&route));
     }

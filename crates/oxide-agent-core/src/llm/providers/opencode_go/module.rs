@@ -114,13 +114,15 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
         })
     }
 
-    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+    fn missing_route_config_message(
+        &self,
+        _provider_name: &str,
+        settings: &AgentSettings,
+    ) -> Option<String> {
         settings
             .module_string_value_or_envs(self.provider_id(), API_KEY_CONFIG_KEY, GO_API_KEY_ENVS)
             .is_none()
-            .then_some(
-                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes",
-            )
+            .then(|| "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes".to_string())
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -181,13 +183,15 @@ impl LlmProviderModule for OpenCodeZenProviderModule {
         })
     }
 
-    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+    fn missing_route_config_message(
+        &self,
+        _provider_name: &str,
+        settings: &AgentSettings,
+    ) -> Option<String> {
         settings
             .module_string_value_or_envs(self.provider_id(), API_KEY_CONFIG_KEY, ZEN_API_KEY_ENVS)
             .is_none()
-            .then_some(
-                "Critical: OPENCODE_ZEN_API_KEY, OPENCODE_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Zen routes",
-            )
+            .then(|| "Critical: OPENCODE_ZEN_API_KEY, OPENCODE_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Zen routes".to_string())
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

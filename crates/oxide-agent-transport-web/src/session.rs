@@ -229,38 +229,41 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
-fn parse_web_model_id(value: &str) -> Option<(&'static str, String)> {
+fn parse_web_model_id(value: &str) -> Option<(String, String)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
         let model_id = model_id.trim();
         return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-go", model_id.to_string()));
+            .then(|| ("opencode-go".to_string(), model_id.to_string()));
     }
     if let Some(model_id) = value.strip_prefix("opencode-zen/") {
         let model_id = model_id.trim();
         return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-zen", model_id.to_string()));
+            .then(|| ("opencode-zen".to_string(), model_id.to_string()));
     }
-    if let Some(model_id) = value.strip_prefix("openai-base/") {
+    if let Some(rest) = value.strip_prefix("openai-base:") {
+        let (name, model_id) = rest.split_once('/')?;
+        let name = normalized_openai_base_instance_name(name)?;
         let model_id = model_id.trim();
-        return (!model_id.is_empty()).then(|| ("openai-base", model_id.to_string()));
+        return (!model_id.is_empty())
+            .then(|| (format!("openai-base:{name}"), model_id.to_string()));
     }
     if value.is_empty() || value.contains('/') {
         return None;
     }
-    Some(("opencode-go", value.to_string()))
+    Some(("opencode-go".to_string(), value.to_string()))
 }
 
 fn web_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
     let value = value.trim();
     if value.starts_with("opencode-go/")
         || value.starts_with("opencode-zen/")
-        || value.starts_with("openai-base/")
+        || value.starts_with("openai-base:")
     {
         let (prefix, model_id) = parse_web_model_id(value)?;
         return (prefix == model_prefix).then(|| format!("{prefix}/{model_id}"));
     }
-    if value.is_empty() || (model_prefix != "openai-base" && value.contains('/')) {
+    if value.is_empty() || (!is_openai_base_prefix(model_prefix) && value.contains('/')) {
         return None;
     }
     Some(format!("{model_prefix}/{value}"))
@@ -282,15 +285,19 @@ fn selected_web_model_route(
     configured_routes
         .iter()
         .find(|route| {
-            web_model_provider_prefix(&route.provider) == Some(selected_prefix)
+            web_model_provider_prefix(&route.provider).as_deref() == Some(selected_prefix)
                 && web_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
                     == Some(selected_qualified_id)
         })
         .cloned()
         .and_then(|route| normalize_model_route(route, provider, provider))
         .unwrap_or_else(|| ModelInfo {
-            id: raw_model_id_for_prefix(selected_qualified_id, selected_prefix)
-                .unwrap_or_else(|| selected_qualified_id.to_string()),
+            id: if is_openai_base_prefix(selected_prefix) {
+                raw_model_id_for_prefix(selected_qualified_id, selected_prefix)
+                    .unwrap_or_else(|| selected_qualified_id.to_string())
+            } else {
+                selected_qualified_id.to_string()
+            },
             provider: provider.to_string(),
             max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
             context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -310,15 +317,15 @@ fn normalize_model_route(
     }
 
     if let Some(model_prefix) = web_model_provider_prefix(provider) {
-        route.id = if model_prefix == "openai-base" {
-            raw_model_id_for_prefix(id, model_prefix)?
+        route.id = if is_openai_base_prefix(&model_prefix) {
+            raw_model_id_for_prefix(id, &model_prefix)?
         } else {
-            web_qualified_model_id_for_prefix(id, model_prefix)?
+            web_qualified_model_id_for_prefix(id, &model_prefix)?
         };
         route.provider = if model_prefix == "opencode-zen" {
             opencode_zen_provider.to_string()
-        } else if model_prefix == "openai-base" {
-            preferred_provider_name(model_prefix, opencode_go_provider)
+        } else if is_openai_base_prefix(&model_prefix) {
+            preferred_provider_name(&model_prefix, opencode_go_provider)
         } else {
             opencode_go_provider.to_string()
         };
@@ -345,20 +352,40 @@ fn normalized_provider_name(provider: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn web_model_provider_prefix(provider: &str) -> Option<&'static str> {
-    match normalized_provider_name(provider).as_str() {
-        "opencode-go" => Some("opencode-go"),
-        "opencode-zen" => Some("opencode-zen"),
-        "openai-base" => Some("openai-base"),
-        _ => None,
+fn web_model_provider_prefix(provider: &str) -> Option<String> {
+    let normalized = normalized_provider_name(provider);
+    match normalized.as_str() {
+        "opencode-go" => Some("opencode-go".to_string()),
+        "opencode-zen" => Some("opencode-zen".to_string()),
+        _ => normalized
+            .strip_prefix("openai-base:")
+            .and_then(normalized_openai_base_instance_name)
+            .map(|name| format!("openai-base:{name}")),
     }
 }
 
 fn preferred_provider_name(model_prefix: &str, fallback: &str) -> String {
-    match model_prefix {
-        "openai-base" => "openai-base".to_string(),
-        _ => fallback.to_string(),
+    if is_openai_base_prefix(model_prefix) {
+        model_prefix.to_string()
+    } else {
+        fallback.to_string()
     }
+}
+
+fn is_openai_base_prefix(prefix: &str) -> bool {
+    prefix.starts_with("openai-base:")
+}
+
+fn normalized_openai_base_instance_name(name: &str) -> Option<String> {
+    let name = name.trim().replace('_', "-").to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        return None;
+    }
+    Some(name)
 }
 
 impl WebSessionManager {
@@ -432,12 +459,12 @@ impl WebSessionManager {
         let selection = selection?;
         let (selected_prefix, _) = parse_web_model_id(&selection.qualified_id)?;
         let selected_model_id =
-            web_qualified_model_id_for_prefix(&selection.qualified_id, selected_prefix)?;
+            web_qualified_model_id_for_prefix(&selection.qualified_id, &selected_prefix)?;
         let configured_routes = self.agent_settings.get_configured_agent_model_routes();
-        let selected_provider = self.preferred_web_model_provider_name(selected_prefix);
+        let selected_provider = self.preferred_web_model_provider_name(&selected_prefix);
         let selected_route = selected_web_model_route(
             &selected_model_id,
-            selected_prefix,
+            &selected_prefix,
             &selected_provider,
             &configured_routes,
         );
@@ -446,9 +473,11 @@ impl WebSessionManager {
     }
 
     fn preferred_web_model_provider_name(&self, model_prefix: &str) -> String {
+        if is_openai_base_prefix(model_prefix) {
+            return model_prefix.to_string();
+        }
         let (dash, underscore) = match model_prefix {
             "opencode-zen" => ("opencode-zen", "opencode_zen"),
-            "openai-base" => ("openai-base", "openai_base"),
             _ => ("opencode-go", "opencode_go"),
         };
         if self.llm.is_provider_available(dash) {
@@ -1484,7 +1513,7 @@ mod tests {
         let settings = Arc::new(AgentSettings {
             agent_model_routes: Some(vec![ModelInfo {
                 id: "hf.co/test/model".to_string(),
-                provider: "openai_base".to_string(),
+                provider: "openai-base:local".to_string(),
                 max_output_tokens: 8_000,
                 context_window_tokens: 64_000,
                 weight: 1,
@@ -1502,7 +1531,7 @@ mod tests {
                 "main".to_string(),
                 WebSessionRuntimeOptions {
                     model_selection: Some(ModelSelection {
-                        qualified_id: "openai-base/hf.co/test/model".to_string(),
+                        qualified_id: "openai-base:local/hf.co/test/model".to_string(),
                     }),
                     ..WebSessionRuntimeOptions::default()
                 },
@@ -1517,7 +1546,7 @@ mod tests {
 
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].id, "hf.co/test/model");
-        assert_eq!(routes[0].provider, "openai-base");
+        assert_eq!(routes[0].provider, "openai-base:local");
         assert_eq!(routes[0].max_output_tokens, 8_000);
         assert_eq!(routes[0].context_window_tokens, 64_000);
     }

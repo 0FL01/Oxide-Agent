@@ -45,11 +45,15 @@ impl LlmProviderModule for ZaiProviderModule {
             })
     }
 
-    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+    fn missing_route_config_message(
+        &self,
+        _provider_name: &str,
+        settings: &AgentSettings,
+    ) -> Option<String> {
         settings
             .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
             .is_none()
-            .then_some("Critical: ZAI_API_KEY is required for configured ZAI routes")
+            .then(|| "Critical: ZAI_API_KEY is required for configured ZAI routes".to_string())
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

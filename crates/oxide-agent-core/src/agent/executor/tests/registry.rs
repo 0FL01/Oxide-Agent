@@ -121,7 +121,7 @@ fn v1_tool_runtime_model_detection_accepts_chat_like_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "gemma4-12b-it-q8_0-mtp".to_string(),
-            provider: "openai-base".to_string(),
+            provider: "openai-base:local".to_string(),
             ..ModelInfo::default()
         }
     ));
@@ -129,7 +129,7 @@ fn v1_tool_runtime_model_detection_accepts_chat_like_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "hf.co/test/model".to_string(),
-            provider: "openai_base".to_string(),
+            provider: "openai_base:local".to_string(),
             ..ModelInfo::default()
         }
     ));
@@ -137,7 +137,7 @@ fn v1_tool_runtime_model_detection_accepts_chat_like_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "local-model".to_string(),
-            provider: "llm-provider/openai-base".to_string(),
+            provider: "llm-provider/openai-base:local".to_string(),
             ..ModelInfo::default()
         }
     ));

@@ -107,8 +107,10 @@ fn web_model_provider_available(state: &AppState) -> bool {
         || llm.is_provider_available("opencode_go")
         || llm.is_provider_available("opencode-zen")
         || llm.is_provider_available("opencode_zen")
-        || llm.is_provider_available("openai-base")
-        || llm.is_provider_available("openai_base")
+        || llm
+            .configured_provider_names()
+            .into_iter()
+            .any(|provider| provider.starts_with("openai-base:"))
 }
 
 fn default_web_model_id(state: &AppState) -> Option<String> {
@@ -148,7 +150,7 @@ pub(crate) fn canonical_model_selection(
             false,
         )
     })?;
-    if model_id.is_empty() || (prefix != OPENAI_BASE_PREFIX && model_id.contains('/')) {
+    if model_id.is_empty() || (!is_openai_base_prefix(&prefix) && model_id.contains('/')) {
         return Err(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
@@ -161,36 +163,39 @@ pub(crate) fn canonical_model_selection(
     })
 }
 
-fn parse_web_model_selection(value: &str) -> Option<(&'static str, &str)> {
+fn parse_web_model_selection(value: &str) -> Option<(String, &str)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
-        return Some((OPENCODE_GO_PREFIX, model_id.trim()));
+        return Some((OPENCODE_GO_PREFIX.to_string(), model_id.trim()));
     }
     if let Some(model_id) = value.strip_prefix("opencode-zen/") {
-        return Some((OPENCODE_ZEN_PREFIX, model_id.trim()));
+        return Some((OPENCODE_ZEN_PREFIX.to_string(), model_id.trim()));
     }
-    if let Some(model_id) = value.strip_prefix("openai-base/") {
-        return Some((OPENAI_BASE_PREFIX, model_id.trim()));
+    if let Some(rest) = value.strip_prefix("openai-base:") {
+        let (name, model_id) = rest.split_once('/')?;
+        let name = normalized_openai_base_instance_name(name)?;
+        return Some((format!("{OPENAI_BASE_PREFIX}:{name}"), model_id.trim()));
     }
     if value.contains('/') {
         return None;
     }
-    Some((OPENCODE_GO_PREFIX, value))
+    Some((OPENCODE_GO_PREFIX.to_string(), value))
 }
 
-pub(crate) fn web_model_provider_prefix(provider: &str) -> Option<&'static str> {
-    match provider
+pub(crate) fn web_model_provider_prefix(provider: &str) -> Option<String> {
+    let normalized = provider
         .trim()
         .strip_prefix("llm-provider/")
         .unwrap_or(provider.trim())
         .replace('_', "-")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "opencode-go" => Some(OPENCODE_GO_PREFIX),
-        "opencode-zen" => Some(OPENCODE_ZEN_PREFIX),
-        "openai-base" => Some(OPENAI_BASE_PREFIX),
-        _ => None,
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "opencode-go" => Some(OPENCODE_GO_PREFIX.to_string()),
+        "opencode-zen" => Some(OPENCODE_ZEN_PREFIX.to_string()),
+        _ => normalized
+            .strip_prefix("openai-base:")
+            .and_then(normalized_openai_base_instance_name)
+            .map(|name| format!("{OPENAI_BASE_PREFIX}:{name}")),
     }
 }
 
@@ -199,7 +204,7 @@ pub(crate) fn qualified_web_model_id(model_id: &str, provider: &str) -> Option<S
     let model_id = model_id.trim();
     if model_id.starts_with("opencode-go/")
         || model_id.starts_with("opencode-zen/")
-        || model_id.starts_with("openai-base/")
+        || model_id.starts_with("openai-base:")
     {
         parse_web_model_selection(model_id).and_then(|(route_prefix, route_model_id)| {
             (route_prefix == prefix).then(|| format!("{route_prefix}/{route_model_id}"))
@@ -207,4 +212,20 @@ pub(crate) fn qualified_web_model_id(model_id: &str, provider: &str) -> Option<S
     } else {
         Some(format!("{prefix}/{model_id}"))
     }
+}
+
+fn is_openai_base_prefix(prefix: &str) -> bool {
+    prefix.starts_with("openai-base:")
+}
+
+fn normalized_openai_base_instance_name(name: &str) -> Option<String> {
+    let name = name.trim().replace('_', "-").to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        return None;
+    }
+    Some(name)
 }
