@@ -1,6 +1,6 @@
 use crate::auth::{AuthContext, DEFAULT_MAX_TASK_INPUT_CHARS};
 use crate::utils::spawn_ui;
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, TaskAttachment, UpdateUserSettingsRequest,
 };
@@ -264,7 +264,9 @@ pub(super) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSign
 
 pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textarea>) {
     if let Some(textarea) = textarea_ref.get() {
-        textarea.style().remove_property("height").ok();
+        use wasm_bindgen::JsCast;
+        let el: web_sys::HtmlElement = textarea.unchecked_into();
+        el.style().remove_property("height").ok();
     }
 }
 

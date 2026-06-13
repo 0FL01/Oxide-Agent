@@ -4,7 +4,7 @@ use crate::components::ErrorBanner;
 use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
 use futures_util::join;
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
     PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskAttachment,
