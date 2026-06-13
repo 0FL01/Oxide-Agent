@@ -220,6 +220,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
             "duckduckgo_search",
             "duckduckgo_news",
             "searxng_search",
+            "web_crawler",
             "web_markdown",
             "crawl4ai_markdown",
         ],
@@ -253,7 +254,14 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Use `web_extract` to read result URLs when snippets are insufficient.".to_string(),
             );
         }
-        if has_tool(&tool_names, "web_markdown") && has_tool(&tool_names, "crawl4ai_markdown") {
+        if has_tool(&tool_names, "web_crawler") {
+            lines.push(
+                "Use `web_crawler` after search to read selected result URLs as Markdown; it tries lightweight fetch first and falls back to browser rendering only for anti-bot/JavaScript blocks."
+                    .to_string(),
+            );
+        } else if has_tool(&tool_names, "web_markdown")
+            && has_tool(&tool_names, "crawl4ai_markdown")
+        {
             lines.push(
                 "Use `web_markdown` first for Reddit threads, repository README pages, Rust/PyPI package pages, Markdown files, and simple static pages; use `crawl4ai_markdown` for pages needing browser rendering, JavaScript, or overlay/consent handling."
                     .to_string(),

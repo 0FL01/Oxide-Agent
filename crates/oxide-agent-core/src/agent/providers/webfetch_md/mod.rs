@@ -45,14 +45,14 @@ pub struct WebFetchMdProvider {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
-struct WebMarkdownArgs {
-    url: String,
+pub(crate) struct WebMarkdownArgs {
+    pub url: String,
     #[serde(default)]
-    timeout_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
     #[serde(default)]
-    max_chars: Option<usize>,
+    pub max_chars: Option<usize>,
     #[serde(default)]
-    offset_chars: Option<usize>,
+    pub offset_chars: Option<usize>,
 }
 
 impl WebFetchMdProvider {
@@ -95,6 +95,24 @@ impl WebFetchMdProvider {
             name: ToolName::from(spec.name.clone()),
             spec,
         })]
+    }
+
+    #[must_use]
+    pub(crate) fn failure_payload(
+        args: Option<&WebMarkdownArgs>,
+        error: &anyhow::Error,
+    ) -> serde_json::Value {
+        error::webfetch_failure_payload(args, error)
+    }
+
+    #[must_use]
+    pub(crate) fn failure_message(args: Option<&WebMarkdownArgs>, error: &anyhow::Error) -> String {
+        error::webfetch_failure_message(args, error)
+    }
+
+    #[must_use]
+    pub(crate) fn error_kind(error: &anyhow::Error) -> &'static str {
+        error::webfetch_error_kind(error)
     }
 
     fn tool_definition() -> ToolDefinition {

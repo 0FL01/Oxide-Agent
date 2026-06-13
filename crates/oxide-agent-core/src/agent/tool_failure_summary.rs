@@ -305,7 +305,8 @@ fn provider_dead_end(tool_name: &str, provider: &str, error_kind: &str) -> Failu
 }
 
 fn is_web_markdown(provider: Option<&str>, tool_name: &str) -> bool {
-    provider == Some("web_markdown") || tool_name == "web_markdown"
+    matches!(provider, Some("web_markdown" | "web_crawler"))
+        || matches!(tool_name, "web_markdown" | "web_crawler")
 }
 
 fn is_duckduckgo(provider: Option<&str>, tool_name: &str) -> bool {

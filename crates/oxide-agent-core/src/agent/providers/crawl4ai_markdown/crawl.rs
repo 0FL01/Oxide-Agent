@@ -20,7 +20,7 @@ use super::url_validation::*;
 use super::Crawl4AiMarkdownProvider;
 
 impl Crawl4AiMarkdownProvider {
-    pub(super) async fn crawl_markdown(
+    pub(crate) async fn crawl_markdown(
         &self,
         args: Crawl4AiMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,

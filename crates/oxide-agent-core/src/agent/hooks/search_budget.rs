@@ -40,6 +40,7 @@ impl SearchBudgetHook {
                 | "duckduckgo_news"
                 | "brave_search"
                 | "searxng_search"
+                | "web_crawler"
                 | "crawl4ai_markdown"
                 | "web_markdown"
         )
@@ -108,7 +109,10 @@ impl SearchBudgetHook {
     fn result_marks_web_markdown_host_unavailable(result: &str) -> Option<String> {
         let value = serde_json::from_str::<serde_json::Value>(result).ok()?;
         let payload = value.get("structured_payload")?;
-        if payload.get("provider").and_then(|value| value.as_str()) != Some("web_markdown") {
+        if !matches!(
+            payload.get("provider").and_then(|value| value.as_str()),
+            Some("web_markdown" | "web_crawler")
+        ) {
             return None;
         }
         if payload.get("error_kind").and_then(|value| value.as_str()) != Some("anti_bot") {
@@ -157,7 +161,7 @@ impl Hook for SearchBudgetHook {
                     };
                 }
 
-                if tool_name == "web_markdown"
+                if matches!(tool_name.as_str(), "web_markdown" | "web_crawler")
                     && let Some(host) = Self::web_markdown_host_from_arguments(arguments)
                     && self
                         .blocked_web_markdown_hosts
@@ -167,7 +171,7 @@ impl Hook for SearchBudgetHook {
                 {
                     return HookResult::Block {
                         reason: format!(
-                            "web_markdown is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the lightweight fetcher; use another source."
+                            "lightweight URL fetch is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the same fetch path; use another source."
                         ),
                     };
                 }
@@ -195,7 +199,9 @@ impl Hook for SearchBudgetHook {
                     self.brave_search_unavailable.store(true, Ordering::SeqCst);
                 }
             }
-            HookEvent::AfterTool { tool_name, result } if tool_name == "web_markdown" => {
+            HookEvent::AfterTool { tool_name, result }
+                if matches!(tool_name.as_str(), "web_markdown" | "web_crawler") =>
+            {
                 if let Some(host) = Self::result_marks_web_markdown_host_unavailable(result) {
                     self.blocked_web_markdown_hosts
                         .lock()

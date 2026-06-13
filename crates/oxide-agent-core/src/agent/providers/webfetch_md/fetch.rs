@@ -29,7 +29,7 @@ struct FetchResult {
 }
 
 impl WebFetchMdProvider {
-    pub(super) async fn fetch_markdown(
+    pub(crate) async fn fetch_markdown(
         &self,
         args: WebMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,

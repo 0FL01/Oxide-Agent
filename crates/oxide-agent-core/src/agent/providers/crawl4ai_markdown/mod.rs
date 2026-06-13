@@ -59,6 +59,29 @@ impl Crawl4AiMarkdownProvider {
         })]
     }
 
+    #[must_use]
+    pub(crate) fn failure_payload(
+        &self,
+        args: Option<&Crawl4AiMarkdownArgs>,
+        error: &anyhow::Error,
+    ) -> serde_json::Value {
+        errors::crawl4ai_failure_payload(args, &self.config, error)
+    }
+
+    #[must_use]
+    pub(crate) fn failure_message(
+        &self,
+        args: Option<&Crawl4AiMarkdownArgs>,
+        error: &anyhow::Error,
+    ) -> String {
+        errors::crawl4ai_failure_message(args, Some(&self.config), error)
+    }
+
+    #[must_use]
+    pub(crate) fn error_kind(error: &anyhow::Error) -> &'static str {
+        errors::crawl4ai_error_kind(error)
+    }
+
     fn tool_definition() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_CRAWL4AI_MARKDOWN.to_string(),

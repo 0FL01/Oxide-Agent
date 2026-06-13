@@ -2695,6 +2695,14 @@ pub fn is_crawl4ai_markdown_enabled() -> bool {
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+/// Determine whether split URL-to-Markdown tools should be merged into `web_crawler`.
+///
+/// Environment variable: `OXIDE_WEB_CRAWLER_MERGE`.
+#[must_use]
+pub fn is_web_crawler_merge_enabled() -> bool {
+    parse_optional_env_bool("OXIDE_WEB_CRAWLER_MERGE").unwrap_or(false)
+}
+
 /// Get SearXNG timeout from env or default.
 ///
 /// Environment variable: `SEARXNG_TIMEOUT_SECS`

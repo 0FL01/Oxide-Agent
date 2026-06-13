@@ -19,6 +19,7 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("duckduckgo_search", "Searching the web: {query}"),
     ("duckduckgo_news", "Searching news: {query}"),
     ("searxng_search", "Searching the web: {query}"),
+    ("web_crawler", "Fetching web page as markdown: {url}"),
     ("web_markdown", "Opening web page as markdown: {url}"),
     (
         "crawl4ai_markdown",

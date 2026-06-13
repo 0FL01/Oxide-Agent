@@ -22,6 +22,7 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 "tool/sandbox-recreate" = { enabled = true }
 "tool/tavily" = { enabled = true }
 "tool/wiki-memory" = { enabled = true }
+"tool/web-crawler" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
 "tool/brave-search" = { enabled = true }
 "tool/crawl4ai-markdown" = { enabled = true }

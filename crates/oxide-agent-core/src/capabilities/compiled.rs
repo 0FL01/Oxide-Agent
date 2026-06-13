@@ -466,6 +466,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
+        "tool-webfetch-md",
+        "tool/web-crawler",
+        Search,
+        ["tool/web-crawler"]
+    );
+    push_module!(
+        modules,
         "tool-crawl4ai-markdown",
         "tool/crawl4ai-markdown",
         Search,

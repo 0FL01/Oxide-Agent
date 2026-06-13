@@ -82,6 +82,8 @@ pub use modules::TavilyToolModule;
 pub use modules::TodosToolModule;
 pub use modules::ToolModuleContextParts;
 #[cfg(feature = "tool-webfetch-md")]
+pub use modules::WebCrawlerToolModule;
+#[cfg(feature = "tool-webfetch-md")]
 pub use modules::WebFetchMdToolModule;
 #[cfg(feature = "tool-wiki-memory")]
 pub use modules::WikiMemoryToolModule;

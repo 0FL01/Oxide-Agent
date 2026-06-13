@@ -71,6 +71,8 @@ use crate::agent::tool_runtime::TodosToolModule;
 ))]
 use crate::agent::tool_runtime::ToolModule;
 #[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebCrawlerToolModule;
+#[cfg(feature = "tool-webfetch-md")]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
@@ -79,6 +81,7 @@ use tokio::sync::Semaphore;
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
 const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
 const TOOL_CANCEL_SUB_AGENTS: &str = "cancel_sub_agents";
+const TOOL_WEB_CRAWLER: &str = "web_crawler";
 const TOOL_WEB_MARKDOWN: &str = "web_markdown";
 const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
 const SUB_AGENT_MAX_CONCURRENT_JOBS: usize = 5;
@@ -735,6 +738,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
 
         #[cfg(feature = "tool-webfetch-md")]
+        self.push_sub_agent_tool_module(&mut executors, &WebCrawlerToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-webfetch-md")]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
         #[cfg(feature = "tool-crawl4ai-markdown")]
@@ -885,6 +891,13 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .filter(|name| available_tools.contains(*name))
             .cloned()
             .collect();
+
+        if requested.contains(TOOL_WEB_MARKDOWN)
+            && !blocked.contains(TOOL_WEB_CRAWLER)
+            && available_tools.contains(TOOL_WEB_CRAWLER)
+        {
+            allowed.insert(TOOL_WEB_CRAWLER.to_string());
+        }
 
         if requested.contains(TOOL_WEB_MARKDOWN)
             && !blocked.contains(TOOL_CRAWL4AI_MARKDOWN)

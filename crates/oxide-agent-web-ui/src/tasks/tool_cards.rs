@@ -46,7 +46,7 @@ pub(super) fn ToolCard(
         "web_markdown" => {
             view! { <WebMarkdownToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "crawl4ai_markdown" => {
+        "crawl4ai_markdown" | "web_crawler" => {
             view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
         }
         "spawn_sub_agents" => {
@@ -493,7 +493,10 @@ fn CrawlToolCard(
         .as_ref()
         .and_then(|event| event.payload.get("display_payload"))
         .filter(|payload| {
-            payload.get("provider").and_then(Value::as_str) == Some("crawl4ai_markdown")
+            matches!(
+                payload.get("provider").and_then(Value::as_str),
+                Some("crawl4ai_markdown" | "web_crawler")
+            )
         })
         .cloned();
     let crawl = crawl_from_stdout.or(crawl_from_display);
@@ -1560,7 +1563,7 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                         .unwrap_or_else(|| other.to_string()),
                 })
             }
-            Some("crawl4ai_markdown") => {
+            Some("crawl4ai_markdown" | "web_crawler") => {
                 let host = payload.get("host").and_then(Value::as_str);
                 let status_code = payload.get("status_code").and_then(Value::as_i64);
 

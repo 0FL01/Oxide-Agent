@@ -1225,11 +1225,41 @@ fn truncate_summary(value: &str) -> String {
 }
 
 fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value> {
-    if name != "crawl4ai_markdown" || !success {
+    if !matches!(name, "crawl4ai_markdown" | "web_crawler") || !success {
         return None;
     }
 
     let output = serde_json::from_str::<Value>(output).ok()?;
+    if name == "web_crawler" {
+        let payload = output.get("structured_payload")?;
+        let markdown = payload
+            .get("markdown")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let (safe_markdown, _) = redact_sensitive_text(markdown);
+        let (markdown_preview, markdown_preview_truncated) =
+            truncate_text(&safe_markdown, TOOL_DISPLAY_MARKDOWN_MAX_CHARS);
+
+        return Some(json!({
+            "provider": "web_crawler",
+            "backend": payload.get("backend").and_then(Value::as_str),
+            "fallback_reason": payload.get("fallback_reason").and_then(Value::as_str),
+            "url": payload.get("url").and_then(Value::as_str),
+            "final_url": payload.get("final_url").and_then(Value::as_str),
+            "status_code": payload.get("status_code").and_then(Value::as_u64),
+            "markdown": markdown_preview,
+            "chars": payload
+                .get("chars")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| markdown.chars().count() as u64),
+            "truncated": payload
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "markdown_preview_truncated": markdown_preview_truncated,
+        }));
+    }
+
     let stdout_text = stream_text_from_output(&output, "stdout")?;
     let crawl = serde_json::from_str::<Value>(&stdout_text).ok()?;
     let markdown = crawl.get("markdown").and_then(Value::as_str).unwrap_or("");
@@ -1314,7 +1344,7 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                     .unwrap_or_else(|| other.to_string()),
             })
         }
-        ("crawl4ai_markdown", Some("crawl4ai_markdown")) => {
+        ("crawl4ai_markdown", Some("crawl4ai_markdown")) | ("web_crawler", Some("web_crawler")) => {
             let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
             let host = payload.get("host").and_then(Value::as_str);
             let status_code = payload.get("status_code").and_then(Value::as_u64);

@@ -78,6 +78,8 @@ use crate::agent::tool_runtime::TodosToolModule;
 ))]
 use crate::agent::tool_runtime::ToolModule;
 #[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebCrawlerToolModule;
+#[cfg(feature = "tool-webfetch-md")]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(feature = "tool-wiki-memory")]
 use crate::agent::tool_runtime::WikiMemoryToolModule;
@@ -199,6 +201,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
         #[cfg(feature = "tool-crawl4ai-markdown")]
         self.register_tool_runtime_module(registry, &Crawl4AiMarkdownToolModule, ctx);
+        #[cfg(feature = "tool-webfetch-md")]
+        self.register_tool_runtime_module(registry, &WebCrawlerToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-wiki-memory")]

@@ -270,18 +270,28 @@ impl ManagerControlPlaneProvider {
         }
 
         #[cfg(feature = "tool-webfetch-md")]
-        groups.push(TopicAgentToolGroup {
-            provider: "webfetch_md",
-            aliases: &["search", "webfetch", "web_markdown"],
-            tools: TOPIC_AGENT_WEBFETCH_TOOLS,
-        });
+        if crate::config::is_web_crawler_merge_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "web_crawler",
+                aliases: &["search", "crawler", "web_crawler", "web_markdown"],
+                tools: TOPIC_AGENT_WEB_CRAWLER_TOOLS,
+            });
+        } else {
+            groups.push(TopicAgentToolGroup {
+                provider: "webfetch_md",
+                aliases: &["search", "webfetch", "web_markdown"],
+                tools: TOPIC_AGENT_WEBFETCH_TOOLS,
+            });
+        }
 
         #[cfg(feature = "tool-crawl4ai-markdown")]
-        groups.push(TopicAgentToolGroup {
-            provider: "crawl4ai",
-            aliases: &["search", "crawl4ai", "browser_markdown"],
-            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-        });
+        if !crate::config::is_web_crawler_merge_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "crawl4ai",
+                aliases: &["search", "crawl4ai", "browser_markdown"],
+                tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
+            });
+        }
     }
 
     pub(super) async fn topic_agent_tool_catalog(
