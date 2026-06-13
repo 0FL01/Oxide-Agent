@@ -768,6 +768,8 @@ impl ToolModule for WebCrawlerToolModule {
 
 #[cfg(feature = "tool-webfetch-md")]
 const TOOL_WEB_CRAWLER: &str = "web_crawler";
+#[cfg(feature = "tool-webfetch-md")]
+const WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS: u64 = 10;
 
 #[cfg(feature = "tool-webfetch-md")]
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -822,7 +824,7 @@ impl WebCrawlerToolExecutor {
         });
         let webfetch_args = WebMarkdownArgs {
             url: args.url.clone(),
-            timeout_secs: args.timeout_secs,
+            timeout_secs: Some(web_crawler_webfetch_timeout_secs(&args)),
             max_chars: args.max_chars,
             offset_chars: args.offset_chars,
         };
@@ -1015,7 +1017,7 @@ fn web_crawler_tool_definition() -> ToolDefinition {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Optional request timeout in seconds"
+                    "description": "Optional request timeout in seconds; lightweight fast path defaults to 10 seconds"
                 },
                 "max_chars": {
                     "type": "integer",
@@ -1044,6 +1046,12 @@ fn web_crawler_tool_definition() -> ToolDefinition {
 fn parse_web_crawler_args(arguments: &str) -> anyhow::Result<WebCrawlerArgs> {
     serde_json::from_str(arguments)
         .map_err(|error| anyhow::anyhow!("invalid web_crawler arguments: {error}"))
+}
+
+#[cfg(feature = "tool-webfetch-md")]
+fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
+    args.timeout_secs
+        .unwrap_or(WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS)
 }
 
 #[cfg(feature = "tool-webfetch-md")]
@@ -1202,6 +1210,32 @@ fn web_crawler_crawl_failure_payload(
         "webfetch_payload": web_payload,
         "crawl4ai_payload": crawl_payload
     })
+}
+
+#[cfg(all(test, feature = "tool-webfetch-md"))]
+mod web_crawler_tests {
+    use super::*;
+
+    #[test]
+    fn web_crawler_webfetch_timeout_defaults_to_ten_seconds() {
+        let args = WebCrawlerArgs {
+            url: "https://example.test".to_string(),
+            ..WebCrawlerArgs::default()
+        };
+
+        assert_eq!(web_crawler_webfetch_timeout_secs(&args), 10);
+    }
+
+    #[test]
+    fn web_crawler_webfetch_timeout_preserves_explicit_value() {
+        let args = WebCrawlerArgs {
+            url: "https://example.test".to_string(),
+            timeout_secs: Some(3),
+            ..WebCrawlerArgs::default()
+        };
+
+        assert_eq!(web_crawler_webfetch_timeout_secs(&args), 3);
+    }
 }
 
 /// Capability module for browser-rendered URL-to-Markdown crawls.
