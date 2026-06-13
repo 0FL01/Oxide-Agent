@@ -6,11 +6,7 @@ services:
       args:
         CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local,oxide-agent-core/tool-crawl4ai-markdown,oxide-agent-sandboxd/profile-full
     environment:
-      SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
-      SEARXNG_URL: ${SEARXNG_URL:-http://127.0.0.1:8081}
-      SEARXNG_BEARER_TOKEN: ${SEARXNG_BEARER_TOKEN:-}
       OXIDE_CRAWL4AI_BASE_URL: ${OXIDE_CRAWL4AI_BASE_URL:-http://127.0.0.1:11235}
-      OXIDE_CRAWL4AI_API_TOKEN: ${OXIDE_CRAWL4AI_API_TOKEN:-}
     depends_on:
       searxng:
         condition: service_healthy

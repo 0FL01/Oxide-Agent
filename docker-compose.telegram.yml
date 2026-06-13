@@ -30,13 +30,9 @@ services:
         required: false
     environment:
       - DUCKDUCKGO_ENABLED=true
-      - DUCKDUCKGO_MIN_DELAY_MS=2500
-      - DUCKDUCKGO_JITTER_MS=1500
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
-      - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
-      - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
@@ -64,7 +60,6 @@ services:
     command: ["./oxide-agent-sandboxd"]
     environment:
       - RUST_LOG=oxide_agent_core=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
-      - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
       - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}-telegram

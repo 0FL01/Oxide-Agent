@@ -4,13 +4,9 @@ services:
   oxide_web:
     environment:
       OXIDE_DATABASE_URL: ${OXIDE_DATABASE_URL:-postgres://oxide_agent:oxide_agent@127.0.0.1:55432/oxide_agent}
-      OXIDE_DATABASE_MIGRATE_ON_STARTUP: ${OXIDE_DATABASE_MIGRATE_ON_STARTUP:-true}
-      OXIDE_DATABASE_MIGRATIONS_DIR: ${OXIDE_DATABASE_MIGRATIONS_DIR:-/app/migrations}
       SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
       SEARXNG_URL: ${SEARXNG_URL:-http://127.0.0.1:8081}
-      SEARXNG_BEARER_TOKEN: ${SEARXNG_BEARER_TOKEN:-}
       OXIDE_CRAWL4AI_BASE_URL: ${OXIDE_CRAWL4AI_BASE_URL:-http://127.0.0.1:11235}
-      OXIDE_CRAWL4AI_API_TOKEN: ${OXIDE_CRAWL4AI_API_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
