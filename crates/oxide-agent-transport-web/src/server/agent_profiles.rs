@@ -232,7 +232,6 @@ async fn clear_agent_profile_references(
         }
         sessions_changed = true;
         session.agent_profile_id = None;
-        session.updated_at = chrono::Utc::now();
         state
             .web_store
             .save_session(session.clone())

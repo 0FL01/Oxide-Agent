@@ -59,9 +59,10 @@ use super::{
     AUTH_COOKIE_NAME, AppState, TaskEventsQuery, WEB_TASK_SCHEMA_VERSION, WebAssetsConfig,
     WebSandboxControl, WebStartupError, api_cancel_task, api_create_agent_profile,
     api_create_session, api_create_session_with_request, api_create_task_version,
-    api_delete_session, api_get_session, api_get_settings, api_get_task_events,
-    api_get_task_progress, api_list_agent_profiles, api_list_sessions, api_update_session_profile,
-    api_update_settings, auth_cookie_value, csrf_header_value, parse_web_bool,
+    api_delete_agent_profile, api_delete_session, api_get_session, api_get_settings,
+    api_get_task_events, api_get_task_progress, api_list_agent_profiles, api_list_sessions,
+    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
+    parse_web_bool,
 };
 #[cfg(feature = "profile-lite")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -1048,6 +1049,112 @@ async fn api_agent_profile_default_and_session_selection_persist() {
     assert_eq!(
         updated_session.session.agent_profile_id,
         Some(created_profile.profile.agent_id.clone())
+    );
+}
+
+#[tokio::test]
+async fn deleting_agent_profile_preserves_session_chronology() {
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (user, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_profile) = api_create_agent_profile(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::Json(CreateAgentProfileRequest {
+            display_name: "Reviewer".to_string(),
+            system_prompt: "Focus on review notes.".to_string(),
+        }),
+    )
+    .await
+    .expect("create agent profile");
+
+    for index in 0..3 {
+        let axum::Json(created) = api_create_session_with_request(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(ApiCreateSessionRequest {
+                model_selection: None,
+                agent_profile_selection: AgentProfileSelection::Profile {
+                    agent_profile_id: created_profile.profile.agent_id.clone(),
+                },
+            }),
+        )
+        .await
+        .expect("create profiled session");
+        let mut record = state
+            .web_store
+            .load_session(user.user_id, &created.session.session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        record.created_at = now + chrono::Duration::seconds(index);
+        record.updated_at = now + chrono::Duration::seconds(index);
+        state
+            .web_store
+            .save_session(record)
+            .await
+            .expect("save timestamped session");
+    }
+
+    let axum::Json(before_delete) = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions before delete");
+    let before_order = before_delete
+        .sessions
+        .iter()
+        .map(|session| (session.session_id.clone(), session.updated_at))
+        .collect::<Vec<_>>();
+
+    let _ = api_delete_agent_profile(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(created_profile.profile.agent_id.clone()),
+    )
+    .await
+    .expect("delete agent profile");
+
+    let axum::Json(after_delete) = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions after delete");
+    let after_order = after_delete
+        .sessions
+        .iter()
+        .map(|session| (session.session_id.clone(), session.updated_at))
+        .collect::<Vec<_>>();
+
+    assert_eq!(before_order, after_order);
+    assert!(
+        after_delete
+            .sessions
+            .iter()
+            .all(|session| session.agent_profile_id.is_none())
     );
 }
 

@@ -182,7 +182,12 @@ impl WebUiStore for InMemoryWebUiStore {
             .filter(|record| record.user_id == user_id)
             .cloned()
             .collect::<Vec<_>>();
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| b.session_id.cmp(&a.session_id))
+        });
         Ok(sessions)
     }
 

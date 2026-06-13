@@ -1157,7 +1157,7 @@ impl WebUiStore for SqlxWebUiStore {
                    schema_version, created_at, updated_at
             FROM web_sessions
             WHERE user_id = $1
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, created_at DESC, session_id DESC
             "#,
         )
         .bind(user_id)
@@ -1182,7 +1182,7 @@ impl WebUiStore for SqlxWebUiStore {
                    last_task_status, last_preview, created_at, updated_at
             FROM web_sessions
             WHERE user_id = $1
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, created_at DESC, session_id DESC
             "#,
         )
         .bind(user_id)
