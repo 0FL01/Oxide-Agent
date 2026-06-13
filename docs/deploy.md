@@ -71,7 +71,7 @@ docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-s
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
 ```
 
-External SearXNG, Crawl4AI, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default.
+External SearXNG, Crawl4AI, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool; set it to `false` to expose split `web_markdown`/`crawl4ai_markdown` tools.
 
 ## 5. Sandbox
 
