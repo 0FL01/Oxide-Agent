@@ -39,6 +39,7 @@ pub(super) struct TaskCardSignals {
     pub(super) set_drawer_open: WriteSignal<bool>,
     pub(super) activity_task_id: ReadSignal<Option<String>>,
     pub(super) set_activity_task_id: WriteSignal<Option<String>>,
+    pub(super) live_activity_task_id: Signal<Option<String>>,
     pub(super) stream_signals: StreamUiSignals,
     pub(super) set_error: WriteSignal<Option<String>>,
 }
@@ -58,6 +59,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_drawer_open,
         activity_task_id,
         set_activity_task_id,
+        live_activity_task_id,
         stream_signals,
         set_error,
     } = signals;
@@ -135,6 +137,10 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let search_probe_messages = search_probe_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
             let activity_open = drawer_open.get() && activity_task_id.get().as_deref() == Some(task.task_id.as_str());
+            let is_live_activity_card = live_activity_task_id
+                .get()
+                .as_deref()
+                == Some(task.task_id.as_str());
             let task_id_for_activity = task.task_id.clone();
             let open_activity = Callback::new(move |_| {
                 if drawer_open.get_untracked()
@@ -176,9 +182,11 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                     />
                     <ResumeUserMessages messages=resume_messages />
                     <SearchProbeMessages messages=search_probe_messages />
-                    <div class="task-action-row">
-                        <ThinkingButton label=thought_label open=activity_open on_click=open_activity />
-                    </div>
+                    {(!is_live_activity_card).then(|| view! {
+                        <div class="task-action-row">
+                            <ThinkingButton label=thought_label open=activity_open on_click=open_activity />
+                        </div>
+                    })}
 
                     {final_response_markdown.map(|answer| view! {
                         <AssistantMessage answer=answer files=delivered_files.clone() />

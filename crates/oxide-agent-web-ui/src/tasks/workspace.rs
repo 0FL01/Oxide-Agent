@@ -194,6 +194,24 @@ fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
         .unwrap_or_default()
 }
 
+fn latest_live_activity_task_id(
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+) -> Option<String> {
+    active_task
+        .get()
+        .filter(|task| task.status != TaskStatus::Completed)
+        .map(|task| task.task_id)
+        .or_else(|| {
+            tasks
+                .get()
+                .into_iter()
+                .max_by_key(|task| task.updated_at)
+                .filter(|task| task.status != TaskStatus::Completed)
+                .map(|task| task.task_id)
+        })
+}
+
 fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
     for task in tasks {
         upsert_task_summary(items, task);
@@ -1046,6 +1064,12 @@ fn SessionWorkspace(
                                                     set_drawer_open,
                                                     activity_task_id,
                                                     set_activity_task_id,
+                                                    live_activity_task_id: Signal::derive(move || {
+                                                        latest_live_activity_task_id(
+                                                            active_task,
+                                                            tasks,
+                                                        )
+                                                    }),
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
                                                         set_progress,
