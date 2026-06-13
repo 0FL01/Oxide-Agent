@@ -13,7 +13,7 @@ use super::types::ToolBatchId;
 use crate::agent::identity::SessionId;
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -106,11 +106,41 @@ impl ToolCallRuntime {
         batch: OpenCodeGoToolCallBatch,
         context: ToolTurnContext,
     ) -> Result<Vec<ToolOutput>, ToolRuntimeFatal> {
+        self.execute_batch_with_blocked_calls(batch, context, BTreeMap::new())
+            .await
+    }
+
+    /// Execute one assistant tool-call batch while returning preflight-blocked
+    /// calls as provider-valid failure outputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fatal error when history cannot be written or output pairing
+    /// invariants fail.
+    pub async fn execute_batch_with_blocked_calls(
+        &self,
+        batch: OpenCodeGoToolCallBatch,
+        context: ToolTurnContext,
+        blocked_calls: BTreeMap<usize, String>,
+    ) -> Result<Vec<ToolOutput>, ToolRuntimeFatal> {
         self.history.record_assistant_tool_calls(&batch).await?;
 
         let mut handles = Vec::with_capacity(batch.calls.len());
+        let mut outputs = Vec::with_capacity(batch.calls.len());
         for call in batch.calls.iter().cloned() {
             let invocation = build_invocation(&batch, &context, &call);
+            if let Some(reason) = blocked_calls.get(&call.batch_index) {
+                outputs.push(
+                    self.normalizer
+                        .failure(
+                            &invocation,
+                            format!("tool call blocked by runtime policy: {reason}"),
+                        )
+                        .with_cleanup_status(CleanupStatus::NotStarted),
+                );
+                continue;
+            }
+
             handles.push(ToolTaskHandle {
                 invocation: invocation.clone(),
                 handle: tokio::spawn(run_one_tool(
@@ -122,7 +152,6 @@ impl ToolCallRuntime {
             });
         }
 
-        let mut outputs = Vec::with_capacity(handles.len());
         for task in handles {
             let output = match task.handle.await {
                 Ok(output) => output,
