@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
-use oxide_agent_core::agent::AgentMemory;
+use oxide_agent_core::agent::{AgentMemory, memory::AgentMessage};
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 
 /// Wraps `unsafe { std::env::set_var }` for test code (Rust 2024).
@@ -1908,13 +1908,28 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
     .await
     .expect("create session");
     let session_id = created_session.session.session_id;
-    let original_context_key = state
+    let original_session = state
         .web_store
         .load_session(user_one.user_id, &session_id)
         .await
         .expect("load session")
-        .expect("session exists")
-        .context_key;
+        .expect("session exists");
+    let original_context_key = original_session.context_key.clone();
+    let agent_flow_id = original_session.agent_flow_id.clone();
+    let mut source_memory = AgentMemory::new(usize::MAX);
+    source_memory.add_message(AgentMessage::user_task("Original prompt"));
+    source_memory.add_message(AgentMessage::assistant("Original answer"));
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user_one.user_id,
+            original_context_key.clone(),
+            agent_flow_id.clone(),
+            &source_memory,
+        )
+        .await
+        .expect("save original flow memory");
 
     let completed = task_record(
         user_one.user_id,
@@ -1963,6 +1978,21 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
             .context_key
             .starts_with(&format!("web-session-{session_id}-branch-"))
     );
+    let branch_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            edited_session.context_key.clone(),
+            agent_flow_id,
+        )
+        .await
+        .expect("load branch flow memory")
+        .expect("branch memory should be copied from source context");
+    let branch_messages = branch_memory.get_messages();
+    assert!(branch_messages.len() >= 2);
+    assert_eq!(branch_messages[0].content, "Original prompt");
+    assert_eq!(branch_messages[1].content, "Original answer");
     assert!(
         sandbox_control
             .list_user_sandboxes(user_one.user_id)

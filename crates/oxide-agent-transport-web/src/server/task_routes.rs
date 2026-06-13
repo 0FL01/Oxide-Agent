@@ -241,6 +241,61 @@ async fn best_effort_copy_attachments_between_web_sandboxes(
     }
 }
 
+async fn best_effort_copy_agent_memory_between_contexts(
+    state: &AppState,
+    user_id: i64,
+    source_context_key: &str,
+    target_context_key: &str,
+    agent_flow_id: &str,
+) {
+    if source_context_key == target_context_key {
+        return;
+    }
+
+    let storage = state.session_manager.storage();
+    let memory = match storage
+        .load_agent_memory_for_flow(
+            user_id,
+            source_context_key.to_string(),
+            agent_flow_id.to_string(),
+        )
+        .await
+    {
+        Ok(Some(memory)) => memory,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                user_id,
+                source_context_key,
+                target_context_key,
+                agent_flow_id,
+                error = %error,
+                "Could not load source web agent memory for task-version branch; continuing with empty branch memory"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = storage
+        .save_agent_memory_for_flow(
+            user_id,
+            target_context_key.to_string(),
+            agent_flow_id.to_string(),
+            &memory,
+        )
+        .await
+    {
+        tracing::warn!(
+            user_id,
+            source_context_key,
+            target_context_key,
+            agent_flow_id,
+            error = %error,
+            "Could not save copied web agent memory for task-version branch; continuing with empty branch memory"
+        );
+    }
+}
+
 fn persisted_user_message_event(
     task: &WebTaskRecord,
     seq: u64,
@@ -985,6 +1040,14 @@ pub(crate) async fn api_create_task_version(
         &source_context_key,
         &session.context_key,
         &attachments,
+    )
+    .await;
+    best_effort_copy_agent_memory_between_contexts(
+        &state,
+        user.user_id,
+        &source_context_key,
+        &session.context_key,
+        &session.agent_flow_id,
     )
     .await;
     save_session_record(&state, session.clone()).await?;
