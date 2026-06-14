@@ -1,6 +1,7 @@
 pub(crate) mod module;
 pub(crate) mod profile;
 pub(crate) mod tool_ids;
+pub(crate) mod transcription;
 
 pub(crate) use module::OpenAIBaseProviderModule;
 pub(crate) use profile::OpenAICompatibleProfile;
@@ -814,13 +815,28 @@ impl LlmProvider for OpenAIBaseProvider {
 
     async fn transcribe_audio(
         &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
+        audio_bytes: Vec<u8>,
+        mime_type: &str,
+        model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
-            "Audio transcription not supported by OpenAI-compatible provider".to_string(),
-        ))
+        let Some(audio_profile) = self.profile.audio_transcription else {
+            return Err(LlmError::Unknown(format!(
+                "Audio transcription not supported by {} profile",
+                self.profile.name,
+            )));
+        };
+
+        transcription::transcribe_audio(
+            &self.http_client,
+            self.api_key.as_deref(),
+            &self.api_base,
+            audio_bytes,
+            mime_type,
+            model_id,
+            &audio_profile,
+            self.profile.name,
+        )
+        .await
     }
 
     async fn analyze_image(
@@ -1335,7 +1351,7 @@ mod tests {
             parsed.tool_calls[0]
                 .tool_call_correlation
                 .as_ref()
-                .map_or(true, |c| c.provider_tool_call_id.is_none())
+                .is_none_or(|c| c.provider_tool_call_id.is_none())
         );
         // wire_tool_call_id falls back to invocation_id (generated UUID)
         assert!(

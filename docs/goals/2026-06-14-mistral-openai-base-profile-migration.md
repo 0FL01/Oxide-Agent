@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 15:30
+Last updated: 2026-06-14 16:00
 
 ## Objective
 
@@ -169,8 +169,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 8 -- "Add audio transcription"
   - Acceptance: `AudioTranscriptionProfile` with endpoint_path, temperature, timeout_secs, max_retries, initial_backoff_ms. Mistral profile has `Some(...)`, generic has `None`. `transcribe_audio()` builds multipart from base URL (not chat completions URL), sends `file`, `model`, `temperature`. 120s timeout, retry on 429/502/503/504/timeout/JSON-transient. Generic `transcribe_audio()` still returns unsupported.
   - Evidence required: ported tests for multipart, retry delay, mime mapping pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Created `openai_base/transcription.rs` with profile-driven `transcribe_audio()` -- builds URL from `api_base + profile.endpoint_path`, uses `profile.temperature` for multipart form, `profile.timeout_secs` for request timeout, `profile.max_retries`/`profile.initial_backoff_ms` for retry logic. `transcription_url()` helper handles base/path joining. `mime_to_extension()` ported from Mistral. `get_retry_delay()` parameterized by profile. `LlmProvider::transcribe_audio()` dispatches: returns `LlmError::Unknown` when `profile.audio_transcription` is `None` (generic), delegates to `transcription::transcribe_audio()` otherwise. 12 new tests: `test_mime_to_extension_variants`, `transcription_url_combines_base_and_path`, `retry_delay_502_exponential_backoff`, `retry_delay_rate_limit_server_wait`, `retry_delay_rate_limit_no_server_wait`, `retry_delay_429_in_api_error`, `retry_delay_503_unavailable`, `retry_delay_non_retryable_error`, `retry_delay_network_config_error_not_retried`, `retry_delay_network_error_is_retried`, `retry_delay_json_error_is_retried`, `retry_delay_custom_backoff`. 55 openai_base + 42 mistral tests pass. Clippy + fmt clean.
 
 - G10: `OpenAIBaseProvider` carries profile + tool_id_mapper fields
   - Source: plan section 2 -- "Extend OpenAIBaseProvider"
@@ -543,6 +543,22 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G8 verified
   - Next: Checkpoint 6 -- audio transcription
+
+- 2026-06-14 16:00: Checkpoint 6 -- Audio transcription in openai_base
+  - Changed:
+    - Created `openai_base/transcription.rs`: profile-driven audio transcription module. `transcription_url()` builds URL from `api_base` + `profile.endpoint_path`. `transcribe_audio()` sends multipart `file`/`model`/`temperature` with optional Bearer auth, configurable timeout, retry with exponential backoff. `retry_transcription()` generic retry wrapper. `get_retry_delay()` handles RateLimit (server-provided wait), ApiError (429/502/503/504/timeout), NetworkError (non-config), JsonError. `mime_to_extension()` ported from Mistral. 12 tests: mime variants, URL combination, retry delays (502 exponential, rate limit server/no-server wait, 429 in API error, 503, non-retryable, network config error, network retry, JSON retry, custom backoff).
+    - Updated `openai_base/mod.rs`: added `pub(crate) mod transcription;` declaration. `LlmProvider::transcribe_audio()` now dispatches on `self.profile.audio_transcription`: returns `LlmError::Unknown` with profile name when `None`, delegates to `transcription::transcribe_audio()` when `Some(...)`.
+    - Fixed pre-existing clippy warning: replaced `.map_or(true, ...)` with `.is_none_or(...)` at line 1354.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 55 passed (43 existing + 12 new)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 42 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G9 verified
+  - Next: Checkpoint 7 -- MistralProviderModule builds OpenAIBaseProvider with Mistral profile
 
 ## Risks and Blockers
 
