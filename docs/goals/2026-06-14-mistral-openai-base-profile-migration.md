@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 16:00
+Last updated: 2026-06-14 16:30
 
 ## Objective
 
@@ -183,8 +183,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 10 -- "Redo module/feature layer"
   - Acceptance: `mistral/module.rs::build_provider()` creates `OpenAIBaseProvider::new_with_client_and_profile(Some(api_key), "https://api.mistral.ai/v1", http_client, OpenAICompatibleProfile::mistral())`. Module ID stays `"llm-provider/mistral"`, aliases stay `["mistral"]`, capabilities stay `Strict/true/true`, media stays `audio=true/image=false/video=false`.
   - Evidence required: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` passes; capabilities command output unchanged
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `mistral/module.rs::build_provider()` now creates `OpenAIBaseProvider::new_with_client_and_profile(Some(api_key), MISTRAL_API_BASE, ctx.http_client.clone(), OpenAICompatibleProfile::mistral())`. Module ID = `"llm-provider/mistral"`, aliases = `["mistral"]`, capabilities = `Strict/true/true`, media = `audio=true/image=false/video=false`. Old `MistralProvider` struct in `mod.rs` is dead code (will be deleted in CP9). 55 openai_base + 42 mistral tests pass. Clippy + fmt clean. Embedded profile compiles.
 
 - G12: `async-openai` dependency removed
   - Source: plan section 8, 10 -- "Remove async-openai"
@@ -559,6 +559,21 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G9 verified
   - Next: Checkpoint 7 -- MistralProviderModule builds OpenAIBaseProvider with Mistral profile
+
+- 2026-06-14 16:30: Checkpoint 7 -- MistralProviderModule builds OpenAIBaseProvider
+  - Changed:
+    - `mistral/module.rs`: `build_provider()` now creates `OpenAIBaseProvider::new_with_client_and_profile(Some(api_key), "https://api.mistral.ai/v1", ctx.http_client, OpenAICompatibleProfile::mistral())` instead of `MistralProvider::new_with_client()`. Added imports for `OpenAIBaseProvider` and `OpenAICompatibleProfile`. Added `MISTRAL_API_BASE` constant. Module ID, aliases, capabilities, media capabilities unchanged.
+    - `mistral/mod.rs`: `MistralProvider` struct and `LlmProvider` impl are now dead code (will be deleted in CP9). All trait methods were previously delegated to `mistral/chat.rs`, `mistral/transcription.rs`, `mistral/image.rs` which are also dead code after this switch.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 55 passed
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 42 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G11 verified
+  - Next: Checkpoint 8 -- Remove async-openai
 
 ## Risks and Blockers
 
