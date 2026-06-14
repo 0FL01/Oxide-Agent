@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 17:20
+Last updated: 2026-06-14 17:30
 
 ## Objective
 
@@ -204,8 +204,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 11 -- "Add PROFILE for generic openai-base instances"
   - Acceptance: `OPENAI_BASE_PROVIDERS__N__PROFILE=mistral` makes instance use Mistral profile. `OPENAI_BASE_PROVIDERS__N__PROFILE=generic` or absent uses generic profile. `provider = "mistral"` still works via `MISTRAL_API_KEY`.
   - Evidence required: unit test setting `PROFILE=mistral` env var and asserting profile selection
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 6 tests in `openai_base/module.rs::tests` (resolve_profile_none, resolve_profile_generic, resolve_profile_mistral, resolve_profile_unknown, configured_endpoints_parses_profile, configured_endpoints_absent_profile_is_none) + integration test `openai_base_profile_env_selects_mistral_profile` in `modules.rs`. `OPENAI_BASE_PROVIDERS__N__PROFILE` parsed in `configured_endpoints()`, resolved via `resolve_profile()` to `OpenAICompatibleProfile::mistral()` or `::generic()`, applied in `build_providers()`. Capability manifest updated with PROFILE config property.
 
 ### Quality requirements
 
@@ -615,6 +615,24 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G13 verified
   - Next: Checkpoint 10 -- Optional PROFILE env var + docs + .env.example
+
+- 2026-06-14 17:30: Checkpoint 10 -- Optional PROFILE env var
+  - Changed:
+    - `openai_base/module.rs`: added `profile: Option<String>` to `OpenAIBaseEndpointConfig` and `PartialOpenAIBaseEndpointConfig`. Added `"PROFILE"` field parsing in `configured_endpoints()`. Added `resolve_profile()` function (maps `"mistral"` -> `OpenAICompatibleProfile::mistral()`, everything else -> `::generic()`). `build_providers()` now uses `new_with_client_and_profile()` with resolved profile.
+    - `openai_base/profile.rs`: added `PartialEq` derive to `OpenAICompatibleProfile` (needed for test assertions).
+    - `capabilities/compiled.rs`: added `providers.N.profile` config property with env `OPENAI_BASE_PROVIDERS__N__PROFILE`.
+    - `modules.rs`: added integration test `openai_base_profile_env_selects_mistral_profile`.
+    - `openai_base/module.rs`: added 6 unit tests for `resolve_profile()` and `configured_endpoints()` with PROFILE.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 62 passed
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 25 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G14 verified
+  - Next: Checkpoint 11 -- Final validation (capabilities CLI, README, .env.example)
 
 ## Risks and Blockers
 

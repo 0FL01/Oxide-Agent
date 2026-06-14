@@ -6,6 +6,8 @@ use crate::llm::LlmProvider;
 use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 
+use super::profile::OpenAICompatibleProfile;
+
 /// Capability module for generic OpenAI-compatible routes.
 pub(crate) struct OpenAIBaseProviderModule;
 
@@ -26,6 +28,7 @@ pub(crate) struct OpenAIBaseEndpointConfig {
     pub(crate) api_key: Option<String>,
     pub(crate) models_url: Option<String>,
     pub(crate) model_cache_ttl_secs: u64,
+    pub(crate) profile: Option<String>,
 }
 
 #[derive(Default)]
@@ -35,6 +38,7 @@ struct PartialOpenAIBaseEndpointConfig {
     api_key: Option<String>,
     models_url: Option<String>,
     model_cache_ttl_secs: Option<u64>,
+    profile: Option<String>,
 }
 
 impl PartialOpenAIBaseEndpointConfig {
@@ -61,6 +65,7 @@ impl PartialOpenAIBaseEndpointConfig {
                 self.model_cache_ttl_secs
                     .unwrap_or(MODEL_CACHE_TTL_SECS_DEFAULT),
             ),
+            profile: self.profile,
         })
     }
 }
@@ -132,6 +137,7 @@ pub(crate) fn configured_endpoints() -> Vec<OpenAIBaseEndpointConfig> {
             "MODEL_CACHE_TTL_SECS" => {
                 provider.model_cache_ttl_secs = value.parse::<u64>().ok();
             }
+            "PROFILE" => provider.profile = Some(value),
             _ => {}
         }
     }
@@ -152,6 +158,16 @@ fn normalize_provider_instance_name(name: &str) -> Option<String> {
         return None;
     }
     Some(name)
+}
+
+/// Resolve a profile name string (from `OPENAI_BASE_PROVIDERS__N__PROFILE`)
+/// to the corresponding `OpenAICompatibleProfile`. Returns `generic()` for
+/// `None`, empty, `"generic"`, or any unrecognized value.
+fn resolve_profile(profile: &Option<String>) -> OpenAICompatibleProfile {
+    match profile.as_deref() {
+        Some("mistral") => OpenAICompatibleProfile::mistral(),
+        _ => OpenAICompatibleProfile::generic(),
+    }
 }
 
 #[cfg(feature = "llm-opencode-go")]
@@ -239,12 +255,14 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
             .into_iter()
             .filter_map(|endpoint| {
                 let provider_name = provider_name_for_instance(&endpoint.name)?;
+                let profile = resolve_profile(&endpoint.profile);
                 Some((
                     provider_name,
-                    Arc::new(super::OpenAIBaseProvider::new_with_client(
+                    Arc::new(super::OpenAIBaseProvider::new_with_client_and_profile(
                         endpoint.api_key,
                         endpoint.api_base,
                         ctx.http_client.clone(),
+                        profile,
                     )) as Arc<dyn LlmProvider>,
                 ))
             })
@@ -279,5 +297,74 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
 
     fn media_capabilities(&self) -> MediaCapabilities {
         MediaCapabilities::new(false, true, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{test_remove_env, test_set_env};
+
+    #[test]
+    fn resolve_profile_none_is_generic() {
+        assert_eq!(resolve_profile(&None), OpenAICompatibleProfile::generic());
+    }
+
+    #[test]
+    fn resolve_profile_generic_string_is_generic() {
+        assert_eq!(
+            resolve_profile(&Some("generic".to_string())),
+            OpenAICompatibleProfile::generic()
+        );
+    }
+
+    #[test]
+    fn resolve_profile_mistral_string() {
+        assert_eq!(
+            resolve_profile(&Some("mistral".to_string())),
+            OpenAICompatibleProfile::mistral()
+        );
+    }
+
+    #[test]
+    fn resolve_profile_unknown_falls_back_to_generic() {
+        assert_eq!(
+            resolve_profile(&Some("deepseek".to_string())),
+            OpenAICompatibleProfile::generic()
+        );
+    }
+
+    #[test]
+    fn configured_endpoints_parses_profile() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "test-profile");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__API_BASE", "http://localhost/v1");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+
+        let endpoints = configured_endpoints();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].profile, Some("mistral".to_string()));
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
+    }
+
+    #[test]
+    fn configured_endpoints_absent_profile_is_none() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "no-profile");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__API_BASE", "http://localhost/v1");
+
+        let endpoints = configured_endpoints();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].profile, None);
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
     }
 }

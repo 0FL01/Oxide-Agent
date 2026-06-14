@@ -94,7 +94,7 @@ pub struct AudioTranscriptionProfile {
 ///
 /// All fields are `Copy` / `&'static str` so the entire struct is
 /// const-constructible -- no heap allocation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenAICompatibleProfile {
     /// Human-readable profile name for logging.
     pub name: &'static str,

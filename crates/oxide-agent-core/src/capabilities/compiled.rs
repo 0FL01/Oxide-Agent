@@ -167,6 +167,11 @@ const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     )
     .with_env("OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS")
     .with_default("1800"),
+    ModuleConfigProperty::string(
+        "providers.N.profile",
+        "Behavioral profile for provider instance N: 'generic' (default) or 'mistral'. Controls tool-call ID mapping, message layout, response parsing, temperatures, and audio transcription.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__PROFILE"),
 ];
 #[allow(dead_code)]
 const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[

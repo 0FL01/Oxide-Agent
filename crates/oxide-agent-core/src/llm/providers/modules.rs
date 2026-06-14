@@ -366,6 +366,29 @@ mod tests {
         test_remove_env("OPENAI_BASE_API_BASE");
     }
 
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_profile_env_selects_mistral_profile() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OPENAI_BASE_API_BASE");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "custom-mistral");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "https://api.mistral.ai/v1",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+
+        let providers = build_configured_providers(&AgentSettings::default());
+
+        assert!(providers.contains_key("openai-base:custom-mistral"));
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
+    }
+
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn opencode_go_module_registers_provider_id_and_aliases() {
