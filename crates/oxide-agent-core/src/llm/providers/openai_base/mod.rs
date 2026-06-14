@@ -3,6 +3,7 @@ pub(crate) mod profile;
 pub(crate) mod tool_ids;
 pub(crate) mod transcription;
 
+pub(crate) use module::MistralProviderModule;
 pub(crate) use module::OpenAIBaseProviderModule;
 pub(crate) use profile::OpenAICompatibleProfile;
 pub(crate) use tool_ids::ToolCallIdMapper;

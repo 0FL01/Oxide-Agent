@@ -241,7 +241,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
     #[cfg(feature = "llm-mistral")]
-    modules.push(Box::new(super::mistral::MistralProviderModule));
+    modules.push(Box::new(super::openai_base::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
     modules.push(Box::new(super::minimax::MiniMaxProviderModule));
     #[cfg(feature = "llm-zai")]

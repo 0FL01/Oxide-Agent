@@ -3,9 +3,6 @@
 pub mod chatgpt;
 #[cfg(feature = "llm-minimax")]
 pub mod minimax;
-#[allow(missing_docs)]
-#[cfg(feature = "llm-mistral")]
-pub mod mistral;
 pub(crate) mod modules;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-openai-base")]
@@ -79,8 +76,6 @@ pub mod zai;
 pub use chatgpt::ChatGptProvider;
 #[cfg(feature = "llm-minimax")]
 pub use minimax::MiniMaxProvider;
-// Mistral provider is now OpenAIBaseProvider with a Mistral profile.
-// Route registration lives in mistral::module.
 #[cfg(feature = "llm-openai-base")]
 pub use openai_base::OpenAIBaseProvider;
 #[cfg(feature = "llm-opencode-go")]
