@@ -1,6 +1,12 @@
 pub(crate) mod module;
+pub(crate) mod profile;
+pub(crate) mod tool_ids;
 
 pub(crate) use module::OpenAIBaseProviderModule;
+pub(crate) use profile::OpenAICompatibleProfile;
+pub(crate) use tool_ids::ToolCallIdMapper;
+
+use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
@@ -16,20 +22,24 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 /// LLM provider for generic OpenAI-compatible Chat Completions endpoints.
+#[allow(dead_code)] // profile + mapper wired in checkpoints 2-6
 pub struct OpenAIBaseProvider {
     http_client: HttpClient,
     api_key: Option<String>,
     api_base: String,
+    profile: OpenAICompatibleProfile,
+    tool_id_mapper: Arc<Mutex<ToolCallIdMapper>>,
 }
 
 impl OpenAIBaseProvider {
     #[must_use]
     pub fn new(api_key: Option<String>, api_base: String) -> Self {
-        Self {
-            http_client: crate::llm::support::http::create_http_client(),
+        Self::new_with_client_and_profile(
             api_key,
             api_base,
-        }
+            crate::llm::support::http::create_http_client(),
+            OpenAICompatibleProfile::generic(),
+        )
     }
 
     #[must_use]
@@ -38,10 +48,27 @@ impl OpenAIBaseProvider {
         api_base: String,
         http_client: HttpClient,
     ) -> Self {
+        Self::new_with_client_and_profile(
+            api_key,
+            api_base,
+            http_client,
+            OpenAICompatibleProfile::generic(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_client_and_profile(
+        api_key: Option<String>,
+        api_base: String,
+        http_client: HttpClient,
+        profile: OpenAICompatibleProfile,
+    ) -> Self {
         Self {
             http_client,
             api_key,
             api_base,
+            profile,
+            tool_id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
         }
     }
 

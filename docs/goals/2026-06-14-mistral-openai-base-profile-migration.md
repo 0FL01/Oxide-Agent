@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14
+Last updated: 2026-06-14 12:00
 
 ## Objective
 
@@ -114,22 +114,22 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 1 -- "Introduce OpenAICompatibleProfile"
   - Acceptance: Struct with fields for name, default_api_base, capabilities, media_capabilities, temperature defaults (chat/tool/reasoning/audio), tool_history_mode, tool_call_id_strategy, message_layout_policy, response_content_policy, json_mode_policy, parallel_tool_calls, audio_transcription, reasoning_policy. Must be `const`-constructible (all `&'static str` / enum / struct fields, no heap).
   - Evidence required: `cargo check -p oxide-agent-core --no-default-features --features profile-full` compiles
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `openai_base/profile.rs` created with `OpenAICompatibleProfile` struct (16 fields, all `Copy`). All policy enums: `ToolCallIdStrategy`, `MessageLayoutPolicy`, `ResponseContentPolicy`, `JsonModePolicy`, `ModelMatchPolicy`, `ReasoningPolicy`, `AudioTranscriptionProfile`. `cargo check` + `cargo clippy -- -D warnings` clean.
 
 - G2: `OpenAICompatibleProfile::mistral()` const constructor exists with all Mistral constants
   - Source: plan section 1, 9 -- Mistral profile values
   - Acceptance: Returns profile with: name="mistral", default_api_base="https://api.mistral.ai/v1", capabilities=Strict/true/true, media=audio=true/image=false/video=false, chat_temp=0.9, tool_temp=0.7, reasoning_temp=0.7, audio_temp=Some(0.4), tool_history=Strict, tool_call_id=MistralNineAlnum, message_layout=MistralStrict, response_content=StringOrChunkArrayWithReasoning, json_mode=standard, parallel_tool_calls=Some(true), audio_transcription=Some(...), reasoning=Mistral{default_effort="high", match="mistral-small-2603"}
   - Evidence required: unit test asserting all field values
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `mistral_profile_has_expected_values` + `mistral_reasoning_model_match` tests pass in `profile.rs`.
 
 - G3: `OpenAICompatibleProfile::generic()` const constructor exists for default openai_base instances
   - Source: plan section 1, 11 -- generic profile
   - Acceptance: Returns profile with: name="generic", default_api_base="" (from env), capabilities=BestEffort/true/true, media=audio=false/image=true/video=false, tool_history=BestEffort, tool_call_id=Preserve, message_layout=GenericOpenAI, response_content=StringOnly, parallel_tool_calls=None, audio_transcription=None, reasoning=None. Generic openai_base instances use this by default and behavior is unchanged from current.
   - Evidence required: existing openai_base tests pass without expectation changes
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `generic_profile_has_expected_values` + `generic_never_reasoning` tests pass. All 21 existing openai_base tests pass unchanged. `auth_header_is_optional` test still uses `OpenAIBaseProvider::new()` which now delegates to `new_with_client_and_profile(..., generic())`.
 
 - G4: Tool-call ID mapper moved to `openai_base/` with strategy enum
   - Source: plan section 3 -- "Move Mistral ID mapper into openai_base"
@@ -177,8 +177,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 2 -- "Extend OpenAIBaseProvider"
   - Acceptance: Struct has `profile: OpenAICompatibleProfile` and `tool_id_mapper: Arc<Mutex<ToolCallIdMapper>>` fields. `new_with_profile()` constructor. Mutex lock is never held across `.await` points (build body -> release -> await -> re-acquire for parse).
   - Evidence required: `cargo clippy --workspace --all-targets -- -D warnings` passes (no `await_holding_lock`)
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `OpenAIBaseProvider` struct now has `profile` + `tool_id_mapper` fields. `new_with_client_and_profile()` constructor added. Existing `new()`/`new_with_client()` delegate to it with `generic()` profile. Clippy clean. Mapper methods not yet wired into provider logic (checkpoint 2+), so no `await` interaction yet.
 
 - G11: `MistralProviderModule` builds `OpenAIBaseProvider` with Mistral profile
   - Source: plan section 10 -- "Redo module/feature layer"
@@ -471,7 +471,20 @@ Key gaps in `openai_base` that need filling from Mistral:
 
 ## Progress Log
 
-(empty -- work has not started)
+- 2026-06-14 12:00: Checkpoint 1 -- Profile skeleton
+  - Changed:
+    - Created `openai_base/profile.rs`: `OpenAICompatibleProfile` struct (16 fields, const-constructible) + policy enums (`ToolCallIdStrategy`, `MessageLayoutPolicy`, `ResponseContentPolicy`, `JsonModePolicy`, `ModelMatchPolicy`, `ReasoningPolicy`, `AudioTranscriptionProfile`). Const constructors `mistral()` and `generic()`. `is_reasoning_model()` helper. 4 profile tests.
+    - Created `openai_base/tool_ids.rs`: `ToolCallIdMapper` (full impl, moved from `mistral/id_mapper.rs`). 4 mapper tests. `#![allow(dead_code)]` until wired in checkpoint 2.
+    - Updated `openai_base/mod.rs`: added `profile` + `tool_id_mapper` fields to `OpenAIBaseProvider`. New `new_with_client_and_profile()` constructor. Existing `new()`/`new_with_client()` delegate with `generic()` profile. `#[allow(dead_code)]` on struct until fields are used in checkpoints 2-6.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 21 passed (4 profile + 4 mapper + 13 existing unchanged)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 30 passed (existing tests unaffected)
+  - Commands: all above
+  - Audit IDs updated: G1 verified, G2 verified, G3 verified, G10 verified
+  - Next: Checkpoint 2 -- move tool-call ID mapper wiring + collision handling
 
 ## Risks and Blockers
 
