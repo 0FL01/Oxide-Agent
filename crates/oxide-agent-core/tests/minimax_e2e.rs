@@ -67,7 +67,11 @@ async fn test_minimax_simple_chat() -> Result<()> {
     };
 
     info!("=== Test: Simple Chat ===");
-    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
+    let provider = MiniMaxProvider::new(
+        api_key.clone(),
+        create_http_client(),
+        "https://api.minimax.io/anthropic".to_string(),
+    );
 
     let messages = vec![Message::user("Say 'hello' in exactly one word.")];
 
@@ -127,7 +131,11 @@ async fn test_minimax_single_tool_call() -> Result<()> {
     };
 
     info!("=== Test: Single Tool Call ===");
-    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
+    let provider = MiniMaxProvider::new(
+        api_key.clone(),
+        create_http_client(),
+        "https://api.minimax.io/anthropic".to_string(),
+    );
 
     let tools = vec![ToolDefinition {
         name: "get_weather".to_string(),
@@ -210,7 +218,11 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
     };
 
     info!("=== Test: Tool Call WITH Result (Multi-turn) ===");
-    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
+    let provider = MiniMaxProvider::new(
+        api_key.clone(),
+        create_http_client(),
+        "https://api.minimax.io/anthropic".to_string(),
+    );
 
     let tools = vec![ToolDefinition {
         name: "get_weather".to_string(),
@@ -335,7 +347,11 @@ async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
     };
 
     info!("=== Test: Multiple Parallel Tool Calls ===");
-    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
+    let provider = MiniMaxProvider::new(
+        api_key.clone(),
+        create_http_client(),
+        "https://api.minimax.io/anthropic".to_string(),
+    );
 
     let tools = vec![
         ToolDefinition {
@@ -421,7 +437,11 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
     };
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
-    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
+    let provider = MiniMaxProvider::new(
+        api_key.clone(),
+        create_http_client(),
+        "https://api.minimax.io/anthropic".to_string(),
+    );
     let tools = weather_and_time_tools();
 
     // First turn: get parallel tool calls

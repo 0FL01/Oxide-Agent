@@ -5,9 +5,6 @@ use crate::llm::support::http::send_json_request;
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
 
-/// MiniMax API base URL (Anthropic-compatible endpoint)
-const MINIMAX_ANTHROPIC_URL: &str = "https://api.minimax.io/anthropic";
-
 /// MiniMax provider using reqwest for Anthropic-compatible API
 pub struct MiniMaxProvider {
     api_key: String,
@@ -18,10 +15,10 @@ pub struct MiniMaxProvider {
 impl MiniMaxProvider {
     /// Create a new MiniMax provider instance.
     #[must_use]
-    pub fn new(api_key: String, http_client: reqwest::Client) -> Self {
+    pub fn new(api_key: String, http_client: reqwest::Client, api_base: String) -> Self {
         Self {
             api_key,
-            base_url: MINIMAX_ANTHROPIC_URL.to_string(),
+            base_url: api_base,
             http_client,
         }
     }
