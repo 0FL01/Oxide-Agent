@@ -114,20 +114,20 @@ pub fn structured_awaiting_user_input_response(kind: &str, prompt: &str) -> Chat
     )
 }
 
-/// Wait until the ZAI provider reaches at least `minimum_calls`.
-pub async fn wait_for_zai_calls(
-    zai_provider: &super::providers::SequencedZaiProvider,
+/// Wait until the LLM provider reaches at least `minimum_calls`.
+pub async fn wait_for_llm_calls(
+    llm_provider: &super::providers::SequencedLlmProvider,
     minimum_calls: usize,
     timeout: Duration,
 ) {
     let deadline = Instant::now() + timeout;
     loop {
-        if zai_provider.model_log().await.len() >= minimum_calls {
+        if llm_provider.model_log().await.len() >= minimum_calls {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "zai provider did not reach {minimum_calls} calls in time"
+            "LLM provider did not reach {minimum_calls} calls in time"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }

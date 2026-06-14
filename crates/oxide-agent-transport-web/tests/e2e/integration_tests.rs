@@ -4,7 +4,8 @@
 //!
 //!     cargo test e2e_connection_pool_latency -- --ignored --nocapture
 //!
-//! Requires one of: `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, or `ZAI_API_KEY`.
+//! Requires one of: `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, or
+//! `OPENAI_BASE_PROVIDERS__1__API_KEY` for the `openai-base:zai` route.
 
 use oxide_agent_core::llm::{LlmClient, Message};
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use std::time::Instant;
 ///
 /// Run with: cargo test e2e_connection_pool_latency -- --ignored --nocapture
 #[tokio::test]
-#[ignore = "Requires OPENROUTER_API_KEY, MISTRAL_API_KEY, or ZAI_API_KEY environment variable"]
+#[ignore = "Requires OPENROUTER_API_KEY, MISTRAL_API_KEY, or OPENAI_BASE_PROVIDERS__1__API_KEY environment variable"]
 async fn e2e_connection_pool_latency() {
     use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 
@@ -25,10 +26,12 @@ async fn e2e_connection_pool_latency() {
         ("openrouter", "openrouter/free")
     } else if std::env::var("MISTRAL_API_KEY").is_ok() {
         ("mistral", "labs-devstral-small-2512")
-    } else if std::env::var("ZAI_API_KEY").is_ok() {
-        ("zai", "glm-4.7")
+    } else if std::env::var("OPENAI_BASE_PROVIDERS__1__API_KEY").is_ok() {
+        ("openai-base:zai", "glm-4.7")
     } else {
-        panic!("Neither OPENROUTER_API_KEY nor MISTRAL_API_KEY nor ZAI_API_KEY is set");
+        panic!(
+            "Neither OPENROUTER_API_KEY nor MISTRAL_API_KEY nor OPENAI_BASE_PROVIDERS__1__API_KEY is set"
+        );
     };
 
     eprintln!("Testing connection pool with provider: {}", provider_name);
@@ -57,21 +60,7 @@ async fn e2e_connection_pool_latency() {
                     );
                 }
             }
-            "zai" => {
-                let mut config = std::env::var("ZAI_API_KEY").ok().map(|api_key| {
-                    ModuleRuntimeConfig::default().with_string_value("api_key", api_key)
-                });
-                if let Ok(base) = std::env::var("ZAI_API_BASE") {
-                    config = Some(
-                        config
-                            .unwrap_or_default()
-                            .with_string_value("api_base", base),
-                    );
-                }
-                if let Some(config) = config {
-                    s.modules.insert("llm-provider/zai".to_string(), config);
-                }
-            }
+            "openai-base:zai" => {}
             _ => {}
         }
         s

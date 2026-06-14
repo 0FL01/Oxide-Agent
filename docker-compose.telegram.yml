@@ -32,7 +32,7 @@ services:
       - DUCKDUCKGO_ENABLED=true
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
-      - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      - RUST_LOG=oxide_agent=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock

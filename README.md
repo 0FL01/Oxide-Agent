@@ -89,18 +89,18 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** - recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
+| **Zhipu AI (ZAI)** | `OPENAI_BASE_PROVIDERS__1__*` | Configure as OpenAI Base profile `zai` for GLM routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 | **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
 
 ### Supported LLM Providers for Agent Mode
-The bot supports **7 providers** for Agent Mode with tool calling:
+The bot supports these Agent Mode provider routes/profiles with tool calling:
 
 *   **OpenCode Go** (`OPENCODE_GO_API_KEY`) - **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, reasoning content parsing, adaptive throttling, and unbounded retry.
 *   **OpenCode Zen** - Free-tier filtered variant of OpenCode Go. Same provider code, filtered to free-only models via discovery. Provider alias: `opencode-zen`.
 *   **ChatGPT/Codex** (`CHATGPT_AUTH_PATH`) - Headless OAuth provider for OpenAI Codex Responses API at `chatgpt.com/backend-api/codex/responses`. SSE streaming. No audio/image support. Use `cargo run -p oxide-agent-telegram-bot --bin chatgpt-login -- login` for initial auth.
-*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) - Alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
+*   **Zhipu AI / ZAI** (`OPENAI_BASE_PROVIDERS__1__PROFILE=zai`) - Alternative OpenAI Base profile for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) - Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
 *   **Mistral** (`MISTRAL_API_KEY`) - Cost-effective agent routes and Voxtral audio transcription (`voxtral-mini-latest`).
 *   **OpenRouter** (`OPENROUTER_API_KEY`) - Multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
@@ -292,10 +292,15 @@ OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
-ZAI_API_KEY=...
 OPENCODE_GO_API_KEY=...
 OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 MINIMAX_API_KEY=...
+
+# ZAI / GLM through OpenAI Base
+OPENAI_BASE_PROVIDERS__1__NAME=zai
+OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4
+OPENAI_BASE_PROVIDERS__1__API_KEY=...
+OPENAI_BASE_PROVIDERS__1__PROFILE=zai
 
 # Web Search Providers (can be enabled together)
 TAVILY_API_KEY=...
@@ -338,13 +343,18 @@ SUB_AGENT_MODEL_ID="deepseek-v4-flash"
 SUB_AGENT_MODEL_PROVIDER="opencode-go"
 ```
 
-  **Alternative (ZAI):** If you prefer the ZAI provider, use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
+  **Alternative (ZAI):** If you prefer ZAI/GLM, configure it as an OpenAI Base `zai` profile and use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
 ```dotenv
+OPENAI_BASE_PROVIDERS__1__NAME=zai
+OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4
+OPENAI_BASE_PROVIDERS__1__API_KEY=...
+OPENAI_BASE_PROVIDERS__1__PROFILE=zai
+
 AGENT_MODEL_ID="glm-4.7"
-AGENT_MODEL_PROVIDER="zai"
+AGENT_MODEL_PROVIDER="openai-base:zai"
 
 SUB_AGENT_MODEL_ID="glm-4.5-air"
-SUB_AGENT_MODEL_PROVIDER="zai"
+SUB_AGENT_MODEL_PROVIDER="openai-base:zai"
 ```
   **Alternative (ChatGPT/Codex):** OAuth-based provider using the Codex Responses API:
 ```dotenv
@@ -369,13 +379,13 @@ MEDIA_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI (GLM-4.7) > Mistral
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI/OpenAI Base (GLM-4.7) > Mistral
 AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
-AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__PROVIDER="openai-base:zai"
 AGENT_MODEL_ROUTES__1__WEIGHT=5
 
 AGENT_MODEL_ROUTES__2__ID="mistral-small-2603"
@@ -806,7 +816,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 
 | Category | Features |
 |----------|----------|
-| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-opencode-go`, `llm-openrouter` |
+| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
 | **Search Tools** | `tool-tavily`, `tool-duckduckgo`, `tool-brave-search`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
@@ -836,7 +846,6 @@ cargo build --release --no-default-features --features profile-full
 - **serde_json** (1.0) - JSON serialization/deserialization
 - **tiktoken-rs** (0.9) - token counting for various models
 - **claudius** (0.19) - MiniMax Anthropic SDK
-- **zai-rs** (0.1) - Zhipu AI SDK
 - **rmcp** (1.2) - MCP client for Jira/SSH/Mattermost
 - **moka** (0.12) - high-performance cache with TTL
 - **chrono** (0.4) - date and time handling

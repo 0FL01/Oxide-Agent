@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 20:35
+Last updated: 2026-06-14 20:47
 
 ## Objective
 
@@ -129,8 +129,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:75`-`:97`, `:131`, `:133`
   - Acceptance: examples/docs instruct `OPENAI_BASE_PROVIDERS__N__NAME=zai`, `OPENAI_BASE_PROVIDERS__N__API_BASE=https://api.z.ai/api/coding/paas/v4`, `OPENAI_BASE_PROVIDERS__N__API_KEY=...`, `OPENAI_BASE_PROVIDERS__N__PROFILE=zai`, and `AGENT_MODEL_PROVIDER=openai-base:zai`; no `ZAI_API_KEY` fallback remains.
   - Evidence required: focused diff review plus `rg "ZAI_API_KEY|AGENT_MODEL_PROVIDER=zai|SUB_AGENT_MODEL_PROVIDER=zai"` only finds removed/historical references or documented non-goal notes.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: README, `.env.example`, GitHub workflow env generation, and web live E2E setup now configure ZAI through `OPENAI_BASE_PROVIDERS__1__NAME=zai`, `OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4`, `OPENAI_BASE_PROVIDERS__1__API_KEY=...`, `OPENAI_BASE_PROVIDERS__1__PROFILE=zai`, and `AGENT_MODEL_PROVIDER=openai-base:zai` / `SUB_AGENT_MODEL_PROVIDER=openai-base:zai`. Verified on 2026-06-14 20:47 by `rg 'ZAI_API_KEY|ZAI_API_BASE|AGENT_MODEL_PROVIDER="?zai|SUB_AGENT_MODEL_PROVIDER="?zai' README.md .env.example .github/workflows/ci-cd.yml crates/oxide-agent-transport-web/tests/e2e || true` returning no matches.
 
 - G10: Old `provider = "zai"` route fails validation and `openai-base:zai` passes
   - Source: `docs/prd/zai-drop.md:73`, `:110`-`:111`
@@ -143,8 +143,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:124`
   - Acceptance: web E2E helper `SequencedZaiProvider` and related `wait_for_zai_calls` names are renamed to generic LLM/OpenAI Base names unless they are live ZAI audit tests that specifically validate ZAI behavior.
   - Evidence required: `rg "SequencedZaiProvider|wait_for_zai_calls" crates/oxide-agent-transport-web/tests` returns no matches or only intentionally retained live-test names with documented reason; web E2E tests compile for the relevant profile.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Generic web E2E mock `SequencedZaiProvider` was renamed to `SequencedLlmProvider`, `wait_for_zai_calls` to `wait_for_llm_calls`, and related local variables/comments away from ZAI-specific names. Verified on 2026-06-14 20:47 by `rg "SequencedZaiProvider|wait_for_zai_calls|zai_provider" crates/oxide-agent-transport-web/tests` returning no matches and by `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run` compiling the E2E test binary.
 
 ### Quality and constraint requirements
 
@@ -166,8 +166,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:96`
   - Acceptance: `ZAI_API_KEY` is not read by runtime config/provider module code after migration.
   - Evidence required: `rg "ZAI_API_KEY|ZAI_API_BASE" crates config README.md .env.example` reviewed; active runtime references absent.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Docs/config/web E2E setup no longer read or instruct `ZAI_API_KEY`/`ZAI_API_BASE`; live ZAI E2E now requires `OPENAI_BASE_PROVIDERS__1__*`. Verified on 2026-06-14 20:47 by the focused grep over README, `.env.example`, CI workflow, and web E2E paths returning no matches. Final runtime status remains in_progress until Checkpoint 5 deletes the dedicated provider code that still owns `ZAI_API_KEY` before removal.
 
 - Q4: No new dependencies or architecture layers
   - Source: repo `AGENTS.md` implementation bias and `docs/prd/zai-drop.md:136`
@@ -218,7 +218,7 @@ Out of scope:
   - Acceptance: after relevant Rust code checkpoints, focused `cargo test -p oxide-agent-core --no-default-features --features profile-full ...` or narrower feature tests pass.
   - Evidence required: command output per checkpoint recorded in Progress Log.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Final broader validation remains pending.
+  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Checkpoint 4 passed `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run`, `cargo fmt --all -- --check`, and `git diff --check` on 2026-06-14 20:47. Final broader validation remains pending.
 
 - V3: Final formatting and lint gates pass
   - Source: `AGENTS.md:146`
@@ -254,8 +254,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:96`
   - Must preserve: only OpenAI Base provider env config is supported for ZAI.
   - Evidence required: runtime grep/review and config tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 4 removed legacy ZAI key usage from README, `.env.example`, CI/deploy env generation, web live E2E setup, and ignored live-test requirements. Focused grep over those active docs/config/E2E paths returned no matches for `ZAI_API_KEY`/`ZAI_API_BASE` or old `zai` model-provider examples on 2026-06-14 20:47. Final verification remains in_progress until Checkpoint 5 removes the dedicated provider module that still reads the old env vars.
 
 - N3: Do not create a new ZAI provider or SDK wrapper
   - Source: `docs/prd/zai-drop.md:58`
@@ -339,6 +339,7 @@ Out of scope:
 - 2026-06-14: Keep ZAI streaming as a small OpenAI Base SSE parser/aggregator keyed by the existing `stream` request body flag; do not introduce a new transport abstraction or dependency.
 - 2026-06-14: Preserve ZAI `next_flush_time` parsing as an OpenAI Base utility and apply it only for the `zai` profile; keep generic `Retry-After` handling as the fallback for non-ZAI OpenAI Base errors.
 - 2026-06-14: While the dedicated provider still exists before Checkpoint 5, prove old `provider = "zai"` failure under the target no-`llm-zai` feature set and keep G10/N1 in_progress until `profile-full` no longer compiles `llm-zai`.
+- 2026-06-14: Live ZAI E2E setup now requires explicit `OPENAI_BASE_PROVIDERS__1__*` env vars instead of translating legacy `ZAI_API_KEY`; this keeps the no-fallback constraint visible and simple.
 
 ## Progress Log
 
@@ -369,6 +370,13 @@ Out of scope:
   - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 86 tests, 0 failed; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_validation --lib` passed; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` passed; `cargo test -p oxide-agent-core --no-default-features --features llm-openrouter,llm-openai-base --test rate_limit` passed with 11 tests, 0 failed; `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib` passed; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` passed; `git diff --check` passed.
   - Audit IDs updated: G2 verified; G7 verified; V1 verified; G10 in_progress; N1 in_progress; V2 in_progress.
   - Next: review diff, commit Checkpoint 3, then implement Checkpoint 4 docs/config/E2E setup migration.
+
+- 2026-06-14 20:47: Checkpoint 4 implemented -- docs/config and web E2E setup migrated to `openai-base:zai`
+  - Changed: updated README, `.env.example`, GitHub workflow/deploy env generation, web live ZAI E2E setup, live-test ignore text, Docker/telegram logging filters, and generic web E2E scripted-provider helper names.
+  - Evidence: active docs/config/web E2E examples now use OpenAI Base provider env vars and `openai-base:zai`; generic web E2E mocks no longer use `SequencedZaiProvider`, `wait_for_zai_calls`, or `zai_provider` names.
+  - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run` compiled successfully (same narrow-feature OpenAI Base/Mistral warnings observed); `rg 'ZAI_API_KEY|ZAI_API_BASE|AGENT_MODEL_PROVIDER="?zai|SUB_AGENT_MODEL_PROVIDER="?zai' README.md .env.example .github/workflows/ci-cd.yml crates/oxide-agent-transport-web/tests/e2e || true` returned no matches; `rg "SequencedZaiProvider|wait_for_zai_calls|zai_provider" crates/oxide-agent-transport-web/tests` returned no matches; `cargo fmt --all -- --check` passed; `git diff --check` passed.
+  - Audit IDs updated: G9 verified; G11 verified; Q3 in_progress; N2 in_progress; V2 in_progress.
+  - Next: review diff, commit Checkpoint 4, then implement Checkpoint 5 dedicated provider/feature/dependency removal.
 
 ## Risks and Blockers
 

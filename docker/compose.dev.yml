@@ -30,7 +30,7 @@ services:
         required: false
     environment:
       TZ: Europe/Moscow
-      RUST_LOG: oxide_agent_core=debug,oxide_agent_transport_telegram=debug,oxide_agent_runtime=debug,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      RUST_LOG: oxide_agent_core=debug,oxide_agent_transport_telegram=debug,oxide_agent_runtime=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       DEBUG_MODE: "true"
       DUCKDUCKGO_ENABLED: "true"
       DUCKDUCKGO_MIN_DELAY_MS: "2500"

@@ -6,10 +6,10 @@ use oxide_agent_core::storage::{compute_cron_next_run_at, resolve_reminder_local
 
 use super::helpers::{
     create_session_http, create_task_http_with_body, fetch_task_events, session_user_id,
-    spawn_test_server, structured_final_answer_response, tool_call_response, wait_for_task_status,
-    wait_for_zai_calls,
+    spawn_test_server, structured_final_answer_response, tool_call_response, wait_for_llm_calls,
+    wait_for_task_status,
 };
-use super::providers::SequencedZaiProvider;
+use super::providers::SequencedLlmProvider;
 use super::setup::setup_web_test_with_custom_providers;
 
 #[tokio::test]
@@ -23,7 +23,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
         tomorrow.day()
     );
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         tool_call_response(
             "reminder_schedule",
             serde_json::json!({
@@ -35,7 +35,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
         ),
         structured_final_answer_response("Готово, напоминание поставлено."),
     ]));
-    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let storage = session_manager.storage();
     let (server, base_url) = spawn_test_server(app_state).await;
@@ -58,7 +58,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
 
     let reminders = storage
         .list_reminder_jobs(user_id, Some(format!("web-session-{session_id}")), None, 10)
@@ -98,7 +98,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
 async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
     let timezone = "UTC+3";
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         tool_call_response(
             "reminder_schedule",
             serde_json::json!({
@@ -111,7 +111,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
         ),
         structured_final_answer_response("Готово, поставил напоминание по будням."),
     ]));
-    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let storage = session_manager.storage();
     let (server, base_url) = spawn_test_server(app_state).await;
@@ -134,7 +134,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
 
     let reminders = storage
         .list_reminder_jobs(user_id, Some(format!("web-session-{session_id}")), None, 10)
