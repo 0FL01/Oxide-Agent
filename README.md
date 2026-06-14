@@ -828,7 +828,6 @@ cargo build --release --no-default-features --features profile-full
 
 - **teloxide** (0.17) - Telegram Bot API with macros and handlers
 - **tokio** (1.52) - asynchronous runtime
-- **async-openai** (0.40) - OpenAI-compatible APIs
 - **sqlx-postgres/sqlx-core** (0.8) - PostgreSQL durable storage
 - **bollard** (0.20) - Docker API for sandbox management
 - **leptos** (0.8) - Web interface frontend (CSR)
