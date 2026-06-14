@@ -1231,22 +1231,28 @@ fn web_crawler_fallback_reason(
 ) -> Option<&'static str> {
     match WebFetchMdProvider::error_kind(error) {
         "anti_bot" => Some("webfetch anti_bot"),
-        "http_status" if web_crawler_should_fallback_on_reddit_rss_http_status(args, error) => {
-            Some("webfetch reddit_rss_http_status")
-        }
+        "http_status" => web_crawler_http_status_fallback_reason(args, error),
         _ => None,
     }
 }
 
 #[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_should_fallback_on_reddit_rss_http_status(
+fn web_crawler_http_status_fallback_reason(
     args: &WebMarkdownArgs,
     error: &anyhow::Error,
-) -> bool {
+) -> Option<&'static str> {
     let payload = WebFetchMdProvider::failure_payload(Some(args), error);
     let status = payload.get("status_code").and_then(Value::as_u64);
-    let retryable_status = matches!(status, Some(429 | 500..=504));
-    retryable_status && web_crawler_is_reddit_thread_url(&args.url)
+    match status {
+        Some(403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
+            Some("webfetch reddit_rss_http_status")
+        }
+        Some(403 | 429) => Some("webfetch http_status"),
+        Some(500..=504) if web_crawler_is_reddit_thread_url(&args.url) => {
+            Some("webfetch reddit_rss_http_status")
+        }
+        _ => None,
+    }
 }
 
 #[cfg(feature = "tool-webfetch-md")]
@@ -1323,13 +1329,43 @@ mod web_crawler_tests {
     }
 
     #[test]
-    fn web_crawler_does_not_fallback_for_non_reddit_http_status() {
+    fn web_crawler_falls_back_for_generic_rate_limit_http_status() {
         let args = WebMarkdownArgs {
             url: "https://example.test/page".to_string(),
             ..WebMarkdownArgs::default()
         };
         let error =
             anyhow::anyhow!("web_markdown fetch failed: non-success status: 429 Too Many Requests");
+
+        assert_eq!(
+            web_crawler_fallback_reason(&args, &error),
+            Some("webfetch http_status")
+        );
+    }
+
+    #[test]
+    fn web_crawler_falls_back_for_generic_forbidden_http_status() {
+        let args = WebMarkdownArgs {
+            url: "https://example.test/page".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 403 Forbidden");
+
+        assert_eq!(
+            web_crawler_fallback_reason(&args, &error),
+            Some("webfetch http_status")
+        );
+    }
+
+    #[test]
+    fn web_crawler_does_not_fallback_for_generic_server_error() {
+        let args = WebMarkdownArgs {
+            url: "https://example.test/page".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error = anyhow::anyhow!(
+            "web_markdown fetch failed: non-success status: 503 Service Unavailable"
+        );
 
         assert_eq!(web_crawler_fallback_reason(&args, &error), None);
     }
