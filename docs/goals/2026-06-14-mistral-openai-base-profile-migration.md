@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 12:00
+Last updated: 2026-06-14 12:45
 
 ## Objective
 
@@ -135,15 +135,14 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 3 -- "Move Mistral ID mapper into openai_base"
   - Acceptance: `ToolCallIdMapper` and `normalize_for_mistral()` live in `openai_base/` (e.g. `tool_ids.rs`). `ToolCallIdStrategy` enum with variants `Preserve` and `MistralNineAlnum`. All 4 existing id_mapper tests pass from new location.
   - Evidence required: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- id_mapper` passes
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `ToolCallIdMapper` lives in `openai_base/tool_ids.rs` with all methods. `mistral/id_mapper.rs` is now a thin re-export (`pub(crate) use ...`). `ToolCallIdStrategy` enum exists in `profile.rs`. All 6 tool_ids tests pass (4 original + collision + stable_fallback). 11 mistral provider tests pass via re-export. `llm-mistral` feature now enables `llm-openai-base` for module visibility. `mistral/mod.rs::id_mapper()` visibility lowered to `pub(crate)` to match `ToolCallIdMapper`'s `pub(crate)` visibility.
 
 - G5: ID mapper collision handling added
   - Source: plan section 3 -- collision mine
   - Acceptance: When generated 9-char ID is already mapped to a different original ID, generate a stable 9-char fallback (hash/base36/base62 of original ID). Existing non-colliding behavior unchanged.
-  - Evidence required: new unit test proving collision scenario produces different IDs
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `register()` now checks for collision. If truncated ID maps to a different original, generates stable 9-char base36 of `DefaultHasher` hash via `stable_fallback()`. `find_collision_free_id()` tries salted variants (1-35) if base36 also collides (astronomically unlikely). `test_collision_handling` proves two different originals normalizing to same 9 chars get different IDs. `test_stable_fallback_is_deterministic` proves determinism.
 
 - G6: Mistral message layout policy implemented in `openai_base`
   - Source: plan section 4 -- "Move Mistral message layout"
@@ -485,6 +484,23 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G1 verified, G2 verified, G3 verified, G10 verified
   - Next: Checkpoint 2 -- move tool-call ID mapper wiring + collision handling
+
+- 2026-06-14 12:45: Checkpoint 2 -- Move tool-call ID mapper + collision handling
+  - Changed:
+    - Updated `openai_base/tool_ids.rs`: added collision handling to `register()` -- if 9-char truncation collides with a different original, generates stable 9-char base36 fallback via `stable_fallback()` + `find_collision_free_id()`. Added `to_base36()` helper. Added `DefaultHasher`/`Hash`/`Hasher` imports. 2 new tests: `test_collision_handling`, `test_stable_fallback_is_deterministic`.
+    - Replaced `mistral/id_mapper.rs` with thin re-export: `pub(crate) use crate::llm::providers::openai_base::tool_ids::ToolCallIdMapper`.
+    - Updated `Cargo.toml`: `llm-mistral` now enables `llm-openai-base` (`["dep:async-openai", "dep:reqwest", "llm-openai-base"]`) so the re-export path is visible.
+    - Updated `mistral/mod.rs`: lowered `id_mapper()` method visibility from `pub` to `pub(crate)` to match `ToolCallIdMapper`'s `pub(crate)` visibility.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full -- tool_ids` -- 9 passed (6 tool_ids + 3 related from other providers)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full -- mistral` -- 26 passed (all mistral tests via re-export)
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean (other profiles unaffected)
+  - Commands: all above
+  - Audit IDs updated: G4 verified, G5 verified
+  - Next: Checkpoint 3 -- message layout policy (MistralStrict dispatch in OpenAIBaseProvider)
 
 ## Risks and Blockers
 

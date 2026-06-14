@@ -79,7 +79,7 @@ impl MistralProvider {
     }
 
     /// Get a reference to the ID mapper (for testing/debugging)
-    pub fn id_mapper(&self) -> std::sync::MutexGuard<'_, ToolCallIdMapper> {
+    pub(crate) fn id_mapper(&self) -> std::sync::MutexGuard<'_, ToolCallIdMapper> {
         self.id_mapper.lock().expect("ID mapper lock poisoned")
     }
 
