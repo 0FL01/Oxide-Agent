@@ -9,7 +9,9 @@ pub(crate) use tool_ids::ToolCallIdMapper;
 use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
-use crate::llm::providers::openai_base::profile::{MessageLayoutPolicy, ResponseContentPolicy};
+use crate::llm::providers::openai_base::profile::{
+    JsonModePolicy, MessageLayoutPolicy, ReasoningPolicy, ResponseContentPolicy,
+};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{
@@ -331,6 +333,7 @@ fn maybe_apply_json_mode(body: &mut Value, json_mode: bool, has_tools: bool) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tool_chat_body(
     system_prompt: &str,
     history: &[Message],
@@ -339,16 +342,25 @@ fn build_tool_chat_body(
     max_tokens: u32,
     temperature: Option<f32>,
     json_mode: bool,
+    reasoning_effort: Option<&str>,
     profile: &OpenAICompatibleProfile,
     tool_id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let openai_tools = prepare_tools_json(tools);
     let has_tools = !openai_tools.is_empty();
+
+    // Temperature: caller override, or reasoning-model default, or tool default.
+    let effective_temperature = if profile.is_reasoning_model(model_id) {
+        temperature.unwrap_or(profile.reasoning_temperature)
+    } else {
+        temperature.unwrap_or(profile.tool_temperature)
+    };
+
     let mut body = json!({
         "model": model_id,
         "messages": dispatch_structured_messages(system_prompt, history, profile, tool_id_mapper),
         "max_tokens": max_tokens,
-        "temperature": temperature.unwrap_or(profile.tool_temperature),
+        "temperature": effective_temperature,
         "stream": false,
     });
 
@@ -357,7 +369,24 @@ fn build_tool_chat_body(
         body["tool_choice"] = json!("auto");
     }
 
-    maybe_apply_json_mode(&mut body, json_mode, has_tools);
+    // parallel_tool_calls: explicit profile value (e.g. Mistral always sends true).
+    if let Some(parallel) = profile.parallel_tool_calls {
+        body["parallel_tool_calls"] = json!(parallel);
+    }
+
+    // reasoning_effort: only for models matching the profile's reasoning policy.
+    if let ReasoningPolicy::Mistral { default_effort, .. } = profile.reasoning
+        && profile.is_reasoning_model(model_id)
+    {
+        let effort = reasoning_effort.unwrap_or(default_effort);
+        body["reasoning_effort"] = json!(effort);
+    }
+
+    // JSON mode: dispatch on profile policy.
+    if matches!(profile.json_mode, JsonModePolicy::Standard) {
+        maybe_apply_json_mode(&mut body, json_mode, has_tools);
+    }
+
     body
 }
 
@@ -749,13 +778,28 @@ impl LlmProvider for OpenAIBaseProvider {
             "role": "user",
             "content": user_message,
         }));
-        let body = json!({
+
+        // Temperature: reasoning-model default, or chat default.
+        let effective_temperature = if self.profile.is_reasoning_model(model_id) {
+            self.profile.reasoning_temperature
+        } else {
+            self.profile.chat_temperature
+        };
+
+        let mut body = json!({
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": self.profile.chat_temperature,
+            "temperature": effective_temperature,
             "stream": false,
         });
+
+        // reasoning_effort: only for models matching the profile's reasoning policy.
+        if let ReasoningPolicy::Mistral { default_effort, .. } = self.profile.reasoning
+            && self.profile.is_reasoning_model(model_id)
+        {
+            body["reasoning_effort"] = json!(default_effort);
+        }
         let auth = self.auth_header();
         let res_json = send_json_request(
             &self.http_client,
@@ -811,7 +855,7 @@ impl LlmProvider for OpenAIBaseProvider {
             max_tokens,
             temperature,
             json_mode,
-            reasoning_effort: _,
+            reasoning_effort,
         } = request;
         let body = {
             let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
@@ -823,6 +867,7 @@ impl LlmProvider for OpenAIBaseProvider {
                 max_tokens,
                 temperature,
                 json_mode,
+                reasoning_effort,
                 &self.profile,
                 &mut mapper,
             );
@@ -908,6 +953,7 @@ mod tests {
             4096,
             None,
             true,
+            None,
             &generic_profile(),
             &mut mapper,
         );
@@ -930,6 +976,7 @@ mod tests {
             1024,
             None,
             true,
+            None,
             &generic_profile(),
             &mut mapper,
         );
@@ -951,6 +998,7 @@ mod tests {
             1024,
             None,
             false,
+            None,
             &generic_profile(),
             &mut mapper,
         );
@@ -1341,5 +1389,174 @@ mod tests {
             parse_chat_response(response, &generic_profile(), &mapper).expect("response parses");
         assert_eq!(parsed.content.as_deref(), Some("Simple text"));
         assert!(parsed.reasoning_content.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Checkpoint 5: Request tweaks -- temperatures, parallel_tool_calls,
+    // reasoning_effort, JSON mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mistral_tool_body_includes_parallel_tool_calls_and_tool_choice() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "mistral-large-latest",
+            4096,
+            None,
+            false,
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["tool_choice"], json!("auto"));
+        assert_eq!(body["parallel_tool_calls"], json!(true));
+        assert!(body.get("tools").is_some());
+    }
+
+    #[test]
+    fn mistral_reasoning_model_tool_body_includes_reasoning_effort() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "mistral-small-2603",
+            4096,
+            None,
+            false,
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["reasoning_effort"], json!("high"));
+        // Reasoning model uses reasoning_temperature (0.7), not tool_temperature
+        let temp = body["temperature"].as_f64().expect("temperature present");
+        assert!((temp - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mistral_regular_model_tool_body_uses_tool_temperature() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "mistral-large-latest",
+            4096,
+            None,
+            false,
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        // Regular model: no reasoning_effort
+        assert!(body.get("reasoning_effort").is_none());
+        // tool_temperature = 0.7
+        let temp = body["temperature"].as_f64().expect("temperature present");
+        assert!((temp - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mistral_tool_body_explicit_temperature_overrides_default() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "mistral-large-latest",
+            4096,
+            Some(0.23),
+            false,
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        let temp = body["temperature"].as_f64().expect("temperature present");
+        assert!((temp - 0.23).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mistral_reasoning_model_tool_body_explicit_effort_overrides_default() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "mistral-small-2603",
+            4096,
+            None,
+            false,
+            Some("none"),
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["reasoning_effort"], json!("none"));
+    }
+
+    #[test]
+    fn generic_tool_body_no_parallel_or_reasoning() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "some-model",
+            4096,
+            None,
+            false,
+            None,
+            &generic_profile(),
+            &mut mapper,
+        );
+
+        assert!(body.get("parallel_tool_calls").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn json_mode_not_added_when_tools_present() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "local-model",
+            1024,
+            None,
+            true, // json_mode = true
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        // response_format should NOT be present when tools are present
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn json_mode_added_without_tools_for_mistral_profile() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "local-model",
+            1024,
+            None,
+            true, // json_mode = true
+            None,
+            &mistral_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 }

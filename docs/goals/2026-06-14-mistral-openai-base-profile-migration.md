@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 14:10
+Last updated: 2026-06-14 15:30
 
 ## Objective
 
@@ -162,8 +162,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 5 -- "Transfer tool request tweaks"
   - Acceptance: Mistral profile produces request bodies with `tool_choice="auto"`, `parallel_tool_calls=true`, correct temperatures (chat/tool/reasoning), `reasoning_effort="high"` only for reasoning models, JSON mode only when `json_mode && !has_tools`. Generic profile does not add `parallel_tool_calls`.
   - Evidence required: ported tests for plain chat body, reasoning body, tool body, JSON mode pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `build_tool_chat_body()` now accepts `reasoning_effort: Option<&str>`, dispatches temperature on `profile.is_reasoning_model()` (reasoning_temperature vs tool_temperature), adds `parallel_tool_calls` from `profile.parallel_tool_calls`, adds `reasoning_effort` only for `ReasoningPolicy::Mistral` matching models, dispatches JSON mode on `profile.json_mode`. `complete_internal_text()` uses reasoning_temperature for reasoning models, adds `reasoning_effort` for matching models. `chat_with_tools()` passes `reasoning_effort` through (no longer discarded). 8 new tests: `mistral_tool_body_includes_parallel_tool_calls_and_tool_choice`, `mistral_reasoning_model_tool_body_includes_reasoning_effort`, `mistral_regular_model_tool_body_uses_tool_temperature`, `mistral_tool_body_explicit_temperature_overrides_default`, `mistral_reasoning_model_tool_body_explicit_effort_overrides_default`, `generic_tool_body_no_parallel_or_reasoning`, `json_mode_not_added_when_tools_present`, `json_mode_added_without_tools_for_mistral_profile`. 43 openai_base + 42 mistral tests pass. Clippy + fmt clean.
 
 - G9: Audio transcription moved to `openai_base` as profile capability
   - Source: plan section 8 -- "Add audio transcription"
@@ -529,6 +529,20 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G7 verified
   - Next: Checkpoint 5 -- request tweaks (temperatures, parallel_tool_calls, reasoning_effort, JSON mode)
+
+- 2026-06-14 15:30: Checkpoint 5 -- Request tweaks (temperatures, parallel_tool_calls, reasoning_effort, JSON mode)
+  - Changed:
+    - `openai_base/mod.rs`: `build_tool_chat_body()` now accepts `reasoning_effort: Option<&str>`, dispatches temperature on `profile.is_reasoning_model()` (reasoning_temperature vs tool_temperature), adds `parallel_tool_calls` from `profile.parallel_tool_calls`, adds `reasoning_effort` only for `ReasoningPolicy::Mistral` matching models, dispatches JSON mode on `profile.json_mode`. `complete_internal_text()` uses reasoning_temperature for reasoning models, adds `reasoning_effort` for matching models. `chat_with_tools()` passes `reasoning_effort` through (no longer discarded with `_`). Added `#[allow(clippy::too_many_arguments)]` on `build_tool_chat_body`. Added imports for `JsonModePolicy`, `ReasoningPolicy`. Updated all existing test calls to pass the new `reasoning_effort` param (`None`). 8 new tests: `mistral_tool_body_includes_parallel_tool_calls_and_tool_choice`, `mistral_reasoning_model_tool_body_includes_reasoning_effort`, `mistral_regular_model_tool_body_uses_tool_temperature`, `mistral_tool_body_explicit_temperature_overrides_default`, `mistral_reasoning_model_tool_body_explicit_effort_overrides_default`, `generic_tool_body_no_parallel_or_reasoning`, `json_mode_not_added_when_tools_present`, `json_mode_added_without_tools_for_mistral_profile`.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 43 passed (35 existing + 8 new)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 42 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G8 verified
+  - Next: Checkpoint 6 -- audio transcription
 
 ## Risks and Blockers
 
