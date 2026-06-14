@@ -1,7 +1,7 @@
 # Goal: Web Console V1
 
 Date started: 2026-05-27
-Status: active
+Status: completed
 Codex goal: Study `docs/prd/PRD_web.md`, create repo-local goal documentation from it, and iteratively implement the web PRD in Oxide-Agent with validation checkpoints.
 Source spec: `docs/prd/PRD_web.md`
 Goal doc owner: Codex
