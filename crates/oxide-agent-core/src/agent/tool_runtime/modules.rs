@@ -850,8 +850,8 @@ impl WebCrawlerToolExecutor {
                 Ok(output)
             }
             Err(webfetch_error) => {
-                let webfetch_kind = WebFetchMdProvider::error_kind(&webfetch_error);
-                if webfetch_kind != "anti_bot" {
+                let fallback_reason = web_crawler_fallback_reason(&webfetch_args, &webfetch_error);
+                let Some(fallback_reason) = fallback_reason else {
                     let message =
                         WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
                     let mut output = normalizer.failure(invocation, message);
@@ -860,7 +860,7 @@ impl WebCrawlerToolExecutor {
                         &webfetch_error,
                     ));
                     return Ok(output);
-                }
+                };
 
                 self.execute_crawl4ai_fallback(
                     invocation,
@@ -868,6 +868,7 @@ impl WebCrawlerToolExecutor {
                     args,
                     webfetch_args,
                     &webfetch_error,
+                    fallback_reason,
                 )
                 .await
             }
@@ -881,6 +882,7 @@ impl WebCrawlerToolExecutor {
         args: WebCrawlerArgs,
         webfetch_args: WebMarkdownArgs,
         webfetch_error: &anyhow::Error,
+        fallback_reason: &'static str,
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         #[cfg(not(feature = "tool-crawl4ai-markdown"))]
         let _ = (&args.wait_for, args.fresh);
@@ -912,7 +914,7 @@ impl WebCrawlerToolExecutor {
                         .and_then(Value::as_str);
                     let stdout = web_crawler_output(
                         "crawl4ai_markdown",
-                        Some("webfetch anti_bot"),
+                        Some(fallback_reason),
                         &args.url,
                         final_url,
                         markdown,
@@ -920,7 +922,7 @@ impl WebCrawlerToolExecutor {
                     let mut output = normalizer.success(invocation, &stdout, "");
                     output.structured_payload = Some(web_crawler_success_payload(
                         "crawl4ai_markdown",
-                        Some("webfetch anti_bot"),
+                        Some(fallback_reason),
                         &args.url,
                         final_url,
                         markdown,
@@ -941,6 +943,7 @@ impl WebCrawlerToolExecutor {
                         &args.url,
                         &webfetch_args,
                         webfetch_error,
+                        fallback_reason,
                         crawl4ai,
                         &crawl_args,
                         &crawl_error,
@@ -949,6 +952,7 @@ impl WebCrawlerToolExecutor {
                     output.structured_payload = Some(web_crawler_crawl_failure_payload(
                         &webfetch_args,
                         webfetch_error,
+                        fallback_reason,
                         crawl4ai,
                         &crawl_args,
                         &crawl_error,
@@ -965,6 +969,7 @@ impl WebCrawlerToolExecutor {
         output.structured_payload = Some(web_crawler_no_fallback_payload(
             &webfetch_args,
             webfetch_error,
+            fallback_reason,
         ));
         Ok(output)
     }
@@ -1140,12 +1145,17 @@ fn web_crawler_webfetch_failure_payload(
 }
 
 #[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_no_fallback_payload(args: &WebMarkdownArgs, error: &anyhow::Error) -> Value {
+fn web_crawler_no_fallback_payload(
+    args: &WebMarkdownArgs,
+    error: &anyhow::Error,
+    fallback_reason: &'static str,
+) -> Value {
     let mut payload = web_crawler_webfetch_failure_payload(Some(args), error);
     if let Some(object) = payload.as_object_mut() {
         object.insert("backend".to_string(), json!("webfetch_md"));
         object.insert("fallback_backend".to_string(), json!("crawl4ai_markdown"));
         object.insert("fallback_attempted".to_string(), json!(false));
+        object.insert("fallback_reason".to_string(), json!(fallback_reason));
         object.insert(
             "crawl4ai_error_kind".to_string(),
             json!("crawl4ai_unavailable"),
@@ -1163,7 +1173,7 @@ fn web_crawler_no_fallback_payload(args: &WebMarkdownArgs, error: &anyhow::Error
 #[cfg(feature = "tool-webfetch-md")]
 fn web_crawler_fallback_unavailable_message(url: &str) -> String {
     format!(
-        "web_crawler lightweight fetch was blocked by anti-bot protection for {url}, and Crawl4AI fallback is not configured. This path is closed for this task; use another source."
+        "web_crawler lightweight fetch needs Crawl4AI fallback for {url}, but Crawl4AI is not configured. This path is closed for this task; use another source."
     )
 }
 
@@ -1172,13 +1182,14 @@ fn web_crawler_crawl_failed_message(
     url: &str,
     _webfetch_args: &WebMarkdownArgs,
     _webfetch_error: &anyhow::Error,
+    fallback_reason: &'static str,
     crawl4ai: &Crawl4AiMarkdownProvider,
     crawl_args: &Crawl4AiMarkdownArgs,
     crawl_error: &anyhow::Error,
 ) -> String {
     let crawl_message = crawl4ai.failure_message(Some(crawl_args), crawl_error);
     format!(
-        "web_crawler lightweight fetch was blocked by anti-bot protection for {url}; Crawl4AI fallback also failed: {crawl_message}. This path is closed for this task; use another source."
+        "web_crawler lightweight fetch failed for {url} ({fallback_reason}); Crawl4AI fallback also failed: {crawl_message}. This path is closed for this task; use another source."
     )
 }
 
@@ -1186,6 +1197,7 @@ fn web_crawler_crawl_failed_message(
 fn web_crawler_crawl_failure_payload(
     webfetch_args: &WebMarkdownArgs,
     webfetch_error: &anyhow::Error,
+    fallback_reason: &'static str,
     crawl4ai: &Crawl4AiMarkdownProvider,
     crawl_args: &Crawl4AiMarkdownArgs,
     crawl_error: &anyhow::Error,
@@ -1198,7 +1210,7 @@ fn web_crawler_crawl_failure_payload(
         "backend": "crawl4ai_markdown",
         "fallback_backend": "crawl4ai_markdown",
         "fallback_attempted": true,
-        "fallback_reason": "webfetch anti_bot",
+        "fallback_reason": fallback_reason,
         "url": webfetch_args.url.as_str(),
         "host": web_payload.get("host").cloned().unwrap_or(Value::Null),
         "error_kind": crawl_error_kind,
@@ -1210,6 +1222,63 @@ fn web_crawler_crawl_failure_payload(
         "webfetch_payload": web_payload,
         "crawl4ai_payload": crawl_payload
     })
+}
+
+#[cfg(feature = "tool-webfetch-md")]
+fn web_crawler_fallback_reason(
+    args: &WebMarkdownArgs,
+    error: &anyhow::Error,
+) -> Option<&'static str> {
+    match WebFetchMdProvider::error_kind(error) {
+        "anti_bot" => Some("webfetch anti_bot"),
+        "http_status" if web_crawler_should_fallback_on_reddit_rss_http_status(args, error) => {
+            Some("webfetch reddit_rss_http_status")
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "tool-webfetch-md")]
+fn web_crawler_should_fallback_on_reddit_rss_http_status(
+    args: &WebMarkdownArgs,
+    error: &anyhow::Error,
+) -> bool {
+    let payload = WebFetchMdProvider::failure_payload(Some(args), error);
+    let status = payload.get("status_code").and_then(Value::as_u64);
+    let retryable_status = matches!(status, Some(429 | 500..=504));
+    retryable_status && web_crawler_is_reddit_thread_url(&args.url)
+}
+
+#[cfg(feature = "tool-webfetch-md")]
+fn web_crawler_is_reddit_thread_url(raw_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw_url) else {
+        return false;
+    };
+    let Some(host) = url
+        .host_str()
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if !matches!(
+        host.as_str(),
+        "reddit.com" | "www.reddit.com" | "old.reddit.com" | "new.reddit.com" | "sh.reddit.com"
+    ) {
+        return false;
+    }
+
+    let Some(mut segments) = url.path_segments() else {
+        return false;
+    };
+    matches!(
+        (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next()
+        ),
+        (Some("r"), Some(_), Some("comments"), Some(_))
+    )
 }
 
 #[cfg(all(test, feature = "tool-webfetch-md"))]
@@ -1235,6 +1304,47 @@ mod web_crawler_tests {
         };
 
         assert_eq!(web_crawler_webfetch_timeout_secs(&args), 3);
+    }
+
+    #[test]
+    fn web_crawler_falls_back_for_reddit_rss_retryable_http_status() {
+        let args = WebMarkdownArgs {
+            url: "https://www.reddit.com/r/LocalLLaMA/comments/1tcv14c/mtp_speed_with_3090_qwen_27b_q4/".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error = anyhow::anyhow!(
+            "reddit rss fast-path failed: reddit rss returned non-success status: 429 Too Many Requests"
+        );
+
+        assert_eq!(
+            web_crawler_fallback_reason(&args, &error),
+            Some("webfetch reddit_rss_http_status")
+        );
+    }
+
+    #[test]
+    fn web_crawler_does_not_fallback_for_non_reddit_http_status() {
+        let args = WebMarkdownArgs {
+            url: "https://example.test/page".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error =
+            anyhow::anyhow!("web_markdown fetch failed: non-success status: 429 Too Many Requests");
+
+        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
+    }
+
+    #[test]
+    fn web_crawler_does_not_fallback_for_reddit_not_found() {
+        let args = WebMarkdownArgs {
+            url: "https://www.reddit.com/r/LocalLLaMA/comments/missing/thread/".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error = anyhow::anyhow!(
+            "reddit rss fast-path failed: reddit rss returned non-success status: 404 Not Found"
+        );
+
+        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
     }
 }
 
