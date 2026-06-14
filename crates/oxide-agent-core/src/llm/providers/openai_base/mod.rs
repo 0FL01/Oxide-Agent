@@ -59,6 +59,17 @@ impl OpenAIBaseProvider {
         )
     }
 
+    /// Convenience constructor for a Mistral-profiled provider.
+    #[must_use]
+    pub fn new_mistral(api_key: Option<String>, http_client: HttpClient) -> Self {
+        Self::new_with_client_and_profile(
+            api_key,
+            "https://api.mistral.ai/v1".to_string(),
+            http_client,
+            OpenAICompatibleProfile::mistral(),
+        )
+    }
+
     #[must_use]
     pub fn new_with_client_and_profile(
         api_key: Option<String>,

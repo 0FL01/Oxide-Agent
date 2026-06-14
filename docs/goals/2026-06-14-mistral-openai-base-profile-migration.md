@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 17:15
+Last updated: 2026-06-14 17:20
 
 ## Objective
 
@@ -197,8 +197,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 12 -- "Delete Mistral implementation files"
   - Acceptance: `mistral/chat.rs`, `mistral/client.rs`, `mistral/id_mapper.rs`, `mistral/messages.rs`, `mistral/parsing.rs`, `mistral/transcription.rs`, `mistral/image.rs`, `mistral/types.rs`, `mistral/tests.rs` deleted. Only `mistral/mod.rs` (thin) and `mistral/module.rs` remain.
   - Evidence required: `ls crates/oxide-agent-core/src/llm/providers/mistral/` shows only `mod.rs` and `module.rs`
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Deleted `mistral/chat.rs`, `mistral/messages.rs`, `mistral/parsing.rs`, `mistral/transcription.rs`, `mistral/image.rs`, `mistral/types.rs`, `mistral/tests.rs`, `mistral/id_mapper.rs` (8 files). Slimmed `mistral/mod.rs` to 10 lines (module declaration + re-export). `providers/mod.rs` updated: removed `pub use mistral::MistralProvider`. `mistral/module.rs` updated: uses `OpenAIBaseProvider::new_mistral()`. Added `new_mistral()` convenience constructor on `OpenAIBaseProvider`. Updated `mistral_e2e.rs` to use `OpenAIBaseProvider::new_mistral()`. 55 openai_base + 23 mistral tests pass. Clippy + fmt clean. Embedded profile compiles.
 
 - G14: Optional `PROFILE` env var for openai_base instances
   - Source: plan section 11 -- "Add PROFILE for generic openai-base instances"
@@ -595,6 +595,26 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G12 verified, Q7 verified
   - Next: Checkpoint 9 -- Delete old Mistral provider implementation files
+
+- 2026-06-14 17:20: Checkpoint 9 -- Delete old Mistral implementation files
+  - Changed:
+    - Deleted `mistral/chat.rs`, `mistral/messages.rs`, `mistral/parsing.rs`, `mistral/transcription.rs`, `mistral/image.rs`, `mistral/types.rs`, `mistral/tests.rs`, `mistral/id_mapper.rs`
+    - `mistral/mod.rs`: slimmed to 10 lines (module declaration + re-export)
+    - `providers/mod.rs`: removed `pub use mistral::MistralProvider`
+    - `mistral/module.rs`: uses `OpenAIBaseProvider::new_mistral()`
+    - `openai_base/mod.rs`: added `new_mistral()` convenience constructor
+    - `mistral_e2e.rs`: uses `OpenAIBaseProvider::new_mistral()`
+  - Evidence:
+    - `ls crates/oxide-agent-core/src/llm/providers/mistral/` shows only `mod.rs` and `module.rs`
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 55 passed
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 23 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G13 verified
+  - Next: Checkpoint 10 -- Optional PROFILE env var + docs + .env.example
 
 ## Risks and Blockers
 
