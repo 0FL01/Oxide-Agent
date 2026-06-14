@@ -1370,16 +1370,6 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                 other => other.to_string(),
             })
         }
-        ("duckduckgo_search" | "duckduckgo_news", Some("duckduckgo")) => {
-            let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
-            Some(match error_kind {
-                "rate_limited" => "rate_limited".to_string(),
-                "blocked" => "blocked".to_string(),
-                "parser_break" => "parser_break".to_string(),
-                "timeout" => "timeout".to_string(),
-                other => other.to_string(),
-            })
-        }
         _ => None,
     }
 }
@@ -1830,66 +1820,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_events_summarizes_duckduckgo_failures() {
-        let event_log = TaskEventLog::new();
-        let (tx, rx) = mpsc::channel(8);
-        let output = serde_json::json!({
-            "tool_call_id": "call-duckduckgo",
-            "tool_name": "duckduckgo_search",
-            "status": "failure",
-            "success": false,
-            "duration_ms": 458,
-            "stdout": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
-            "stderr": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
-            "structured_payload": {
-                "provider": "duckduckgo",
-                "kind": "search",
-                "query": "Thaumcraft 4 Pech spawning biome",
-                "error_kind": "blocked",
-                "provider_unavailable": true,
-                "results": []
-            },
-            "error_message": "DuckDuckGo is temporarily blocking requests",
-            "timeout_reason": null,
-            "cancellation_reason": null,
-            "cleanup_status": "not_needed",
-            "truncation": { "artifact_write_failed": false, "content_truncated": false, "max_stderr_bytes": 65536, "max_stdout_bytes": 65536, "max_tool_output_content_bytes": 131072, "stderr_truncated": false, "stdout_truncated": false },
-            "artifacts": []
-        })
-        .to_string();
-
-        tx.send(AgentEvent::ToolResult {
-            id: "tool-1".to_string(),
-            source: AgentEventSource::Root,
-            name: "duckduckgo_search".to_string(),
-            output,
-            success: false,
-        })
-        .await
-        .expect("send tool result");
-        drop(tx);
-
-        let result = collect_events(
-            event_log,
-            rx,
-            Some(BrowserEventScope::new(
-                7,
-                "session-1".to_string(),
-                "task-1".to_string(),
-            )),
-            None,
-            None,
-            None,
-        )
-        .await;
-
-        let tool_result = &result.persisted_events[0];
-        assert_eq!(tool_result.kind, TaskEventKind::ToolResult);
-        assert_eq!(tool_result.summary, "blocked");
-        assert_eq!(tool_result.payload["result_summary"], "blocked");
-    }
-
-    #[tokio::test]
     async fn collect_events_omits_rate_limit_retrying_browser_events() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
@@ -2113,7 +2043,7 @@ mod tests {
         tx.send(AgentEvent::ToolCall {
             id: "tool-a".to_string(),
             source: AgentEventSource::Root,
-            name: "duckduckgo_search".to_string(),
+            name: "searxng_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         })
@@ -2122,7 +2052,7 @@ mod tests {
         tx.send(AgentEvent::ToolCall {
             id: "tool-b".to_string(),
             source: AgentEventSource::Root,
-            name: "duckduckgo_search".to_string(),
+            name: "searxng_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         })
@@ -2131,7 +2061,7 @@ mod tests {
         tx.send(AgentEvent::ToolResult {
             id: "tool-b".to_string(),
             source: AgentEventSource::Root,
-            name: "duckduckgo_search".to_string(),
+            name: "searxng_search".to_string(),
             output: "result2".to_string(),
             success: true,
         })
@@ -2140,7 +2070,7 @@ mod tests {
         tx.send(AgentEvent::ToolResult {
             id: "tool-a".to_string(),
             source: AgentEventSource::Root,
-            name: "duckduckgo_search".to_string(),
+            name: "searxng_search".to_string(),
             output: "result1".to_string(),
             success: false,
         })

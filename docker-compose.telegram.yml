@@ -29,7 +29,6 @@ services:
       - path: .env
         required: false
     environment:
-      - DUCKDUCKGO_ENABLED=true
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
       - RUST_LOG=oxide_agent=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn

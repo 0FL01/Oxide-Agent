@@ -32,9 +32,6 @@ services:
       TZ: Europe/Moscow
       RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       DEBUG_MODE: "false"
-      DUCKDUCKGO_ENABLED: "true"
-      DUCKDUCKGO_MIN_DELAY_MS: "2500"
-      DUCKDUCKGO_JITTER_MS: "1500"
       SEARXNG_ENABLED: "true"
       SEARXNG_URL: http://127.0.0.1:8081
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:latest}

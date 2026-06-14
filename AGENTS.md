@@ -117,7 +117,7 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 - `webfetch_md` is feature-controlled and registered by default when compiled. `crawl4ai_markdown` registers only when `OXIDE_CRAWL4AI_BASE_URL` is set or `OXIDE_CRAWL4AI_ENABLED=true`. `OXIDE_WEB_CRAWLER_MERGE=true` hides split URL-to-Markdown tools and exposes `web_crawler`, which uses webfetch first and falls back to Crawl4AI only on anti-bot blocks when configured. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps split tools in other entrypoints.
 
 ## Configuration

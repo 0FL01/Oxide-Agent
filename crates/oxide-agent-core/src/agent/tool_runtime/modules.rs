@@ -44,8 +44,6 @@ use crate::agent::providers::CompressionProvider;
 use crate::agent::providers::Crawl4AiMarkdownProvider;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::providers::DelegationProvider;
-#[cfg(feature = "tool-duckduckgo")]
-use crate::agent::providers::DuckDuckGoProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
@@ -1459,40 +1457,6 @@ impl TavilyToolModule {
 impl ToolModule for TavilyToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tavily")
-    }
-
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
-/// Capability module for DuckDuckGo web and news search.
-#[cfg(feature = "tool-duckduckgo")]
-pub struct DuckDuckGoToolModule;
-
-#[cfg(feature = "tool-duckduckgo")]
-impl DuckDuckGoToolModule {
-    fn provider(&self) -> Option<DuckDuckGoProvider> {
-        if !crate::config::is_duckduckgo_enabled() {
-            return None;
-        }
-
-        match DuckDuckGoProvider::new() {
-            Ok(provider) => Some(provider),
-            Err(error) => {
-                tracing::warn!(error = %error, "DuckDuckGo provider initialization failed");
-                None
-            }
-        }
-    }
-}
-
-#[cfg(feature = "tool-duckduckgo")]
-impl ToolModule for DuckDuckGoToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/duckduckgo")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

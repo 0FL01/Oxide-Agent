@@ -79,32 +79,6 @@ pub struct AgentSettings {
     pub brave_search_max_concurrent: Option<usize>,
     /// Process-wide Brave Search minimum delay between operations.
     pub brave_search_min_delay_ms: Option<u64>,
-    /// Enable DuckDuckGo tool provider registration.
-    pub duckduckgo_enabled: Option<bool>,
-    /// DuckDuckGo request timeout (seconds).
-    pub duckduckgo_timeout_secs: Option<u64>,
-    /// Default DuckDuckGo region.
-    pub duckduckgo_region: Option<String>,
-    /// Default DuckDuckGo news safe-search setting.
-    pub duckduckgo_safe_search: Option<bool>,
-    /// Process-wide DuckDuckGo max concurrent operations.
-    pub duckduckgo_max_concurrent: Option<usize>,
-    /// Process-wide DuckDuckGo minimum delay between operations.
-    pub duckduckgo_min_delay_ms: Option<u64>,
-    /// Process-wide DuckDuckGo random delay jitter.
-    pub duckduckgo_jitter_ms: Option<u64>,
-    /// DuckDuckGo retry count.
-    pub duckduckgo_max_retries: Option<u8>,
-    /// DuckDuckGo initial retry backoff.
-    pub duckduckgo_initial_backoff_ms: Option<u64>,
-    /// DuckDuckGo maximum retry backoff.
-    pub duckduckgo_max_backoff_ms: Option<u64>,
-    /// DuckDuckGo process-wide cooldown after blocks or transient failures.
-    pub duckduckgo_cooldown_secs: Option<u64>,
-    /// DuckDuckGo user-agent alias or literal value.
-    pub duckduckgo_user_agent: Option<String>,
-    /// Optional DuckDuckGo proxy URL.
-    pub duckduckgo_proxy_url: Option<String>,
     /// SearXNG base URL.
     pub searxng_url: Option<String>,
     /// Enable SearXNG tool provider registration.
@@ -789,25 +763,6 @@ impl AgentSettings {
 
         if self.brave_search_enabled.is_none() {
             self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
-        }
-
-        if self.duckduckgo_enabled.is_none() {
-            self.duckduckgo_enabled = parse_optional_env_bool("DUCKDUCKGO_ENABLED");
-        }
-
-        if self.duckduckgo_user_agent.is_none()
-            && let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT")
-            && !val.is_empty()
-        {
-            self.duckduckgo_user_agent = Some(val);
-        }
-
-        if self.duckduckgo_proxy_url.is_none()
-            && let Ok(val) =
-                std::env::var("DUCKDUCKGO_PROXY_URL").or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
-            && !val.is_empty()
-        {
-            self.duckduckgo_proxy_url = Some(val);
         }
 
         if self.searxng_url.is_none()
@@ -2008,28 +1963,6 @@ mod tests {
         test_remove_env("TAVILY_API_KEY");
     }
 
-    #[test]
-    fn duckduckgo_enabled_defaults_to_true_without_sidecar_url() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("DUCKDUCKGO_ENABLED");
-
-        assert!(is_duckduckgo_enabled());
-    }
-
-    #[test]
-    fn duckduckgo_enabled_flag_overrides_default() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_set_env("DUCKDUCKGO_ENABLED", "false");
-
-        assert!(!is_duckduckgo_enabled());
-
-        test_remove_env("DUCKDUCKGO_ENABLED");
-    }
-
     fn clear_brave_search_env() {
         for key in [
             "BRAVE_SEARCH_API_KEY",
@@ -2132,28 +2065,6 @@ mod tests {
         assert_eq!(get_brave_search_min_delay_ms(), 500);
 
         clear_brave_search_env();
-    }
-
-    #[test]
-    fn duckduckgo_rate_limit_config_uses_defaults_when_env_missing() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("DUCKDUCKGO_MAX_CONCURRENT");
-        test_remove_env("DUCKDUCKGO_MIN_DELAY_MS");
-        test_remove_env("DUCKDUCKGO_JITTER_MS");
-        test_remove_env("DUCKDUCKGO_COOLDOWN_SECS");
-
-        let config = get_duckduckgo_rate_limit_config();
-        assert_eq!(
-            config,
-            DuckDuckGoRateLimitConfig {
-                max_concurrent: DUCKDUCKGO_DEFAULT_MAX_CONCURRENT,
-                min_delay_ms: DUCKDUCKGO_DEFAULT_MIN_DELAY_MS,
-                jitter_ms: DUCKDUCKGO_DEFAULT_JITTER_MS,
-                cooldown_secs: DUCKDUCKGO_DEFAULT_COOLDOWN_SECS,
-            }
-        );
     }
 
     #[test]
@@ -2512,74 +2423,12 @@ pub const BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT: usize = 1;
 /// Default process-wide Brave Search minimum delay between operations.
 pub const BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS: u64 = 1_000;
 
-/// Default timeout for DuckDuckGo requests (seconds).
-pub const DUCKDUCKGO_DEFAULT_TIMEOUT_SECS: u64 = 30;
-/// Default DuckDuckGo region.
-pub const DUCKDUCKGO_DEFAULT_REGION: &str = "wt-wt";
-/// Default DuckDuckGo news safe-search setting.
-pub const DUCKDUCKGO_DEFAULT_SAFE_SEARCH: bool = true;
-/// Default process-wide DuckDuckGo max concurrent operations.
-pub const DUCKDUCKGO_DEFAULT_MAX_CONCURRENT: usize = 1;
-/// Default process-wide DuckDuckGo minimum delay between operations.
-pub const DUCKDUCKGO_DEFAULT_MIN_DELAY_MS: u64 = 2_500;
-/// Default process-wide DuckDuckGo delay jitter.
-pub const DUCKDUCKGO_DEFAULT_JITTER_MS: u64 = 1_500;
-/// Default DuckDuckGo retry count.
-pub const DUCKDUCKGO_DEFAULT_MAX_RETRIES: u8 = 2;
-/// Default DuckDuckGo initial retry backoff.
-pub const DUCKDUCKGO_DEFAULT_INITIAL_BACKOFF_MS: u64 = 1_500;
-/// Default DuckDuckGo maximum retry backoff.
-pub const DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS: u64 = 30_000;
-/// Default DuckDuckGo cooldown after blocks or transient failures.
-pub const DUCKDUCKGO_DEFAULT_COOLDOWN_SECS: u64 = 90;
-
 // Self-hosted SearXNG HTTP client configuration
 /// Default timeout for SearXNG requests (seconds)
 pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Default engines used for SearXNG rotation fallback.
 pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
     &["brave", "bing", "qwant", "mojeek", "yandex"];
-
-/// DuckDuckGo browser configuration.
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub struct DuckDuckGoBrowserConfig {
-    /// User-agent alias or literal value.
-    pub user_agent: Option<String>,
-    /// Optional proxy URL.
-    pub proxy_url: Option<String>,
-}
-
-/// DuckDuckGo rate-limit configuration.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct DuckDuckGoRateLimitConfig {
-    /// Max concurrent high-level DuckDuckGo operations.
-    pub max_concurrent: usize,
-    /// Minimum delay between high-level operations.
-    pub min_delay_ms: u64,
-    /// Random delay jitter.
-    pub jitter_ms: u64,
-    /// Cooldown after likely rate limits or blocks.
-    pub cooldown_secs: u64,
-}
-
-/// DuckDuckGo retry backoff configuration.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct DuckDuckGoBackoffConfig {
-    /// Maximum retry attempts after the first request.
-    pub max_retries: u8,
-    /// Initial retry backoff in milliseconds.
-    pub initial_backoff_ms: u64,
-    /// Maximum retry backoff in milliseconds.
-    pub max_backoff_ms: u64,
-}
-
-/// Get DuckDuckGo timeout from env or default.
-///
-/// Environment variable: `DUCKDUCKGO_TIMEOUT_SECS`
-#[must_use]
-pub fn get_duckduckgo_timeout() -> u64 {
-    parse_env_u64("DUCKDUCKGO_TIMEOUT_SECS").unwrap_or(DUCKDUCKGO_DEFAULT_TIMEOUT_SECS)
-}
 
 /// Get Brave Search API key from env.
 ///
@@ -2664,72 +2513,6 @@ pub fn get_brave_search_max_concurrent() -> usize {
 #[must_use]
 pub fn get_brave_search_min_delay_ms() -> u64 {
     parse_env_u64("BRAVE_SEARCH_MIN_DELAY_MS").unwrap_or(BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS)
-}
-
-/// Get DuckDuckGo default region from env or default.
-///
-/// Environment variable: `DUCKDUCKGO_REGION`
-#[must_use]
-pub fn get_duckduckgo_region() -> String {
-    std::env::var("DUCKDUCKGO_REGION")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DUCKDUCKGO_DEFAULT_REGION.to_string())
-}
-
-/// Get DuckDuckGo news safe-search setting from env or default.
-///
-/// Environment variable: `DUCKDUCKGO_SAFE_SEARCH`
-#[must_use]
-pub fn get_duckduckgo_safe_search() -> bool {
-    parse_optional_env_bool("DUCKDUCKGO_SAFE_SEARCH").unwrap_or(DUCKDUCKGO_DEFAULT_SAFE_SEARCH)
-}
-
-/// Get DuckDuckGo browser config from env.
-///
-/// Environment variables: `DUCKDUCKGO_USER_AGENT`, `DUCKDUCKGO_PROXY_URL`, `DUCKDUCKGO_PROXY`.
-#[must_use]
-pub fn get_duckduckgo_browser_config() -> DuckDuckGoBrowserConfig {
-    DuckDuckGoBrowserConfig {
-        user_agent: std::env::var("DUCKDUCKGO_USER_AGENT")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        proxy_url: std::env::var("DUCKDUCKGO_PROXY_URL")
-            .or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-    }
-}
-
-/// Get DuckDuckGo process-wide rate-limit config from env or defaults.
-#[must_use]
-pub fn get_duckduckgo_rate_limit_config() -> DuckDuckGoRateLimitConfig {
-    DuckDuckGoRateLimitConfig {
-        max_concurrent: parse_env_usize("DUCKDUCKGO_MAX_CONCURRENT")
-            .filter(|value| *value > 0)
-            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_CONCURRENT),
-        min_delay_ms: parse_env_u64("DUCKDUCKGO_MIN_DELAY_MS")
-            .unwrap_or(DUCKDUCKGO_DEFAULT_MIN_DELAY_MS),
-        jitter_ms: parse_env_u64("DUCKDUCKGO_JITTER_MS").unwrap_or(DUCKDUCKGO_DEFAULT_JITTER_MS),
-        cooldown_secs: parse_env_u64("DUCKDUCKGO_COOLDOWN_SECS")
-            .unwrap_or(DUCKDUCKGO_DEFAULT_COOLDOWN_SECS),
-    }
-}
-
-/// Get DuckDuckGo retry backoff config from env or defaults.
-#[must_use]
-pub fn get_duckduckgo_backoff_config() -> DuckDuckGoBackoffConfig {
-    DuckDuckGoBackoffConfig {
-        max_retries: parse_env_u8("DUCKDUCKGO_MAX_RETRIES")
-            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_RETRIES),
-        initial_backoff_ms: parse_env_u64("DUCKDUCKGO_INITIAL_BACKOFF_MS")
-            .unwrap_or(DUCKDUCKGO_DEFAULT_INITIAL_BACKOFF_MS),
-        max_backoff_ms: parse_env_u64("DUCKDUCKGO_MAX_BACKOFF_MS")
-            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS),
-    }
 }
 
 /// Get SearXNG base URL from env.
@@ -2851,12 +2634,6 @@ fn parse_env_u64(name: &str) -> Option<u64> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-fn parse_env_u8(name: &str) -> Option<u8> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-}
-
 fn parse_env_usize(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
@@ -2889,14 +2666,6 @@ pub fn is_tavily_enabled() -> bool {
 pub fn is_brave_search_enabled() -> bool {
     parse_optional_env_bool("BRAVE_SEARCH_ENABLED")
         .unwrap_or_else(|| get_brave_search_api_key().is_some())
-}
-
-/// Determine whether DuckDuckGo tools should be registered.
-///
-/// Environment variable: `DUCKDUCKGO_ENABLED`
-#[must_use]
-pub fn is_duckduckgo_enabled() -> bool {
-    parse_optional_env_bool("DUCKDUCKGO_ENABLED").unwrap_or(true)
 }
 
 // LLM HTTP client configuration

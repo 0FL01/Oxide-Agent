@@ -235,7 +235,6 @@ impl ManagerControlPlaneProvider {
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
         #[cfg(not(any(
             feature = "tool-tavily",
-            feature = "tool-duckduckgo",
             feature = "tool-searxng",
             feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md"
@@ -248,15 +247,6 @@ impl ManagerControlPlaneProvider {
                 provider: "tavily",
                 aliases: &["search", "tavily"],
                 tools: TOPIC_AGENT_TAVILY_TOOLS,
-            });
-        }
-
-        #[cfg(feature = "tool-duckduckgo")]
-        if crate::config::is_duckduckgo_enabled() {
-            groups.push(TopicAgentToolGroup {
-                provider: "duckduckgo",
-                aliases: &["search", "duckduckgo", "ddg", "news"],
-                tools: TOPIC_AGENT_DUCKDUCKGO_TOOLS,
             });
         }
 
@@ -1518,9 +1508,9 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "duckduckgo",
-                    aliases: &["search", "duckduckgo", "ddg", "news"],
-                    tools: &["duckduckgo_search", "duckduckgo_news"],
+                    provider: "searxng",
+                    aliases: &["search", "searxng"],
+                    tools: &["searxng_search"],
                 },
                 TopicAgentToolGroup {
                     provider: "webfetch_md",
@@ -1531,8 +1521,7 @@ mod tests {
             tool_names: [
                 "web_search",
                 "web_extract",
-                "duckduckgo_search",
-                "duckduckgo_news",
+                "searxng_search",
                 "web_markdown",
             ]
             .into_iter()
@@ -1549,8 +1538,7 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "duckduckgo_news".to_string(),
-                "duckduckgo_search".to_string(),
+                "searxng_search".to_string(),
                 "web_extract".to_string(),
                 "web_markdown".to_string(),
                 "web_search".to_string(),

@@ -918,40 +918,6 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     test_remove_env("TAVILY_API_KEY");
 }
 
-#[cfg(feature = "tool-duckduckgo")]
-#[test]
-fn typed_runtime_registry_skips_disabled_duckduckgo_module() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("DUCKDUCKGO_ENABLED", "true");
-
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/duckduckgo".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("duckduckgo_search"));
-    assert!(!tool_names.contains("duckduckgo_news"));
-    #[cfg(feature = "tool-todos")]
-    assert!(tool_names.contains("write_todos"));
-
-    test_remove_env("DUCKDUCKGO_ENABLED");
-}
-
 #[cfg(feature = "tool-searxng")]
 #[test]
 fn typed_runtime_registry_skips_disabled_searxng_module() {
@@ -1043,7 +1009,7 @@ fn current_tool_definitions_include_brave_search_when_key_is_configured() {
     test_remove_env("BRAVE_SEARCH_API_KEY");
 }
 
-#[cfg(all(feature = "tool-tavily", feature = "tool-duckduckgo"))]
+#[cfg(feature = "tool-tavily")]
 #[test]
 fn typed_runtime_registry_registers_search_modules_once() {
     let _guard = crate::config::test_env_mutex()
@@ -1051,7 +1017,6 @@ fn typed_runtime_registry_registers_search_modules_once() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_set_env("TAVILY_API_KEY", "dummy-key");
     test_set_env("TAVILY_ENABLED", "true");
-    test_set_env("DUCKDUCKGO_ENABLED", "true");
 
     let executor = build_executor();
     let registry =
@@ -1072,22 +1037,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
             .count(),
         1
     );
-    assert_eq!(
-        tool_names
-            .iter()
-            .filter(|name| *name == "duckduckgo_search")
-            .count(),
-        1
-    );
-    assert_eq!(
-        tool_names
-            .iter()
-            .filter(|name| *name == "duckduckgo_news")
-            .count(),
-        1
-    );
 
-    test_remove_env("DUCKDUCKGO_ENABLED");
     test_remove_env("TAVILY_ENABLED");
     test_remove_env("TAVILY_API_KEY");
 }

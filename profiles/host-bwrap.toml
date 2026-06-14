@@ -20,7 +20,6 @@ cargo_features = ["profile-host-bwrap"]
 "tool/sandbox-fileops" = { enabled = true }
 "tool/sandbox-recreate" = { enabled = true }
 "tool/tavily" = { enabled = true }
-"tool/duckduckgo" = { enabled = true }
 "tool/brave-search" = { enabled = true }
 "tool/searxng" = { enabled = true }
 "tool/todos" = { enabled = true }

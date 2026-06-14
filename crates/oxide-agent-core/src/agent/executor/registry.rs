@@ -9,8 +9,6 @@ use crate::agent::tool_runtime::CompressionToolModule;
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::tool_runtime::DelegationToolModule;
-#[cfg(feature = "tool-duckduckgo")]
-use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]
@@ -63,7 +61,6 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-image",
     feature = "tool-media-video",
     feature = "tool-reminder",
-    feature = "tool-duckduckgo",
     feature = "tool-brave-search",
     feature = "tool-searxng",
     feature = "tool-stack-logs",
@@ -144,7 +141,6 @@ impl AgentExecutor {
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
-            feature = "tool-duckduckgo",
             feature = "tool-brave-search",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
@@ -181,8 +177,6 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
         #[cfg(feature = "tool-reminder")]
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
-        #[cfg(feature = "tool-duckduckgo")]
-        self.register_tool_runtime_module(registry, &DuckDuckGoToolModule, ctx);
         #[cfg(feature = "tool-brave-search")]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
@@ -233,7 +227,6 @@ impl AgentExecutor {
         feature = "tool-media-image",
         feature = "tool-media-video",
         feature = "tool-reminder",
-        feature = "tool-duckduckgo",
         feature = "tool-brave-search",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
@@ -280,7 +273,6 @@ impl AgentExecutor {
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
-            feature = "tool-duckduckgo",
             feature = "tool-brave-search",
             feature = "tool-searxng",
             feature = "tool-stack-logs",

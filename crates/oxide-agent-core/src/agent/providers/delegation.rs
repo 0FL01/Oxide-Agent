@@ -45,8 +45,6 @@ use uuid::Uuid;
 use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
-#[cfg(feature = "tool-duckduckgo")]
-use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -61,7 +59,6 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-brave-search",
-    feature = "tool-duckduckgo",
     feature = "tool-searxng",
     feature = "tool-tavily",
     feature = "tool-todos",
@@ -715,7 +712,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-brave-search",
-            feature = "tool-duckduckgo",
             feature = "tool-searxng",
             feature = "tool-tavily",
             feature = "tool-todos",
@@ -748,9 +744,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-tavily")]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
-
-        #[cfg(feature = "tool-duckduckgo")]
-        self.push_sub_agent_tool_module(&mut executors, &DuckDuckGoToolModule, &module_ctx);
 
         #[cfg(feature = "tool-brave-search")]
         self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
@@ -801,7 +794,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-brave-search",
-        feature = "tool-duckduckgo",
         feature = "tool-searxng",
         feature = "tool-tavily",
         feature = "tool-todos",
@@ -829,19 +821,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
-        }
-
-        #[cfg(not(feature = "tool-duckduckgo"))]
-        if std::env::var("DUCKDUCKGO_ENABLED")
-            .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-        {
-            warn!("DuckDuckGo enabled but feature not compiled in");
         }
 
         #[cfg(not(feature = "tool-brave-search"))]

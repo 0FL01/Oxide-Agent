@@ -13,7 +13,6 @@ use url::Url;
 pub struct SearchBudgetHook {
     limit: usize,
     count: AtomicUsize,
-    duckduckgo_unavailable: AtomicBool,
     brave_search_unavailable: AtomicBool,
     blocked_web_markdown_hosts: Mutex<HashSet<String>>,
 }
@@ -25,7 +24,6 @@ impl SearchBudgetHook {
         Self {
             limit,
             count: AtomicUsize::new(0),
-            duckduckgo_unavailable: AtomicBool::new(false),
             brave_search_unavailable: AtomicBool::new(false),
             blocked_web_markdown_hosts: Mutex::new(HashSet::new()),
         }
@@ -36,8 +34,6 @@ impl SearchBudgetHook {
             tool_name,
             "web_search"
                 | "web_extract"
-                | "duckduckgo_search"
-                | "duckduckgo_news"
                 | "brave_search"
                 | "searxng_search"
                 | "web_crawler"
@@ -46,28 +42,8 @@ impl SearchBudgetHook {
         )
     }
 
-    fn is_duckduckgo_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "duckduckgo_search" | "duckduckgo_news")
-    }
-
     fn is_brave_search_tool(tool_name: &str) -> bool {
         matches!(tool_name, "brave_search")
-    }
-
-    fn result_marks_duckduckgo_unavailable(result: &str) -> bool {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
-            return false;
-        };
-        let Some(payload) = value.get("structured_payload") else {
-            return false;
-        };
-        if payload.get("provider").and_then(|value| value.as_str()) != Some("duckduckgo") {
-            return false;
-        }
-        matches!(
-            payload.get("error_kind").and_then(|value| value.as_str()),
-            Some("blocked" | "rate_limited")
-        )
     }
 
     fn result_marks_brave_search_unavailable(result: &str) -> bool {
@@ -136,19 +112,6 @@ impl Hook for SearchBudgetHook {
                 tool_name,
                 arguments,
             } => {
-                if Self::is_duckduckgo_tool(tool_name)
-                    && self.duckduckgo_unavailable.load(Ordering::SeqCst)
-                {
-                    return HookResult::Block {
-                        reason: concat!(
-                            "DuckDuckGo is temporarily unavailable in this task because it returned ",
-                            "a block/rate-limit signal. Do not retry DuckDuckGo with rewritten ",
-                            "queries; use `searxng_search` instead or synthesize from existing data."
-                        )
-                        .to_string(),
-                    };
-                }
-
                 if Self::is_brave_search_tool(tool_name)
                     && self.brave_search_unavailable.load(Ordering::SeqCst)
                 {
@@ -189,11 +152,6 @@ impl Hook for SearchBudgetHook {
                     }
                 }
             }
-            HookEvent::AfterTool { tool_name, result } if Self::is_duckduckgo_tool(tool_name) => {
-                if Self::result_marks_duckduckgo_unavailable(result) {
-                    self.duckduckgo_unavailable.store(true, Ordering::SeqCst);
-                }
-            }
             HookEvent::AfterTool { tool_name, result } if Self::is_brave_search_tool(tool_name) => {
                 if Self::result_marks_brave_search_unavailable(result) {
                     self.brave_search_unavailable.store(true, Ordering::SeqCst);
@@ -221,50 +179,6 @@ mod tests {
     use super::*;
     use crate::agent::memory::AgentMemory;
     use crate::agent::providers::TodoList;
-
-    #[test]
-    fn counts_duckduckgo_search_against_budget() {
-        let hook = SearchBudgetHook::new(1);
-        let todos = TodoList::new();
-        let memory = AgentMemory::new(1024);
-        let context = HookContext::new(&todos, &memory, 0, 0, 1);
-
-        let first = hook.handle(
-            &HookEvent::BeforeTool {
-                tool_name: "duckduckgo_search".to_string(),
-                arguments: "{}".to_string(),
-            },
-            &context,
-        );
-        let second = hook.handle(
-            &HookEvent::BeforeTool {
-                tool_name: "duckduckgo_search".to_string(),
-                arguments: "{}".to_string(),
-            },
-            &context,
-        );
-
-        assert!(matches!(first, HookResult::Continue));
-        assert!(matches!(second, HookResult::Block { .. }));
-    }
-
-    #[test]
-    fn counts_duckduckgo_news_against_budget() {
-        let hook = SearchBudgetHook::new(0);
-        let todos = TodoList::new();
-        let memory = AgentMemory::new(1024);
-        let context = HookContext::new(&todos, &memory, 0, 0, 1);
-
-        let result = hook.handle(
-            &HookEvent::BeforeTool {
-                tool_name: "duckduckgo_news".to_string(),
-                arguments: "{}".to_string(),
-            },
-            &context,
-        );
-
-        assert!(matches!(result, HookResult::Block { .. }));
-    }
 
     #[test]
     fn counts_brave_search_against_budget() {
@@ -334,43 +248,6 @@ mod tests {
 
         assert!(matches!(first, HookResult::Continue));
         assert!(matches!(second, HookResult::Block { .. }));
-    }
-
-    #[test]
-    fn blocks_repeated_duckduckgo_after_block_signal() {
-        let hook = SearchBudgetHook::new(10);
-        let todos = TodoList::new();
-        let memory = AgentMemory::new(1024);
-        let context = HookContext::new(&todos, &memory, 0, 0, 1);
-
-        let result = serde_json::json!({
-            "structured_payload": {
-                "provider": "duckduckgo",
-                "kind": "search",
-                "error_kind": "blocked"
-            }
-        })
-        .to_string();
-        assert!(matches!(
-            hook.handle(
-                &HookEvent::AfterTool {
-                    tool_name: "duckduckgo_search".to_string(),
-                    result,
-                },
-                &context,
-            ),
-            HookResult::Continue
-        ));
-
-        let blocked = hook.handle(
-            &HookEvent::BeforeTool {
-                tool_name: "duckduckgo_search".to_string(),
-                arguments: "{}".to_string(),
-            },
-            &context,
-        );
-
-        assert!(matches!(blocked, HookResult::Block { .. }));
     }
 
     #[test]
@@ -467,7 +344,7 @@ mod tests {
         );
         let search = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "duckduckgo_search".to_string(),
+                tool_name: "searxng_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,

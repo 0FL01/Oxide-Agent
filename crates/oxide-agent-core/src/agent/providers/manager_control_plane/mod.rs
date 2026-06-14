@@ -202,8 +202,6 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 ];
 #[cfg(feature = "tool-tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
-#[cfg(feature = "tool-duckduckgo")]
-const TOPIC_AGENT_DUCKDUCKGO_TOOLS: &[&str] = &["duckduckgo_search", "duckduckgo_news"];
 #[cfg(feature = "tool-searxng")]
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "tool-webfetch-md")]

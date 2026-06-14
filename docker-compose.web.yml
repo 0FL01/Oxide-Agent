@@ -45,7 +45,6 @@ services:
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
-      - DUCKDUCKGO_ENABLED=false
       - OXIDE_WEB_CRAWLER_MERGE=${OXIDE_WEB_CRAWLER_MERGE:-true}
       - RUST_LOG=oxide_agent_core=info,oxide_agent_core::agent_latency=${OXIDE_AGENT_LATENCY_LOG:-off},oxide_agent_core::agent::providers::crawl4ai_markdown=debug,oxide_agent_transport_web=info,oxide_agent_transport_web::web_latency=${OXIDE_WEB_LATENCY_LOG:-off},oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
     volumes:

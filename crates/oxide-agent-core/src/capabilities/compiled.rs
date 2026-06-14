@@ -463,13 +463,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-duckduckgo",
-        "tool/duckduckgo",
-        Search,
-        ["tool/duckduckgo-search", "tool/duckduckgo-news"]
-    );
-    push_module!(
-        modules,
         "tool-brave-search",
         "tool/brave-search",
         Search,

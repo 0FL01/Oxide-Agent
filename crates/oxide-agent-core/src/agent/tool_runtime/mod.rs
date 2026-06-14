@@ -38,8 +38,6 @@ pub use modules::CompressionToolModule;
 pub use modules::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-delegation")]
 pub use modules::DelegationToolModule;
-#[cfg(feature = "tool-duckduckgo")]
-pub use modules::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]

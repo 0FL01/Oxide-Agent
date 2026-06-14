@@ -36,8 +36,6 @@ bollard = { version = "0.20.2", optional = true }
 futures-util = "0.3.31"
 uuid = { version = "1.19.0", features = ["v4", "v5"] }
 shell-escape = "0.1.5"
-duckduckgo = { version = "=0.3.3", default-features = false, optional = true }
-scraper = { version = "0.27.0", optional = true }
 chrono = { version = "0.4.42", features = ["serde"] }
 tar = { version = "0.4", optional = true }
 bytes = { version = "1.11", optional = true }
@@ -90,7 +88,6 @@ profile-full = [
     "tool-wiki-memory",
     "tool-webfetch-md",
     "tool-tavily",
-    "tool-duckduckgo",
     "tool-brave-search",
     "tool-searxng",
     "tool-sandbox-fileops",
@@ -128,12 +125,6 @@ profile-embedded-opencode-local = [
     "tool-media-image",
     "tool-media-video",
     "tool-tavily",
-    "tool-duckduckgo",
-    "tool-brave-search",
-    "tool-searxng",
-    "tool-sandbox-fileops",
-    "tool-sandbox-exec",
-    "tool-sandbox-recreate",
     "sandbox-backend-bwrap",
     "sandbox-backend-docker-direct",
     "sandbox-backend-sandboxd-client",
@@ -177,7 +168,6 @@ profile-search-only = [
     "llm-opencode-go",
     "tool-webfetch-md",
     "tool-tavily",
-    "tool-duckduckgo",
     "tool-brave-search",
     "tool-searxng",
 ]
@@ -217,12 +207,6 @@ profile-host-bwrap = [
     "tool-media-image",
     "tool-media-video",
     "tool-tavily",
-    "tool-duckduckgo",
-    "tool-brave-search",
-    "tool-searxng",
-    "tool-sandbox-fileops",
-    "tool-sandbox-exec",
-    "tool-sandbox-recreate",
     "sandbox-backend-bwrap",
 ]
 
@@ -251,7 +235,6 @@ tool-wiki-memory = []
 tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-crawl4ai-markdown = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:reqwest"]
-tool-duckduckgo = ["dep:duckduckgo", "dep:reqwest", "dep:scraper"]
 tool-brave-search = ["dep:reqwest"]
 tool-searxng = ["dep:reqwest", "reqwest/query"]
 tool-sandbox-fileops = []

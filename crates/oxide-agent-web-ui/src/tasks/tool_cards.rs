@@ -31,7 +31,7 @@ pub(super) fn ToolCard(
         "execute_command" => {
             view! { <ShellToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "web_search" | "tavily_search" | "duckduckgo_search" | "duckduckgo_news" => view! {
+        "web_search" | "tavily_search" => view! {
             <SearchToolCard label="Web search" preview_query_first=false call=call result=result output=output_json />
         }
         .into_any(),
@@ -1588,13 +1588,6 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                     other => other.to_string(),
                 })
             }
-            Some("duckduckgo") => Some(match error_kind {
-                "rate_limited" => "rate_limited".to_string(),
-                "blocked" => "blocked".to_string(),
-                "parser_break" => "parser_break".to_string(),
-                "timeout" => "timeout".to_string(),
-                other => other.to_string(),
-            }),
             _ => None,
         }
     })
