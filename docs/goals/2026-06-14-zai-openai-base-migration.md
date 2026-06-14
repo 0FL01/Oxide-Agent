@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 20:16
+Last updated: 2026-06-14 20:23
 
 ## Objective
 
@@ -94,15 +94,15 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:18`-`:31`, `:129`
   - Acceptance: for profile `zai`, except native JSON-only, `openai_base` sends a normal Chat Completions request with `stream: true`, reads SSE `data: ...` chunks using `reqwest`, ignores `[DONE]`, and returns through the normal `LlmProvider` response shape.
   - Evidence required: hermetic SSE parser/transport tests proving streamed content is parsed and non-stream JSON-only still uses the existing response path.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `chat_with_tools` in `crates/oxide-agent-core/src/llm/providers/openai_base/mod.rs` now dispatches to a reqwest `bytes_stream()` SSE path whenever the profile/body policy sets `stream: true`; SSE `data:` events are parsed, `[DONE]` is ignored, and native JSON-only ZAI requests keep the existing non-streaming JSON path. Verified by `zai_chat_with_tools_uses_sse_transport` and `zai_native_json_chat_uses_non_streaming_transport` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:23.
 
 - G5: ZAI streaming aggregator preserves content, reasoning, tools, IDs, finish reason, and usage
   - Source: `docs/prd/zai-drop.md:33`-`:45`, `:105`-`:108`, `:117`-`:118`
   - Acceptance: SSE aggregation accumulates `choices[0].delta.content`, separately accumulates `choices[0].delta.reasoning_content`, assembles fragmented `tool_calls`, concatenates fragmented `function.arguments`, preserves provider tool-call IDs, reads `finish_reason`, reads streamed `usage` when present, and errors cleanly on an empty response.
   - Evidence required: unit tests for content chunks, reasoning chunks, fragmented tool arguments, tool-call ID preservation, finish reason/usage, and empty response.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: OpenAI Base streaming aggregation now accumulates `delta.content`, separately accumulates `delta.reasoning_content`, assembles indexed/fragmented `delta.tool_calls`, concatenates `function.arguments`, preserves provider wire IDs through `CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call`, records `finish_reason`, maps streamed `usage`, and returns `EmptyResponse` for empty streams. Verified by `zai_sse_aggregates_content_reasoning_finish_and_usage`, `zai_sse_aggregates_fragmented_tool_arguments_and_preserves_id`, `streaming_tool_calls_handle_empty_id_as_uncorrelated`, and `zai_sse_empty_response_errors_cleanly` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:23.
 
 - G6: ZAI structured-output support is model-gated
   - Source: `docs/prd/zai-drop.md:16`, `:56`, `:104`, `crates/oxide-agent-core/src/llm/providers/zai/module.rs` current behavior
@@ -180,8 +180,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:39`-`:42`, `:117`
   - Acceptance: streamed tool calls become `ToolCall` records with correct provider IDs and concatenated arguments; history repair/tool result correlation semantics are unchanged.
   - Evidence required: streaming aggregator tests plus existing tool-call tests pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Streaming tool-call aggregation uses provider-correlated tool calls for non-empty ZAI IDs and uncorrelated generated IDs for empty IDs, matching existing chat-like correlation semantics. Verified by `zai_sse_aggregates_fragmented_tool_arguments_and_preserves_id`, `streaming_tool_calls_handle_empty_id_as_uncorrelated`, and existing openai_base tool-call tests in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:23.
 
 - Q6: Audio/media fallback dead code is removed or made generic
   - Source: `docs/prd/zai-drop.md:123`
@@ -210,15 +210,15 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:98`-`:112`
   - Acceptance: tests cover body stream flags, JSON-only behavior, normal thinking, SSE content, SSE reasoning, fragmented tool arguments, tool-call ID preservation, ZAI 429 `next_flush_time`, old provider validation failure, and new provider validation success.
   - Evidence required: list of test names and passing `cargo test` command output.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Body stream flags, JSON-only behavior, normal thinking, SSE content, SSE reasoning, fragmented tool arguments, tool-call ID preservation, streamed usage/finish reason, and empty streamed response are covered by focused openai_base tests passing on 2026-06-14 20:23. Remaining V1 coverage: ZAI 429 `next_flush_time`, old provider validation failure, and new provider validation success.
 
 - V2: Focused core validation passes during checkpoints
   - Source: repo validation guidance
   - Acceptance: after relevant Rust code checkpoints, focused `cargo test -p oxide-agent-core --no-default-features --features profile-full ...` or narrower feature tests pass.
   - Evidence required: command output per checkpoint recorded in Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Final broader validation remains pending.
 
 - V3: Final formatting and lint gates pass
   - Source: `AGENTS.md:146`
@@ -336,6 +336,7 @@ Out of scope:
 - 2026-06-14: Do not support legacy `provider = "zai"` or `ZAI_API_KEY` fallback; the PRD explicitly prioritizes clean migration over compatibility.
 - 2026-06-14: Start with profile/body policy before deleting provider so behavior can be ported and tested while the old implementation is still available as reference.
 - 2026-06-14: Represent ZAI request quirks as small profile policy enums (`ThinkingPolicy`, `StreamPolicy`, `StructuredOutputPolicy`) instead of adding a new provider or broad abstraction.
+- 2026-06-14: Keep ZAI streaming as a small OpenAI Base SSE parser/aggregator keyed by the existing `stream` request body flag; do not introduce a new transport abstraction or dependency.
 
 ## Progress Log
 
@@ -352,6 +353,13 @@ Out of scope:
   - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 71 tests, 0 failed (warnings from Mistral module being compiled without `llm-mistral` under this narrow feature set were observed and remain non-fatal for this focused command).
   - Audit IDs updated: G1 verified; G2 in_progress; G3 verified; G6 verified; Q2 in_progress; V1 partially covered for body/profile/capability tests.
   - Next: review diff, commit Checkpoint 1, then implement Checkpoint 2 SSE streaming parser/aggregator.
+
+- 2026-06-14 20:23: Checkpoint 2 implemented -- ZAI SSE streaming parser and aggregator in OpenAI Base
+  - Changed: added reqwest SSE dispatch for `chat_with_tools` when the OpenAI Base request body has `stream: true`; added SSE `data:` parsing, UTF-8 chunk buffering, `[DONE]` handling, streamed usage parsing, reasoning/content accumulation, fragmented tool-call assembly, provider tool-call ID preservation, and empty-stream error handling.
+  - Evidence: hermetic tests cover streamed transport, native JSON-only non-streaming transport, content/reasoning accumulation, fragmented function arguments, provider wire ID preservation, empty IDs as uncorrelated calls, finish reason, usage, and empty response errors.
+  - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 77 tests, 0 failed; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` passed.
+  - Audit IDs updated: G4 verified; G5 verified; Q5 verified; V1 in_progress; V2 in_progress.
+  - Next: review diff, commit Checkpoint 2, then implement Checkpoint 3 rate-limit parser and route validation.
 
 ## Risks and Blockers
 

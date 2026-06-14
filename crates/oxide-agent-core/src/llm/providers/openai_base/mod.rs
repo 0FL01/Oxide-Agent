@@ -16,13 +16,14 @@ use crate::llm::providers::openai_base::profile::{
     ThinkingPolicy,
 };
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::support::http::{extract_text_content, send_json_request};
+use crate::llm::support::http::{APP_USER_AGENT, extract_text_content, send_json_request};
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart,
     TokenUsage, ToolCall, ToolDefinition,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use futures_util::StreamExt;
 use reqwest::Client as HttpClient;
 use serde_json::{Value, json};
 use tracing::debug;
@@ -782,19 +783,7 @@ fn parse_chat_response(
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    let usage = response.get("usage").and_then(|usage| {
-        Some(TokenUsage {
-            prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
-            completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
-            total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
-            cached_tokens: usage
-                .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .map(|value| value as u32),
-            cache_creation_tokens: None,
-        })
-    });
+    let usage = response.get("usage").and_then(parse_token_usage);
 
     Ok(ChatResponse {
         content,
@@ -803,6 +792,303 @@ fn parse_chat_response(
         reasoning_content,
         usage,
     })
+}
+
+fn parse_token_usage(usage: &Value) -> Option<TokenUsage> {
+    Some(TokenUsage {
+        prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
+        completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
+        total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
+        cached_tokens: usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(Value::as_u64)
+            .map(|value| value as u32),
+        cache_creation_tokens: None,
+    })
+}
+
+fn should_stream_chat_response(body: &Value) -> bool {
+    body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+}
+
+#[derive(Default)]
+struct StreamingChatAccumulator {
+    content: String,
+    reasoning_content: String,
+    finish_reason: String,
+    usage: Option<TokenUsage>,
+    pending_tool_calls: Vec<PendingStreamingToolCall>,
+}
+
+#[derive(Default)]
+struct PendingStreamingToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+async fn send_streaming_chat_request(
+    client: &HttpClient,
+    url: &str,
+    body: &Value,
+    auth_header: Option<&str>,
+) -> Result<ChatResponse, LlmError> {
+    let mut request = client
+        .post(url)
+        .json(body)
+        .header("User-Agent", APP_USER_AGENT);
+    if let Some(auth) = auth_header {
+        request = request.header("Authorization", auth);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| LlmError::NetworkError(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let wait_secs = (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            .then(|| parse_retry_after_seconds(response.headers()))
+            .flatten();
+        let error_text = response.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(LlmError::RateLimit {
+                wait_secs,
+                message: error_text,
+            });
+        }
+        return Err(LlmError::ApiError(format!(
+            "API error: {status} - {error_text}"
+        )));
+    }
+
+    parse_streaming_chat_response(response).await
+}
+
+async fn parse_streaming_chat_response(
+    response: reqwest::Response,
+) -> Result<ChatResponse, LlmError> {
+    let mut state = StreamingChatAccumulator {
+        finish_reason: "unknown".to_string(),
+        ..StreamingChatAccumulator::default()
+    };
+    let mut buffer = String::new();
+    let mut pending_bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
+        pending_bytes.extend_from_slice(&chunk);
+        if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
+            buffer.push_str(&decoded);
+        }
+        normalize_newlines_in_place(&mut buffer);
+
+        while let Some(boundary) = buffer.find("\n\n") {
+            let raw_event = buffer[..boundary].to_string();
+            buffer = buffer[(boundary + 2)..].to_string();
+            process_chat_sse_event(&raw_event, &mut state)?;
+        }
+    }
+
+    if !pending_bytes.is_empty() {
+        let tail = String::from_utf8(pending_bytes)
+            .map_err(|error| LlmError::JsonError(error.to_string()))?;
+        buffer.push_str(&tail);
+        normalize_newlines_in_place(&mut buffer);
+    }
+
+    if !buffer.trim().is_empty() {
+        process_chat_sse_event(&buffer, &mut state)?;
+    }
+
+    finish_streaming_chat_response(state)
+}
+
+fn process_chat_sse_event(
+    raw_event: &str,
+    state: &mut StreamingChatAccumulator,
+) -> Result<(), LlmError> {
+    let payload = raw_event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if payload.is_empty() || payload == "[DONE]" {
+        return Ok(());
+    }
+
+    let chunk: Value =
+        serde_json::from_str(&payload).map_err(|error| LlmError::JsonError(error.to_string()))?;
+
+    if let Some(choice) = chunk.get("choices").and_then(|choices| choices.get(0)) {
+        if let Some(delta) = choice.get("delta") {
+            if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+                state.reasoning_content.push_str(reasoning);
+            }
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                state.content.push_str(text);
+            }
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                apply_streaming_tool_call_delta(tool_calls, &mut state.pending_tool_calls);
+            }
+        }
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            state.finish_reason = reason.to_string();
+        }
+    }
+
+    if let Some(usage) = chunk.get("usage").and_then(parse_token_usage) {
+        state.usage = Some(usage);
+    }
+
+    Ok(())
+}
+
+fn apply_streaming_tool_call_delta(
+    tool_calls: &[Value],
+    pending: &mut Vec<PendingStreamingToolCall>,
+) {
+    for call in tool_calls {
+        if let Some(call_type) = call.get("type").and_then(Value::as_str)
+            && call_type != "function"
+        {
+            continue;
+        }
+
+        let entry_index = streaming_tool_call_index(call, pending);
+        while pending.len() <= entry_index {
+            pending.push(PendingStreamingToolCall::default());
+        }
+
+        let entry = &mut pending[entry_index];
+        if let Some(id) = call
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            entry.id = Some(id.to_string());
+        }
+
+        if let Some(function) = call.get("function") {
+            if let Some(name) = function
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                entry.name = Some(name.to_string());
+            }
+            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                entry.arguments.push_str(arguments);
+            }
+        }
+    }
+}
+
+fn streaming_tool_call_index(call: &Value, pending: &[PendingStreamingToolCall]) -> usize {
+    if let Some(index) = call.get("index").and_then(Value::as_u64) {
+        return index as usize;
+    }
+
+    if let Some(id) = call.get("id").and_then(Value::as_str) {
+        if let Some((index, _)) = pending
+            .iter()
+            .enumerate()
+            .find(|(_, pending_call)| pending_call.id.as_deref() == Some(id))
+        {
+            return index;
+        }
+
+        if pending
+            .last()
+            .and_then(|pending_call| pending_call.id.as_deref())
+            != Some(id)
+        {
+            return pending.len();
+        }
+    }
+
+    pending.len().saturating_sub(1)
+}
+
+fn finish_streaming_chat_response(
+    state: StreamingChatAccumulator,
+) -> Result<ChatResponse, LlmError> {
+    let tool_calls = finalize_streaming_tool_calls(state.pending_tool_calls);
+    if state.content.is_empty() && state.reasoning_content.is_empty() && tool_calls.is_empty() {
+        return Err(LlmError::EmptyResponse(
+            " from OpenAI-compatible streaming response".to_string(),
+        ));
+    }
+
+    Ok(ChatResponse {
+        content: (!state.content.is_empty()).then_some(state.content),
+        tool_calls,
+        finish_reason: state.finish_reason,
+        reasoning_content: (!state.reasoning_content.is_empty()).then_some(state.reasoning_content),
+        usage: state.usage,
+    })
+}
+
+fn finalize_streaming_tool_calls(pending: Vec<PendingStreamingToolCall>) -> Vec<ToolCall> {
+    pending
+        .into_iter()
+        .filter_map(|call| {
+            let name = call.name?;
+            let arguments = if call.arguments.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                call.arguments
+            };
+            Some(match call.id {
+                Some(id) if !id.trim().is_empty() => CHAT_LIKE_TOOL_PROFILE
+                    .inbound_provider_tool_call(id.as_str(), None, name, arguments),
+                _ => CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments),
+            })
+        })
+        .collect()
+}
+
+fn parse_retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
+    match std::str::from_utf8(pending_bytes) {
+        Ok(valid) => {
+            let decoded = valid.to_string();
+            pending_bytes.clear();
+            Ok((!decoded.is_empty()).then_some(decoded))
+        }
+        Err(error) => {
+            let valid_up_to = error.valid_up_to();
+            if let Some(error_len) = error.error_len() {
+                return Err(LlmError::JsonError(format!(
+                    "invalid utf-8 in OpenAI-compatible stream at {valid_up_to} (len {error_len})"
+                )));
+            }
+
+            if valid_up_to == 0 {
+                return Ok(None);
+            }
+
+            let decoded = String::from_utf8(pending_bytes[..valid_up_to].to_vec())
+                .map_err(|error| LlmError::JsonError(error.to_string()))?;
+            pending_bytes.drain(..valid_up_to);
+            Ok(Some(decoded))
+        }
+    }
+}
+
+fn normalize_newlines_in_place(buffer: &mut String) {
+    if buffer.contains('\r') {
+        *buffer = buffer.replace("\r\n", "\n");
+    }
 }
 
 #[async_trait]
@@ -938,6 +1224,16 @@ impl LlmProvider for OpenAIBaseProvider {
             body
         };
         let auth = self.auth_header();
+        if should_stream_chat_response(&body) {
+            return send_streaming_chat_request(
+                &self.http_client,
+                &self.chat_completions_url(),
+                &body,
+                auth.as_deref(),
+            )
+            .await;
+        }
+
         let res_json = send_json_request(
             &self.http_client,
             &self.chat_completions_url(),
@@ -954,12 +1250,18 @@ impl LlmProvider for OpenAIBaseProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAIBaseProvider, OpenAICompatibleProfile, ToolCallIdMapper, build_image_analysis_body,
-        build_tool_chat_body, chat_completions_url, infer_image_mime_type,
-        normalize_tool_arguments_str, parse_chat_response,
+        OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator, ToolCallIdMapper,
+        build_image_analysis_body, build_tool_chat_body, chat_completions_url,
+        finalize_streaming_tool_calls, finish_streaming_chat_response, infer_image_mime_type,
+        normalize_tool_arguments_str, parse_chat_response, process_chat_sse_event,
     };
-    use crate::llm::{Message, MessageContentPart, ToolCall, ToolCallFunction, ToolDefinition};
+    use crate::llm::{
+        ChatWithToolsRequest, LlmProvider, Message, MessageContentPart, ToolCall, ToolCallFunction,
+        ToolDefinition,
+    };
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn sample_tool() -> ToolDefinition {
         ToolDefinition {
@@ -983,6 +1285,27 @@ mod tests {
 
     fn zai_profile() -> OpenAICompatibleProfile {
         OpenAICompatibleProfile::zai()
+    }
+
+    async fn run_single_response_server(body: &'static str, content_type: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server binds");
+        let addr = listener.local_addr().expect("local addr available");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.expect("read request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        format!("http://{addr}/v1")
     }
 
     #[test]
@@ -1692,6 +2015,166 @@ mod tests {
 
         assert!(body.get("thinking").is_none());
         assert_eq!(body["stream"], json!(false));
+    }
+
+    #[test]
+    fn zai_sse_aggregates_content_reasoning_finish_and_usage() {
+        let mut state = StreamingChatAccumulator {
+            finish_reason: "unknown".to_string(),
+            ..StreamingChatAccumulator::default()
+        };
+
+        process_chat_sse_event(
+            r#"data: {"choices":[{"delta":{"content":"hel","reasoning_content":"think "}}]}"#,
+            &mut state,
+        )
+        .expect("first event parses");
+        process_chat_sse_event(
+            r#"data: {"choices":[{"delta":{"content":"lo","reasoning_content":"again"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3}}}"#,
+            &mut state,
+        )
+        .expect("second event parses");
+        process_chat_sse_event("data: [DONE]", &mut state).expect("done event ignored");
+
+        let response = finish_streaming_chat_response(state).expect("stream finalizes");
+        assert_eq!(response.content.as_deref(), Some("hello"));
+        assert_eq!(response.reasoning_content.as_deref(), Some("think again"));
+        assert_eq!(response.finish_reason, "stop");
+        let usage = response.usage.expect("usage captured");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 4);
+        assert_eq!(usage.total_tokens, 14);
+        assert_eq!(usage.cached_tokens, Some(3));
+    }
+
+    #[test]
+    fn zai_sse_aggregates_fragmented_tool_arguments_and_preserves_id() {
+        let mut state = StreamingChatAccumulator {
+            finish_reason: "unknown".to_string(),
+            ..StreamingChatAccumulator::default()
+        };
+
+        process_chat_sse_event(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-zai-1","type":"function","function":{"name":"search","arguments":"{\"q"}}]}}]}"#,
+            &mut state,
+        )
+        .expect("first tool delta parses");
+        process_chat_sse_event(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\":\"oxi"}}]}}]}"#,
+            &mut state,
+        )
+        .expect("second tool delta parses");
+        process_chat_sse_event(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"de\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("final tool delta parses");
+
+        let response = finish_streaming_chat_response(state).expect("stream finalizes");
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_ne!(
+            response.tool_calls[0].invocation_id().as_str(),
+            "call-zai-1"
+        );
+        assert_eq!(response.tool_calls[0].wire_tool_call_id(), "call-zai-1");
+        assert_eq!(response.tool_calls[0].function.name, "search");
+        assert_eq!(
+            response.tool_calls[0].function.arguments,
+            r#"{"q":"oxide"}"#
+        );
+    }
+
+    #[test]
+    fn zai_sse_empty_response_errors_cleanly() {
+        let err = finish_streaming_chat_response(StreamingChatAccumulator {
+            finish_reason: "unknown".to_string(),
+            ..StreamingChatAccumulator::default()
+        })
+        .expect_err("empty stream should fail");
+
+        assert!(err.to_string().contains("Empty response"));
+    }
+
+    #[test]
+    fn streaming_tool_calls_handle_empty_id_as_uncorrelated() {
+        let tool_calls = finalize_streaming_tool_calls(vec![super::PendingStreamingToolCall {
+            id: Some("".to_string()),
+            name: Some("search".to_string()),
+            arguments: "{}".to_string(),
+        }]);
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(
+            tool_calls[0].wire_tool_call_id(),
+            tool_calls[0].invocation_id().as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn zai_chat_with_tools_uses_sse_transport() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\",\"reasoning_content\":\"reason\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let api_base = run_single_response_server(body, "text/event-stream").await;
+        let provider = OpenAIBaseProvider::new_with_client_and_profile(
+            None,
+            api_base,
+            reqwest::Client::new(),
+            zai_profile(),
+        );
+        let tools = vec![sample_tool()];
+
+        let response = provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &tools,
+                model_id: "glm-4.7",
+                max_tokens: 128,
+                temperature: None,
+                json_mode: false,
+                reasoning_effort: None,
+            })
+            .await
+            .expect("SSE response parses");
+
+        assert_eq!(response.content.as_deref(), Some("hello"));
+        assert_eq!(response.reasoning_content.as_deref(), Some("reason"));
+        assert_eq!(response.finish_reason, "stop");
+        assert_eq!(response.usage.expect("usage").total_tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn zai_native_json_chat_uses_non_streaming_transport() {
+        let body = r#"{"choices":[{"message":{"content":"{\"ok\":true}","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#;
+        let api_base = run_single_response_server(body, "application/json").await;
+        let provider = OpenAIBaseProvider::new_with_client_and_profile(
+            None,
+            api_base,
+            reqwest::Client::new(),
+            zai_profile(),
+        );
+
+        let response = provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &[],
+                model_id: "glm-4.7",
+                max_tokens: 128,
+                temperature: None,
+                json_mode: true,
+                reasoning_effort: None,
+            })
+            .await
+            .expect("JSON response parses");
+
+        assert_eq!(response.content.as_deref(), Some(r#"{"ok":true}"#));
+        assert_eq!(response.finish_reason, "stop");
+        assert_eq!(response.usage.expect("usage").total_tokens, 3);
     }
 
     #[test]
