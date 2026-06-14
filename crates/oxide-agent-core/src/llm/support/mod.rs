@@ -1,6 +1,4 @@
 pub(crate) mod backoff;
-#[cfg(feature = "llm-mistral")]
-pub(crate) mod common;
 pub(crate) mod history;
 #[cfg(any(
     feature = "llm-chatgpt",
@@ -11,5 +9,3 @@ pub(crate) mod history;
     feature = "llm-openrouter"
 ))]
 pub mod http;
-#[cfg(feature = "llm-mistral")]
-pub(crate) mod openai_compat;

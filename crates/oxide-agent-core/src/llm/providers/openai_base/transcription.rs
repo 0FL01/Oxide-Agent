@@ -5,8 +5,8 @@
 //! Profile parameters come from [`AudioTranscriptionProfile`].
 
 use crate::llm::LlmError;
-use crate::llm::support::http::parse_retry_after;
 use crate::llm::providers::openai_base::profile::AudioTranscriptionProfile;
+use crate::llm::support::http::parse_retry_after;
 use reqwest::{
     Client as HttpClient, StatusCode,
     multipart::{Form, Part},
@@ -132,7 +132,11 @@ where
 }
 
 /// Calculate retry delay based on error type and attempt number.
-fn get_retry_delay(error: &LlmError, attempt: usize, profile: &AudioTranscriptionProfile) -> Option<Duration> {
+fn get_retry_delay(
+    error: &LlmError,
+    attempt: usize,
+    profile: &AudioTranscriptionProfile,
+) -> Option<Duration> {
     match error {
         LlmError::RateLimit { wait_secs, .. } => {
             let delay = if let Some(secs) = wait_secs {
@@ -298,9 +302,18 @@ mod tests {
             initial_backoff_ms: 3000,
         };
         let err = LlmError::ApiError("502 Bad Gateway".to_string());
-        assert_eq!(get_retry_delay(&err, 1, &profile), Some(Duration::from_millis(3000)));
-        assert_eq!(get_retry_delay(&err, 2, &profile), Some(Duration::from_millis(6000)));
-        assert_eq!(get_retry_delay(&err, 3, &profile), Some(Duration::from_millis(12000)));
+        assert_eq!(
+            get_retry_delay(&err, 1, &profile),
+            Some(Duration::from_millis(3000))
+        );
+        assert_eq!(
+            get_retry_delay(&err, 2, &profile),
+            Some(Duration::from_millis(6000))
+        );
+        assert_eq!(
+            get_retry_delay(&err, 3, &profile),
+            Some(Duration::from_millis(12000))
+        );
     }
 
     #[test]
@@ -351,8 +364,14 @@ mod tests {
             initial_backoff_ms: 3000,
         };
         let err = LlmError::ApiError("HTTP 429 Too Many Requests".to_string());
-        assert_eq!(get_retry_delay(&err, 1, &profile), Some(Duration::from_millis(3000)));
-        assert_eq!(get_retry_delay(&err, 2, &profile), Some(Duration::from_millis(6000)));
+        assert_eq!(
+            get_retry_delay(&err, 1, &profile),
+            Some(Duration::from_millis(3000))
+        );
+        assert_eq!(
+            get_retry_delay(&err, 2, &profile),
+            Some(Duration::from_millis(6000))
+        );
     }
 
     #[test]
@@ -430,8 +449,17 @@ mod tests {
             initial_backoff_ms: 1000,
         };
         let err = LlmError::ApiError("502 Bad Gateway".to_string());
-        assert_eq!(get_retry_delay(&err, 1, &profile), Some(Duration::from_millis(1000)));
-        assert_eq!(get_retry_delay(&err, 2, &profile), Some(Duration::from_millis(2000)));
-        assert_eq!(get_retry_delay(&err, 3, &profile), Some(Duration::from_millis(4000)));
+        assert_eq!(
+            get_retry_delay(&err, 1, &profile),
+            Some(Duration::from_millis(1000))
+        );
+        assert_eq!(
+            get_retry_delay(&err, 2, &profile),
+            Some(Duration::from_millis(2000))
+        );
+        assert_eq!(
+            get_retry_delay(&err, 3, &profile),
+            Some(Duration::from_millis(4000))
+        );
     }
 }

@@ -25,7 +25,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.17"
 regex = "1.10"
-async-openai = { version = "0.40.2", default-features = false, features = ["rustls", "chat-completion", "audio", "image"], optional = true }
 reqwest = { version = "0.13.4", features = ["cookies", "form", "json", "multipart", "rustls", "stream"], default-features = false, optional = true }
 base64 = "0.22.1"
 async-trait = "0.1.89"
@@ -238,7 +237,7 @@ storage-sqlx = ["dep:sqlx-core", "dep:sqlx-postgres"]
 
 # LLM providers
 llm-chatgpt = ["dep:reqwest"]
-llm-mistral = ["dep:async-openai", "dep:reqwest", "llm-openai-base"]
+llm-mistral = ["dep:reqwest", "llm-openai-base"]
 llm-minimax = ["dep:claudius"]
 llm-zai = ["dep:zai-rs", "dep:reqwest"]
 llm-openai-base = ["dep:reqwest"]

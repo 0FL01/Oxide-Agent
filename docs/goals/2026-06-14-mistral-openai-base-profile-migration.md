@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 16:30
+Last updated: 2026-06-14 17:15
 
 ## Objective
 
@@ -190,8 +190,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 8, 10 -- "Remove async-openai"
   - Acceptance: `Cargo.toml` has no `async-openai` line. `llm-mistral` feature no longer references it. `support/openai_compat.rs` and `support/common.rs` deleted. `support/mod.rs` no longer gates them. `mistral/client.rs` deleted.
   - Evidence required: `cargo tree -i async-openai -p oxide-agent-core --no-default-features --features profile-full` returns "not found"
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo tree -i async-openai` returns `error: package ID specification 'async-openai' did not match any packages`. `async-openai` dep removed from Cargo.toml L28. `llm-mistral` feature updated to `["dep:reqwest", "llm-openai-base"]`. `support/openai_compat.rs`, `support/common.rs`, `mistral/client.rs` deleted. `support/mod.rs` rewritten without `common`/`openai_compat` modules. `mistral/mod.rs` rewritten: removed `Client<OpenAIConfig>` field, removed `async_openai` import, removed `openai_compat` import, `complete_internal_text` now uses `chat::build_chat_completion_body()` + `chat::send_chat_request()` (raw HTTP). Tracing filter in `telegram-bot/src/main.rs` updated to remove `async_openai=warn`. `cargo tree -i async-openai` confirms not found. 55 openai_base + 42 mistral tests pass. Clippy + fmt clean. Embedded profile compiles.
 
 - G13: Old Mistral implementation files deleted
   - Source: plan section 12 -- "Delete Mistral implementation files"
@@ -255,8 +255,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: AGENTS.md implementation principles
   - Acceptance: `Cargo.toml` has fewer dependencies (removed `async-openai`), no new deps added.
   - Evidence required: `git diff Cargo.toml` review
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `async-openai` removed from Cargo.toml. No new dependencies added. `llm-mistral` feature now `["dep:reqwest", "llm-openai-base"]` (was `["dep:async-openai", "dep:reqwest", "llm-openai-base"]`). Net reduction of 1 optional dependency.
 
 ### Validation requirements
 
@@ -574,6 +574,27 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G11 verified
   - Next: Checkpoint 8 -- Remove async-openai
+
+- 2026-06-14 17:15: Checkpoint 8 -- Remove async-openai
+  - Changed:
+    - `Cargo.toml`: removed `async-openai` dep (L28), updated `llm-mistral` feature to `["dep:reqwest", "llm-openai-base"]` (L241)
+    - Deleted `support/openai_compat.rs` (37L, async-openai chat completion wrapper)
+    - Deleted `support/common.rs` (71L, async-openai message building helpers)
+    - Deleted `mistral/client.rs` (18L, async-openai + reqwest client factories)
+    - `support/mod.rs`: rewrote to remove `common` and `openai_compat` module declarations and their `#[cfg(feature = "llm-mistral")]` gates
+    - `mistral/mod.rs`: removed `Client<OpenAIConfig>` field, removed `async_openai`/`openai_compat` imports, `complete_internal_text` now uses `chat::build_chat_completion_body()` + `chat::send_chat_request()` (raw HTTP)
+    - `telegram-bot/src/main.rs`: removed `async_openai=warn` from tracing filter
+  - Evidence:
+    - `cargo tree -i async-openai` returns "did not match any packages"
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 55 passed
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 42 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G12 verified, Q7 verified
+  - Next: Checkpoint 9 -- Delete old Mistral provider implementation files
 
 ## Risks and Blockers
 

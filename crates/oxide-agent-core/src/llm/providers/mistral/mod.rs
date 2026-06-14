@@ -4,7 +4,6 @@
 //!
 //! # Structure
 //! - `types`: Constants and type definitions
-//! - `client`: HTTP client creation utilities
 //! - `messages`: Message preparation for API requests
 //! - `parsing`: Response parsing utilities
 //! - `chat`: Chat completion and tool calling
@@ -13,17 +12,12 @@
 //! - `id_mapper`: Tool call ID mapping for API compatibility
 //! - `tests`: Unit tests
 
-use crate::config::MISTRAL_CHAT_TEMPERATURE;
-use crate::llm::{
-    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, support::openai_compat,
-};
-use async_openai::{Client, config::OpenAIConfig};
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
 use std::sync::{Arc, Mutex};
 
 mod chat;
-mod client;
 mod id_mapper;
 mod image;
 mod messages;
@@ -41,8 +35,11 @@ pub(crate) use module::MistralProviderModule;
 ///
 /// Uses bidirectional mapping between original UUID-based tool call IDs
 /// and Mistral-compatible 9-character alphanumeric IDs.
+///
+/// NOTE: This struct is currently dead code — `MistralProviderModule` now builds
+/// `OpenAIBaseProvider` with a Mistral profile. Kept for e2e test compatibility
+/// until removed in a subsequent cleanup.
 pub struct MistralProvider {
-    client: Client<OpenAIConfig>,
     http_client: HttpClient,
     api_key: String,
     /// Maps between original and Mistral-compatible tool call IDs
@@ -53,10 +50,8 @@ impl MistralProvider {
     /// Create a new Mistral provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
-        let http_client = client::create_http_client();
-        let openai_client = client::create_openai_client(&api_key);
+        let http_client = crate::llm::support::http::create_http_client();
         Self {
-            client: openai_client,
             http_client,
             api_key,
             id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
@@ -69,9 +64,7 @@ impl MistralProvider {
     /// significantly reducing latency for sequential requests.
     #[must_use]
     pub fn new_with_client(api_key: String, http_client: HttpClient) -> Self {
-        let openai_client = client::create_openai_client(&api_key);
         Self {
-            client: openai_client,
             http_client,
             api_key,
             id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
@@ -99,30 +92,17 @@ impl LlmProvider for MistralProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        if chat::is_reasoning_model(model_id) {
-            let body = chat::build_chat_completion_body(
-                system_prompt,
-                history,
-                user_message,
-                model_id,
-                max_tokens,
-            );
-            let response = chat::send_chat_request(&self.http_client, &self.api_key, body).await?;
-            return response
-                .content
-                .ok_or_else(|| LlmError::ApiError("Empty response".to_string()));
-        }
-
-        openai_compat::chat_completion(
-            &self.client,
+        let body = chat::build_chat_completion_body(
             system_prompt,
             history,
             user_message,
             model_id,
             max_tokens,
-            MISTRAL_CHAT_TEMPERATURE,
-        )
-        .await
+        );
+        let response = chat::send_chat_request(&self.http_client, &self.api_key, body).await?;
+        response
+            .content
+            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
     }
 
     async fn transcribe_audio(
