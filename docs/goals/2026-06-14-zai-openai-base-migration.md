@@ -1,11 +1,11 @@
 # Goal: Migrate ZAI to OpenAI Base Profile
 
 Date started: 2026-06-14
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 21:18
+Last updated: 2026-06-14 21:31
 
 ## Objective
 
@@ -159,8 +159,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:119`-`:121`
   - Acceptance: generic/mistral profiles do not send `thinking`, do not force ZAI streaming policy, and keep their existing JSON/tool behavior.
   - Evidence required: existing openai_base generic and mistral tests pass plus focused negative tests for `thinking` and streaming flags.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 body tests verify non-ZAI generic tool bodies do not receive `thinking` and retain `stream: false`; focused openai_base test suite passed on 2026-06-14 20:16. Full generic/mistral regression and final lint remain pending.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 body tests verify non-ZAI generic tool bodies do not receive `thinking` and retain `stream: false`; final profile-full OpenAI Base regression passed on 2026-06-14 21:31 with `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib openai_base` (86 passed, 0 failed), covering generic, Mistral, and ZAI profile/body/parser behavior. Workspace clippy also passed with `cargo clippy --workspace --all-targets -- -D warnings`.
 
 - Q3: No legacy ZAI API key compatibility branch
   - Source: `docs/prd/zai-drop.md:96`
@@ -201,8 +201,8 @@ Out of scope:
   - Source: repo `AGENTS.md` scale/implementation bias
   - Acceptance: no broad refactor unrelated to ZAI migration; code changes are localized to provider/profile/config/docs/tests required by audit items.
   - Evidence required: final `git diff --stat` and changed-file review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Final changed-file review on 2026-06-14 21:31 used `git diff --stat 10a54b28..HEAD` and `git diff --name-only 10a54b28..HEAD`: changes are localized to OpenAI Base profile/transport/config, removal of dedicated ZAI provider files, provider registry/capability snapshots, docs/config examples, and web E2E ZAI setup/mock naming. The goal-specific cumulative diff is deletion-heavy (`43 files changed, 1891 insertions(+), 2373 deletions(-)`) and no new dependency/service/abstraction files were added.
 
 ### Validation requirements
 
@@ -217,29 +217,29 @@ Out of scope:
   - Source: repo validation guidance
   - Acceptance: after relevant Rust code checkpoints, focused `cargo test -p oxide-agent-core --no-default-features --features profile-full ...` or narrower feature tests pass.
   - Evidence required: command output per checkpoint recorded in Progress Log.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Checkpoint 4 passed `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run`, `cargo fmt --all -- --check`, and `git diff --check` on 2026-06-14 20:47. Checkpoint 5 passed `cargo check -p oxide-agent-core --no-default-features --features profile-full`, modular registry snapshot tests for `profile-full` and `all-features`, old ZAI route rejection under `profile-full`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 21:18. Final broader validation remains pending.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Checkpoint 4 passed `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run`, `cargo fmt --all -- --check`, and `git diff --check` on 2026-06-14 20:47. Checkpoint 5 passed `cargo check -p oxide-agent-core --no-default-features --features profile-full`, modular registry snapshot tests for `profile-full` and `all-features`, old ZAI route rejection under `profile-full`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 21:18. Final Checkpoint 6 validation passed `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib openai_base` (86 passed), `cargo test -p oxide-agent-core --no-default-features --features profile-full --test rate_limit` (11 passed), and `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` (1 passed).
 
 - V3: Final formatting and lint gates pass
   - Source: `AGENTS.md:146`
   - Acceptance: `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` pass.
   - Evidence required: command output recorded in Final Verification.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo fmt --all -- --check` passed with no output on 2026-06-14 21:31. `cargo clippy --workspace --all-targets -- -D warnings` passed on 2026-06-14 21:31.
 
 - V4: Final profile/full build check passes
   - Source: `docs/prd/zai-drop.md:134`, `AGENTS.md:136`
   - Acceptance: `cargo check --workspace --no-default-features --features profile-full` passes.
   - Evidence required: command output recorded in Final Verification.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo check --workspace --no-default-features --features profile-full` passed on 2026-06-14 21:31.
 
 - V5: Live `glm-*` validation is attempted or precisely blocked
   - Source: `docs/prd/zai-drop.md:134`
   - Acceptance: run a real `glm-*` request through `openai-base:zai` if credentials are available; if not available, record exact missing env/secret and the smallest external action needed.
   - Evidence required: command/log of successful live request or blocker note with missing variable and audit IDs affected.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Live validation is precisely blocked in this process environment because `OPENAI_BASE_PROVIDERS__1__API_KEY_present=false`, `OPENAI_BASE_PROVIDERS__1__NAME=<unset>`, `OPENAI_BASE_PROVIDERS__1__API_BASE_is_zai=false`, and `OPENAI_BASE_PROVIDERS__1__PROFILE=<unset>` on 2026-06-14 21:31. Smallest external action: provide `OPENAI_BASE_PROVIDERS__1__NAME=zai`, `OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4`, `OPENAI_BASE_PROVIDERS__1__API_KEY=<secret>`, `OPENAI_BASE_PROVIDERS__1__PROFILE=zai`, set `RUN_LLM_E2E_CHECKS=1`, then run `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --test e2e live_zai_audit_tests -- --ignored`.
 
 ### Non-goals and exclusions
 
@@ -386,27 +386,41 @@ Out of scope:
   - Audit IDs updated: G8 verified; G10 verified; Q1 verified; Q3 verified; Q4 verified; Q6 verified; Q7 verified; N1 verified; N2 verified; N3 verified; V2 in_progress.
   - Next: review diff, commit Checkpoint 5, then run Checkpoint 6 final validation/audit including workspace clippy/check and V5 live-test attempt/blocker.
 
+- 2026-06-14 21:31: Checkpoint 6 completed -- final validation and audit
+  - Changed: updated the Completion Audit and Final Verification with final command evidence; no production code changes in this checkpoint.
+  - Evidence: final profile-full OpenAI Base tests, rate-limit tests, modular registry snapshot tests, workspace profile-full check, workspace clippy, formatting, cleanup greps, changed-file review, and live ZAI credential availability check all completed.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib openai_base`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --test rate_limit`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy --workspace --all-targets -- -D warnings`; focused `rg` cleanup checks; `git diff --stat 10a54b28..HEAD`; `git diff --name-only 10a54b28..HEAD`; `git diff --check`.
+  - Audit IDs updated: Q2 verified; Q8 verified; V2 verified; V3 verified; V4 verified; V5 verified with a precise live-test credential blocker and rerun command.
+  - Next: commit Checkpoint 6 goal-doc final audit and close the OpenCode goal.
+
 ## Risks and Blockers
 
 - Live `glm-*` validation may require an API key not present locally.
-  - Impact: V5 may be blocked even when local implementation and hermetic tests pass.
-  - Evidence: not yet checked; will inspect env/config without exposing secrets before final validation.
-  - Mitigation or requested decision: if no key is available, document missing `OPENAI_BASE_PROVIDERS__N__API_KEY` and the exact command to rerun.
-  - Audit IDs affected: V5 only.
+  - Impact: live provider behavior could not be exercised from this process, but local implementation and hermetic tests are complete.
+  - Evidence: `OPENAI_BASE_PROVIDERS__1__API_KEY_present=false`, `OPENAI_BASE_PROVIDERS__1__NAME=<unset>`, `OPENAI_BASE_PROVIDERS__1__API_BASE_is_zai=false`, and `OPENAI_BASE_PROVIDERS__1__PROFILE=<unset>` on 2026-06-14 21:31.
+  - Mitigation or requested decision: provide the OpenAI Base ZAI env vars listed in V5 and rerun the ignored live ZAI E2E command.
+  - Audit IDs affected: none remaining; V5 acceptance is satisfied by the precise credential blocker.
 
 - Large migration touches provider registration, config validation, snapshots, and docs.
-  - Impact: broad compile/test failures are likely if deletion happens before behavior is ported.
-  - Evidence: Checkpoint 5 removed `llm-zai`, `zai-rs`, provider registration, and snapshots; focused profile-full core validation now passes.
-  - Mitigation or requested decision: finish final broad validation in Checkpoint 6 before closing the goal.
-  - Audit IDs affected: V2-V5, Q2, Q8.
+  - Impact: resolved by checkpointed port-before-delete sequencing and final validation.
+  - Evidence: final Checkpoint 6 validation passed profile-full OpenAI Base/rate-limit/snapshot tests, workspace profile-full check, workspace clippy, formatting, and cleanup greps.
+  - Mitigation or requested decision: none.
+  - Audit IDs affected: none remaining.
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
+- Completion Audit result: all G1-G11, Q1-Q8, V1-V5, and N1-N3 are verified. V5 is verified by the documented absence of required live ZAI OpenAI Base credentials and the exact rerun command, as allowed by the Validation Contract.
 - Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+  - `cargo fmt --all -- --check` -- passed.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib openai_base` -- passed, 86 tests.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --test rate_limit` -- passed, 11 tests.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` -- passed, 1 test.
+  - `cargo check --workspace --no-default-features --features profile-full` -- passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` -- passed.
+  - `rg "llm-zai|zai-rs|llm-provider/zai|ZAI_FALLBACK_TO_MEDIA|zai_rs|ZAI_API_KEY|ZAI_API_BASE" crates config profiles README.md .env.example Cargo.lock .github/workflows/ci-cd.yml docker-compose.yml docker-compose.telegram.yml docker-compose.web.yml docker || true` -- no matches.
+  - `rg 'AGENT_MODEL_PROVIDER="?zai|SUB_AGENT_MODEL_PROVIDER="?zai|SequencedZaiProvider|wait_for_zai_calls|zai_provider' README.md .env.example .github/workflows/ci-cd.yml crates/oxide-agent-transport-web/tests crates/oxide-agent-core/src crates/oxide-agent-core/tests || true` -- only intentional test names `route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled` and `openai_base_builds_zai_provider_instance` matched.
+  - `git diff --check` -- passed.
+- Artifacts inspected: goal-specific cumulative `git diff --stat 10a54b28..HEAD` / `git diff --name-only 10a54b28..HEAD`; active legacy-reference greps; profile-full OpenAI Base tests; rate-limit tests; modular registry snapshot tests; process env presence check for `OPENAI_BASE_PROVIDERS__1__*` without printing secrets.
+- Remaining gaps: no local implementation, cleanup, test, or documentation gaps remain. Live ZAI network validation was not run because this process has no configured `OPENAI_BASE_PROVIDERS__1__API_KEY`/ZAI OpenAI Base endpoint env.
+- User-accepted exceptions: none.
+- Final status: complete after Checkpoint 6 final-audit commit.
