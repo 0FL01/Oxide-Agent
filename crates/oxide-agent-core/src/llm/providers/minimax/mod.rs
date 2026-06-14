@@ -1,12 +1,11 @@
-//! MiniMax AI provider implementation using claudius SDK
+//! MiniMax AI provider implementation using reqwest + shared Anthropic Messages helpers.
 //!
 //! Uses the Anthropic-compatible API endpoint: https://api.minimax.io/anthropic
 
+use crate::llm::providers::anthropic_messages;
+
 mod client;
-mod messages;
 pub(crate) mod module;
-mod response;
-mod tools;
 
 pub use client::MiniMaxProvider;
 pub(crate) use module::MiniMaxProviderModule;

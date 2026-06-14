@@ -29,7 +29,7 @@ impl AnthropicProfile {
     }
 
     /// Profile for MiniMax provider.
-    #[allow(dead_code)] // used by minimax provider in CP3
+    #[allow(dead_code)] // used when llm-minimax feature is active
     pub const fn minimax() -> Self {
         Self {
             label: "MiniMax",

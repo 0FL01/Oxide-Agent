@@ -9,6 +9,7 @@ use crate::llm::LlmProvider;
 
 #[cfg(any(
     feature = "llm-chatgpt",
+    feature = "llm-minimax",
     feature = "llm-mistral",
     feature = "llm-openai-base",
     feature = "llm-opencode-go",
@@ -20,6 +21,7 @@ use crate::llm::support;
 pub(crate) struct LlmProviderBuildContext {
     #[cfg(any(
         feature = "llm-chatgpt",
+        feature = "llm-minimax",
         feature = "llm-mistral",
         feature = "llm-openai-base",
         feature = "llm-opencode-go",
@@ -33,6 +35,7 @@ impl LlmProviderBuildContext {
         Self {
             #[cfg(any(
                 feature = "llm-chatgpt",
+                feature = "llm-minimax",
                 feature = "llm-mistral",
                 feature = "llm-openai-base",
                 feature = "llm-opencode-go",

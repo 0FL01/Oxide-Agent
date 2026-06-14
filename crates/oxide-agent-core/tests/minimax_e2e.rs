@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use dotenvy::dotenv;
+use oxide_agent_core::llm::http::create_http_client;
 use oxide_agent_core::llm::providers::MiniMaxProvider;
 use oxide_agent_core::llm::{ChatWithToolsRequest, LlmProvider, Message, ToolDefinition};
 use serde_json::json;
@@ -66,7 +67,7 @@ async fn test_minimax_simple_chat() -> Result<()> {
     };
 
     info!("=== Test: Simple Chat ===");
-    let provider = MiniMaxProvider::new(api_key.clone());
+    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
 
     let messages = vec![Message::user("Say 'hello' in exactly one word.")];
 
@@ -126,7 +127,7 @@ async fn test_minimax_single_tool_call() -> Result<()> {
     };
 
     info!("=== Test: Single Tool Call ===");
-    let provider = MiniMaxProvider::new(api_key.clone());
+    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
 
     let tools = vec![ToolDefinition {
         name: "get_weather".to_string(),
@@ -209,7 +210,7 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
     };
 
     info!("=== Test: Tool Call WITH Result (Multi-turn) ===");
-    let provider = MiniMaxProvider::new(api_key.clone());
+    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
 
     let tools = vec![ToolDefinition {
         name: "get_weather".to_string(),
@@ -334,7 +335,7 @@ async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
     };
 
     info!("=== Test: Multiple Parallel Tool Calls ===");
-    let provider = MiniMaxProvider::new(api_key.clone());
+    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
 
     let tools = vec![
         ToolDefinition {
@@ -420,7 +421,7 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
     };
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
-    let provider = MiniMaxProvider::new(api_key.clone());
+    let provider = MiniMaxProvider::new(api_key.clone(), create_http_client());
     let tools = weather_and_time_tools();
 
     // First turn: get parallel tool calls

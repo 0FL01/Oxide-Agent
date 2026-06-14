@@ -23,11 +23,16 @@ impl LlmProviderModule for MiniMaxProviderModule {
     fn build_provider(
         &self,
         settings: &AgentSettings,
-        _ctx: &LlmProviderBuildContext,
+        ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
         settings
             .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
-            .map(|api_key| Arc::new(super::MiniMaxProvider::new(api_key)) as Arc<dyn LlmProvider>)
+            .map(|api_key| {
+                Arc::new(super::MiniMaxProvider::new(
+                    api_key,
+                    ctx.http_client.clone(),
+                )) as Arc<dyn LlmProvider>
+            })
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
