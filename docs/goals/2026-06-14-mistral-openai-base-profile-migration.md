@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 13:30
+Last updated: 2026-06-14 14:10
 
 ## Objective
 
@@ -155,8 +155,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 7 -- "Transfer response parser"
   - Acceptance: `ResponseContentPolicy::StringOrChunkArrayWithReasoning` handles content as both string and array. Extracts `thinking`/`reasoning` chunks recursively. Falls back to `reasoning_content` top-level field. Parses `usage.prompt_tokens_details.cached_tokens`. Reverse-maps tool call IDs. `ResponseContentPolicy::StringOnly` preserves current generic behavior.
   - Evidence required: ported tests for reasoning chunks, content array, usage parsing, tool call reverse mapping pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `extract_text_segments`, `join_segments`, `extract_message_content`, `extract_reasoning_content` added to `openai_base/mod.rs`. `parse_tool_calls_with_mapper()` implements 3-case reverse mapping (empty->uncorrelated, known->original, unknown->provider-correlated). `parse_chat_response()` now accepts `profile: &OpenAICompatibleProfile, id_mapper: &ToolCallIdMapper` and dispatches on `ResponseContentPolicy`. 6 new tests pass: `mistral_parse_content_array_with_reasoning_chunks`, `mistral_parse_top_level_reasoning_content_fallback`, `mistral_parse_tool_calls_with_known_mapping`, `mistral_parse_unknown_tool_call_id_becomes_provider_correlated`, `mistral_parse_empty_tool_call_id_becomes_uncorrelated`, `mistral_parse_cached_tokens_in_usage`, `generic_parse_preserves_string_only_behavior`. 35 openai_base + 36 mistral tests pass. Clippy + fmt clean.
 
 - G8: Mistral request tweaks implemented as profile data
   - Source: plan section 5 -- "Transfer tool request tweaks"
@@ -515,6 +515,20 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G6 verified
   - Next: Checkpoint 4 -- response parser policy
+
+- 2026-06-14 14:10: Checkpoint 4 -- Response parser policy
+  - Changed:
+    - `openai_base/mod.rs`: added content array parsing functions: `extract_text_segments()` (recursive, handles strings/arrays/objects with text/thinking/content/reasoning keys), `join_segments()`, `extract_message_content()` (string -> content only, array -> content+reasoning by type discrimination), `extract_reasoning_content()` (top-level fallback). Added `parse_tool_calls_with_mapper()` with 3-case reverse mapping: empty ID -> `inbound_uncorrelated_tool_call`, known mapping -> `inbound_tool_call` (restores original ID as invocation_id, mistral ID as provider_tool_call_id), unknown -> `inbound_provider_tool_call` (provider-correlated). Modified `parse_chat_response()` to accept `profile: &OpenAICompatibleProfile` + `id_mapper: &ToolCallIdMapper` and dispatch on `ResponseContentPolicy`: `StringOnly` preserves existing string-only behavior, `StringOrChunkArrayWithReasoning` uses `extract_message_content()` + `parse_tool_calls_with_mapper()`. Updated `chat_with_tools()` to re-lock mapper after send_json_request for response parsing. Removed `#[allow(dead_code)]` from `mistral_profile()`. Added 7 new tests: `mistral_parse_content_array_with_reasoning_chunks`, `mistral_parse_top_level_reasoning_content_fallback`, `mistral_parse_tool_calls_with_known_mapping`, `mistral_parse_unknown_tool_call_id_becomes_provider_correlated`, `mistral_parse_empty_tool_call_id_becomes_uncorrelated`, `mistral_parse_cached_tokens_in_usage`, `generic_parse_preserves_string_only_behavior`.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 35 passed (28 existing + 7 new)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 36 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G7 verified
+  - Next: Checkpoint 5 -- request tweaks (temperatures, parallel_tool_calls, reasoning_effort, JSON mode)
 
 ## Risks and Blockers
 

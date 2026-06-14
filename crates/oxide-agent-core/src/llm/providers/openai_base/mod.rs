@@ -9,7 +9,7 @@ pub(crate) use tool_ids::ToolCallIdMapper;
 use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
-use crate::llm::providers::openai_base::profile::MessageLayoutPolicy;
+use crate::llm::providers::openai_base::profile::{MessageLayoutPolicy, ResponseContentPolicy};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{
@@ -448,6 +448,110 @@ fn normalize_tool_arguments_str(raw: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Content array parsing (used by Mistral-style response content policy)
+// ---------------------------------------------------------------------------
+
+/// Extract text segments from a JSON value recursively.
+///
+/// Handles strings, arrays, and objects with `text`/`thinking`/`content`/`reasoning` keys.
+fn extract_text_segments(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                vec![trimmed.to_string()]
+            }
+        }
+        Value::Array(items) => items.iter().flat_map(extract_text_segments).collect(),
+        Value::Object(map) => {
+            if let Some(text) = map.get("text") {
+                let extracted = extract_text_segments(text);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+
+            ["thinking", "content", "reasoning"]
+                .into_iter()
+                .filter_map(|key| map.get(key))
+                .flat_map(extract_text_segments)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Join non-empty trimmed text segments with double newlines.
+fn join_segments(segments: Vec<String>) -> Option<String> {
+    let segments: Vec<_> = segments
+        .into_iter()
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments.join("\n\n"))
+    }
+}
+
+/// Extract message content and reasoning from response content value.
+///
+/// Handles both simple string content and array content with
+/// `thinking`/`reasoning`/`text` chunks.
+fn extract_message_content(content: Option<&Value>) -> (Option<String>, Option<String>) {
+    let Some(content) = content else {
+        return (None, None);
+    };
+
+    match content {
+        Value::String(text) => (join_segments(vec![text.to_string()]), None),
+        Value::Array(items) => {
+            let mut content_segments = Vec::new();
+            let mut reasoning_segments = Vec::new();
+
+            for item in items {
+                let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+                    content_segments.extend(extract_text_segments(item));
+                    continue;
+                };
+
+                match item_type {
+                    "thinking" | "reasoning" => {
+                        reasoning_segments.extend(extract_text_segments(item));
+                    }
+                    "text" => {
+                        if let Some(text) = item.get("text") {
+                            content_segments.extend(extract_text_segments(text));
+                        }
+                    }
+                    _ => content_segments.extend(extract_text_segments(item)),
+                }
+            }
+
+            (
+                join_segments(content_segments),
+                join_segments(reasoning_segments),
+            )
+        }
+        _ => (join_segments(extract_text_segments(content)), None),
+    }
+}
+
+/// Fall back to top-level `reasoning_content` field on the message object.
+fn extract_reasoning_content(message: &Value) -> Option<String> {
+    join_segments(extract_text_segments(message.get("reasoning_content")?))
+}
+
+// ---------------------------------------------------------------------------
+// Tool call parsing
+// ---------------------------------------------------------------------------
+
+/// Generic tool-call parser (no mapper).
 fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
     let Some(array) = value.as_array() else {
         return Err(LlmError::JsonError(
@@ -494,7 +598,61 @@ fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
     Ok(tool_calls)
 }
 
-fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
+/// Mistral-style tool-call parser with bidirectional ID reverse mapping.
+///
+/// Three cases:
+/// - Empty/whitespace ID -> `inbound_uncorrelated_tool_call`
+/// - Known mapping in mapper -> `inbound_tool_call` (restores original ID)
+/// - Unknown mapping -> `inbound_provider_tool_call` (provider-correlated)
+fn parse_tool_calls_with_mapper(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<ToolCall> {
+    let Some(tool_calls_array) = message.get("tool_calls") else {
+        return Vec::new();
+    };
+    let Some(array) = tool_calls_array.as_array() else {
+        return Vec::new();
+    };
+
+    array
+        .iter()
+        .filter_map(|tc| {
+            let provider_id = tc.get("id")?.as_str()?.to_string();
+            let original_id = id_mapper.to_original(&provider_id);
+            let has_known_mapping = id_mapper.has_mistral_id(&provider_id);
+
+            let function = tc.get("function")?;
+            let name = function.get("name")?.as_str()?.to_string();
+            let arguments = function
+                .get("arguments")
+                .map(normalize_tool_arguments)
+                .unwrap_or_else(|| "{}".to_string());
+
+            Some(if provider_id.trim().is_empty() {
+                CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments)
+            } else if has_known_mapping {
+                CHAT_LIKE_TOOL_PROFILE.inbound_tool_call(
+                    original_id,
+                    Some(&provider_id),
+                    None,
+                    name,
+                    arguments,
+                )
+            } else {
+                CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
+                    &provider_id,
+                    None,
+                    name,
+                    arguments,
+                )
+            })
+        })
+        .collect()
+}
+
+fn parse_chat_response(
+    response: Value,
+    profile: &OpenAICompatibleProfile,
+    id_mapper: &ToolCallIdMapper,
+) -> Result<ChatResponse, LlmError> {
     let choice = response
         .get("choices")
         .and_then(|choices| choices.get(0))
@@ -507,23 +665,35 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
         LlmError::ApiError("Missing message in OpenAI-compatible provider response".to_string())
     })?;
 
-    let content = message
-        .get("content")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let reasoning_content = message
-        .get("reasoning_content")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let tool_calls = match message.get("tool_calls") {
-        Some(value) if value.is_null() => Vec::new(),
-        Some(value) if value.is_array() => parse_tool_calls(value)?,
-        Some(_) => {
-            return Err(LlmError::JsonError(
-                "Invalid tool_calls format from OpenAI-compatible provider".to_string(),
-            ));
+    let (content, reasoning_content, tool_calls) = match profile.response_content {
+        ResponseContentPolicy::StringOnly => {
+            let content = message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let reasoning_content = message
+                .get("reasoning_content")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let tool_calls = match message.get("tool_calls") {
+                Some(value) if value.is_null() => Vec::new(),
+                Some(value) if value.is_array() => parse_tool_calls(value)?,
+                Some(_) => {
+                    return Err(LlmError::JsonError(
+                        "Invalid tool_calls format from OpenAI-compatible provider".to_string(),
+                    ));
+                }
+                None => Vec::new(),
+            };
+            (content, reasoning_content, tool_calls)
         }
-        None => Vec::new(),
+        ResponseContentPolicy::StringOrChunkArrayWithReasoning => {
+            let (content, extracted_reasoning) = extract_message_content(message.get("content"));
+            let reasoning_content =
+                extracted_reasoning.or_else(|| extract_reasoning_content(message));
+            let tool_calls = parse_tool_calls_with_mapper(message, id_mapper);
+            (content, reasoning_content, tool_calls)
+        }
     };
 
     if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
@@ -668,7 +838,8 @@ impl LlmProvider for OpenAIBaseProvider {
             &[],
         )
         .await?;
-        parse_chat_response(res_json)
+        let mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
+        parse_chat_response(res_json, &self.profile, &mapper)
     }
 }
 
@@ -698,7 +869,6 @@ mod tests {
         OpenAICompatibleProfile::generic()
     }
 
-    #[allow(dead_code)] // used in checkpoint 5+ tests
     fn mistral_profile() -> OpenAICompatibleProfile {
         OpenAICompatibleProfile::mistral()
     }
@@ -853,7 +1023,8 @@ mod tests {
             }
         });
 
-        let parsed = parse_chat_response(response).expect("response parses");
+        let parsed = parse_chat_response(response, &generic_profile(), &ToolCallIdMapper::new())
+            .expect("response parses");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_1");
         assert_eq!(parsed.usage.expect("usage").cached_tokens, Some(7));
@@ -978,5 +1149,197 @@ mod tests {
         let messages = prepare_structured_messages_mistral("sys", &history, &mut mapper);
         let tool_msg = &messages[1];
         assert_eq!(tool_msg["tool_call_id"], json!(mistral_id));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mistral response content policy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mistral_parse_content_array_with_reasoning_chunks() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "thinking", "content": "Let me think about this"},
+                        {"type": "text", "text": "Hello world"}
+                    ],
+                    "role": "assistant"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        });
+        let mapper = ToolCallIdMapper::new();
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.content.as_deref(), Some("Hello world"));
+        assert_eq!(
+            parsed.reasoning_content.as_deref(),
+            Some("Let me think about this")
+        );
+    }
+
+    #[test]
+    fn mistral_parse_top_level_reasoning_content_fallback() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "Hello",
+                    "reasoning_content": "Internal reasoning",
+                    "role": "assistant"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        });
+        let mapper = ToolCallIdMapper::new();
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.content.as_deref(), Some("Hello"));
+        // reasoning_content from string content is None; top-level fallback kicks in
+        assert_eq!(
+            parsed.reasoning_content.as_deref(),
+            Some("Internal reasoning")
+        );
+    }
+
+    #[test]
+    fn mistral_parse_tool_calls_with_known_mapping() {
+        let mut mapper = ToolCallIdMapper::new();
+        let original_id = "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14";
+        let mistral_id = mapper.register(original_id.to_string());
+        assert_eq!(mistral_id, "43acb9e14");
+
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": mistral_id,
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}
+                    }],
+                    "role": "assistant"
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        });
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        // Known mapping: invocation_id restores original ID, wire ID is the mistral ID
+        assert_eq!(parsed.tool_calls[0].invocation_id().as_str(), original_id);
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), mistral_id);
+    }
+
+    #[test]
+    fn mistral_parse_unknown_tool_call_id_becomes_provider_correlated() {
+        let mapper = ToolCallIdMapper::new(); // empty mapper = no known mappings
+
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "D681PevKs",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"}
+                    }],
+                    "role": "assistant"
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+        });
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        // Unknown mapping: provider-correlated (uses provider ID as-is)
+        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "D681PevKs");
+    }
+
+    #[test]
+    fn mistral_parse_empty_tool_call_id_becomes_uncorrelated() {
+        let mapper = ToolCallIdMapper::new();
+
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "  ",
+                        "type": "function",
+                        "function": {"name": "run_code", "arguments": "{}"}
+                    }],
+                    "role": "assistant"
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+        });
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        // Empty ID: uncorrelated -- has no provider_tool_call_id (uses generated UUID)
+        assert!(
+            parsed.tool_calls[0]
+                .tool_call_correlation
+                .as_ref()
+                .map_or(true, |c| c.provider_tool_call_id.is_none())
+        );
+        // wire_tool_call_id falls back to invocation_id (generated UUID)
+        assert!(
+            parsed.tool_calls[0]
+                .wire_tool_call_id()
+                .starts_with("call_")
+        );
+    }
+
+    #[test]
+    fn mistral_parse_cached_tokens_in_usage() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "Hello",
+                    "role": "assistant"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+                "prompt_tokens_details": {"cached_tokens": 42}
+            }
+        });
+        let mapper = ToolCallIdMapper::new();
+        let parsed =
+            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
+        let usage = parsed.usage.expect("usage present");
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 10);
+        assert_eq!(usage.cached_tokens, Some(42));
+    }
+
+    #[test]
+    fn generic_parse_preserves_string_only_behavior() {
+        // Generic profile (StringOnly) does NOT handle content arrays
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": "Simple text",
+                    "role": "assistant"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        });
+        let mapper = ToolCallIdMapper::new();
+        let parsed =
+            parse_chat_response(response, &generic_profile(), &mapper).expect("response parses");
+        assert_eq!(parsed.content.as_deref(), Some("Simple text"));
+        assert!(parsed.reasoning_content.is_none());
     }
 }
