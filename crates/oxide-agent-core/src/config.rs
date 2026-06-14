@@ -1219,6 +1219,7 @@ mod tests {
 
     #[cfg(any(
         feature = "llm-minimax",
+        feature = "llm-openai-base",
         feature = "llm-opencode-go",
         feature = "llm-openrouter",
         feature = "llm-zai"
@@ -1427,6 +1428,88 @@ mod tests {
                     .contains("no compiled LLM provider module owns that provider alias or ID"),
                 "unexpected error for provider {provider}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled() {
+        let settings = AgentSettings {
+            agent_model_id: Some("glm-4.7".to_string()),
+            agent_model_provider: Some("zai".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let result = settings.validate_route_providers();
+        if cfg!(feature = "llm-zai") {
+            result.expect("dedicated ZAI provider still validates before removal checkpoint");
+            return;
+        }
+
+        let error = result.expect_err("removed direct ZAI provider should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_MODEL_PROVIDER references provider 'zai'")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no compiled LLM provider module owns that provider alias or ID")
+        );
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn route_validation_accepts_openai_base_zai_instance() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for key in [
+            "OPENAI_BASE_PROVIDERS__0__NAME",
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "OPENAI_BASE_PROVIDERS__0__API_KEY",
+            "OPENAI_BASE_PROVIDERS__0__PROFILE",
+        ] {
+            test_remove_env(key);
+        }
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "zai");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "https://api.z.ai/api/coding/paas/v4",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__0__API_KEY", "test-zai-key");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
+
+        let mut settings = AgentSettings {
+            agent_model_id: Some("glm-4.7".to_string()),
+            agent_model_provider: Some("openai-base:zai".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .validate_route_providers()
+            .expect("openai-base:zai provider should validate");
+        settings
+            .validate_route_credentials()
+            .expect("configured openai-base:zai endpoint should validate");
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("openai-base:zai should canonicalize");
+        settings
+            .validate_route_model_capabilities()
+            .expect("openai-base:zai glm route should support agent tools");
+        assert_eq!(
+            settings.agent_model_provider.as_deref(),
+            Some("openai-base:zai")
+        );
+
+        for key in [
+            "OPENAI_BASE_PROVIDERS__0__NAME",
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "OPENAI_BASE_PROVIDERS__0__API_KEY",
+            "OPENAI_BASE_PROVIDERS__0__PROFILE",
+        ] {
+            test_remove_env(key);
         }
     }
 
@@ -1726,7 +1809,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "llm-minimax", feature = "llm-zai"))]
+    #[cfg(all(feature = "llm-minimax", feature = "llm-openai-base"))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1734,14 +1817,20 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
 
-        test_set_env("ZAI_API_KEY", "test-key");
+        test_set_env("OPENAI_BASE_PROVIDERS__1__NAME", "zai");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__1__API_BASE",
+            "https://api.z.ai/api/coding/paas/v4",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__1__API_KEY", "test-zai-key");
+        test_set_env("OPENAI_BASE_PROVIDERS__1__PROFILE", "zai");
         test_set_env("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
         test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
         test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
         test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
         test_set_env("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
         test_set_env("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
-        test_set_env("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
+        test_set_env("AGENT_MODEL_ROUTES__1__PROVIDER", "openai-base:zai");
         test_set_env("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
         test_set_env("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
         test_set_env("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
@@ -1753,7 +1842,7 @@ mod tests {
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].provider, "llm-provider/minimax");
         assert_eq!(routes[0].weight, 10);
-        assert_eq!(routes[1].provider, "llm-provider/zai");
+        assert_eq!(routes[1].provider, "openai-base:zai");
         assert_eq!(primary.id, "MiniMax-M2.7");
         assert_eq!(primary.provider, "llm-provider/minimax");
 
@@ -1768,7 +1857,10 @@ mod tests {
             "AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS",
             "AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS",
             "AGENT_MODEL_ROUTES__1__WEIGHT",
-            "ZAI_API_KEY",
+            "OPENAI_BASE_PROVIDERS__1__NAME",
+            "OPENAI_BASE_PROVIDERS__1__API_BASE",
+            "OPENAI_BASE_PROVIDERS__1__API_KEY",
+            "OPENAI_BASE_PROVIDERS__1__PROFILE",
         ] {
             test_remove_env(key);
         }

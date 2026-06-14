@@ -477,6 +477,34 @@ mod tests {
     }
 
     #[test]
+    fn openai_base_builds_zai_provider_instance() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "zai");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "https://api.z.ai/api/coding/paas/v4",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__0__API_KEY", "test-zai-key");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
+
+        let module = OpenAIBaseProviderModule;
+        let ctx = LlmProviderBuildContext {
+            http_client: reqwest::Client::new(),
+        };
+        let providers = module.build_providers(&AgentSettings::default(), &ctx);
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].0, "openai-base:zai");
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_KEY");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
+    }
+
+    #[test]
     fn configured_endpoints_absent_profile_is_none() {
         let _guard = crate::config::test_env_mutex()
             .lock()

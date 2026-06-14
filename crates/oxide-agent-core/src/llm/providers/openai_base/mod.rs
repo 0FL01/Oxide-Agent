@@ -16,7 +16,9 @@ use crate::llm::providers::openai_base::profile::{
     ThinkingPolicy,
 };
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::support::http::{APP_USER_AGENT, extract_text_content, send_json_request};
+use crate::llm::support::http::{
+    APP_USER_AGENT, extract_text_content, parse_retry_after, send_json_request,
+};
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart,
     TokenUsage, ToolCall, ToolDefinition,
@@ -812,6 +814,73 @@ fn should_stream_chat_response(body: &Value) -> bool {
     body.get("stream").and_then(Value::as_bool).unwrap_or(false)
 }
 
+/// Parse ZAI flush time from a rate-limit error message or JSON error body.
+///
+/// ZAI returns reset time as `next_flush_time` in text such as
+/// `Usage limit reached. Your limit will reset at 1710000000`. The timestamp can
+/// be Unix seconds, Unix milliseconds, or an RFC3339 datetime string.
+#[must_use]
+pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
+    let message_lower = message.to_ascii_lowercase();
+
+    if let Some(caps) = regex::Regex::new(r"\b(\d{10,13})\b")
+        .ok()
+        .and_then(|regex| regex.captures(&message_lower))
+        && let Some(ts_str) = caps.get(1)
+    {
+        let ts = ts_str.as_str();
+        let ts_value: i64 = ts.parse().ok()?;
+        let ts_seconds = if ts.len() > 10 {
+            ts_value / 1000
+        } else {
+            ts_value
+        };
+        let wait_secs = ts_seconds - chrono::Utc::now().timestamp();
+        if wait_secs > 0 {
+            return Some(wait_secs as u64);
+        }
+    }
+
+    if let Some(caps) =
+        regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
+            .ok()
+            .and_then(|regex| regex.captures(message))
+        && let Some(dt_str) = caps.get(1)
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str())
+    {
+        let duration = dt.signed_duration_since(chrono::Utc::now());
+        if duration.num_seconds() > 0 {
+            return Some(duration.num_seconds() as u64);
+        }
+    }
+
+    None
+}
+
+fn apply_profile_rate_limit_wait(error: LlmError, profile: &OpenAICompatibleProfile) -> LlmError {
+    match error {
+        LlmError::RateLimit { wait_secs, message } if profile.name == "zai" => {
+            LlmError::RateLimit {
+                wait_secs: parse_zai_flush_time(&message).or(wait_secs),
+                message,
+            }
+        }
+        other => other,
+    }
+}
+
+fn profile_rate_limit_wait_secs(
+    profile: &OpenAICompatibleProfile,
+    message: &str,
+    fallback: Option<u64>,
+) -> Option<u64> {
+    if profile.name == "zai" {
+        parse_zai_flush_time(message).or(fallback)
+    } else {
+        fallback
+    }
+}
+
 #[derive(Default)]
 struct StreamingChatAccumulator {
     content: String,
@@ -833,6 +902,7 @@ async fn send_streaming_chat_request(
     url: &str,
     body: &Value,
     auth_header: Option<&str>,
+    profile: &OpenAICompatibleProfile,
 ) -> Result<ChatResponse, LlmError> {
     let mut request = client
         .post(url)
@@ -848,13 +918,13 @@ async fn send_streaming_chat_request(
         .map_err(|error| LlmError::NetworkError(error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
-        let wait_secs = (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
-            .then(|| parse_retry_after_seconds(response.headers()))
+        let retry_after_secs = (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+            .then(|| parse_retry_after(response.headers()))
             .flatten();
         let error_text = response.text().await.unwrap_or_default();
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(LlmError::RateLimit {
-                wait_secs,
+                wait_secs: profile_rate_limit_wait_secs(profile, &error_text, retry_after_secs),
                 message: error_text,
             });
         }
@@ -1051,13 +1121,6 @@ fn finalize_streaming_tool_calls(pending: Vec<PendingStreamingToolCall>) -> Vec<
         .collect()
 }
 
-fn parse_retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-}
-
 fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
     match std::str::from_utf8(pending_bytes) {
         Ok(valid) => {
@@ -1142,7 +1205,8 @@ impl LlmProvider for OpenAIBaseProvider {
             auth.as_deref(),
             &[],
         )
-        .await?;
+        .await
+        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -1188,7 +1252,8 @@ impl LlmProvider for OpenAIBaseProvider {
             auth.as_deref(),
             &[],
         )
-        .await?;
+        .await
+        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -1230,6 +1295,7 @@ impl LlmProvider for OpenAIBaseProvider {
                 &self.chat_completions_url(),
                 &body,
                 auth.as_deref(),
+                &self.profile,
             )
             .await;
         }
@@ -1241,7 +1307,8 @@ impl LlmProvider for OpenAIBaseProvider {
             auth.as_deref(),
             &[],
         )
-        .await?;
+        .await
+        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
         let mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
         parse_chat_response(res_json, &self.profile, &mapper)
     }
@@ -1253,11 +1320,12 @@ mod tests {
         OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator, ToolCallIdMapper,
         build_image_analysis_body, build_tool_chat_body, chat_completions_url,
         finalize_streaming_tool_calls, finish_streaming_chat_response, infer_image_mime_type,
-        normalize_tool_arguments_str, parse_chat_response, process_chat_sse_event,
+        normalize_tool_arguments_str, parse_chat_response, parse_zai_flush_time,
+        process_chat_sse_event, send_streaming_chat_request,
     };
     use crate::llm::{
-        ChatWithToolsRequest, LlmProvider, Message, MessageContentPart, ToolCall, ToolCallFunction,
-        ToolDefinition,
+        ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolCall,
+        ToolCallFunction, ToolDefinition,
     };
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1287,7 +1355,20 @@ mod tests {
         OpenAICompatibleProfile::zai()
     }
 
-    async fn run_single_response_server(body: &'static str, content_type: &'static str) -> String {
+    async fn run_single_response_server(
+        body: impl Into<String>,
+        content_type: &'static str,
+    ) -> String {
+        run_single_status_response_server("200 OK", body, content_type, &[]).await
+    }
+
+    async fn run_single_status_response_server(
+        status: &'static str,
+        body: impl Into<String>,
+        content_type: &'static str,
+        headers: &'static [(&'static str, &'static str)],
+    ) -> String {
+        let body = body.into();
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("test server binds");
@@ -1296,8 +1377,12 @@ mod tests {
             let (mut socket, _) = listener.accept().await.expect("accept request");
             let mut buffer = [0_u8; 4096];
             let _ = socket.read(&mut buffer).await.expect("read request");
+            let extra_headers = headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect::<String>();
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             socket
@@ -2111,6 +2196,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_zai_flush_time_unix_timestamp() {
+        let future_ts = (chrono::Utc::now().timestamp() + 300).to_string();
+        let message = format!("Usage limit reached. Your limit will reset at {future_ts}");
+
+        let wait_secs = parse_zai_flush_time(&message).expect("unix timestamp parses");
+        assert!((wait_secs as i64 - 300).abs() < 5, "~300 seconds");
+    }
+
+    #[test]
+    fn parse_zai_flush_time_milliseconds() {
+        let future_ms = (chrono::Utc::now().timestamp_millis() + 300_000).to_string();
+        let message = format!("Usage limit reached. Your limit will reset at {future_ms}");
+
+        let wait_secs = parse_zai_flush_time(&message).expect("millisecond timestamp parses");
+        assert!((wait_secs as i64 - 300).abs() < 5, "~300 seconds");
+    }
+
+    #[test]
+    fn parse_zai_flush_time_iso_datetime() {
+        let future_dt = chrono::Utc::now() + chrono::Duration::minutes(5);
+        let message = format!(
+            "Usage limit reached. Your limit will reset at {}",
+            future_dt.format("%Y-%m-%dT%H:%M:%SZ")
+        );
+
+        let wait_secs = parse_zai_flush_time(&message).expect("ISO datetime parses");
+        assert!(wait_secs >= 200, "~5 minutes");
+    }
+
+    #[test]
+    fn parse_zai_flush_time_no_timestamp() {
+        let wait_secs = parse_zai_flush_time("Rate limit exceeded. Please try again later.");
+        assert_eq!(wait_secs, None);
+    }
+
     #[tokio::test]
     async fn zai_chat_with_tools_uses_sse_transport() {
         let body = concat!(
@@ -2175,6 +2296,121 @@ mod tests {
         assert_eq!(response.content.as_deref(), Some(r#"{"ok":true}"#));
         assert_eq!(response.finish_reason, "stop");
         assert_eq!(response.usage.expect("usage").total_tokens, 3);
+    }
+
+    #[tokio::test]
+    async fn zai_streaming_429_uses_next_flush_time() {
+        let future_ts = chrono::Utc::now().timestamp() + 240;
+        let body = format!(
+            r#"{{"error":{{"message":"Usage limit reached. Your limit will reset at {future_ts}"}}}}"#
+        );
+        let api_base = run_single_status_response_server(
+            "429 Too Many Requests",
+            body,
+            "application/json",
+            &[],
+        )
+        .await;
+        let provider = OpenAIBaseProvider::new_with_client_and_profile(
+            None,
+            api_base,
+            reqwest::Client::new(),
+            zai_profile(),
+        );
+        let tools = vec![sample_tool()];
+
+        let err = provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &tools,
+                model_id: "glm-4.7",
+                max_tokens: 128,
+                temperature: None,
+                json_mode: false,
+                reasoning_effort: None,
+            })
+            .await
+            .expect_err("429 should map to rate limit");
+
+        match err {
+            LlmError::RateLimit { wait_secs, message } => {
+                let wait_secs = wait_secs.expect("next_flush_time should be parsed");
+                assert!((wait_secs as i64 - 240).abs() < 5, "~240 seconds");
+                assert!(message.contains("Usage limit reached"));
+            }
+            other => panic!("expected rate limit, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn zai_native_json_429_uses_next_flush_time() {
+        let future_ts = chrono::Utc::now().timestamp() + 180;
+        let body = format!(
+            r#"{{"error":{{"message":"Usage limit reached. Your limit will reset at {future_ts}"}}}}"#
+        );
+        let api_base = run_single_status_response_server(
+            "429 Too Many Requests",
+            body,
+            "application/json",
+            &[],
+        )
+        .await;
+        let provider = OpenAIBaseProvider::new_with_client_and_profile(
+            None,
+            api_base,
+            reqwest::Client::new(),
+            zai_profile(),
+        );
+
+        let err = provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &[],
+                model_id: "glm-4.7",
+                max_tokens: 128,
+                temperature: None,
+                json_mode: true,
+                reasoning_effort: None,
+            })
+            .await
+            .expect_err("429 should map to rate limit");
+
+        match err {
+            LlmError::RateLimit { wait_secs, message } => {
+                let wait_secs = wait_secs.expect("next_flush_time should be parsed");
+                assert!((wait_secs as i64 - 180).abs() < 5, "~180 seconds");
+                assert!(message.contains("Usage limit reached"));
+            }
+            other => panic!("expected rate limit, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_streaming_429_uses_retry_after_header() {
+        let api_base = run_single_status_response_server(
+            "429 Too Many Requests",
+            r#"{"error":"rate limit"}"#,
+            "application/json",
+            &[("Retry-After", "17")],
+        )
+        .await;
+
+        let err = send_streaming_chat_request(
+            &reqwest::Client::new(),
+            &format!("{api_base}/chat/completions"),
+            &json!({"stream": true}),
+            None,
+            &generic_profile(),
+        )
+        .await
+        .expect_err("429 should map to rate limit");
+
+        match err {
+            LlmError::RateLimit { wait_secs, .. } => assert_eq!(wait_secs, Some(17)),
+            other => panic!("expected rate limit, got {other:?}"),
+        }
     }
 
     #[test]

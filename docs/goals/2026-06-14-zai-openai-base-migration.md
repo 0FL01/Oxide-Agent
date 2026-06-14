@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 20:23
+Last updated: 2026-06-14 20:35
 
 ## Objective
 
@@ -80,8 +80,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:5`, `:87`-`:94`, `:111`
   - Acceptance: `OPENAI_BASE_PROVIDERS__N__PROFILE=zai` resolves to the ZAI profile; `provider = "openai-base:zai"` validates and builds a provider instance.
   - Evidence required: module/config unit tests for profile resolution and `openai-base:zai` model route validation pass.
-  - Status: in_progress
-  - Evidence collected: `resolve_profile("zai")` added and verified by `llm::providers::openai_base::module::tests::resolve_profile_zai_string` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:16. Full config-route validation remains for Checkpoint 3.
+  - Status: verified
+  - Evidence collected: `resolve_profile("zai")` added and verified by `llm::providers::openai_base::module::tests::resolve_profile_zai_string`; provider instance build verified by `openai_base_builds_zai_provider_instance`; route/config validation verified by `config::tests::route_validation_accepts_openai_base_zai_instance`. Commands passed on 2026-06-14 20:35: `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_validation --lib`, and `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`.
 
 - G3: ZAI body policy preserves current request behavior
   - Source: `docs/prd/zai-drop.md:7`-`:16`, `:31`, `:101`-`:104`, `:119`-`:121`
@@ -115,8 +115,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:55`, `:109`, `:122`
   - Acceptance: ZAI 429 bodies containing `next_flush_time` produce a meaningful retry wait/rate-limit error; generic Retry-After handling still works.
   - Evidence required: ported `parse_zai_flush_time` tests and a 429 mapping test pass without `llm-zai`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `parse_zai_flush_time` moved into `crates/oxide-agent-core/src/llm/providers/openai_base/mod.rs`; ZAI streaming and native JSON-only 429 paths now parse `next_flush_time`, while generic streaming 429s still use `Retry-After`. Verified by `parse_zai_flush_time_unix_timestamp`, `parse_zai_flush_time_milliseconds`, `parse_zai_flush_time_iso_datetime`, `parse_zai_flush_time_no_timestamp`, `zai_streaming_429_uses_next_flush_time`, `zai_native_json_429_uses_next_flush_time`, and `generic_streaming_429_uses_retry_after_header` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:35; integration coverage also passed in `cargo test -p oxide-agent-core --no-default-features --features llm-openrouter,llm-openai-base --test rate_limit`.
 
 - G8: Dedicated ZAI provider and SDK are removed
   - Source: `docs/prd/zai-drop.md:49`-`:73`, `:132`
@@ -136,8 +136,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:73`, `:110`-`:111`
   - Acceptance: config/model-route validation rejects old dedicated `zai` provider and accepts `openai-base:zai` with configured OpenAI Base endpoint.
   - Evidence required: config tests for both cases pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: New `openai-base:zai` route validation is verified by `config::tests::route_validation_accepts_openai_base_zai_instance` and env route parsing by `test_model_routes_parse_from_env_and_override_primary_models`. Old `provider = "zai"` rejection is verified in the target no-dedicated-provider feature set by `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` on 2026-06-14 20:35. Final status remains in_progress until Checkpoint 5 removes `llm-zai`, so the same validation is true under `profile-full`.
 
 - G11: Test mocks are renamed away from ZAI-specific provider names
   - Source: `docs/prd/zai-drop.md:124`
@@ -210,15 +210,15 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:98`-`:112`
   - Acceptance: tests cover body stream flags, JSON-only behavior, normal thinking, SSE content, SSE reasoning, fragmented tool arguments, tool-call ID preservation, ZAI 429 `next_flush_time`, old provider validation failure, and new provider validation success.
   - Evidence required: list of test names and passing `cargo test` command output.
-  - Status: in_progress
-  - Evidence collected: Body stream flags, JSON-only behavior, normal thinking, SSE content, SSE reasoning, fragmented tool arguments, tool-call ID preservation, streamed usage/finish reason, and empty streamed response are covered by focused openai_base tests passing on 2026-06-14 20:23. Remaining V1 coverage: ZAI 429 `next_flush_time`, old provider validation failure, and new provider validation success.
+  - Status: verified
+  - Evidence collected: Body stream flags, JSON-only behavior, normal thinking, SSE content, SSE reasoning, fragmented tool arguments, tool-call ID preservation, streamed usage/finish reason, and empty streamed response are covered by focused openai_base tests passing on 2026-06-14 20:23. ZAI 429 `next_flush_time`, old provider validation failure in the no-`llm-zai` target feature set, and new `openai-base:zai` validation success were added and passed on 2026-06-14 20:35 via `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib`, and `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_validation --lib`.
 
 - V2: Focused core validation passes during checkpoints
   - Source: repo validation guidance
   - Acceptance: after relevant Rust code checkpoints, focused `cargo test -p oxide-agent-core --no-default-features --features profile-full ...` or narrower feature tests pass.
   - Evidence required: command output per checkpoint recorded in Progress Log.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Final broader validation remains pending.
+  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Final broader validation remains pending.
 
 - V3: Final formatting and lint gates pass
   - Source: `AGENTS.md:146`
@@ -247,8 +247,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:73`
   - Must preserve: old routes fail validation explicitly.
   - Evidence required: config validation test for old provider failure.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `provider = "zai"` rejection is covered under `--no-default-features --features llm-openai-base` by `route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled` on 2026-06-14 20:35. This remains in_progress until Checkpoint 5 removes the compiled `llm-zai` provider from `profile-full`.
 
 - N2: Do not keep `ZAI_API_KEY` fallback
   - Source: `docs/prd/zai-drop.md:96`
@@ -337,6 +337,8 @@ Out of scope:
 - 2026-06-14: Start with profile/body policy before deleting provider so behavior can be ported and tested while the old implementation is still available as reference.
 - 2026-06-14: Represent ZAI request quirks as small profile policy enums (`ThinkingPolicy`, `StreamPolicy`, `StructuredOutputPolicy`) instead of adding a new provider or broad abstraction.
 - 2026-06-14: Keep ZAI streaming as a small OpenAI Base SSE parser/aggregator keyed by the existing `stream` request body flag; do not introduce a new transport abstraction or dependency.
+- 2026-06-14: Preserve ZAI `next_flush_time` parsing as an OpenAI Base utility and apply it only for the `zai` profile; keep generic `Retry-After` handling as the fallback for non-ZAI OpenAI Base errors.
+- 2026-06-14: While the dedicated provider still exists before Checkpoint 5, prove old `provider = "zai"` failure under the target no-`llm-zai` feature set and keep G10/N1 in_progress until `profile-full` no longer compiles `llm-zai`.
 
 ## Progress Log
 
@@ -360,6 +362,13 @@ Out of scope:
   - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 77 tests, 0 failed; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` passed.
   - Audit IDs updated: G4 verified; G5 verified; Q5 verified; V1 in_progress; V2 in_progress.
   - Next: review diff, commit Checkpoint 2, then implement Checkpoint 3 rate-limit parser and route validation.
+
+- 2026-06-14 20:35: Checkpoint 3 implemented -- ZAI rate-limit parser and route validation
+  - Changed: moved ZAI `next_flush_time` parsing into OpenAI Base, applied ZAI-specific wait parsing to streaming and non-streaming 429 paths, kept generic `Retry-After` handling, ported rate-limit tests away from `llm-zai`, added `openai-base:zai` provider build/config validation, and updated model-route env parsing to use `openai-base:zai` instead of `ZAI_API_KEY`/`zai`.
+  - Evidence: tests cover Unix/millisecond/ISO/no timestamp parsing, ZAI streaming and native JSON 429 mapping, generic Retry-After fallback, provider instance build, new route validation success, old route failure in the target no-`llm-zai` feature set, and profile-full env route parsing.
+  - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 86 tests, 0 failed; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_validation --lib` passed; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` passed; `cargo test -p oxide-agent-core --no-default-features --features llm-openrouter,llm-openai-base --test rate_limit` passed with 11 tests, 0 failed; `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib` passed; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` passed; `git diff --check` passed.
+  - Audit IDs updated: G2 verified; G7 verified; V1 verified; G10 in_progress; N1 in_progress; V2 in_progress.
+  - Next: review diff, commit Checkpoint 3, then implement Checkpoint 4 docs/config/E2E setup migration.
 
 ## Risks and Blockers
 
