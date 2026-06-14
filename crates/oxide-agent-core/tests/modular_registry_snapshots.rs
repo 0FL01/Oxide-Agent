@@ -560,8 +560,8 @@ fn allowed_provider_names_for_enabled_modules(
 
     for module_id in enabled_module_ids {
         match *module_id {
-            "llm-provider/minimax" => {
-                allowed.extend(["llm-provider/minimax", "minimax"]);
+            "llm-provider/anthropic" => {
+                allowed.extend(["llm-provider/anthropic", "anthropic"]);
             }
             "llm-provider/mistral" => {
                 allowed.extend(["llm-provider/mistral", "mistral"]);

@@ -1,19 +1,19 @@
-//! MiniMax provider implementation using reqwest + shared Anthropic Messages helpers.
+//! Anthropic Messages API provider implementation.
 
-use crate::config::{MINIMAX_CHAT_TEMPERATURE, MINIMAX_TOOL_TEMPERATURE};
+use crate::config::{ANTHROPIC_CHAT_TEMPERATURE, ANTHROPIC_TOOL_TEMPERATURE};
 use crate::llm::support::http::send_json_request;
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
 
-/// MiniMax provider using reqwest for Anthropic-compatible API
-pub struct MiniMaxProvider {
+/// Generic Anthropic Messages API provider.
+pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
     http_client: reqwest::Client,
 }
 
-impl MiniMaxProvider {
-    /// Create a new MiniMax provider instance.
+impl AnthropicProvider {
+    /// Create a new Anthropic provider instance.
     #[must_use]
     pub fn new(api_key: String, http_client: reqwest::Client, api_base: String) -> Self {
         Self {
@@ -40,13 +40,13 @@ impl MiniMaxProvider {
 
         super::anthropic_messages::response::parse_response(
             response,
-            super::anthropic_messages::AnthropicProfile::minimax(),
+            super::anthropic_messages::AnthropicProfile::anthropic(),
         )
     }
 }
 
 #[async_trait]
-impl LlmProvider for MiniMaxProvider {
+impl LlmProvider for AnthropicProvider {
     async fn complete_internal_text(
         &self,
         system_prompt: &str,
@@ -61,8 +61,8 @@ impl LlmProvider for MiniMaxProvider {
             user_message,
             model_id,
             max_tokens,
-            MINIMAX_CHAT_TEMPERATURE,
-            None, // MiniMax does not use extended thinking
+            ANTHROPIC_CHAT_TEMPERATURE,
+            None,
         );
 
         let response = self.send_and_parse(body).await?;
@@ -78,7 +78,9 @@ impl LlmProvider for MiniMaxProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented for MiniMax".to_string()))
+        Err(LlmError::Unknown(
+            "Not implemented for Anthropic provider".to_string(),
+        ))
     }
 
     async fn analyze_image(
@@ -88,7 +90,9 @@ impl LlmProvider for MiniMaxProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented for MiniMax".to_string()))
+        Err(LlmError::Unknown(
+            "Not implemented for Anthropic provider".to_string(),
+        ))
     }
 
     /// Chat completion with tool calling support for agent mode
@@ -113,8 +117,8 @@ impl LlmProvider for MiniMaxProvider {
             tools,
             model_id,
             max_tokens,
-            temperature.unwrap_or(MINIMAX_TOOL_TEMPERATURE),
-            None, // MiniMax does not use extended thinking
+            temperature.unwrap_or(ANTHROPIC_TOOL_TEMPERATURE),
+            None,
         );
 
         self.send_and_parse(body).await
@@ -134,17 +138,22 @@ mod tests {
             "You are helpful.",
             &messages,
             "How are you?",
-            "MiniMax-M2",
+            "claude-3-5-sonnet",
             4096,
-            MINIMAX_CHAT_TEMPERATURE,
+            ANTHROPIC_CHAT_TEMPERATURE,
             None,
         );
 
-        assert_eq!(body["model"], json!("MiniMax-M2"));
+        assert_eq!(body["model"], json!("claude-3-5-sonnet"));
         assert_eq!(body["max_tokens"], json!(4096));
-        assert_eq!(body["temperature"], json!(MINIMAX_CHAT_TEMPERATURE));
+        assert_eq!(body["temperature"], json!(ANTHROPIC_CHAT_TEMPERATURE));
         assert_eq!(body["stream"], json!(false));
-        assert!(body["messages"].as_array().unwrap().len() >= 1);
+        assert!(
+            !body["messages"]
+                .as_array()
+                .expect("messages array")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -165,13 +174,13 @@ mod tests {
             "You are helpful.",
             &messages,
             &tools,
-            "MiniMax-M2",
+            "claude-3-5-sonnet",
             4096,
-            MINIMAX_TOOL_TEMPERATURE,
+            ANTHROPIC_TOOL_TEMPERATURE,
             None,
         );
 
-        assert_eq!(body["model"], json!("MiniMax-M2"));
+        assert_eq!(body["model"], json!("claude-3-5-sonnet"));
         assert_eq!(body["max_tokens"], json!(4096));
         assert!(body.get("tools").is_some());
         assert_eq!(body["tool_choice"], json!({ "type": "auto" }));
@@ -185,9 +194,9 @@ mod tests {
             "You are helpful.",
             &messages,
             &[],
-            "MiniMax-M2",
+            "claude-3-5-sonnet",
             4096,
-            MINIMAX_TOOL_TEMPERATURE,
+            ANTHROPIC_TOOL_TEMPERATURE,
             None,
         );
 
@@ -209,14 +218,14 @@ mod tests {
                 ],
                 "stop_reason": "tool_use"
             }),
-            super::super::anthropic_messages::AnthropicProfile::minimax(),
+            super::super::anthropic_messages::AnthropicProfile::anthropic(),
         )
         .expect("response parses");
 
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(
             response.tool_calls[0].wire_tool_call_id(),
-            "minimax_fallback_0"
+            "anthropic_fallback_0"
         );
     }
 
@@ -231,7 +240,7 @@ mod tests {
                     "output_tokens": 5
                 }
             }),
-            super::super::anthropic_messages::AnthropicProfile::minimax(),
+            super::super::anthropic_messages::AnthropicProfile::anthropic(),
         )
         .expect("response parses");
 

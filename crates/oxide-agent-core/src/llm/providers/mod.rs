@@ -1,3 +1,5 @@
+#[cfg(feature = "llm-minimax")]
+pub mod anthropic;
 #[cfg(any(
     feature = "llm-chatgpt",
     feature = "llm-mistral",
@@ -10,8 +12,6 @@ pub(crate) mod anthropic_messages;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
-#[cfg(feature = "llm-minimax")]
-pub mod minimax;
 pub(crate) mod modules;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-openai-base")]
@@ -72,10 +72,10 @@ mod tool_correlation;
 ))]
 #[allow(dead_code)]
 mod tool_result_encoder;
+#[cfg(feature = "llm-minimax")]
+pub use anthropic::AnthropicProvider;
 #[cfg(feature = "llm-chatgpt")]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-minimax")]
-pub use minimax::MiniMaxProvider;
 #[cfg(feature = "llm-openai-base")]
 pub use openai_base::OpenAIBaseProvider;
 #[cfg(feature = "llm-opencode-go")]

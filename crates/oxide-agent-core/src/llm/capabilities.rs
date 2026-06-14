@@ -180,8 +180,8 @@ mod tests {
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_capabilities_disable_structured_output() {
-        let capabilities = super::provider_capabilities("minimax");
+    fn anthropic_capabilities_disable_structured_output() {
+        let capabilities = super::provider_capabilities("anthropic");
 
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);

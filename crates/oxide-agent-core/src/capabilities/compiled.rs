@@ -125,10 +125,12 @@ const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
         .with_env("MISTRAL_API_KEY")
         .secret()];
 #[allow(dead_code)]
-const MINIMAX_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "MiniMax API key.")
-        .with_env("MINIMAX_API_KEY")
-        .secret()];
+const ANTHROPIC_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[
+        ModuleConfigProperty::string("api_key", "Anthropic API key.")
+            .with_env("ANTHROPIC_API_KEY")
+            .secret(),
+    ];
 #[allow(dead_code)]
 const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     ModuleConfigProperty::string(
@@ -356,10 +358,10 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     push_module_with_config!(
         modules,
         "llm-minimax",
-        "llm-provider/minimax",
+        "llm-provider/anthropic",
         LlmProvider,
-        ["llm-provider/minimax"],
-        MINIMAX_CONFIG_PROPERTIES
+        ["llm-provider/anthropic"],
+        ANTHROPIC_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

@@ -2,7 +2,7 @@
 //!
 //! Provides request body construction, message conversion, tool schema encoding,
 //! response parsing, and usage extraction for the Anthropic Messages API format.
-//! Used by both `opencode_go` and `minimax` providers.
+//! Used by `opencode_go` and `anthropic` providers.
 
 pub(crate) mod request;
 pub(crate) mod response;
@@ -28,12 +28,12 @@ impl AnthropicProfile {
         }
     }
 
-    /// Profile for MiniMax provider.
+    /// Profile for generic Anthropic Messages API provider.
     #[allow(dead_code)] // used when llm-minimax feature is active
-    pub const fn minimax() -> Self {
+    pub const fn anthropic() -> Self {
         Self {
-            label: "MiniMax",
-            empty_tool_id_fallback_prefix: Some("minimax_fallback_"),
+            label: "Anthropic",
+            empty_tool_id_fallback_prefix: Some("anthropic_fallback_"),
         }
     }
 }

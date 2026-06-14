@@ -243,7 +243,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-mistral")]
     modules.push(Box::new(super::openai_base::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
-    modules.push(Box::new(super::minimax::MiniMaxProviderModule));
+    modules.push(Box::new(super::anthropic::AnthropicProviderModule));
     #[cfg(feature = "llm-openai-base")]
     modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
     #[cfg(feature = "llm-opencode-go")]
@@ -570,21 +570,24 @@ mod tests {
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_module_registers_provider_id_and_aliases() {
-        let settings = settings_with_provider_key("llm-provider/minimax", "test-minimax-key");
+    fn anthropic_module_registers_provider_id_and_aliases() {
+        let settings = settings_with_provider_key("llm-provider/anthropic", "test-anthropic-key");
 
         let providers = build_configured_providers(&settings);
 
-        assert!(providers.contains_key("llm-provider/minimax"));
-        assert!(providers.contains_key("minimax"));
-        assert_eq!(provider_module_id("minimax"), Some("llm-provider/minimax"));
+        assert!(providers.contains_key("llm-provider/anthropic"));
+        assert!(providers.contains_key("anthropic"));
+        assert_eq!(
+            provider_module_id("anthropic"),
+            Some("llm-provider/anthropic")
+        );
     }
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_module_owns_base_capabilities() {
+    fn anthropic_module_owns_base_capabilities() {
         let capabilities =
-            provider_capabilities("llm-provider/minimax").expect("provider should resolve");
+            provider_capabilities("llm-provider/anthropic").expect("provider should resolve");
 
         assert_eq!(capabilities.tool_history_label(), "strict");
         assert!(capabilities.supports_tool_calling);

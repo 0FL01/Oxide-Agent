@@ -29,10 +29,10 @@ pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for generic OpenAI-compatible text requests.
 pub const OPENAI_BASE_CHAT_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for MiniMax text requests.
-pub const MINIMAX_CHAT_TEMPERATURE: f32 = 1.0;
-/// Temperature used when MiniMax runs tool-enabled chat requests.
-pub const MINIMAX_TOOL_TEMPERATURE: f32 = 1.0;
+/// Default temperature used for Anthropic Messages API text requests.
+pub const ANTHROPIC_CHAT_TEMPERATURE: f32 = 1.0;
+/// Temperature used when the Anthropic provider runs tool-enabled chat requests.
+pub const ANTHROPIC_TOOL_TEMPERATURE: f32 = 1.0;
 /// Temperature for OpenRouter audio transcription requests.
 pub const OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Temperature for OpenRouter image analysis requests.
@@ -1773,8 +1773,8 @@ mod tests {
         );
         test_set_env("OPENAI_BASE_PROVIDERS__1__API_KEY", "test-zai-key");
         test_set_env("OPENAI_BASE_PROVIDERS__1__PROFILE", "zai");
-        test_set_env("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
-        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "claude-3-5-sonnet");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "anthropic");
         test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
         test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
         test_set_env("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
@@ -1789,11 +1789,11 @@ mod tests {
         let primary = settings.get_configured_agent_model();
 
         assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].provider, "llm-provider/minimax");
+        assert_eq!(routes[0].provider, "llm-provider/anthropic");
         assert_eq!(routes[0].weight, 10);
         assert_eq!(routes[1].provider, "openai-base:zai");
-        assert_eq!(primary.id, "MiniMax-M2.7");
-        assert_eq!(primary.provider, "llm-provider/minimax");
+        assert_eq!(primary.id, "claude-3-5-sonnet");
+        assert_eq!(primary.provider, "llm-provider/anthropic");
 
         for key in [
             "AGENT_MODEL_ROUTES__0__ID",

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use oxide_agent_core::llm::http::create_http_client;
-use oxide_agent_core::llm::providers::MiniMaxProvider;
+use oxide_agent_core::llm::providers::AnthropicProvider;
 use oxide_agent_core::llm::{ChatWithToolsRequest, LlmProvider, Message, ToolDefinition};
 use serde_json::json;
 use std::env;
@@ -50,27 +50,27 @@ fn weather_result() -> &'static str {
 }
 
 #[tokio::test]
-async fn test_minimax_simple_chat() -> Result<()> {
+async fn test_anthropic_simple_chat() -> Result<()> {
     init_test_env();
 
     if !should_run_e2e_checks() {
-        warn!("Skipping MiniMax E2E test: RUN_LLM_E2E_CHECKS != 1");
+        warn!("Skipping Anthropic E2E test: RUN_LLM_E2E_CHECKS != 1");
         return Ok(());
     }
 
-    let api_key = match env::var("MINIMAX_API_KEY") {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
         _ => {
-            warn!("Skipping test: valid MINIMAX_API_KEY not set");
+            warn!("Skipping test: valid ANTHROPIC_API_KEY not set");
             return Ok(());
         }
     };
 
     info!("=== Test: Simple Chat ===");
-    let provider = MiniMaxProvider::new(
+    let provider = AnthropicProvider::new(
         api_key.clone(),
         create_http_client(),
-        "https://api.minimax.io/anthropic".to_string(),
+        "https://api.anthropic.com".to_string(),
     );
 
     let messages = vec![Message::user("Say 'hello' in exactly one word.")];
@@ -114,27 +114,27 @@ async fn test_minimax_simple_chat() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_minimax_single_tool_call() -> Result<()> {
+async fn test_anthropic_single_tool_call() -> Result<()> {
     init_test_env();
 
     if !should_run_e2e_checks() {
-        warn!("Skipping MiniMax E2E test: RUN_LLM_E2E_CHECKS != 1");
+        warn!("Skipping Anthropic E2E test: RUN_LLM_E2E_CHECKS != 1");
         return Ok(());
     }
 
-    let api_key = match env::var("MINIMAX_API_KEY") {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
         _ => {
-            warn!("Skipping test: valid MINIMAX_API_KEY not set");
+            warn!("Skipping test: valid ANTHROPIC_API_KEY not set");
             return Ok(());
         }
     };
 
     info!("=== Test: Single Tool Call ===");
-    let provider = MiniMaxProvider::new(
+    let provider = AnthropicProvider::new(
         api_key.clone(),
         create_http_client(),
-        "https://api.minimax.io/anthropic".to_string(),
+        "https://api.anthropic.com".to_string(),
     );
 
     let tools = vec![ToolDefinition {
@@ -201,27 +201,27 @@ async fn test_minimax_single_tool_call() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_minimax_tool_call_with_result() -> Result<()> {
+async fn test_anthropic_tool_call_with_result() -> Result<()> {
     init_test_env();
 
     if !should_run_e2e_checks() {
-        warn!("Skipping MiniMax E2E test: RUN_LLM_E2E_CHECKS != 1");
+        warn!("Skipping Anthropic E2E test: RUN_LLM_E2E_CHECKS != 1");
         return Ok(());
     }
 
-    let api_key = match env::var("MINIMAX_API_KEY") {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
         _ => {
-            warn!("Skipping test: valid MINIMAX_API_KEY not set");
+            warn!("Skipping test: valid ANTHROPIC_API_KEY not set");
             return Ok(());
         }
     };
 
     info!("=== Test: Tool Call WITH Result (Multi-turn) ===");
-    let provider = MiniMaxProvider::new(
+    let provider = AnthropicProvider::new(
         api_key.clone(),
         create_http_client(),
-        "https://api.minimax.io/anthropic".to_string(),
+        "https://api.anthropic.com".to_string(),
     );
 
     let tools = vec![ToolDefinition {
@@ -330,27 +330,27 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
+async fn test_anthropic_multiple_tool_calls_parallel() -> Result<()> {
     init_test_env();
 
     if !should_run_e2e_checks() {
-        warn!("Skipping MiniMax E2E test: RUN_LLM_E2E_CHECKS != 1");
+        warn!("Skipping Anthropic E2E test: RUN_LLM_E2E_CHECKS != 1");
         return Ok(());
     }
 
-    let api_key = match env::var("MINIMAX_API_KEY") {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
         _ => {
-            warn!("Skipping test: valid MINIMAX_API_KEY not set");
+            warn!("Skipping test: valid ANTHROPIC_API_KEY not set");
             return Ok(());
         }
     };
 
     info!("=== Test: Multiple Parallel Tool Calls ===");
-    let provider = MiniMaxProvider::new(
+    let provider = AnthropicProvider::new(
         api_key.clone(),
         create_http_client(),
-        "https://api.minimax.io/anthropic".to_string(),
+        "https://api.anthropic.com".to_string(),
     );
 
     let tools = vec![
@@ -420,27 +420,27 @@ async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_minimax_parallel_tool_results() -> Result<()> {
+async fn test_anthropic_parallel_tool_results() -> Result<()> {
     init_test_env();
 
     if !should_run_e2e_checks() {
-        warn!("Skipping MiniMax E2E test: RUN_LLM_E2E_CHECKS != 1");
+        warn!("Skipping Anthropic E2E test: RUN_LLM_E2E_CHECKS != 1");
         return Ok(());
     }
 
-    let api_key = match env::var("MINIMAX_API_KEY") {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() && k != "dummy" => k,
         _ => {
-            warn!("Skipping test: valid MINIMAX_API_KEY not set");
+            warn!("Skipping test: valid ANTHROPIC_API_KEY not set");
             return Ok(());
         }
     };
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
-    let provider = MiniMaxProvider::new(
+    let provider = AnthropicProvider::new(
         api_key.clone(),
         create_http_client(),
-        "https://api.minimax.io/anthropic".to_string(),
+        "https://api.anthropic.com".to_string(),
     );
     let tools = weather_and_time_tools();
 

@@ -1,6 +1,5 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
-assertion_line: 125
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -20,8 +19,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "integration/ssh-mcp"
       },
       {
-        "id": "llm-provider/minimax",
-        "module": "llm-provider/minimax"
+        "id": "llm-provider/anthropic",
+        "module": "llm-provider/anthropic"
       },
       {
         "id": "llm-provider/mistral",
@@ -259,18 +258,18 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": [
           {
             "default_value": null,
-            "description": "MiniMax API key.",
-            "env": "MINIMAX_API_KEY",
+            "description": "Anthropic API key.",
+            "env": "ANTHROPIC_API_KEY",
             "name": "api_key",
             "secret": true,
             "value_kind": "string"
           }
         ],
         "conflicts": [],
-        "id": "llm-provider/minimax",
+        "id": "llm-provider/anthropic",
         "kind": "llm-provider",
         "provides": [
-          "llm-provider/minimax"
+          "llm-provider/anthropic"
         ],
         "requires": []
       },
@@ -936,7 +935,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-jira",
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
-      "llm-provider/minimax",
+      "llm-provider/anthropic",
       "llm-provider/mistral",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
@@ -991,7 +990,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-jira",
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
-      "llm-provider/minimax",
+      "llm-provider/anthropic",
       "llm-provider/mistral",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
@@ -1060,7 +1059,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "ytdlp_search_videos"
   ],
   "registered_llm_provider_ids_dummy_config": [
-    "llm-provider/minimax",
+    "llm-provider/anthropic",
     "llm-provider/mistral",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
@@ -1068,8 +1067,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "llm-provider/openrouter"
   ],
   "registered_llm_provider_aliases_dummy_config": [
+    "anthropic",
     "chatgpt",
-    "minimax",
     "mistral",
     "openai-chatgpt",
     "opencode-go",
@@ -1108,11 +1107,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "llm-provider/minimax",
+      "module_id": "llm-provider/anthropic",
       "kind": "llm-provider",
       "cargo_feature": "llm-minimax",
       "config_env": [
-        "MINIMAX_API_KEY"
+        "ANTHROPIC_API_KEY"
       ],
       "requires_capabilities": []
     },
