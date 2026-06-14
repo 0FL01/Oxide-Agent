@@ -585,9 +585,6 @@ fn allowed_provider_names_for_enabled_modules(
             "llm-provider/openai-base" => {
                 allowed.extend(["llm-provider/openai-base"]);
             }
-            "llm-provider/zai" => {
-                allowed.extend(["llm-provider/zai", "zai"]);
-            }
             _ => {}
         }
     }

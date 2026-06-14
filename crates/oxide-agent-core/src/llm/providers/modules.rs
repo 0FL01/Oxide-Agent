@@ -10,7 +10,6 @@ use crate::llm::LlmProvider;
 #[cfg(any(
     feature = "llm-chatgpt",
     feature = "llm-mistral",
-    feature = "llm-zai",
     feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
@@ -22,7 +21,6 @@ pub(crate) struct LlmProviderBuildContext {
     #[cfg(any(
         feature = "llm-chatgpt",
         feature = "llm-mistral",
-        feature = "llm-zai",
         feature = "llm-openai-base",
         feature = "llm-opencode-go",
         feature = "llm-openrouter"
@@ -36,7 +34,6 @@ impl LlmProviderBuildContext {
             #[cfg(any(
                 feature = "llm-chatgpt",
                 feature = "llm-mistral",
-                feature = "llm-zai",
                 feature = "llm-openai-base",
                 feature = "llm-opencode-go",
                 feature = "llm-openrouter"
@@ -244,8 +241,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     modules.push(Box::new(super::openai_base::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
     modules.push(Box::new(super::minimax::MiniMaxProviderModule));
-    #[cfg(feature = "llm-zai")]
-    modules.push(Box::new(super::zai::ZaiProviderModule));
     #[cfg(feature = "llm-openai-base")]
     modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
     #[cfg(feature = "llm-opencode-go")]
@@ -265,8 +260,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
         feature = "llm-mistral",
         feature = "llm-minimax",
         feature = "llm-opencode-go",
-        feature = "llm-openrouter",
-        feature = "llm-zai"
+        feature = "llm-openrouter"
     )),
     allow(dead_code, unused_imports)
 )]
@@ -541,41 +535,6 @@ mod tests {
 
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_module_owns_missing_route_config_message() {
-        let settings = AgentSettings::default();
-
-        assert_eq!(
-            provider_missing_route_config_message("zai", &settings),
-            Some("Critical: ZAI_API_KEY is required for configured ZAI routes".to_string())
-        );
-
-        let settings = settings_with_provider_key("llm-provider/zai", "test-zai-key");
-
-        assert_eq!(
-            provider_missing_route_config_message("llm-provider/zai", &settings),
-            None
-        );
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_module_owns_model_specific_structured_output() {
-        let route = crate::config::ModelInfo {
-            id: "GLM-4.7".to_string(),
-            provider: "llm-provider/zai".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            weight: 1,
-        };
-
-        let capabilities =
-            provider_capabilities_for_model(&route).expect("provider id should resolve");
-
-        assert!(capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-openrouter")]

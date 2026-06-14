@@ -130,15 +130,6 @@ const MINIMAX_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
         .with_env("MINIMAX_API_KEY")
         .secret()];
 #[allow(dead_code)]
-const ZAI_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "ZAI/Zhipu API key.")
-        .with_env("ZAI_API_KEY")
-        .secret(),
-    ModuleConfigProperty::string("api_base", "ZAI/Zhipu Chat Completions API endpoint.")
-        .with_env("ZAI_API_BASE")
-        .with_default("https://api.z.ai/api/coding/paas/v4/chat/completions"),
-];
-#[allow(dead_code)]
 const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     ModuleConfigProperty::string(
         "providers",
@@ -169,7 +160,7 @@ const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     .with_default("1800"),
     ModuleConfigProperty::string(
         "providers.N.profile",
-        "Behavioral profile for provider instance N: 'generic' (default) or 'mistral'. Controls tool-call ID mapping, message layout, response parsing, temperatures, and audio transcription.",
+        "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
     )
     .with_env("OPENAI_BASE_PROVIDERS__N__PROFILE"),
 ];
@@ -369,14 +360,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/minimax"],
         MINIMAX_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-zai",
-        "llm-provider/zai",
-        LlmProvider,
-        ["llm-provider/zai"],
-        ZAI_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

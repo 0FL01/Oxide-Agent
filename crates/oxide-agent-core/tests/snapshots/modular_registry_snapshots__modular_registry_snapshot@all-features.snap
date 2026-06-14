@@ -128,6 +128,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "env": "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
             "secret": false,
             "default_value": null
+          },
+          {
+            "name": "providers.N.profile",
+            "value_kind": "string",
+            "description": "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+            "env": "OPENAI_BASE_PROVIDERS__N__PROFILE",
+            "secret": false,
+            "default_value": null
           }
         ]
       },
@@ -270,34 +278,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "value_kind": "string",
             "description": "OpenRouter API key.",
             "env": "OPENROUTER_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/zai",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-zai",
-        "provides": [
-          "llm-provider/zai"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "ZAI/Zhipu Chat Completions API endpoint.",
-            "env": "ZAI_API_BASE",
-            "secret": false,
-            "default_value": "https://api.z.ai/api/coding/paas/v4/chat/completions"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "ZAI/Zhipu API key.",
-            "env": "ZAI_API_KEY",
             "secret": true,
             "default_value": null
           }
@@ -814,10 +794,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/openrouter"
       },
       {
-        "id": "llm-provider/zai",
-        "module": "llm-provider/zai"
-      },
-      {
         "id": "manager/agent-profile-admin",
         "module": "manager/control-plane"
       },
@@ -1031,7 +1007,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
-      "llm-provider/zai",
       "manager/control-plane",
       "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
@@ -1076,7 +1051,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
-      "llm-provider/zai",
       "manager/agent-profile-admin",
       "manager/control-plane",
       "manager/topic-sandbox-admin",
@@ -1167,8 +1141,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
-    "llm-provider/openrouter",
-    "llm-provider/zai"
+    "llm-provider/openrouter"
   ],
   "registered_llm_provider_aliases_dummy_config": [
     "chatgpt",
@@ -1179,8 +1152,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "opencode-zen",
     "opencode_go",
     "opencode_zen",
-    "openrouter",
-    "zai"
+    "openrouter"
   ],
   "storage_backend_module_ids": [
     "storage/sqlx"
@@ -1239,7 +1211,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENAI_BASE_PROVIDERS__N__API_BASE",
         "OPENAI_BASE_PROVIDERS__N__API_KEY",
         "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
-        "OPENAI_BASE_PROVIDERS__N__MODELS_URL"
+        "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+        "OPENAI_BASE_PROVIDERS__N__PROFILE"
       ],
       "requires_capabilities": []
     },
@@ -1284,16 +1257,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "cargo_feature": "llm-openrouter",
       "config_env": [
         "OPENROUTER_API_KEY"
-      ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "llm-provider/zai",
-      "kind": "llm-provider",
-      "cargo_feature": "llm-zai",
-      "config_env": [
-        "ZAI_API_BASE",
-        "ZAI_API_KEY"
       ],
       "requires_capabilities": []
     },

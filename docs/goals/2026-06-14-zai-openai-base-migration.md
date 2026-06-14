@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 20:47
+Last updated: 2026-06-14 21:18
 
 ## Objective
 
@@ -122,8 +122,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:49`-`:73`, `:132`
   - Acceptance: files `zai.rs` and `zai/` are deleted; feature `llm-zai`, dependency `zai-rs`, provider module registration, compiled capability manifest module, `llm-provider/zai` mentions, `zai_rs` tracing filter, and ZAI-only media fallback sentinel are gone.
   - Evidence required: `rg "llm-zai|zai-rs|llm-provider/zai|ZAI_FALLBACK_TO_MEDIA|zai_rs"` returns no active code/config references except historical PRD/goal docs if explicitly reviewed; `cargo tree -i zai-rs -p oxide-agent-core --no-default-features --features profile-full` reports no package match.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 5 deleted `crates/oxide-agent-core/src/llm/providers/zai.rs`, `crates/oxide-agent-core/src/llm/providers/zai/`, and `crates/oxide-agent-core/tests/llm_provider_check.rs`; removed `zai-rs` and `llm-zai` from `crates/oxide-agent-core/Cargo.toml`; removed dedicated ZAI registration from provider modules, compiled capability manifest, `profiles/full.toml`, snapshots, and `llm/client.rs` fallback handling. Verified on 2026-06-14 21:18 by `rg "llm-zai|zai-rs|llm-provider/zai|ZAI_FALLBACK_TO_MEDIA|zai_rs|ZAI_API_KEY|ZAI_API_BASE" crates/oxide-agent-core profiles/full.toml Cargo.lock || true` returning no matches and by `cargo tree -i zai-rs -p oxide-agent-core --no-default-features --features profile-full` reporting `package ID specification 'zai-rs' did not match any packages`.
 
 - G9: Runtime config and docs use `openai-base:zai`
   - Source: `docs/prd/zai-drop.md:75`-`:97`, `:131`, `:133`
@@ -136,8 +136,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:73`, `:110`-`:111`
   - Acceptance: config/model-route validation rejects old dedicated `zai` provider and accepts `openai-base:zai` with configured OpenAI Base endpoint.
   - Evidence required: config tests for both cases pass.
-  - Status: in_progress
-  - Evidence collected: New `openai-base:zai` route validation is verified by `config::tests::route_validation_accepts_openai_base_zai_instance` and env route parsing by `test_model_routes_parse_from_env_and_override_primary_models`. Old `provider = "zai"` rejection is verified in the target no-dedicated-provider feature set by `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` on 2026-06-14 20:35. Final status remains in_progress until Checkpoint 5 removes `llm-zai`, so the same validation is true under `profile-full`.
+  - Status: verified
+  - Evidence collected: New `openai-base:zai` route validation is verified by `config::tests::route_validation_accepts_openai_base_zai_instance` and env route parsing by `test_model_routes_parse_from_env_and_override_primary_models`. Old `provider = "zai"` rejection is now verified under `profile-full` after `llm-zai` removal by `cargo test -p oxide-agent-core --no-default-features --features profile-full route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` on 2026-06-14 21:18.
 
 - G11: Test mocks are renamed away from ZAI-specific provider names
   - Source: `docs/prd/zai-drop.md:124`
@@ -152,8 +152,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:49`-`:58`, `:136`
   - Acceptance: no new provider or SDK wrapper is introduced; ZAI behavior lives in `openai_base` profile/body/stream/rate-limit utilities.
   - Evidence required: file review and `rg "struct .*ZaiProvider|provider/zai|mod zai" crates/oxide-agent-core/src/llm/providers` after cleanup.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Dedicated ZAI provider files and module registration were removed in Checkpoint 5; ZAI behavior that remains is in OpenAI Base profile/body/stream/rate-limit utilities. Verified by `rg "struct .*ZaiProvider|provider/zai|mod zai" crates/oxide-agent-core/src/llm/providers || true` returning no matches on 2026-06-14 21:18.
 
 - Q2: Generic OpenAI Base behavior is not polluted by ZAI quirks
   - Source: `docs/prd/zai-drop.md:119`-`:121`
@@ -166,15 +166,15 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:96`
   - Acceptance: `ZAI_API_KEY` is not read by runtime config/provider module code after migration.
   - Evidence required: `rg "ZAI_API_KEY|ZAI_API_BASE" crates config README.md .env.example` reviewed; active runtime references absent.
-  - Status: in_progress
-  - Evidence collected: Docs/config/web E2E setup no longer read or instruct `ZAI_API_KEY`/`ZAI_API_BASE`; live ZAI E2E now requires `OPENAI_BASE_PROVIDERS__1__*`. Verified on 2026-06-14 20:47 by the focused grep over README, `.env.example`, CI workflow, and web E2E paths returning no matches. Final runtime status remains in_progress until Checkpoint 5 deletes the dedicated provider code that still owns `ZAI_API_KEY` before removal.
+  - Status: verified
+  - Evidence collected: Docs/config/web E2E setup no longer read or instruct `ZAI_API_KEY`/`ZAI_API_BASE`; live ZAI E2E now requires `OPENAI_BASE_PROVIDERS__1__*`. Checkpoint 5 deleted the dedicated provider code that still owned `ZAI_API_KEY`/`ZAI_API_BASE`. Verified on 2026-06-14 21:18 by `rg "llm-zai|zai-rs|llm-provider/zai|ZAI_FALLBACK_TO_MEDIA|zai_rs|ZAI_API_KEY|ZAI_API_BASE" crates/oxide-agent-core profiles/full.toml Cargo.lock || true` returning no matches.
 
 - Q4: No new dependencies or architecture layers
   - Source: repo `AGENTS.md` implementation bias and `docs/prd/zai-drop.md:136`
   - Acceptance: solution uses existing `reqwest`/`serde_json`/`futures-util` stack and existing profile abstraction; no new crates/services/queues/caches.
   - Evidence required: `git diff Cargo.toml Cargo.lock` shows only removal or existing-feature wiring changes; no added dependencies.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 5 removes the `zai-rs` dependency and `llm-zai` feature without adding dependencies; streaming remains on the existing OpenAI Base `reqwest` path. `git diff --stat` shows the checkpoint is deletion-heavy (`47 insertions(+), 2157 deletions(-)`), and `cargo tree -i zai-rs -p oxide-agent-core --no-default-features --features profile-full` reports no matching package.
 
 - Q5: Tool-call correlation integrity is preserved
   - Source: `docs/prd/zai-drop.md:39`-`:42`, `:117`
@@ -187,15 +187,15 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:123`
   - Acceptance: `llm/client.rs` has no stale ZAI-only sentinel path; any remaining media fallback is capability-driven and not tied to removed provider names.
   - Evidence required: focused diff review and `rg "ZAI_FALLBACK_TO_MEDIA|fallback_to_media|ZAI" crates/oxide-agent-core/src/llm/client.rs` reviewed.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Removed the `ZAI_FALLBACK_TO_MEDIA` branch from `LlmClient::transcribe_audio_with_fallback`; the method now only retries the selected provider and returns its result/error. Verified on 2026-06-14 21:18 by `rg "ZAI_FALLBACK_TO_MEDIA|fallback_to_media|ZAI" crates/oxide-agent-core/src/llm/client.rs || true` returning no matches and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` passing.
 
 - Q7: Snapshot/manifest state matches removed provider
   - Source: `docs/prd/zai-drop.md:66`-`:70`
   - Acceptance: modular registry snapshots and compiled capability output no longer list `llm-provider/zai` or `llm-zai`; OpenAI Base profile config is represented as needed.
   - Evidence required: snapshot tests pass and focused snapshot diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Removed `llm-provider/zai` from the compiled capability manifest and `profiles/full.toml`, then regenerated both modular registry snapshots. Verified by `INSTA_UPDATE=always cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` and `INSTA_UPDATE=always cargo test -p oxide-agent-core --all-features --test modular_registry_snapshots` passing on 2026-06-14 21:18; focused snapshot grep for `llm-zai|zai-rs|llm-provider/zai|ZAI_API_KEY|ZAI_API_BASE` returned no matches.
 
 - Q8: Implementation remains minimal and maintainable
   - Source: repo `AGENTS.md` scale/implementation bias
@@ -218,7 +218,7 @@ Out of scope:
   - Acceptance: after relevant Rust code checkpoints, focused `cargo test -p oxide-agent-core --no-default-features --features profile-full ...` or narrower feature tests pass.
   - Evidence required: command output per checkpoint recorded in Progress Log.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Checkpoint 4 passed `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run`, `cargo fmt --all -- --check`, and `git diff --check` on 2026-06-14 20:47. Final broader validation remains pending.
+  - Evidence collected: Checkpoint 2 passed `cargo fmt --all`, `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` (77 passed, 0 failed), and `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` on 2026-06-14 20:23. Checkpoint 3 passed `cargo fmt --all`, focused OpenAI Base/config/rate-limit tests, `cargo test -p oxide-agent-core --no-default-features --features profile-full test_model_routes_parse_from_env_and_override_primary_models --lib`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 20:35. Checkpoint 4 passed `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --tests --no-run`, `cargo fmt --all -- --check`, and `git diff --check` on 2026-06-14 20:47. Checkpoint 5 passed `cargo check -p oxide-agent-core --no-default-features --features profile-full`, modular registry snapshot tests for `profile-full` and `all-features`, old ZAI route rejection under `profile-full`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`, and `git diff --check` on 2026-06-14 21:18. Final broader validation remains pending.
 
 - V3: Final formatting and lint gates pass
   - Source: `AGENTS.md:146`
@@ -247,22 +247,22 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:73`
   - Must preserve: old routes fail validation explicitly.
   - Evidence required: config validation test for old provider failure.
-  - Status: in_progress
-  - Evidence collected: `provider = "zai"` rejection is covered under `--no-default-features --features llm-openai-base` by `route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled` on 2026-06-14 20:35. This remains in_progress until Checkpoint 5 removes the compiled `llm-zai` provider from `profile-full`.
+  - Status: verified
+  - Evidence collected: `provider = "zai"` rejection is covered under `--no-default-features --features llm-openai-base` by `route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled` on 2026-06-14 20:35, and under `profile-full` after `llm-zai` removal by `cargo test -p oxide-agent-core --no-default-features --features profile-full route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib` on 2026-06-14 21:18.
 
 - N2: Do not keep `ZAI_API_KEY` fallback
   - Source: `docs/prd/zai-drop.md:96`
   - Must preserve: only OpenAI Base provider env config is supported for ZAI.
   - Evidence required: runtime grep/review and config tests.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 4 removed legacy ZAI key usage from README, `.env.example`, CI/deploy env generation, web live E2E setup, and ignored live-test requirements. Focused grep over those active docs/config/E2E paths returned no matches for `ZAI_API_KEY`/`ZAI_API_BASE` or old `zai` model-provider examples on 2026-06-14 20:47. Final verification remains in_progress until Checkpoint 5 removes the dedicated provider module that still reads the old env vars.
+  - Status: verified
+  - Evidence collected: Checkpoint 4 removed legacy ZAI key usage from README, `.env.example`, CI/deploy env generation, web live E2E setup, and ignored live-test requirements. Checkpoint 5 removed the dedicated provider module that still read the old env vars. Verified on 2026-06-14 21:18 by `rg "llm-zai|zai-rs|llm-provider/zai|ZAI_FALLBACK_TO_MEDIA|zai_rs|ZAI_API_KEY|ZAI_API_BASE" crates/oxide-agent-core profiles/full.toml Cargo.lock || true` returning no matches.
 
 - N3: Do not create a new ZAI provider or SDK wrapper
   - Source: `docs/prd/zai-drop.md:58`
   - Must preserve: one OpenAI-compatible transport on `reqwest`; ZAI is a profile.
   - Evidence required: provider file review and dependency diff.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 5 deleted the dedicated ZAI provider/SDK and did not add any replacement ZAI provider module or SDK dependency. Verified by `rg "struct .*ZaiProvider|provider/zai|mod zai" crates/oxide-agent-core/src/llm/providers || true` returning no matches, by `cargo tree -i zai-rs -p oxide-agent-core --no-default-features --features profile-full` reporting no matching package, and by `git diff --stat` showing dependency/provider removal rather than additions.
 
 ## Implementation Plan
 
@@ -340,6 +340,7 @@ Out of scope:
 - 2026-06-14: Preserve ZAI `next_flush_time` parsing as an OpenAI Base utility and apply it only for the `zai` profile; keep generic `Retry-After` handling as the fallback for non-ZAI OpenAI Base errors.
 - 2026-06-14: While the dedicated provider still exists before Checkpoint 5, prove old `provider = "zai"` failure under the target no-`llm-zai` feature set and keep G10/N1 in_progress until `profile-full` no longer compiles `llm-zai`.
 - 2026-06-14: Live ZAI E2E setup now requires explicit `OPENAI_BASE_PROVIDERS__1__*` env vars instead of translating legacy `ZAI_API_KEY`; this keeps the no-fallback constraint visible and simple.
+- 2026-06-14: Delete the old ZAI live integration test file instead of porting it because final live validation is tracked explicitly by V5 and should use the new `openai-base:zai` runtime route/config, not a provider constructor.
 
 ## Progress Log
 
@@ -378,6 +379,13 @@ Out of scope:
   - Audit IDs updated: G9 verified; G11 verified; Q3 in_progress; N2 in_progress; V2 in_progress.
   - Next: review diff, commit Checkpoint 4, then implement Checkpoint 5 dedicated provider/feature/dependency removal.
 
+- 2026-06-14 21:18: Checkpoint 5 implemented -- dedicated ZAI provider, feature, dependency, manifest, and fallback removed
+  - Changed: deleted dedicated ZAI provider/SDK files and old live provider-check test; removed `zai-rs`, `llm-zai`, provider registration/export gates, compiled capability module, full profile module entry, ZAI media fallback sentinel, stale ZAI capability/module tests, and regenerated modular registry snapshots.
+  - Evidence: active core/profile/lock/snapshot grep has no `llm-zai`, `zai-rs`, `llm-provider/zai`, `ZAI_FALLBACK_TO_MEDIA`, `zai_rs`, `ZAI_API_KEY`, or `ZAI_API_BASE`; old `provider = "zai"` validation fails under `profile-full`; `zai-rs` is absent from the profile-full dependency tree.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features profile-full`; `INSTA_UPDATE=always cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots`; `INSTA_UPDATE=always cargo test -p oxide-agent-core --all-features --test modular_registry_snapshots`; `cargo test -p oxide-agent-core --no-default-features --features profile-full route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled --lib`; `cargo tree -i zai-rs -p oxide-agent-core --no-default-features --features profile-full 2>&1 || true`; `cargo fmt --all -- --check`; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: G8 verified; G10 verified; Q1 verified; Q3 verified; Q4 verified; Q6 verified; Q7 verified; N1 verified; N2 verified; N3 verified; V2 in_progress.
+  - Next: review diff, commit Checkpoint 5, then run Checkpoint 6 final validation/audit including workspace clippy/check and V5 live-test attempt/blocker.
+
 ## Risks and Blockers
 
 - Live `glm-*` validation may require an API key not present locally.
@@ -388,9 +396,9 @@ Out of scope:
 
 - Large migration touches provider registration, config validation, snapshots, and docs.
   - Impact: broad compile/test failures are likely if deletion happens before behavior is ported.
-  - Evidence: current repo still has `llm-zai` feature and `zai-rs` dependency in `crates/oxide-agent-core/Cargo.toml:52`, `:83`, `:242`.
-  - Mitigation or requested decision: implement in checkpoints and commit after each verified checkpoint.
-  - Audit IDs affected: G1-G11, Q1-Q8, V1-V4.
+  - Evidence: Checkpoint 5 removed `llm-zai`, `zai-rs`, provider registration, and snapshots; focused profile-full core validation now passes.
+  - Mitigation or requested decision: finish final broad validation in Checkpoint 6 before closing the goal.
+  - Audit IDs affected: V2-V5, Q2, Q8.
 
 ## Final Verification
 

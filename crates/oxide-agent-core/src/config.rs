@@ -1221,8 +1221,7 @@ mod tests {
         feature = "llm-minimax",
         feature = "llm-openai-base",
         feature = "llm-opencode-go",
-        feature = "llm-openrouter",
-        feature = "llm-zai"
+        feature = "llm-openrouter"
     ))]
     fn clear_model_route_env() {
         let keys: Vec<String> = env::vars()
@@ -1440,11 +1439,6 @@ mod tests {
         };
 
         let result = settings.validate_route_providers();
-        if cfg!(feature = "llm-zai") {
-            result.expect("dedicated ZAI provider still validates before removal checkpoint");
-            return;
-        }
-
         let error = result.expect_err("removed direct ZAI provider should fail");
         assert!(
             error
@@ -1875,7 +1869,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
         test_set_env("AGENT_MODEL_ID", "chat-model");
@@ -1928,7 +1921,6 @@ mod tests {
         clear_opencode_go_env();
         test_remove_env("AGENT_MODEL_ID");
         test_remove_env("AGENT_MODEL_PROVIDER");
-        test_remove_env("ZAI_API_KEY");
 
         test_set_env("OPENCODE_API_KEY", "opencode-key");
 
@@ -1952,13 +1944,12 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go()
+    fn settings_do_not_require_unrelated_provider_key_when_active_routes_use_opencode_go()
     -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
         test_set_env("OPENCODE_GO_API_KEY", "opencode-key");
@@ -1994,7 +1985,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
         test_set_env("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");

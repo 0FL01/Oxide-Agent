@@ -49,7 +49,6 @@ tokio-retry = "0.3"
 unicode-segmentation = "1.12.0"
 sha2 = "0.10.9"
 serde_yaml = "0.9.34"
-zai-rs = { version = "0.1.15", optional = true }
 claudius = { version = "0.19.0", optional = true }
 mockall = "0.14.0"
 insta = "1.46.1"
@@ -80,7 +79,6 @@ profile-full = [
     "llm-chatgpt",
     "llm-mistral",
     "llm-minimax",
-    "llm-zai",
     "llm-openai-base",
     "llm-opencode-go",
     "llm-openrouter",
@@ -239,7 +237,6 @@ storage-sqlx = ["dep:sqlx-core", "dep:sqlx-postgres"]
 llm-chatgpt = ["dep:reqwest"]
 llm-mistral = ["dep:reqwest", "llm-openai-base"]
 llm-minimax = ["dep:claudius"]
-llm-zai = ["dep:zai-rs", "dep:reqwest"]
 llm-openai-base = ["dep:reqwest"]
 llm-opencode-go = ["dep:reqwest"]
 llm-openrouter = ["dep:reqwest"]

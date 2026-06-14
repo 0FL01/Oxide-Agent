@@ -12,7 +12,6 @@ cargo_features = ["profile-full"]
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }
 "llm-provider/openrouter" = { enabled = true }
-"llm-provider/zai" = { enabled = true }
 "manager/control-plane" = { enabled = true }
 "sandbox-backend/docker-direct" = { enabled = true }
 "sandbox-backend/sandboxd-client" = { enabled = true }

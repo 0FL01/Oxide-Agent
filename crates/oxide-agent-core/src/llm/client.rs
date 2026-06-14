@@ -792,9 +792,7 @@ impl LlmClient {
             .await
     }
 
-    /// Transcribe audio with automatic fallback for text-only providers and retry logic.
-    ///
-    /// If the provider returns `ZAI_FALLBACK_TO_MEDIA` error, uses `media_model_provider` instead.
+    /// Transcribe audio with retry logic.
     /// Retries up to 5 times with exponential backoff for retryable errors.
     ///
     /// # Errors
@@ -807,47 +805,17 @@ impl LlmClient {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let primary_result = self
-            .retry_with_backoff(
-                || async {
-                    let provider = self.get_provider(provider_name)?;
-                    provider
-                        .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
-                        .await
-                },
-                &format!("Transcription with {}", provider_name),
-                3000,
-            )
-            .await;
-
-        match primary_result {
-            Ok(text) => Ok(text),
-            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_MEDIA" => {
-                let media_provider = self
-                    .media_model_provider
-                    .as_deref()
-                    .ok_or_else(|| LlmError::MissingConfig("media_model_provider".to_string()))?;
-                let media_model_id = self
-                    .media_model_id
-                    .as_deref()
-                    .ok_or_else(|| LlmError::MissingConfig("media_model_id".to_string()))?;
-
-                info!("ZAI does not support audio, falling back to media model {media_model_id}");
-
-                self.retry_with_backoff(
-                    || async {
-                        let provider = self.get_provider(media_provider)?;
-                        provider
-                            .transcribe_audio(audio_bytes.clone(), mime_type, media_model_id)
-                            .await
-                    },
-                    &format!("Transcription fallback with {}", media_provider),
-                    3000,
-                )
-                .await
-            }
-            Err(e) => Err(e),
-        }
+        self.retry_with_backoff(
+            || async {
+                let provider = self.get_provider(provider_name)?;
+                provider
+                    .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
+                    .await
+            },
+            &format!("Transcription with {}", provider_name),
+            3000,
+        )
+        .await
     }
 
     /// Analyze an image with a text prompt

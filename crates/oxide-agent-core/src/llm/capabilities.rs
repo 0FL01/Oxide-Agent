@@ -260,43 +260,6 @@ mod tests {
         assert!(!alias.supports_structured_output);
     }
 
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_capabilities_disable_structured_output() {
-        let capabilities = super::provider_capabilities("zai");
-
-        assert!(capabilities.supports_tool_calling);
-        assert!(!capabilities.supports_structured_output);
-        assert_eq!(capabilities.tool_history_label(), "best_effort");
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn provider_capabilities_for_zai_model_apply_model_specific_overrides() {
-        let structured = crate::config::ModelInfo {
-            id: "glm-4.6".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "zai".to_string(),
-            weight: 1,
-        };
-        let conservative = crate::config::ModelInfo {
-            id: "glm-5".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "zai".to_string(),
-            weight: 1,
-        };
-
-        let structured_capabilities = super::provider_capabilities_for_model(&structured);
-        let conservative_capabilities = super::provider_capabilities_for_model(&conservative);
-
-        assert!(structured_capabilities.supports_tool_calling);
-        assert!(structured_capabilities.supports_structured_output);
-        assert!(conservative_capabilities.supports_tool_calling);
-        assert!(!conservative_capabilities.supports_structured_output);
-    }
-
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn opencode_go_models_use_native_tools_without_structured_output() {
