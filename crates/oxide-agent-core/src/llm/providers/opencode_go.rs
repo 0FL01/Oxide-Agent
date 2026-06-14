@@ -1,7 +1,6 @@
+use super::anthropic_messages;
 use crate::config::{OPENCODE_GO_CHAT_TEMPERATURE, get_opencode_go_max_concurrent};
-use crate::llm::providers::protocol_profiles::{
-    ANTHROPIC_CLIENT_TOOL_PROFILE, CHAT_LIKE_TOOL_PROFILE,
-};
+use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{create_http_client, send_json_request};
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart,
@@ -28,7 +27,6 @@ const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
 const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
 const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
 const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
-const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 const OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS: u32 = 4000;
 
 /// Reasoning effort sent for models that support thinking/CoT parameters.
@@ -439,18 +437,24 @@ impl LlmProvider for OpenCodeGoProvider {
                     ),
                     Vec::new(),
                 ),
-                ModelProtocol::AnthropicMessages => (
-                    "messages",
-                    &self.api_base_messages,
-                    build_anthropic_completion_body(
-                        system_prompt,
-                        history,
-                        user_message,
-                        model_id,
-                        max_tokens,
-                    ),
-                    anthropic_extra_headers(&self.api_key),
-                ),
+                ModelProtocol::AnthropicMessages => {
+                    let thinking = anthropic_messages::response::is_reasoning_model(model_id)
+                        .then(|| json!({ "type": "enabled" }));
+                    (
+                        "messages",
+                        &self.api_base_messages,
+                        anthropic_messages::request::build_completion_body(
+                            system_prompt,
+                            history,
+                            user_message,
+                            normalize_model_id(model_id),
+                            max_tokens,
+                            OPENCODE_GO_CHAT_TEMPERATURE,
+                            thinking,
+                        ),
+                        anthropic_messages::request::anthropic_extra_headers(&self.api_key),
+                    )
+                }
                 ModelProtocol::Unknown => {
                     return Err(unsupported_protocol_error(model_id, self.profile));
                 }
@@ -478,7 +482,10 @@ impl LlmProvider for OpenCodeGoProvider {
             .await?;
             let parsed = match protocol {
                 ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
-                ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
+                ModelProtocol::AnthropicMessages => anthropic_messages::response::parse_response(
+                    response,
+                    anthropic_messages::AnthropicProfile::opencode_go(),
+                )?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
             log_response_summary(self.profile, request_kind, model_id, &parsed);
@@ -612,21 +619,25 @@ impl LlmProvider for OpenCodeGoProvider {
                     ),
                     Vec::new(),
                 ),
-                ModelProtocol::AnthropicMessages => (
-                    "messages_with_tools",
-                    &self.api_base_messages,
-                    build_anthropic_messages_body(
-                        system_prompt,
-                        messages,
-                        tools,
-                        model_id,
-                        max_tokens,
-                        temperature,
-                        json_mode,
-                        reasoning_effort,
-                    ),
-                    anthropic_extra_headers(&self.api_key),
-                ),
+                ModelProtocol::AnthropicMessages => {
+                    let thinking = (anthropic_messages::response::is_reasoning_model(model_id)
+                        && !anthropic_messages::response::disables_reasoning(reasoning_effort))
+                    .then(|| json!({ "type": "enabled" }));
+                    (
+                        "messages_with_tools",
+                        &self.api_base_messages,
+                        anthropic_messages::request::build_messages_body(
+                            system_prompt,
+                            messages,
+                            tools,
+                            normalize_model_id(model_id),
+                            max_tokens,
+                            temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+                            thinking,
+                        ),
+                        anthropic_messages::request::anthropic_extra_headers(&self.api_key),
+                    )
+                }
                 ModelProtocol::Unknown => {
                     return Err(unsupported_protocol_error(model_id, self.profile));
                 }
@@ -655,7 +666,10 @@ impl LlmProvider for OpenCodeGoProvider {
 
             let parsed = match protocol {
                 ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
-                ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
+                ModelProtocol::AnthropicMessages => anthropic_messages::response::parse_response(
+                    response,
+                    anthropic_messages::AnthropicProfile::opencode_go(),
+                )?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
             log_response_summary(self.profile, request_kind, model_id, &parsed);
@@ -699,24 +713,6 @@ fn normalize_model_id_for_prefix<'a>(model_id: &'a str, model_prefix: &str) -> &
     let trimmed = model_id.trim();
     let prefix = format!("{}/", model_prefix.trim().trim_end_matches('/'));
     trimmed.strip_prefix(&prefix).unwrap_or(trimmed)
-}
-
-/// Check if the model supports reasoning/thinking effort parameters.
-///
-/// Matches DeepSeek V4 family and MiMo V2 family.
-/// Model ID is normalized (prefix stripped) before matching.
-fn is_reasoning_model(model_id: &str) -> bool {
-    let lower = normalize_model_id(model_id).to_ascii_lowercase();
-    lower.starts_with("deepseek-v4") || lower.starts_with("mimo-v2")
-}
-
-fn disables_reasoning(reasoning_effort: Option<&str>) -> bool {
-    reasoning_effort
-        .map(str::trim)
-        .map(|effort| {
-            effort.eq_ignore_ascii_case("none") || effort.eq_ignore_ascii_case("disabled")
-        })
-        .unwrap_or(false)
 }
 
 fn derive_messages_api_base(api_base: &str) -> String {
@@ -846,7 +842,7 @@ fn build_chat_completion_body(
         "stream": false,
     });
 
-    if is_reasoning_model(model_id) {
+    if anthropic_messages::response::is_reasoning_model(normalize_model_id(model_id)) {
         body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
     }
 
@@ -879,7 +875,7 @@ fn build_image_analysis_body(
         "stream": false,
     });
 
-    if is_reasoning_model(model_id) {
+    if anthropic_messages::response::is_reasoning_model(normalize_model_id(model_id)) {
         body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
     }
 
@@ -920,31 +916,6 @@ fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
     "image/jpeg"
 }
 
-fn build_anthropic_completion_body(
-    system_prompt: &str,
-    history: &[Message],
-    user_message: &str,
-    model_id: &str,
-    max_tokens: u32,
-) -> Value {
-    let mut messages = prepare_anthropic_messages(history);
-    messages.push(anthropic_text_message("user", user_message));
-    let mut body = json!({
-        "model": normalize_model_id(model_id),
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": OPENCODE_GO_CHAT_TEMPERATURE,
-        "stream": false,
-    });
-    if let Some(system) = anthropic_system_prompt(system_prompt, history) {
-        body["system"] = json!(system);
-    }
-    if is_reasoning_model(model_id) {
-        body["thinking"] = json!({ "type": "enabled" });
-    }
-    body
-}
-
 fn build_tool_chat_body(
     system_prompt: &str,
     history: &[Message],
@@ -981,44 +952,10 @@ fn build_tool_chat_body(
         body["response_format"] = json!({ "type": "json_object" });
     }
 
-    if is_reasoning_model(model_id) && !disables_reasoning(reasoning_effort) {
+    if anthropic_messages::response::is_reasoning_model(normalize_model_id(model_id))
+        && !anthropic_messages::response::disables_reasoning(reasoning_effort)
+    {
         body["reasoning_effort"] = json!(reasoning_effort.unwrap_or(OPENCODE_GO_REASONING_EFFORT));
-    }
-
-    body
-}
-
-fn build_anthropic_messages_body(
-    system_prompt: &str,
-    history: &[Message],
-    tools: &[ToolDefinition],
-    model_id: &str,
-    max_tokens: u32,
-    temperature: Option<f32>,
-    _json_mode: bool,
-    reasoning_effort: Option<&str>,
-) -> Value {
-    let messages = prepare_anthropic_messages(history);
-    let anthropic_tools = prepare_anthropic_tools_json(tools);
-    let has_tools = !anthropic_tools.is_empty();
-
-    let mut body = json!({
-        "model": normalize_model_id(model_id),
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
-        "stream": false,
-    });
-
-    if let Some(system) = anthropic_system_prompt(system_prompt, history) {
-        body["system"] = json!(system);
-    }
-    if has_tools {
-        body["tools"] = json!(anthropic_tools);
-        body["tool_choice"] = json!({ "type": "auto" });
-    }
-    if is_reasoning_model(model_id) && !disables_reasoning(reasoning_effort) {
-        body["thinking"] = json!({ "type": "enabled" });
     }
 
     body
@@ -1146,122 +1083,6 @@ fn openai_user_message_content(message: &Message, allow_native_image_parts: bool
     }
 }
 
-fn anthropic_system_prompt(system_prompt: &str, history: &[Message]) -> Option<String> {
-    let mut parts = Vec::new();
-    if !system_prompt.trim().is_empty() {
-        parts.push(system_prompt.trim().to_string());
-    }
-    parts.extend(
-        history
-            .iter()
-            .filter(|message| message.role == "system")
-            .map(|message| message.content.trim())
-            .filter(|content| !content.is_empty())
-            .map(ToString::to_string),
-    );
-    (!parts.is_empty()).then(|| parts.join("\n\n"))
-}
-
-fn prepare_anthropic_messages(history: &[Message]) -> Vec<Value> {
-    let mut messages = Vec::with_capacity(history.len());
-    let mut index = 0;
-    while index < history.len() {
-        let message = &history[index];
-        if message.role == "system" {
-            index += 1;
-            continue;
-        }
-        if message.role == "tool" {
-            let mut blocks = Vec::new();
-            let mut cursor = index;
-            while cursor < history.len() && history[cursor].role == "tool" {
-                if let Some(block) = anthropic_tool_result_block(&history[cursor]) {
-                    blocks.push(block);
-                }
-                cursor += 1;
-            }
-            if !blocks.is_empty() {
-                messages.push(json!({
-                    "role": "user",
-                    "content": blocks,
-                }));
-            }
-            index = cursor;
-            continue;
-        }
-
-        messages.push(match message.role.as_str() {
-            "assistant" => anthropic_assistant_message(message),
-            "user" => anthropic_text_message("user", &message.content),
-            _ => anthropic_text_message("user", &message.content),
-        });
-        index += 1;
-    }
-    messages
-}
-
-fn anthropic_text_message(role: &str, text: &str) -> Value {
-    json!({
-        "role": role,
-        "content": [{
-            "type": "text",
-            "text": text,
-        }],
-    })
-}
-
-fn anthropic_assistant_message(message: &Message) -> Value {
-    let mut blocks = Vec::new();
-    if !message.content.is_empty() {
-        blocks.push(json!({
-            "type": "text",
-            "text": message.content,
-        }));
-    }
-    if let Some(tool_calls) = &message.tool_calls {
-        blocks.extend(tool_calls.iter().filter_map(|tool_call| {
-            ANTHROPIC_CLIENT_TOOL_PROFILE
-                .encode_tool_call(tool_call)
-                .and_then(|call| call.into_anthropic())
-                .map(|call| {
-                    json!({
-                        "type": "tool_use",
-                        "id": call.id,
-                        "name": call.name,
-                        "input": call.input,
-                    })
-                })
-        }));
-    }
-    if blocks.is_empty() {
-        blocks.push(json!({
-            "type": "text",
-            "text": "",
-        }));
-    }
-    json!({
-        "role": "assistant",
-        "content": blocks,
-    })
-}
-
-fn anthropic_tool_result_block(message: &Message) -> Option<Value> {
-    ANTHROPIC_CLIENT_TOOL_PROFILE
-        .encode_tool_result(message)
-        .and_then(|result| result.into_anthropic())
-        .map(|result| {
-            let mut block = json!({
-                "type": "tool_result",
-                "tool_use_id": result.tool_use_id,
-                "content": result.content,
-            });
-            if let Some(is_error) = result.is_error {
-                block["is_error"] = json!(is_error);
-            }
-            block
-        })
-}
-
 fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
     tools
         .iter()
@@ -1276,26 +1097,6 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-fn prepare_anthropic_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters,
-            })
-        })
-        .collect()
-}
-
-fn anthropic_extra_headers(api_key: &str) -> Vec<(&str, &str)> {
-    vec![
-        ("anthropic-version", ANTHROPIC_VERSION_HEADER),
-        ("x-api-key", api_key),
-    ]
 }
 
 fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
@@ -1357,103 +1158,6 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
     })
 }
 
-fn parse_anthropic_messages_response(response: Value) -> Result<ChatResponse, LlmError> {
-    if let Some(error) = extract_opencode_error_response(&response) {
-        return Err(LlmError::ApiError(error));
-    }
-
-    let blocks = response
-        .get("content")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            LlmError::ApiError(
-                "Missing content blocks in OpenCode Go messages response".to_string(),
-            )
-        })?;
-    let mut content_parts = Vec::new();
-    let mut reasoning_parts = Vec::new();
-    let mut tool_calls = Vec::new();
-
-    for (index, block) in blocks.iter().enumerate() {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(text) = block
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                {
-                    content_parts.push(text.to_string());
-                }
-            }
-            Some("tool_use") => {
-                let Some(name) = block.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                let input = block.get("input").unwrap_or(&Value::Null);
-                let arguments = if input.is_null() {
-                    "{}".to_string()
-                } else {
-                    serde_json::to_string(input).unwrap_or_default()
-                };
-                let wire_id = block
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.trim().is_empty())
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| format!("opencode_go_tool_use_{index}"));
-                tool_calls.push(ANTHROPIC_CLIENT_TOOL_PROFILE.inbound_provider_tool_call(
-                    wire_id.as_str(),
-                    None,
-                    name.to_string(),
-                    arguments,
-                ));
-            }
-            Some("thinking") => {
-                if let Some(thinking) = block
-                    .get("thinking")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|thinking| !thinking.is_empty())
-                {
-                    reasoning_parts.push(thinking.to_string());
-                }
-            }
-            Some("redacted_thinking") => {
-                if let Some(data) = block
-                    .get("data")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|data| !data.is_empty())
-                {
-                    reasoning_parts.push(data.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let content = (!content_parts.is_empty()).then(|| content_parts.join("\n"));
-    let reasoning_content = (!reasoning_parts.is_empty()).then(|| reasoning_parts.join("\n"));
-    if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
-        return Err(LlmError::ApiError(
-            "Empty OpenCode Go messages response".to_string(),
-        ));
-    }
-
-    Ok(ChatResponse {
-        content,
-        tool_calls,
-        finish_reason: response
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .map(map_anthropic_stop_reason)
-            .unwrap_or_else(|| "unknown".to_string()),
-        reasoning_content,
-        usage: response.get("usage").and_then(parse_anthropic_usage),
-    })
-}
-
 fn extract_opencode_error_response(response: &Value) -> Option<String> {
     if let Some(error) = response.get("error") {
         if let Some(message) = non_empty_str(error.get("message")) {
@@ -1507,16 +1211,6 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
-    }
-}
-
-fn map_anthropic_stop_reason(stop_reason: &str) -> String {
-    match stop_reason {
-        "end_turn" => "stop".to_string(),
-        "tool_use" => "tool_calls".to_string(),
-        "stop_sequence" => "stop".to_string(),
-        "max_tokens" => "length".to_string(),
-        other => other.to_string(),
     }
 }
 
@@ -1592,39 +1286,15 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
     })
 }
 
-fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
-    let input_tokens = value.get("input_tokens")?.as_u64()? as u32;
-    let completion_tokens = value.get("output_tokens")?.as_u64()? as u32;
-    let cached_tokens = value
-        .get("cache_read_input_tokens")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
-    let cache_creation_tokens = value
-        .get("cache_creation_input_tokens")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
-    let prompt_tokens = input_tokens
-        .saturating_add(cached_tokens.unwrap_or_default())
-        .saturating_add(cache_creation_tokens.unwrap_or_default());
-    Some(TokenUsage {
-        prompt_tokens,
-        completion_tokens,
-        total_tokens: prompt_tokens.saturating_add(completion_tokens),
-        cached_tokens,
-        cache_creation_tokens,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile, build_anthropic_completion_body,
-        build_anthropic_messages_body, build_chat_completion_body, build_tool_chat_body,
-        derive_messages_api_base, is_reasoning_model, normalize_model_id,
-        opencode_go_should_throttle, parse_anthropic_messages_response, parse_anthropic_usage,
-        parse_chat_response, parse_tool_calls, parse_usage, prepare_anthropic_messages,
+        OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile, build_chat_completion_body,
+        build_tool_chat_body, derive_messages_api_base, normalize_model_id,
+        opencode_go_should_throttle, parse_chat_response, parse_tool_calls, parse_usage,
         prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
     };
+    use crate::llm::providers::anthropic_messages::response::is_reasoning_model;
     use crate::llm::{
         LlmError, Message, MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction,
         ToolDefinition,
@@ -1681,22 +1351,24 @@ mod tests {
 
     #[test]
     fn reasoning_model_detection() {
+        // Shared is_reasoning_model does not normalize (no prefix stripping);
+        // callers must normalize_model_id() first.
         // DeepSeek V4 family
         assert!(is_reasoning_model("deepseek-v4-flash"));
         assert!(is_reasoning_model("deepseek-v4-pro"));
-        assert!(is_reasoning_model("opencode-go/deepseek-v4-flash"));
         assert!(is_reasoning_model(" DEEPSEEK-V4-FLASH "));
 
         // MiMo V2 family
         assert!(is_reasoning_model("mimo-v2.5"));
         assert!(is_reasoning_model("mimo-v2.5-pro"));
-        assert!(is_reasoning_model("opencode-go/mimo-v2.5-pro"));
 
         // Non-reasoning models
         assert!(!is_reasoning_model("deepseek-v3"));
         assert!(!is_reasoning_model("deepseek-chat"));
         assert!(!is_reasoning_model("gpt-4o"));
         assert!(!is_reasoning_model("qwen3-235b-a22b"));
+        // Prefixed IDs must be normalized first
+        assert!(!is_reasoning_model("opencode-go/deepseek-v4-flash"));
     }
 
     #[test]
@@ -1726,44 +1398,6 @@ mod tests {
             Some("none"),
         );
         assert!(body.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn thinking_enabled_in_anthropic_text_body() {
-        let body =
-            build_anthropic_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000);
-        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
-    }
-
-    #[test]
-    fn thinking_enabled_in_anthropic_tool_body() {
-        let tools = vec![read_file_tool()];
-        let body = build_anthropic_messages_body(
-            "system",
-            &[],
-            &tools,
-            "mimo-v2.5-pro",
-            32000,
-            None,
-            false,
-            None,
-        );
-        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
-    }
-
-    #[test]
-    fn disabled_reasoning_omits_anthropic_thinking() {
-        let body = build_anthropic_messages_body(
-            "system",
-            &[],
-            &[],
-            "mimo-v2.5-pro",
-            32000,
-            None,
-            false,
-            Some("disabled"),
-        );
-        assert!(body.get("thinking").is_none());
     }
 
     #[test]
@@ -1947,92 +1581,6 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_messages_body_uses_messages_endpoint_shape() {
-        let history = vec![
-            Message::assistant_with_tools(
-                "Calling tools",
-                vec![
-                    ToolCall::new(
-                        "invoke-opencode-1",
-                        ToolCallFunction {
-                            name: "read_file".to_string(),
-                            arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
-                        },
-                        false,
-                    )
-                    .with_correlation(
-                        ToolCallCorrelation::new("invoke-opencode-1")
-                            .with_provider_tool_call_id("toolu-opencode-1"),
-                    ),
-                ],
-            ),
-            Message::tool_with_correlation(
-                "invoke-opencode-1",
-                ToolCallCorrelation::new("invoke-opencode-1")
-                    .with_provider_tool_call_id("toolu-opencode-1"),
-                "read_file",
-                "contents",
-            ),
-        ];
-        let body = build_anthropic_messages_body(
-            "system",
-            &history,
-            &[read_file_tool()],
-            "opencode-go/minimax-m2.7",
-            32000,
-            Some(0.2),
-            true,
-            None,
-        );
-
-        assert_eq!(body["model"], json!("minimax-m2.7"));
-        assert_eq!(body["system"], json!("system"));
-        assert_eq!(body["messages"][0]["role"], json!("assistant"));
-        assert_eq!(body["messages"][0]["content"][1]["type"], json!("tool_use"));
-        assert_eq!(
-            body["messages"][0]["content"][1]["id"],
-            json!("toolu-opencode-1")
-        );
-        assert_eq!(
-            body["messages"][1]["content"][0]["type"],
-            json!("tool_result")
-        );
-        assert_eq!(body["tools"][0]["name"], json!("read_file"));
-        assert_eq!(
-            body["tools"][0]["input_schema"]["properties"]["path"]["type"],
-            json!("string")
-        );
-        assert_eq!(body["tool_choice"], json!({ "type": "auto" }));
-        assert!(body.get("response_format").is_none());
-    }
-
-    #[test]
-    fn anthropic_message_conversion_groups_tool_results() {
-        let history = vec![
-            Message::tool_with_correlation(
-                "invoke-a",
-                ToolCallCorrelation::new("invoke-a").with_provider_tool_call_id("toolu-a"),
-                "read_file",
-                "a",
-            ),
-            Message::tool_with_correlation(
-                "invoke-b",
-                ToolCallCorrelation::new("invoke-b").with_provider_tool_call_id("toolu-b"),
-                "read_file",
-                "b",
-            ),
-        ];
-
-        let messages = prepare_anthropic_messages(&history);
-
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0]["role"], json!("user"));
-        assert_eq!(messages[0]["content"].as_array().expect("blocks").len(), 2);
-        assert_eq!(messages[0]["content"][0]["tool_use_id"], json!("toolu-a"));
-        assert_eq!(messages[0]["content"][1]["tool_use_id"], json!("toolu-b"));
-    }
-
-    #[test]
     fn derives_messages_endpoint_from_chat_completions_endpoint() {
         assert_eq!(
             derive_messages_api_base("https://opencode.ai/zen/go/v1/chat/completions"),
@@ -2179,73 +1727,6 @@ mod tests {
         .expect("usage should parse");
 
         assert_eq!(usage.cached_tokens, None);
-    }
-
-    #[test]
-    fn parse_anthropic_usage_extracts_cache_fields() {
-        let usage = parse_anthropic_usage(&json!({
-            "input_tokens": 3840,
-            "output_tokens": 512,
-            "cache_read_input_tokens": 2560,
-            "cache_creation_input_tokens": 128
-        }))
-        .expect("anthropic usage should parse");
-
-        assert_eq!(usage.prompt_tokens, 6528);
-        assert_eq!(usage.total_tokens, 7040);
-        assert_eq!(usage.cached_tokens, Some(2560));
-        assert_eq!(usage.cache_creation_tokens, Some(128));
-    }
-
-    #[test]
-    fn parse_anthropic_usage_returns_none_when_no_cache_fields() {
-        let usage = parse_anthropic_usage(&json!({
-            "input_tokens": 10,
-            "output_tokens": 5
-        }))
-        .expect("anthropic usage should parse");
-
-        assert_eq!(usage.cached_tokens, None);
-        assert_eq!(usage.cache_creation_tokens, None);
-    }
-
-    #[test]
-    fn parse_chat_response_extracts_text_tool_calls_reasoning_and_usage() {
-        let response = parse_anthropic_messages_response(json!({
-            "content": [
-                { "type": "thinking", "thinking": "internal reasoning" },
-                { "type": "text", "text": "Use a tool" },
-                {
-                    "type": "tool_use",
-                    "id": "toolu-opencode-2",
-                    "name": "read_file",
-                    "input": { "path": "Cargo.toml" }
-                }
-            ],
-            "stop_reason": "tool_use",
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 5
-            }
-        }))
-        .expect("anthropic response parses");
-
-        assert_eq!(response.content.as_deref(), Some("Use a tool"));
-        assert_eq!(
-            response.reasoning_content.as_deref(),
-            Some("internal reasoning")
-        );
-        assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(
-            response.tool_calls[0].wire_tool_call_id(),
-            "toolu-opencode-2"
-        );
-        assert_eq!(
-            response.tool_calls[0].function.arguments,
-            r#"{"path":"Cargo.toml"}"#
-        );
-        assert_eq!(response.finish_reason, "tool_calls");
-        assert_eq!(response.usage.expect("usage").total_tokens, 15);
     }
 
     #[test]

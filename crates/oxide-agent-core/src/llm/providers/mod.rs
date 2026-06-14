@@ -1,3 +1,12 @@
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod anthropic_messages;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;

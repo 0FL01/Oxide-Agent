@@ -1,0 +1,39 @@
+//! Shared Anthropic Messages v1 wire helpers.
+//!
+//! Provides request body construction, message conversion, tool schema encoding,
+//! response parsing, and usage extraction for the Anthropic Messages API format.
+//! Used by both `opencode_go` and `minimax` providers.
+
+pub(crate) mod request;
+pub(crate) mod response;
+
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Profile for provider-specific behavior in the shared Anthropic Messages helpers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AnthropicProfile {
+    /// Provider label for error messages.
+    pub label: &'static str,
+    /// Prefix for generated fallback tool IDs when the provider returns empty IDs.
+    /// `None` means empty IDs are kept as-is.
+    pub empty_tool_id_fallback_prefix: Option<&'static str>,
+}
+
+impl AnthropicProfile {
+    /// Profile for OpenCode Go provider.
+    pub const fn opencode_go() -> Self {
+        Self {
+            label: "OpenCode Go",
+            empty_tool_id_fallback_prefix: Some("opencode_go_tool_use_"),
+        }
+    }
+
+    /// Profile for MiniMax provider.
+    #[allow(dead_code)] // used by minimax provider in CP3
+    pub const fn minimax() -> Self {
+        Self {
+            label: "MiniMax",
+            empty_tool_id_fallback_prefix: Some("minimax_fallback_"),
+        }
+    }
+}
