@@ -71,6 +71,34 @@ pub enum ReasoningPolicy {
     },
 }
 
+/// Provider-specific `thinking` request field policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingPolicy {
+    /// Do not send a `thinking` field.
+    None,
+    /// ZAI expects `thinking.type = enabled` normally and `disabled` for native
+    /// JSON mode requests.
+    ZaiEnabledUnlessJsonMode,
+}
+
+/// Provider-specific streaming request policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPolicy {
+    /// Keep non-streaming Chat Completions requests.
+    NonStreaming,
+    /// Stream ZAI Chat Completions unless native JSON mode is active.
+    ZaiUnlessNativeJsonMode,
+}
+
+/// Model-specific structured-output policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredOutputPolicy {
+    /// Use the profile's base capability unchanged.
+    BaseCapability,
+    /// ZAI allows native structured output only for the legacy GLM tool models.
+    ZaiGlmToolModelsOnly,
+}
+
 /// Audio transcription parameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioTranscriptionProfile {
@@ -126,6 +154,12 @@ pub struct OpenAICompatibleProfile {
     pub audio_transcription: Option<AudioTranscriptionProfile>,
     /// Reasoning effort policy.
     pub reasoning: ReasoningPolicy,
+    /// `thinking` request field policy.
+    pub thinking: ThinkingPolicy,
+    /// Chat Completions streaming policy.
+    pub streaming: StreamPolicy,
+    /// Model-gated structured-output policy.
+    pub structured_output: StructuredOutputPolicy,
 }
 
 impl OpenAICompatibleProfile {
@@ -157,6 +191,34 @@ impl OpenAICompatibleProfile {
                 default_effort: "high",
                 model_match: ModelMatchPolicy::CaseInsensitiveContains("mistral-small-2603"),
             },
+            thinking: ThinkingPolicy::None,
+            streaming: StreamPolicy::NonStreaming,
+            structured_output: StructuredOutputPolicy::BaseCapability,
+        }
+    }
+
+    /// ZAI GLM profile.
+    #[must_use]
+    pub const fn zai() -> Self {
+        Self {
+            name: "zai",
+            default_api_base: "https://api.z.ai/api/coding/paas/v4",
+            capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
+            media_capabilities: MediaCapabilities::new(false, true, false),
+            chat_temperature: 0.95,
+            tool_temperature: 0.95,
+            reasoning_temperature: 0.95,
+            audio_temperature: None,
+            tool_call_id_strategy: ToolCallIdStrategy::Preserve,
+            message_layout: MessageLayoutPolicy::GenericOpenAI,
+            response_content: ResponseContentPolicy::StringOrChunkArrayWithReasoning,
+            json_mode: JsonModePolicy::Standard,
+            parallel_tool_calls: None,
+            audio_transcription: None,
+            reasoning: ReasoningPolicy::None,
+            thinking: ThinkingPolicy::ZaiEnabledUnlessJsonMode,
+            streaming: StreamPolicy::ZaiUnlessNativeJsonMode,
+            structured_output: StructuredOutputPolicy::ZaiGlmToolModelsOnly,
         }
     }
 
@@ -179,6 +241,9 @@ impl OpenAICompatibleProfile {
             parallel_tool_calls: None,
             audio_transcription: None,
             reasoning: ReasoningPolicy::None,
+            thinking: ThinkingPolicy::None,
+            streaming: StreamPolicy::NonStreaming,
+            structured_output: StructuredOutputPolicy::BaseCapability,
         }
     }
 
@@ -195,6 +260,26 @@ impl OpenAICompatibleProfile {
             },
         }
     }
+
+    /// Returns request capabilities after model-specific profile overrides.
+    #[must_use]
+    pub fn capabilities_for_model(&self, model_id: &str) -> ProviderCapabilities {
+        let mut capabilities = self.capabilities;
+        if matches!(
+            self.structured_output,
+            StructuredOutputPolicy::ZaiGlmToolModelsOnly
+        ) {
+            capabilities.supports_structured_output = zai_supports_structured_output(model_id);
+        }
+        capabilities
+    }
+}
+
+fn zai_supports_structured_output(model_id: &str) -> bool {
+    matches!(
+        model_id.trim().to_ascii_lowercase().as_str(),
+        "glm-4.7" | "glm-4" | "mainagent" | "glm-4.6" | "glm-4.5-air" | "glm-4-air" | "subagent"
+    )
 }
 
 #[cfg(test)]
@@ -228,11 +313,60 @@ mod tests {
         assert_eq!(p.json_mode, JsonModePolicy::Standard);
         assert_eq!(p.parallel_tool_calls, Some(true));
         assert!(p.audio_transcription.is_some());
+        assert_eq!(p.thinking, ThinkingPolicy::None);
+        assert_eq!(p.streaming, StreamPolicy::NonStreaming);
+        assert_eq!(p.structured_output, StructuredOutputPolicy::BaseCapability);
         if let Some(audio) = p.audio_transcription {
             assert_eq!(audio.endpoint_path, "/audio/transcriptions");
             assert_eq!(audio.timeout_secs, 120);
             assert_eq!(audio.max_retries, 5);
         }
+    }
+
+    #[test]
+    fn zai_profile_has_expected_values() {
+        let p = OpenAICompatibleProfile::zai();
+        assert_eq!(p.name, "zai");
+        assert_eq!(p.default_api_base, "https://api.z.ai/api/coding/paas/v4");
+        assert!(!p.capabilities.strict_tool_history());
+        assert!(p.capabilities.supports_tool_calling);
+        assert!(!p.capabilities.supports_structured_output);
+        assert!(!p.media_capabilities.supports_audio_transcription);
+        assert!(p.media_capabilities.supports_image_understanding);
+        assert!(!p.media_capabilities.supports_video_understanding);
+        assert!((p.chat_temperature - 0.95).abs() < f32::EPSILON);
+        assert!((p.tool_temperature - 0.95).abs() < f32::EPSILON);
+        assert!((p.reasoning_temperature - 0.95).abs() < f32::EPSILON);
+        assert_eq!(p.tool_call_id_strategy, ToolCallIdStrategy::Preserve);
+        assert_eq!(p.message_layout, MessageLayoutPolicy::GenericOpenAI);
+        assert_eq!(
+            p.response_content,
+            ResponseContentPolicy::StringOrChunkArrayWithReasoning
+        );
+        assert_eq!(p.json_mode, JsonModePolicy::Standard);
+        assert_eq!(p.parallel_tool_calls, None);
+        assert!(p.audio_transcription.is_none());
+        assert_eq!(p.reasoning, ReasoningPolicy::None);
+        assert_eq!(p.thinking, ThinkingPolicy::ZaiEnabledUnlessJsonMode);
+        assert_eq!(p.streaming, StreamPolicy::ZaiUnlessNativeJsonMode);
+        assert_eq!(
+            p.structured_output,
+            StructuredOutputPolicy::ZaiGlmToolModelsOnly
+        );
+    }
+
+    #[test]
+    fn zai_structured_output_is_model_gated() {
+        let p = OpenAICompatibleProfile::zai();
+        assert!(
+            p.capabilities_for_model("glm-4.6")
+                .supports_structured_output
+        );
+        assert!(
+            p.capabilities_for_model(" subagent ")
+                .supports_structured_output
+        );
+        assert!(!p.capabilities_for_model("glm-5").supports_structured_output);
     }
 
     #[test]
@@ -250,6 +384,9 @@ mod tests {
         assert_eq!(p.response_content, ResponseContentPolicy::StringOnly);
         assert_eq!(p.parallel_tool_calls, None);
         assert!(p.audio_transcription.is_none());
+        assert_eq!(p.thinking, ThinkingPolicy::None);
+        assert_eq!(p.streaming, StreamPolicy::NonStreaming);
+        assert_eq!(p.structured_output, StructuredOutputPolicy::BaseCapability);
     }
 
     #[test]

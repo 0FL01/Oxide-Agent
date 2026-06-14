@@ -165,10 +165,28 @@ fn normalize_provider_instance_name(name: &str) -> Option<String> {
 /// to the corresponding `OpenAICompatibleProfile`. Returns `generic()` for
 /// `None`, empty, `"generic"`, or any unrecognized value.
 fn resolve_profile(profile: &Option<String>) -> OpenAICompatibleProfile {
-    match profile.as_deref() {
+    match profile
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("mistral") => OpenAICompatibleProfile::mistral(),
+        Some("zai") => OpenAICompatibleProfile::zai(),
         _ => OpenAICompatibleProfile::generic(),
     }
+}
+
+fn profile_for_provider(provider_name: &str) -> OpenAICompatibleProfile {
+    let Some(instance) = provider_instance_name(provider_name) else {
+        return OpenAICompatibleProfile::generic();
+    };
+
+    configured_endpoints()
+        .into_iter()
+        .find(|endpoint| endpoint.name == instance)
+        .map(|endpoint| resolve_profile(&endpoint.profile))
+        .unwrap_or_else(OpenAICompatibleProfile::generic)
 }
 
 #[cfg(feature = "llm-opencode-go")]
@@ -299,6 +317,13 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
     fn media_capabilities(&self) -> MediaCapabilities {
         MediaCapabilities::new(false, true, false)
     }
+
+    fn capabilities_for_model(
+        &self,
+        model_info: &crate::config::ModelInfo,
+    ) -> ProviderCapabilities {
+        profile_for_provider(&model_info.provider).capabilities_for_model(&model_info.id)
+    }
 }
 
 /// Backward-compatible Mistral route registration.
@@ -377,6 +402,14 @@ mod tests {
     }
 
     #[test]
+    fn resolve_profile_zai_string() {
+        assert_eq!(
+            resolve_profile(&Some(" zai ".to_string())),
+            OpenAICompatibleProfile::zai()
+        );
+    }
+
+    #[test]
     fn resolve_profile_unknown_falls_back_to_generic() {
         assert_eq!(
             resolve_profile(&Some("deepseek".to_string())),
@@ -396,6 +429,47 @@ mod tests {
         let endpoints = configured_endpoints();
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].profile, Some("mistral".to_string()));
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
+    }
+
+    #[test]
+    fn openai_base_zai_capabilities_are_model_gated() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "zai");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "https://api.z.ai/api/coding/paas/v4",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
+
+        let structured = crate::config::ModelInfo {
+            id: "glm-4.6".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "openai-base:zai".to_string(),
+            weight: 1,
+        };
+        let conservative = crate::config::ModelInfo {
+            id: "glm-5".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "openai-base:zai".to_string(),
+            weight: 1,
+        };
+
+        let module = OpenAIBaseProviderModule;
+        let structured_capabilities = module.capabilities_for_model(&structured);
+        let conservative_capabilities = module.capabilities_for_model(&conservative);
+
+        assert!(structured_capabilities.supports_tool_calling);
+        assert!(structured_capabilities.supports_structured_output);
+        assert!(conservative_capabilities.supports_tool_calling);
+        assert!(!conservative_capabilities.supports_structured_output);
 
         test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
         test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");

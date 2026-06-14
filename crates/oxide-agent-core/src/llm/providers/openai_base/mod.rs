@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
 use crate::llm::providers::openai_base::profile::{
-    JsonModePolicy, MessageLayoutPolicy, ReasoningPolicy, ResponseContentPolicy,
+    JsonModePolicy, MessageLayoutPolicy, ReasoningPolicy, ResponseContentPolicy, StreamPolicy,
+    ThinkingPolicy,
 };
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{extract_text_content, send_json_request};
@@ -341,8 +342,40 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
 }
 
 fn maybe_apply_json_mode(body: &mut Value, json_mode: bool, has_tools: bool) {
-    if json_mode && !has_tools {
+    if should_use_native_json_mode(json_mode, has_tools) {
         body["response_format"] = json!({ "type": "json_object" });
+    }
+}
+
+fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
+    json_mode && !has_tools
+}
+
+fn apply_profile_request_policies(
+    body: &mut Value,
+    profile: &OpenAICompatibleProfile,
+    json_mode: bool,
+    has_tools: bool,
+) {
+    let native_json_mode = should_use_native_json_mode(json_mode, has_tools);
+
+    match profile.thinking {
+        ThinkingPolicy::None => {}
+        ThinkingPolicy::ZaiEnabledUnlessJsonMode => {
+            let thinking_type = if native_json_mode {
+                "disabled"
+            } else {
+                "enabled"
+            };
+            body["thinking"] = json!({ "type": thinking_type });
+        }
+    }
+
+    match profile.streaming {
+        StreamPolicy::NonStreaming => {}
+        StreamPolicy::ZaiUnlessNativeJsonMode => {
+            body["stream"] = json!(!native_json_mode);
+        }
     }
 }
 
@@ -399,6 +432,8 @@ fn build_tool_chat_body(
     if matches!(profile.json_mode, JsonModePolicy::Standard) {
         maybe_apply_json_mode(&mut body, json_mode, has_tools);
     }
+
+    apply_profile_request_policies(&mut body, profile, json_mode, has_tools);
 
     body
 }
@@ -944,6 +979,10 @@ mod tests {
 
     fn mistral_profile() -> OpenAICompatibleProfile {
         OpenAICompatibleProfile::mistral()
+    }
+
+    fn zai_profile() -> OpenAICompatibleProfile {
+        OpenAICompatibleProfile::zai()
     }
 
     #[test]
@@ -1547,6 +1586,112 @@ mod tests {
 
         assert!(body.get("parallel_tool_calls").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn zai_tool_body_sets_stream_and_enabled_thinking() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "glm-4.7",
+            4096,
+            None,
+            false,
+            None,
+            &zai_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert!(body.get("response_format").is_none());
+        let temp = body["temperature"].as_f64().expect("temperature present");
+        assert!((temp - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zai_plain_body_without_json_streams_with_enabled_thinking() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "glm-4.7",
+            1024,
+            None,
+            false,
+            None,
+            &zai_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn zai_native_json_body_disables_thinking_and_streaming() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "glm-4.7",
+            1024,
+            None,
+            true,
+            None,
+            &zai_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["stream"], json!(false));
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
+    }
+
+    #[test]
+    fn zai_json_with_tools_does_not_use_native_json_mode() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "glm-4.7",
+            1024,
+            None,
+            true,
+            None,
+            &zai_profile(),
+            &mut mapper,
+        );
+
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn generic_tool_body_does_not_send_zai_thinking() {
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[sample_tool()],
+            "some-model",
+            4096,
+            None,
+            false,
+            None,
+            &generic_profile(),
+            &mut mapper,
+        );
+
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["stream"], json!(false));
     }
 
     #[test]

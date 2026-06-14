@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-zai-openai-base-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/zai-drop.md`
 Goal doc owner: Codex
-Last updated: 2026-06-14 19:50
+Last updated: 2026-06-14 20:16
 
 ## Objective
 
@@ -73,22 +73,22 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:3`-`17`, `:128`
   - Acceptance: `OpenAICompatibleProfile::zai()` exists with base URL `https://api.z.ai/api/coding/paas/v4`, temperatures `0.95`, tools enabled, `ToolCallIdStrategy::Preserve`, JSON mode policy compatible with `json_mode && !tools`, ZAI-only thinking policy, reasoning-content response policy, and model-specific structured-output capability policy.
   - Evidence required: unit test asserting all profile fields; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base --lib openai_base::profile` passes.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `OpenAICompatibleProfile::zai()` added in `crates/oxide-agent-core/src/llm/providers/openai_base/profile.rs` with default API base `https://api.z.ai/api/coding/paas/v4`, `0.95` temperatures, preserved tool IDs, reasoning-content response policy, ZAI thinking/streaming policies, and model-gated structured output. Verified by `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:16 (`zai_profile_has_expected_values`, `zai_structured_output_is_model_gated`).
 
 - G2: `resolve_profile("zai")` config works
   - Source: `docs/prd/zai-drop.md:5`, `:87`-`:94`, `:111`
   - Acceptance: `OPENAI_BASE_PROVIDERS__N__PROFILE=zai` resolves to the ZAI profile; `provider = "openai-base:zai"` validates and builds a provider instance.
   - Evidence required: module/config unit tests for profile resolution and `openai-base:zai` model route validation pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `resolve_profile("zai")` added and verified by `llm::providers::openai_base::module::tests::resolve_profile_zai_string` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:16. Full config-route validation remains for Checkpoint 3.
 
 - G3: ZAI body policy preserves current request behavior
   - Source: `docs/prd/zai-drop.md:7`-`:16`, `:31`, `:101`-`:104`, `:119`-`:121`
   - Acceptance: ZAI tool/plain chat bodies use temperature `0.95`; tool requests set `stream: true`; plain non-native-JSON ZAI chat sends `thinking: {"type":"enabled"}`; native JSON-only (`json_mode && !tools`) sends `stream: false`, `response_format: {"type":"json_object"}`, and `thinking: {"type":"disabled"}`; JSON mode is not sent when tools are present; non-ZAI profiles do not receive `thinking`.
   - Evidence required: focused body-builder tests covering tools, plain chat, native JSON-only, JSON-with-tools, and generic non-ZAI profile behavior.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Body policy added in `crates/oxide-agent-core/src/llm/providers/openai_base/mod.rs`: ZAI sends `thinking: {"type":"enabled"}` and `stream: true` normally, disables both streaming and thinking for native JSON-only, and omits `response_format` when tools are present. Verified by `zai_tool_body_sets_stream_and_enabled_thinking`, `zai_plain_body_without_json_streams_with_enabled_thinking`, `zai_native_json_body_disables_thinking_and_streaming`, `zai_json_with_tools_does_not_use_native_json_mode`, and `generic_tool_body_does_not_send_zai_thinking` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:16.
 
 - G4: OpenAI Base has a reqwest SSE streaming path for ZAI
   - Source: `docs/prd/zai-drop.md:18`-`:31`, `:129`
@@ -108,8 +108,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:16`, `:56`, `:104`, `crates/oxide-agent-core/src/llm/providers/zai/module.rs` current behavior
   - Acceptance: only the same GLM models currently allowed by the dedicated ZAI provider report native structured-output support under `openai-base:zai`; unsupported models disable structured output.
   - Evidence required: ported capability tests for supported and unsupported GLM model IDs pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `OpenAICompatibleProfile::capabilities_for_model` and `OpenAIBaseProviderModule::capabilities_for_model` apply the legacy ZAI GLM allow-list for `openai-base:zai`. Verified by `zai_structured_output_is_model_gated` and `openai_base_zai_capabilities_are_model_gated` in `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` on 2026-06-14 20:16.
 
 - G7: ZAI rate-limit parser is preserved in OpenAI Base
   - Source: `docs/prd/zai-drop.md:55`, `:109`, `:122`
@@ -159,8 +159,8 @@ Out of scope:
   - Source: `docs/prd/zai-drop.md:119`-`:121`
   - Acceptance: generic/mistral profiles do not send `thinking`, do not force ZAI streaming policy, and keep their existing JSON/tool behavior.
   - Evidence required: existing openai_base generic and mistral tests pass plus focused negative tests for `thinking` and streaming flags.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 body tests verify non-ZAI generic tool bodies do not receive `thinking` and retain `stream: false`; focused openai_base test suite passed on 2026-06-14 20:16. Full generic/mistral regression and final lint remain pending.
 
 - Q3: No legacy ZAI API key compatibility branch
   - Source: `docs/prd/zai-drop.md:96`
@@ -335,6 +335,7 @@ Out of scope:
 - 2026-06-14: Use `docs/goals/2026-06-14-zai-openai-base-migration.md` because active goal docs live under `docs/goals/` and completed goals are archived under `docs/goals/archives/`.
 - 2026-06-14: Do not support legacy `provider = "zai"` or `ZAI_API_KEY` fallback; the PRD explicitly prioritizes clean migration over compatibility.
 - 2026-06-14: Start with profile/body policy before deleting provider so behavior can be ported and tested while the old implementation is still available as reference.
+- 2026-06-14: Represent ZAI request quirks as small profile policy enums (`ThinkingPolicy`, `StreamPolicy`, `StructuredOutputPolicy`) instead of adding a new provider or broad abstraction.
 
 ## Progress Log
 
@@ -344,6 +345,13 @@ Out of scope:
   - Commands: `git status --short --branch` showed `## dev...origin-ssh/dev [ahead 1]` before edits.
   - Audit IDs updated: setup only; all implementation audit items remain pending.
   - Next: review diff and commit Checkpoint 0, then implement Checkpoint 1.
+
+- 2026-06-14 20:16: Checkpoint 1 implemented -- ZAI OpenAI Base profile and request body policy
+  - Changed: added `OpenAICompatibleProfile::zai()`, ZAI profile policy enums, `resolve_profile("zai")`, model-gated ZAI structured-output capabilities for `openai-base:zai`, and body-builder handling for ZAI `thinking`, streaming, and native JSON-only behavior.
+  - Evidence: focused tests cover profile fields, profile resolution, model-gated structured output, ZAI tool/plain/native-JSON request bodies, JSON-with-tools behavior, and generic non-ZAI negative behavior.
+  - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features llm-openai-base openai_base --lib` passed with 71 tests, 0 failed (warnings from Mistral module being compiled without `llm-mistral` under this narrow feature set were observed and remain non-fatal for this focused command).
+  - Audit IDs updated: G1 verified; G2 in_progress; G3 verified; G6 verified; Q2 in_progress; V1 partially covered for body/profile/capability tests.
+  - Next: review diff, commit Checkpoint 1, then implement Checkpoint 2 SSE streaming parser/aggregator.
 
 ## Risks and Blockers
 
