@@ -9,6 +9,7 @@ pub(crate) use tool_ids::ToolCallIdMapper;
 use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
+use crate::llm::providers::openai_base::profile::MessageLayoutPolicy;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{
@@ -22,7 +23,6 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 /// LLM provider for generic OpenAI-compatible Chat Completions endpoints.
-#[allow(dead_code)] // profile + mapper wired in checkpoints 2-6
 pub struct OpenAIBaseProvider {
     http_client: HttpClient,
     api_key: Option<String>,
@@ -91,6 +91,21 @@ fn chat_completions_url(api_base: &str) -> String {
         trimmed.to_string()
     } else {
         format!("{trimmed}/chat/completions")
+    }
+}
+
+/// Dispatch message preparation based on profile layout policy.
+fn dispatch_structured_messages(
+    system_prompt: &str,
+    history: &[Message],
+    profile: &OpenAICompatibleProfile,
+    tool_id_mapper: &mut ToolCallIdMapper,
+) -> Vec<Value> {
+    match profile.message_layout {
+        MessageLayoutPolicy::GenericOpenAI => prepare_structured_messages(system_prompt, history),
+        MessageLayoutPolicy::MistralStrict => {
+            prepare_structured_messages_mistral(system_prompt, history, tool_id_mapper)
+        }
     }
 }
 
@@ -174,6 +189,92 @@ fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<
     messages
 }
 
+/// Mistral-strict message layout: history system messages are collected and
+/// prepended before the main system prompt. Tool-call IDs are mapped through
+/// the [`ToolCallIdMapper`] to 9-character alphanumeric format.
+fn prepare_structured_messages_mistral(
+    system_prompt: &str,
+    history: &[Message],
+    id_mapper: &mut ToolCallIdMapper,
+) -> Vec<Value> {
+    let mut history_systems = Vec::new();
+    let mut other_messages = Vec::new();
+
+    for msg in history {
+        match msg.role.as_str() {
+            "system" => {
+                history_systems.push(json!({
+                    "role": "system",
+                    "content": msg.content,
+                }));
+            }
+            "assistant" => {
+                let mut msg_obj = json!({
+                    "role": "assistant",
+                    "content": msg.content,
+                });
+                if let Some(tool_calls) = &msg.tool_calls
+                    && !tool_calls.is_empty()
+                {
+                    let mapped_calls: Vec<Value> = tool_calls
+                        .iter()
+                        .filter_map(|tc| {
+                            CHAT_LIKE_TOOL_PROFILE
+                                .encode_tool_call(tc)
+                                .and_then(|call| call.into_chat_like())
+                                .map(|call| {
+                                    let mistral_id = id_mapper.mistral_id_for(&call.id);
+                                    json!({
+                                        "id": mistral_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": call.name,
+                                            "arguments": call.arguments,
+                                        }
+                                    })
+                                })
+                        })
+                        .collect();
+                    msg_obj["tool_calls"] = json!(mapped_calls);
+                }
+                other_messages.push(msg_obj);
+            }
+            "tool" => {
+                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
+                    .encode_tool_result(msg)
+                    .and_then(|result| result.into_chat_like())
+                {
+                    let mistral_id = id_mapper.mistral_id_for(&result.tool_call_id);
+                    let mut tool_msg = json!({
+                        "role": "tool",
+                        "content": result.content,
+                    });
+                    tool_msg["tool_call_id"] = json!(mistral_id);
+                    if let Some(name) = result.name {
+                        tool_msg["name"] = json!(name);
+                    }
+                    other_messages.push(tool_msg);
+                }
+            }
+            _ => {
+                other_messages.push(json!({
+                    "role": "user",
+                    "content": msg.content,
+                }));
+            }
+        }
+    }
+
+    let mut messages = Vec::with_capacity(history_systems.len() + 1 + other_messages.len());
+    messages.extend(history_systems);
+    messages.push(json!({
+        "role": "system",
+        "content": system_prompt,
+    }));
+    messages.extend(other_messages);
+    messages
+}
+
 fn openai_user_message_content(message: &Message) -> Value {
     if message.content_parts.is_empty() {
         return json!(message.content);
@@ -238,14 +339,16 @@ fn build_tool_chat_body(
     max_tokens: u32,
     temperature: Option<f32>,
     json_mode: bool,
+    profile: &OpenAICompatibleProfile,
+    tool_id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let openai_tools = prepare_tools_json(tools);
     let has_tools = !openai_tools.is_empty();
     let mut body = json!({
         "model": model_id,
-        "messages": prepare_structured_messages(system_prompt, history),
+        "messages": dispatch_structured_messages(system_prompt, history, profile, tool_id_mapper),
         "max_tokens": max_tokens,
-        "temperature": temperature.unwrap_or(OPENAI_BASE_CHAT_TEMPERATURE),
+        "temperature": temperature.unwrap_or(profile.tool_temperature),
         "stream": false,
     });
 
@@ -465,7 +568,13 @@ impl LlmProvider for OpenAIBaseProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let mut messages = prepare_structured_messages(system_prompt, history);
+        let mut messages = {
+            let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
+            let msgs =
+                dispatch_structured_messages(system_prompt, history, &self.profile, &mut mapper);
+            drop(mapper);
+            msgs
+        };
         messages.push(json!({
             "role": "user",
             "content": user_message,
@@ -474,7 +583,7 @@ impl LlmProvider for OpenAIBaseProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": OPENAI_BASE_CHAT_TEMPERATURE,
+            "temperature": self.profile.chat_temperature,
             "stream": false,
         });
         let auth = self.auth_header();
@@ -534,15 +643,22 @@ impl LlmProvider for OpenAIBaseProvider {
             json_mode,
             reasoning_effort: _,
         } = request;
-        let body = build_tool_chat_body(
-            system_prompt,
-            history,
-            tools,
-            model_id,
-            max_tokens,
-            temperature,
-            json_mode,
-        );
+        let body = {
+            let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
+            let body = build_tool_chat_body(
+                system_prompt,
+                history,
+                tools,
+                model_id,
+                max_tokens,
+                temperature,
+                json_mode,
+                &self.profile,
+                &mut mapper,
+            );
+            drop(mapper);
+            body
+        };
         let auth = self.auth_header();
         let res_json = send_json_request(
             &self.http_client,
@@ -559,10 +675,11 @@ impl LlmProvider for OpenAIBaseProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAIBaseProvider, build_image_analysis_body, build_tool_chat_body, chat_completions_url,
-        infer_image_mime_type, normalize_tool_arguments_str, parse_chat_response,
+        OpenAIBaseProvider, OpenAICompatibleProfile, ToolCallIdMapper, build_image_analysis_body,
+        build_tool_chat_body, chat_completions_url, infer_image_mime_type,
+        normalize_tool_arguments_str, parse_chat_response,
     };
-    use crate::llm::{Message, MessageContentPart, ToolDefinition};
+    use crate::llm::{Message, MessageContentPart, ToolCall, ToolCallFunction, ToolDefinition};
     use serde_json::json;
 
     fn sample_tool() -> ToolDefinition {
@@ -575,6 +692,15 @@ mod tests {
                 "required": ["city"]
             }),
         }
+    }
+
+    fn generic_profile() -> OpenAICompatibleProfile {
+        OpenAICompatibleProfile::generic()
+    }
+
+    #[allow(dead_code)] // used in checkpoint 5+ tests
+    fn mistral_profile() -> OpenAICompatibleProfile {
+        OpenAICompatibleProfile::mistral()
     }
 
     #[test]
@@ -603,6 +729,7 @@ mod tests {
 
     #[test]
     fn builds_tool_chat_body_with_tools_and_without_parallel_tool_calls() {
+        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "You are helpful.",
             &[],
@@ -611,6 +738,8 @@ mod tests {
             4096,
             None,
             true,
+            &generic_profile(),
+            &mut mapper,
         );
 
         assert_eq!(body["model"], json!("local-model"));
@@ -622,7 +751,18 @@ mod tests {
 
     #[test]
     fn adds_json_mode_only_without_tools() {
-        let body = build_tool_chat_body("system", &[], &[], "local-model", 1024, None, true);
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "local-model",
+            1024,
+            None,
+            true,
+            &generic_profile(),
+            &mut mapper,
+        );
 
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
@@ -632,7 +772,18 @@ mod tests {
         let user = Message::user("What is this?").with_user_content_parts(vec![
             MessageContentPart::image("image/png", b"png".to_vec()),
         ]);
-        let body = build_tool_chat_body("system", &[user], &[], "vision-model", 1024, None, false);
+        let mut mapper = ToolCallIdMapper::new();
+        let body = build_tool_chat_body(
+            "system",
+            &[user],
+            &[],
+            "vision-model",
+            1024,
+            None,
+            false,
+            &generic_profile(),
+            &mut mapper,
+        );
 
         let content = &body["messages"][1]["content"];
         assert_eq!(content[0]["type"], json!("text"));
@@ -706,5 +857,126 @@ mod tests {
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_1");
         assert_eq!(parsed.usage.expect("usage").cached_tokens, Some(7));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mistral message layout policy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mistral_prepare_structured_messages_formats_tool_message() {
+        use super::prepare_structured_messages_mistral;
+        let mut mapper = ToolCallIdMapper::new();
+        let history = vec![Message::tool(
+            "call_abc123",
+            "get_weather",
+            "{\"temperature\": 20}",
+        )];
+        let messages =
+            prepare_structured_messages_mistral("You are helpful.", &history, &mut mapper);
+
+        let tool_msg = &messages[1];
+        assert_eq!(tool_msg["role"], json!("tool"));
+        assert_eq!(tool_msg["content"], json!("{\"temperature\": 20}"));
+        // "call_abc123" -> filter -> "callabc123" -> last 9 -> "allabc123"
+        assert_eq!(tool_msg["tool_call_id"], json!("allabc123"));
+        assert_eq!(tool_msg["name"], json!("get_weather"));
+    }
+
+    #[test]
+    fn mistral_prepare_structured_messages_preserves_assistant_tool_calls() {
+        use super::prepare_structured_messages_mistral;
+        let mut mapper = ToolCallIdMapper::new();
+        let history = vec![Message::assistant_with_tools(
+            "I'll get the weather.",
+            vec![ToolCall::new(
+                "call_xyz".to_string(),
+                ToolCallFunction {
+                    name: "get_weather".to_string(),
+                    arguments: "{\"city\":\"Paris\"}".to_string(),
+                },
+                false,
+            )],
+        )];
+        let messages =
+            prepare_structured_messages_mistral("You are helpful.", &history, &mut mapper);
+
+        let assistant_msg = &messages[1];
+        assert_eq!(assistant_msg["role"], json!("assistant"));
+        assert_eq!(assistant_msg["content"], json!("I'll get the weather."));
+        let tool_calls = assistant_msg["tool_calls"]
+            .as_array()
+            .expect("tool_calls should be present");
+        assert_eq!(tool_calls.len(), 1);
+        // "call_xyz" -> filter -> "callxyz" -> last 9 -> "callxyz" (7 chars)
+        assert_eq!(tool_calls[0]["id"], json!("callxyz"));
+        assert_eq!(tool_calls[0]["function"]["name"], json!("get_weather"));
+    }
+
+    #[test]
+    fn mistral_system_messages_collected_before_main_system_prompt() {
+        use super::prepare_structured_messages_mistral;
+        let mut mapper = ToolCallIdMapper::new();
+        let history = vec![
+            Message {
+                role: "system".to_string(),
+                content: "History system instruction".to_string(),
+                ..Message::user("")
+            },
+            Message::user("Hello"),
+        ];
+        let messages =
+            prepare_structured_messages_mistral("Main system prompt", &history, &mut mapper);
+
+        // Order: history system, main system, user
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], json!("system"));
+        assert_eq!(messages[0]["content"], json!("History system instruction"));
+        assert_eq!(messages[1]["role"], json!("system"));
+        assert_eq!(messages[1]["content"], json!("Main system prompt"));
+        assert_eq!(messages[2]["role"], json!("user"));
+    }
+
+    #[test]
+    fn generic_messages_put_main_system_prompt_first() {
+        use super::prepare_structured_messages;
+        let history = vec![
+            Message {
+                role: "system".to_string(),
+                content: "History system instruction".to_string(),
+                ..Message::user("")
+            },
+            Message::user("Hello"),
+        ];
+        let messages = prepare_structured_messages("Main system prompt", &history);
+
+        // Order: main system, history system, user
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], json!("system"));
+        assert_eq!(messages[0]["content"], json!("Main system prompt"));
+        assert_eq!(messages[1]["role"], json!("system"));
+        assert_eq!(messages[1]["content"], json!("History system instruction"));
+        assert_eq!(messages[2]["role"], json!("user"));
+    }
+
+    #[test]
+    fn mistral_bidirectional_id_mapping_roundtrip() {
+        use super::prepare_structured_messages_mistral;
+        let mut mapper = ToolCallIdMapper::new();
+        let original_id = "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14";
+
+        // Step 1: Register the original ID
+        let mistral_id = mapper.register(original_id.to_string());
+        assert_eq!(mistral_id, "43acb9e14");
+
+        // Step 2: Prepare tool result message -- should use mapped ID
+        let history = vec![Message::tool(
+            original_id,
+            "get_weather",
+            "{\"temperature\": 20}",
+        )];
+        let messages = prepare_structured_messages_mistral("sys", &history, &mut mapper);
+        let tool_msg = &messages[1];
+        assert_eq!(tool_msg["tool_call_id"], json!(mistral_id));
     }
 }

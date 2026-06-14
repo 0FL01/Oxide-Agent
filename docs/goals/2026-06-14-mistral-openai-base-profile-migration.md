@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-14-mistral-openai-base-profile-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User-provided migration plan (Mistral -> OpenAI-compatible profile).
 Goal doc owner: Codex
-Last updated: 2026-06-14 12:45
+Last updated: 2026-06-14 13:30
 
 ## Objective
 
@@ -148,8 +148,8 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Source: plan section 4 -- "Move Mistral message layout"
   - Acceptance: `MessageLayoutPolicy::MistralStrict` collects history system messages and prepends them before main system prompt. Assistant tool calls get mapped Mistral IDs. Tool result messages get mapped `tool_call_id` + optional `name`. `MessageLayoutPolicy::GenericOpenAI` preserves current openai_base behavior.
   - Evidence required: ported tests for assistant tool calls and tool result messages pass
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `prepare_structured_messages_mistral()` implemented in `openai_base/mod.rs`. `dispatch_structured_messages()` switches on `profile.message_layout`. `build_tool_chat_body()` and `complete_internal_text()` now accept profile+mapper. `chat_with_tools()` locks mapper before body build, drops before await. 5 new tests: `mistral_prepare_structured_messages_formats_tool_message`, `mistral_prepare_structured_messages_preserves_assistant_tool_calls`, `mistral_system_messages_collected_before_main_system_prompt`, `generic_messages_put_main_system_prompt_first`, `mistral_bidirectional_id_mapping_roundtrip`. All 28 openai_base + 30 mistral tests pass.
 
 - G7: Mistral response parser policy implemented in `openai_base`
   - Source: plan section 7 -- "Transfer response parser"
@@ -501,6 +501,20 @@ Key gaps in `openai_base` that need filling from Mistral:
   - Commands: all above
   - Audit IDs updated: G4 verified, G5 verified
   - Next: Checkpoint 3 -- message layout policy (MistralStrict dispatch in OpenAIBaseProvider)
+
+- 2026-06-14 13:30: Checkpoint 3 -- Message layout policy
+  - Changed:
+    - `openai_base/mod.rs`: added `prepare_structured_messages_mistral()` -- collects history system msgs before main system prompt, maps assistant tool call IDs via `id_mapper.mistral_id_for()`, maps tool result `tool_call_id` via mapper, includes optional `name` field. Added `dispatch_structured_messages()` that dispatches on `profile.message_layout`. Updated `build_tool_chat_body()` to accept profile+mapper params and use `dispatch_structured_messages()`. Updated `complete_internal_text()` to lock mapper, dispatch, drop lock before async request. Updated `chat_with_tools()` similarly. Removed `#[allow(dead_code)]` from `OpenAIBaseProvider` struct. Added test helpers `generic_profile()`/`mistral_profile()`. 5 new tests: `mistral_prepare_structured_messages_formats_tool_message`, `mistral_prepare_structured_messages_preserves_assistant_tool_calls`, `mistral_system_messages_collected_before_main_system_prompt`, `generic_messages_put_main_system_prompt_first`, `mistral_bidirectional_id_mapping_roundtrip`. Fixed collapsible_if clippy lint + dead_code warnings.
+  - Evidence:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` clean
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` clean
+    - `cargo fmt --all -- --check` clean
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- openai_base` -- 28 passed (21 existing + 7 new)
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- mistral` -- 30 passed
+    - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` clean
+  - Commands: all above
+  - Audit IDs updated: G6 verified
+  - Next: Checkpoint 4 -- response parser policy
 
 ## Risks and Blockers
 
