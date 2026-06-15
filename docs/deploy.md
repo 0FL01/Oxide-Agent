@@ -48,8 +48,6 @@ Web console with local Postgres and CRW:
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
 ```
 
-Bare host deployments should use `SANDBOX_BACKEND=bwrap`; see `docs/bwrap-sandbox.md`.
-
 ## 3. Postgres and migrations
 
 - Use PostgreSQL 15+ or Supabase Postgres.
@@ -76,8 +74,6 @@ External CRW, Kokoro, and Silero are configured through `.env.example`. If a ser
 ## 5. Sandbox
 
 Docker Compose uses the broker backend. Only `sandboxd` mounts `/var/run/docker.sock`; bot/web containers talk to it over `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`.
-
-Bare-host Bubblewrap setup is documented in `docs/bwrap-sandbox.md`.
 
 ## 6. Verify
 

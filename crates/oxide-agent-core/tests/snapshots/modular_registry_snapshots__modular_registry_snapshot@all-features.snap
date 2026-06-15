@@ -59,22 +59,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "manager/control-plane"
       },
       {
-        "id": "sandbox-backend/bwrap",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/exec",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/fileops",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/lifecycle",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
         "id": "sandbox-backend/docker-direct",
         "module": "sandbox-backend/docker-direct"
       },
@@ -531,20 +515,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "sandbox-backend-bwrap",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "sandbox-backend/bwrap",
-        "kind": "sandbox-backend",
-        "provides": [
-          "sandbox-backend/bwrap",
-          "sandbox-backend/bwrap/exec",
-          "sandbox-backend/bwrap/fileops",
-          "sandbox-backend/bwrap/lifecycle"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "sandbox-backend-docker-direct",
         "config_properties": [],
         "conflicts": [],
@@ -676,6 +646,18 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "tool-crw",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/crw",
+        "kind": "search",
+        "provides": [
+          "tool/crw-scrape",
+          "tool/crw-search"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-delegation",
         "config_properties": [],
         "conflicts": [],
@@ -754,8 +736,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           }
@@ -775,8 +756,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -795,8 +775,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
           }
@@ -914,16 +893,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           },
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -968,10 +945,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "manager/agent-profile-admin",
       "manager/control-plane",
       "manager/topic-sandbox-admin",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/bwrap/exec",
-      "sandbox-backend/bwrap/fileops",
-      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/docker-direct",
       "sandbox-backend/docker-direct/diagnostics",
       "sandbox-backend/docker-direct/exec",
@@ -1026,7 +999,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
       "manager/control-plane",
-      "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "sandbox-daemon/sandboxd",
@@ -1110,7 +1082,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/bwrap",
     "sandbox-backend/docker-direct",
     "sandbox-backend/sandboxd-client"
   ],
@@ -1213,13 +1184,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "sandbox-backend/bwrap",
-      "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-bwrap",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
       "module_id": "sandbox-backend/docker-direct",
       "kind": "sandbox-backend",
       "cargo_feature": "sandbox-backend-docker-direct",
@@ -1261,6 +1225,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/brave-search",
       "kind": "search",
       "cargo_feature": "tool-brave-search",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/crw",
+      "kind": "search",
+      "cargo_feature": "tool-crw",
       "config_env": [],
       "requires_capabilities": []
     },

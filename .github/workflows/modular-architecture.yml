@@ -46,7 +46,7 @@ jobs:
       - name: Check representative profiles
         run: |
           set -euo pipefail
-          for features in profile-lite profile-full profile-host-bwrap; do
+          for features in profile-lite profile-full profile-embedded-opencode-local; do
             cargo check --workspace --no-default-features --features "${features}"
           done
 

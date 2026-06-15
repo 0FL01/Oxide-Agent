@@ -1,7 +1,7 @@
 //! Sandbox management for Agent Mode.
 //!
 //! Provides isolated execution environments for agents through compiled backends
-//! such as Docker, sandboxd, and Bubblewrap.
+//! such as Docker and sandboxd.
 
 pub mod admin;
 /// Unix-socket sandbox broker protocol, client, and server.
@@ -12,14 +12,11 @@ pub mod admin;
     feature = "tool-stack-logs"
 ))]
 pub mod broker;
-#[cfg(feature = "sandbox-backend-bwrap")]
-pub(crate) mod bwrap;
 #[cfg(feature = "tool-stack-logs")]
 pub mod diagnostics;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
@@ -27,7 +24,6 @@ pub mod manager;
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
@@ -50,7 +46,6 @@ pub use diagnostics::SandboxDiagnosticsRuntime;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
@@ -58,7 +53,6 @@ pub use manager::sandbox_backend_available;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
@@ -66,7 +60,6 @@ pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, San
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
@@ -74,7 +67,6 @@ pub use manager_stub::sandbox_backend_available;
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
-    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
@@ -91,32 +83,9 @@ pub use traits::{
 
 /// Run startup checks for explicitly selected sandbox backends.
 ///
-/// This is intentionally fail-fast only for explicit `SANDBOX_BACKEND=bwrap` so
+/// This is intentionally fail-fast only for explicitly configured backends so
 /// profiles without sandbox tools can still start when no sandbox backend is
 /// configured.
 pub async fn preflight_sandbox_backend() -> anyhow::Result<()> {
-    let Some(backend) = std::env::var_os("SANDBOX_BACKEND") else {
-        return Ok(());
-    };
-    if !backend
-        .to_string_lossy()
-        .trim()
-        .eq_ignore_ascii_case("bwrap")
-    {
-        return Ok(());
-    }
-    preflight_bwrap_backend().await
-}
-
-#[cfg(feature = "sandbox-backend-bwrap")]
-async fn preflight_bwrap_backend() -> anyhow::Result<()> {
-    bwrap::preflight_from_env()?;
-    bwrap::bootstrap_image_from_env().await
-}
-
-#[cfg(not(feature = "sandbox-backend-bwrap"))]
-async fn preflight_bwrap_backend() -> anyhow::Result<()> {
-    anyhow::bail!(
-        "SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or choose another sandbox backend with SANDBOX_BACKEND=docker|broker."
-    )
+    Ok(())
 }

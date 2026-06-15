@@ -56,7 +56,6 @@ chrono-tz = "0.10.4"
 fastrand = "2.3.0"
 htmd = { version = "0.5.4", optional = true }
 url = "2.5.7"
-fs2 = { version = "0.4.3", optional = true }
 sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
 sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
 
@@ -124,7 +123,9 @@ profile-embedded-opencode-local = [
     "tool-media-image",
     "tool-media-video",
     "tool-tavily",
-    "sandbox-backend-bwrap",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
     "sandbox-backend-docker-direct",
     "sandbox-backend-sandboxd-client",
 ]
@@ -149,7 +150,6 @@ profile-web-embedded-opencode-local = [
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
-    "sandbox-backend-bwrap",
     "sandbox-backend-sandboxd-client",
 ]
 profile-lite = [
@@ -186,26 +186,6 @@ profile-media-enabled = [
     "tool-media-image",
     "tool-media-video",
     "tool-file-delivery",
-]
-profile-host-bwrap = [
-    "transport-telegram",
-    "storage-sqlx",
-    "llm-opencode-go",
-    "llm-openrouter",
-    "llm-openai-base",
-    "tool-todos",
-    "tool-compression",
-    "tool-delegation",
-    "tool-agents-md",
-    "tool-reminder",
-    "tool-wiki-memory",
-    "tool-webfetch-md",
-    "tool-file-delivery",
-    "tool-media-audio",
-    "tool-media-image",
-    "tool-media-video",
-    "tool-tavily",
-    "sandbox-backend-bwrap",
 ]
 
 # Transports
@@ -255,7 +235,6 @@ sandbox-backend-docker-direct = [
     "sandbox-broker-protocol",
 ]
 sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
-sandbox-backend-bwrap = ["dep:fs2", "dep:reqwest"]
 sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
 sandbox-daemon = ["sandbox-backend-docker-direct"]
 integration-mcp-jira = ["dep:rmcp"]

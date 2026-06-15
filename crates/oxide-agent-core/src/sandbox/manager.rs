@@ -74,8 +74,6 @@ use crate::sandbox::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
-#[cfg(feature = "sandbox-backend-bwrap")]
-use crate::sandbox::bwrap::BwrapSandboxManager;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client"
@@ -122,7 +120,7 @@ pub struct ExecResult {
 /// Backend-neutral metadata for a user-owned sandbox instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxInstanceRecord {
-    /// Runtime backend that owns this instance, such as `docker` or `bwrap`.
+    /// Runtime backend that owns this instance, such as `docker` or `broker`.
     pub backend: String,
     /// Stable backend instance id.
     pub instance_id: String,
@@ -249,8 +247,6 @@ enum SandboxManagerInner {
     Docker(DockerSandboxManager),
     #[cfg(feature = "sandbox-backend-sandboxd-client")]
     Broker(BrokerSandboxManager),
-    #[cfg(feature = "sandbox-backend-bwrap")]
-    Bwrap(Box<BwrapSandboxManager>),
 }
 
 #[cfg(feature = "sandbox-backend-sandboxd-client")]
@@ -436,13 +432,6 @@ fn docker_backend_not_compiled() -> anyhow::Error {
     anyhow!("sandbox Docker direct backend is not compiled; enable sandbox-backend-docker-direct")
 }
 
-#[cfg(not(feature = "sandbox-backend-bwrap"))]
-fn bwrap_backend_not_compiled() -> anyhow::Error {
-    anyhow!(
-        "SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or select SANDBOX_BACKEND=docker/broker."
-    )
-}
-
 fn compiled_sandbox_backends() -> Vec<&'static str> {
     let mut backends = Vec::new();
     if cfg!(feature = "sandbox-backend-docker-direct") {
@@ -450,9 +439,6 @@ fn compiled_sandbox_backends() -> Vec<&'static str> {
     }
     if cfg!(feature = "sandbox-backend-sandboxd-client") {
         backends.push("broker");
-    }
-    if cfg!(feature = "sandbox-backend-bwrap") {
-        backends.push("bwrap");
     }
     backends
 }
@@ -485,7 +471,6 @@ fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
     let selected_is_compiled = match backend {
         SandboxBackendConfig::Docker => cfg!(feature = "sandbox-backend-docker-direct"),
         SandboxBackendConfig::Broker => cfg!(feature = "sandbox-backend-sandboxd-client"),
-        SandboxBackendConfig::Bwrap => cfg!(feature = "sandbox-backend-bwrap"),
     };
 
     if selected_is_compiled {
@@ -521,19 +506,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                {
-                    return Ok(Self {
-                        inner: SandboxManagerInner::Bwrap(Box::new(
-                            BwrapSandboxManager::new(scope).await?,
-                        )),
-                    });
-                }
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
-            }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 {
@@ -559,13 +531,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                return BwrapSandboxManager::list_user_sandboxes(user_id).await;
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
-            }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::list_user_sandboxes(user_id).await;
@@ -590,13 +555,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                return BwrapSandboxManager::inspect_sandbox_by_name(user_id, container_name).await;
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
-            }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name)
@@ -619,13 +577,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                return BwrapSandboxManager::ensure_scope_sandbox(scope).await;
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
-            }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::ensure_scope_sandbox(scope).await;
@@ -647,13 +598,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                return BwrapSandboxManager::recreate_scope_sandbox(scope).await;
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
-            }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::recreate_scope_sandbox(scope).await;
@@ -674,13 +618,6 @@ impl SandboxManager {
 
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
-            }
-            SandboxBackendConfig::Bwrap => {
-                #[cfg(feature = "sandbox-backend-bwrap")]
-                return BwrapSandboxManager::delete_sandbox_by_name(user_id, container_name).await;
-
-                #[cfg(not(feature = "sandbox-backend-bwrap"))]
-                return Err(bwrap_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -706,9 +643,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => Err(anyhow!(
-                "Stack logs are Docker/Compose diagnostics and are not supported by SANDBOX_BACKEND=bwrap."
-            )),
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::list_stack_log_sources(request).await;
@@ -733,9 +667,6 @@ impl SandboxManager {
                 #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
                 return Err(broker_backend_not_compiled());
             }
-            SandboxBackendConfig::Bwrap => Err(anyhow!(
-                "Stack logs are Docker/Compose diagnostics and are not supported by SANDBOX_BACKEND=bwrap."
-            )),
             SandboxBackendConfig::Docker => {
                 #[cfg(feature = "sandbox-backend-docker-direct")]
                 return DockerSandboxManager::fetch_stack_logs(request).await;
@@ -753,8 +684,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.is_running(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.is_running(),
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.is_running(),
         }
     }
 
@@ -765,8 +694,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.container_id(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.container_id(),
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.container_id(),
         }
     }
 
@@ -777,8 +704,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.scope(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.scope(),
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.scope(),
         }
     }
 
@@ -788,8 +713,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.create_sandbox().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.create_sandbox().await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.create_sandbox().await,
         }
     }
 
@@ -807,10 +730,6 @@ impl SandboxManager {
             SandboxManagerInner::Broker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => {
-                manager.exec_command(cmd, cancellation_token).await
-            }
         }
     }
 
@@ -820,8 +739,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.write_file(path, content).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.write_file(path, content).await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.write_file(path, content).await,
         }
     }
 
@@ -831,8 +748,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.read_file(path).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.read_file(path).await,
         }
     }
 
@@ -861,10 +776,6 @@ impl SandboxManager {
                 }
                 Ok(applied.result)
             }
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => {
-                manager.apply_file_edit(path, edit, read_guard).await
-            }
         }
     }
 
@@ -878,10 +789,6 @@ impl SandboxManager {
             SandboxManagerInner::Broker(manager) => {
                 manager.upload_file(container_path, content).await
             }
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => {
-                manager.upload_file(container_path, content).await
-            }
         }
     }
 
@@ -891,8 +798,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.download_file(container_path).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.download_file(container_path).await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.download_file(container_path).await,
         }
     }
 
@@ -902,8 +807,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.get_uploads_size().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.get_uploads_size().await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.get_uploads_size().await,
         }
     }
 
@@ -913,8 +816,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.cleanup_old_downloads().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.cleanup_old_downloads().await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.cleanup_old_downloads().await,
         }
     }
 
@@ -924,8 +825,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.destroy().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.destroy().await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.destroy().await,
         }
     }
 
@@ -935,8 +834,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.recreate().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.recreate().await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.recreate().await,
         }
     }
 
@@ -958,12 +855,6 @@ impl SandboxManager {
                     .file_size_bytes(container_path, cancellation_token)
                     .await
             }
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => {
-                manager
-                    .file_size_bytes(container_path, cancellation_token)
-                    .await
-            }
         }
     }
 
@@ -973,8 +864,6 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => list_files_via_exec(manager, path).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => list_files_via_exec(manager, path).await,
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            SandboxManagerInner::Bwrap(manager) => manager.list_files(path).await,
         }
     }
 }
@@ -2743,40 +2632,6 @@ mod backend_selection_tests {
                 "Set SANDBOX_BACKEND={}",
                 compiled_sandbox_backends()[0]
             )));
-        }
-
-        match previous {
-            Some(value) => test_set_env("SANDBOX_BACKEND", value),
-            None => test_remove_env("SANDBOX_BACKEND"),
-        }
-    }
-
-    #[cfg(feature = "tool-stack-logs")]
-    #[test]
-    fn stack_logs_report_explicit_unsupported_error_under_bwrap() {
-        let _guard = crate::config::test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
-        test_set_env("SANDBOX_BACKEND", "bwrap");
-
-        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
-        let list_error = runtime
-            .block_on(SandboxManager::list_stack_log_sources(
-                StackLogsListSourcesRequest::default(),
-            ))
-            .expect_err("stack log listing must be unsupported under bwrap")
-            .to_string();
-        let fetch_error = runtime
-            .block_on(SandboxManager::fetch_stack_logs(
-                StackLogsFetchRequest::default(),
-            ))
-            .expect_err("stack log fetching must be unsupported under bwrap")
-            .to_string();
-
-        for error in [list_error, fetch_error] {
-            assert!(error.contains("Stack logs are Docker/Compose diagnostics"));
-            assert!(error.contains("not supported by SANDBOX_BACKEND=bwrap"));
         }
 
         match previous {

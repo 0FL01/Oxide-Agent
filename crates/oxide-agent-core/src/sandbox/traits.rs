@@ -114,7 +114,6 @@ pub struct SandboxApplyFileEditResult {
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]
@@ -129,7 +128,6 @@ pub(crate) struct SandboxAppliedFileEdit {
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]
@@ -168,7 +166,6 @@ pub(crate) fn apply_sandbox_file_edit(
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]
@@ -180,7 +177,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]
@@ -217,7 +213,6 @@ fn validate_edit_read_guard(
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]
@@ -267,7 +262,6 @@ fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<
     not(any(
         feature = "sandbox-backend-docker-direct",
         feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
     )),
     allow(dead_code)
 )]

@@ -736,8 +736,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           }
@@ -757,8 +756,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -777,8 +775,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
           }
@@ -896,16 +893,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           },
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }

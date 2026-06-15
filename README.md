@@ -18,7 +18,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Web Interface:** Browser-based chat with the agent (Leptos SPA, SSE streaming, dark theme, markdown rendering)
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
-- **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
+- **Sandbox Backends:** Docker broker isolation by default, with optional direct Docker access
 - **Wiki Memory:** SQLx/Postgres-backed persistent memory with optional LLM-assisted extraction
 - **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly with validated 80%+ cache hit rate on OpenCode Go
 </details>
@@ -38,7 +38,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 *   **Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
-    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path; Bubblewrap is available for bare-host setups.
+    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
     *   **Fire-and-Forget Checkpoint:** Memory persistence is async, non-blocking for reduced latency.
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.
@@ -111,7 +111,6 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 ### Infrastructure
 *   **Docker** - run the default code sandbox (`agent-sandbox:latest`)
 *   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
-*   **Bubblewrap** - optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** - optional web search provider (`TAVILY_API_KEY`)
 *   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`)
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
@@ -133,134 +132,6 @@ cp .env.example .env
 $EDITOR .env
 docker compose up --build -d
 ```
-
-<details>
-<summary>Alpine 3.23 deployment from the release binary (embedded profile)</summary>
-
-This path is for the prebuilt `x86_64` release artifact built with the embedded profile. Download the Alpine release archive from GitHub Releases, unpack it under `/opt/oxide-agent`, and run the binary directly or through OpenRC.
-
-1. Install host packages:
-
-   ```bash
-   apk add --no-cache bubblewrap ca-certificates tar xz curl
-   ```
-
-2. Create a dedicated service user and prepare directories:
-
-   ```bash
-   addgroup -S oxide
-   adduser -S -D -H -h /var/lib/oxide-agent -s /sbin/nologin -G oxide oxide
-   mkdir -p /opt/oxide-agent/bin
-   mkdir -p /opt/oxide-agent/bwrap-images
-   mkdir -p /var/lib/oxide-agent/sandbox/scopes
-   mkdir -p /var/lib/oxide-agent/sandbox/locks
-   mkdir -p /var/lib/oxide-agent/sandbox/root-upper
-   mkdir -p /var/log/oxide-agent
-   chown -R oxide:oxide /opt/oxide-agent /var/lib/oxide-agent /var/log/oxide-agent
-   ```
-
-3. Download the Alpine release archive from GitHub Releases, unpack it, and move the binary to `/opt/oxide-agent/bin/oxide-agent-telegram-bot`.
-
-4. Create `/opt/oxide-agent/.env`. The release binary reads `.env` from its working directory. Minimal example:
-
-   ```dotenv
-   TELEGRAM_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
-   TELEGRAM_ALLOWED_USERS=123456789
-   TELEGRAM_MANAGER_ALLOWED_USERS=123456789
-
-    OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
-    OXIDE_DATABASE_MAX_CONNECTIONS=5
-    OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
-    OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
-
-   OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
-   OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
-
-   AGENT_MODEL_ID=deepseek-v4-flash
-   AGENT_MODEL_PROVIDER=opencode-go
-   SUB_AGENT_MODEL_ID=deepseek-v4-flash
-   SUB_AGENT_MODEL_PROVIDER=opencode-go
-
-   SANDBOX_BACKEND=bwrap
-   BWRAP_BIN=/usr/bin/bwrap
-   BWRAP_IMAGE=alpine-3.23-dev
-   BWRAP_IMAGE_BOOTSTRAP=download
-   BWRAP_IMAGE_URL=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-minirootfs-3.23.4-x86_64.tar.gz
-   BWRAP_IMAGE_SHA256=85498865362aa7ebececa0d725a2f2e4db7ac4e4b2850b8df21645afa0d03ee3
-   BWRAP_IMAGE_PACKAGE_MANAGER=apk
-   BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
-   BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
-   BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
-   BWRAP_ROOT_MODE=overlay-rw
-   BWRAP_ROOT_UPPER_DIR=/var/lib/oxide-agent/sandbox/root-upper
-   BWRAP_NET=host
-   BWRAP_ALLOW_OVERLAY=true
-   BWRAP_RESOLV_CONF=auto
-   BWRAP_DISABLE_NESTED_USERNS=true
-
-   RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
-   DEBUG_MODE=false
-   ```
-
-   When `SANDBOX_BACKEND=bwrap` is set, startup checks `/usr/bin/bwrap` immediately. If bubblewrap is missing, the bot exits with an error telling you to install `bubblewrap`, set `BWRAP_BIN`, or choose another sandbox backend.
-
-   `BWRAP_RESOLV_CONF=auto` stages the host resolver config and bind-mounts it into the sandbox. With `BWRAP_ROOT_MODE=overlay-rw`, the bot also creates the missing `/etc/resolv.conf` bind target for Alpine minirootfs images.
-
-5. On startup, `BWRAP_IMAGE_BOOTSTRAP=download` downloads the Alpine minirootfs, verifies `BWRAP_IMAGE_SHA256`, extracts it to `/opt/oxide-agent/bwrap-images/alpine-3.23-dev`, and writes the bwrap `image.json`. If `/opt/oxide-agent/bwrap-images/alpine-3.23-dev/image.json` already exists, bootstrap is a no-op.
-
-6. Optional OpenRC wrapper:
-
-   ```bash
-   cat >/opt/oxide-agent/bin/run-oxide-agent.sh <<'EOF'
-   #!/bin/sh
-   set -a
-   . /opt/oxide-agent/.env
-   set +a
-   cd /opt/oxide-agent
-   exec /opt/oxide-agent/bin/oxide-agent-telegram-bot
-   EOF
-   chmod +x /opt/oxide-agent/bin/run-oxide-agent.sh
-   chown oxide:oxide /opt/oxide-agent/bin/run-oxide-agent.sh
-   ```
-
-7. Optional OpenRC service:
-
-   ```bash
-   cat >/etc/init.d/oxide-agent <<'EOF'
-   #!/sbin/openrc-run
-
-   name="oxide-agent"
-   description="Oxide Agent Telegram bot"
-   command="/opt/oxide-agent/bin/run-oxide-agent.sh"
-   directory="/opt/oxide-agent"
-   command_user="oxide:oxide"
-   command_background="true"
-   pidfile="/run/${RC_SVCNAME}.pid"
-   output_log="/var/log/oxide-agent/current.log"
-   error_log="/var/log/oxide-agent/current.log"
-
-   depend() {
-       need net
-       use dns logger
-   }
-   EOF
-   chmod +x /etc/init.d/oxide-agent
-   rc-update add oxide-agent default
-   rc-service oxide-agent start
-   ```
-
-   The bot writes structured logs to `stderr`, so the OpenRC example sends both `stdout` and `stderr` to the same `current.log` file.
-
-8. Manual verification:
-
-   ```bash
-   cd /opt/oxide-agent
-   ./bin/oxide-agent-telegram-bot capabilities --compiled --json
-   tail -f /var/log/oxide-agent/current.log
-   ```
-
-For a more detailed bare-host Bubblewrap reference, see `docs/bwrap-sandbox.md`.
-</details>
 
 ## Configuration (.env)
 
@@ -711,9 +582,8 @@ crates/
 │       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, opencode_go)
 │       │   └── tool_correlation.rs
 │       ├── sandbox/            # Sandbox facade and backends
-│       │   ├── bwrap/          # Bubblewrap backend (14 modules)
+│       │   ├── broker.rs        # Unix-socket sandbox broker protocol
 │       │   ├── manager.rs      # Sandbox manager facade
-│       │   ├── broker.rs       # Broker client/protocol
 │       │   └── traits.rs       # Sandbox backend traits
 │       ├── storage/            # Storage facade, SQLx backend, control-plane records
 │       ├── capabilities/       # Capability module manifests
@@ -768,7 +638,6 @@ tests/                          # Integration and functional tests
 │   └── tool_latency_tests.rs
 docs/                           # Documentation
 ├── wiki-memory.md              # Wiki memory system
-├── bwrap-sandbox.md            # Bubblewrap sandbox backend
 ├── silero-tts-api.md           # Silero TTS integration
 ├── stack-logs-stage0.md        # Stack logs tool
 ├── context-window-tracking.md  # Token budget management
@@ -792,13 +661,12 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Profile | Description | Key Components |
 |---------|-------------|----------------|
 | `profile-full` | Full production deployment | All features |
-| `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-sqlx, llm-opencode-go, bwrap |
-| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, bwrap |
+| `profile-embedded-opencode-local` | Telegram + local OpenCode | transport-telegram, storage-sqlx, llm-opencode-go, docker + sandboxd |
+| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd |
 | `profile-lite` | Minimal Telegram bot | transport-telegram, storage-sqlx, llm-opencode-go, todos, webfetch, reminders |
 | `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
 | `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-sqlx, llm-opencode-go, wiki memory |
 | `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
-| `profile-host-bwrap` | Host-level bwrap, no Docker | transport-telegram, llm-opencode-go + openrouter, bwrap |
 
 ### Atomic Features (selection)
 
@@ -807,7 +675,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
 | **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
-| **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
+| **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
 | **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |

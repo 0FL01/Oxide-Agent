@@ -7,7 +7,6 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }
 "llm-provider/openai-base" = { enabled = true }
-"sandbox-backend/bwrap" = { enabled = true }
 "sandbox-backend/sandboxd-client" = { enabled = true }
 "tool/compression" = { enabled = true }
 "tool/delegation" = { enabled = true }

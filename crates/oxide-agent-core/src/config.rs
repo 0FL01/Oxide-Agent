@@ -1258,13 +1258,6 @@ mod tests {
                 .expect("supported broker sandbox backend should parse"),
             SandboxBackendConfig::Broker
         );
-        assert_eq!(
-            "BWRAP"
-                .parse::<SandboxBackendConfig>()
-                .expect("supported bwrap sandbox backend should parse"),
-            SandboxBackendConfig::Bwrap
-        );
-        assert_eq!(SandboxBackendConfig::Bwrap.to_string(), "bwrap");
     }
 
     #[test]
@@ -1274,22 +1267,15 @@ mod tests {
             .expect_err("invalid sandbox backend should be rejected");
 
         assert!(error.contains("Invalid SANDBOX_BACKEND='podman'"));
-        assert!(error.contains("docker, broker, bwrap"));
+        assert!(error.contains("docker, broker"));
     }
 
     #[test]
-    fn sandbox_backend_env_parsing_handles_bwrap_and_broker_mode() {
+    fn sandbox_backend_env_parsing_handles_broker_mode() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var_os("SANDBOX_BACKEND");
-
-        test_set_env("SANDBOX_BACKEND", "bwrap");
-        assert_eq!(
-            get_sandbox_backend_config().expect("bwrap sandbox backend env should parse"),
-            SandboxBackendConfig::Bwrap
-        );
-        assert!(!sandbox_uses_broker());
 
         test_set_env("SANDBOX_BACKEND", "broker");
         assert_eq!(
@@ -2303,13 +2289,11 @@ pub enum SandboxBackendConfig {
     Docker,
     /// Unix-socket sandboxd broker backend.
     Broker,
-    /// Bubblewrap host backend.
-    Bwrap,
 }
 
 impl SandboxBackendConfig {
     /// Valid environment/config values.
-    pub const VALID_VALUES: &'static [&'static str] = &["docker", "broker", "bwrap"];
+    pub const VALID_VALUES: &'static [&'static str] = &["docker", "broker"];
 
     /// Returns the stable environment string for this backend.
     #[must_use]
@@ -2317,7 +2301,6 @@ impl SandboxBackendConfig {
         match self {
             Self::Docker => "docker",
             Self::Broker => "broker",
-            Self::Bwrap => "bwrap",
         }
     }
 }
@@ -2335,7 +2318,6 @@ impl FromStr for SandboxBackendConfig {
         match value.trim().to_ascii_lowercase().as_str() {
             "docker" => Ok(Self::Docker),
             "broker" => Ok(Self::Broker),
-            "bwrap" => Ok(Self::Bwrap),
             invalid => Err(format!(
                 "Invalid SANDBOX_BACKEND='{invalid}'. Valid values: {}.",
                 Self::VALID_VALUES.join(", ")

@@ -19,22 +19,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-zen"
       },
       {
-        "id": "sandbox-backend/bwrap",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/exec",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/fileops",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/lifecycle",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
         "id": "sandbox-backend/sandboxd-client",
         "module": "sandbox-backend/sandboxd-client"
       },
@@ -309,20 +293,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "sandbox-backend-bwrap",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "sandbox-backend/bwrap",
-        "kind": "sandbox-backend",
-        "provides": [
-          "sandbox-backend/bwrap",
-          "sandbox-backend/bwrap/exec",
-          "sandbox-backend/bwrap/fileops",
-          "sandbox-backend/bwrap/lifecycle"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "sandbox-backend-sandboxd-client",
         "config_properties": [],
         "conflicts": [],
@@ -502,8 +472,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           }
@@ -523,8 +492,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -543,8 +511,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
           }
@@ -624,10 +591,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/bwrap/exec",
-      "sandbox-backend/bwrap/fileops",
-      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/sandboxd-client",
       "sandbox-backend/sandboxd-client/diagnostics",
       "sandbox-backend/sandboxd-client/exec",
@@ -660,7 +623,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
       "sandbox-backend/sandboxd-client",
       "storage/sqlx",
       "tool/brave-search",
@@ -716,7 +678,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/bwrap",
     "sandbox-backend/sandboxd-client"
   ],
   "external_service_requirements": [
@@ -758,13 +719,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
         "OPENCODE_ZEN_MODELS_URL"
       ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "sandbox-backend/bwrap",
-      "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-bwrap",
-      "config_env": [],
       "requires_capabilities": []
     },
     {

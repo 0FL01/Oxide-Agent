@@ -27,6 +27,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/todos"
       },
       {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
+      },
+      {
         "id": "tool/webfetch-md",
         "module": "tool/webfetch-md"
       },
@@ -218,6 +222,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "cargo_feature": "tool-webfetch-md",
         "config_properties": [],
         "conflicts": [],
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "provides": [
+          "tool/web-crawler"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
         "id": "tool/webfetch-md",
         "kind": "search",
         "provides": [
@@ -245,6 +260,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "storage/sqlx",
       "tool/reminder",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "transport/telegram"
     ],
@@ -254,6 +270,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "storage/sqlx",
       "tool/reminder",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "transport/telegram"
     ]
@@ -314,6 +331,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
         "OXIDE_DATABASE_MIGRATIONS_DIR"
       ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
+      "config_env": [],
       "requires_capabilities": []
     },
     {
