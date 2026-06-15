@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// LLM-facing tool name for CRW-backed web search.
 pub const TOOL_WEB_SEARCH: &str = "web_search";
@@ -22,14 +22,69 @@ pub struct CrwSearchRequest {
 // --- Search response (Firecrawl-compatible) ---
 
 /// CRW search API response.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct CrwSearchResponse {
     /// Whether the request succeeded.
-    #[serde(default)]
     pub success: bool,
     /// Search result entries.
-    #[serde(default)]
     pub data: Vec<CrwSearchResult>,
+}
+
+impl<'de> Deserialize<'de> for CrwSearchResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawResponse {
+            #[serde(default)]
+            success: bool,
+            #[serde(default)]
+            data: serde_json::Value,
+            #[serde(default)]
+            results: serde_json::Value,
+        }
+
+        let raw = RawResponse::deserialize(deserializer)?;
+        let data = search_results_from_value(&raw.data)
+            .or_else(|| search_results_from_value(&raw.results))
+            .unwrap_or_default();
+
+        Ok(Self {
+            success: raw.success,
+            data,
+        })
+    }
+}
+
+fn search_results_from_value(value: &serde_json::Value) -> Option<Vec<CrwSearchResult>> {
+    if value.is_null() {
+        return Some(Vec::new());
+    }
+
+    if value.is_array() {
+        return serde_json::from_value(value.clone()).ok();
+    }
+
+    let object = value.as_object()?;
+    if let Some(results) = object.get("results") {
+        if results.is_array() {
+            return serde_json::from_value(results.clone()).ok();
+        }
+        if let Some(grouped) = results.as_object() {
+            let mut flattened = Vec::new();
+            for entries in grouped.values() {
+                if let Ok(mut parsed) =
+                    serde_json::from_value::<Vec<CrwSearchResult>>(entries.clone())
+                {
+                    flattened.append(&mut parsed);
+                }
+            }
+            return Some(flattened);
+        }
+    }
+
+    None
 }
 
 /// Single search result entry.
@@ -42,7 +97,7 @@ pub struct CrwSearchResult {
     #[serde(default)]
     pub url: String,
     /// Snippet or content excerpt.
-    #[serde(default, alias = "description")]
+    #[serde(default, alias = "description", alias = "snippet")]
     pub content: String,
 }
 
@@ -229,6 +284,46 @@ mod tests {
         assert_eq!(resp.data.len(), 2);
         assert_eq!(resp.data[0].content, "Snippet 1");
         assert_eq!(resp.data[1].content, "Content 2");
+    }
+
+    #[test]
+    fn search_response_deserializes_crw_results_object_format() {
+        let raw = serde_json::json!({
+            "success": true,
+            "data": {
+                "results": [
+                    {"title": "Result 1", "url": "https://example.com/1", "snippet": "Snippet 1"},
+                    {"title": "Result 2", "url": "https://example.com/2", "description": "Snippet 2"}
+                ]
+            }
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].content, "Snippet 1");
+        assert_eq!(resp.data[1].content, "Snippet 2");
+    }
+
+    #[test]
+    fn search_response_deserializes_grouped_results_object_format() {
+        let raw = serde_json::json!({
+            "success": true,
+            "data": {
+                "results": {
+                    "web": [
+                        {"title": "Web", "url": "https://example.com/web", "snippet": "Web snippet"}
+                    ],
+                    "news": [
+                        {"title": "News", "url": "https://example.com/news", "snippet": "News snippet"}
+                    ]
+                }
+            }
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert!(resp.success);
+        assert_eq!(resp.data.len(), 2);
+        assert!(resp.data.iter().any(|result| result.title == "Web"));
+        assert!(resp.data.iter().any(|result| result.title == "News"));
     }
 
     #[test]
