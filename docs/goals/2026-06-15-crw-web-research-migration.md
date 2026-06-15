@@ -1,11 +1,11 @@
 # Goal: Migrate web research from SearXNG + Crawl4AI to CRW
 
 Date started: 2026-06-15
-Status: active
+Status: cancelled by user during Checkpoint 10
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 16:15 UTC+3
+Last updated: 2026-06-15 16:30 UTC+3
 
 ## Objective
 
@@ -1033,11 +1033,19 @@ Avoid vague updates such as "working on migration". Name the next file set or va
 
 ## Final Verification
 
-Filled only when complete.
+Cancelled by user during Checkpoint 10 to stop further token/time spend.
 
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: not marked complete by Codex goal state; Checkpoints 0-9 were completed and committed, Checkpoint 10 final audit was partially run.
+- Commands run during final audit before cancellation:
+  - `cargo fmt --all -- --check` → passed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` → passed.
+  - `cargo check --workspace --no-default-features --features profile-full` → passed.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full` → 1151 passed, 11 failed; failures were in pre-existing/non-CRW areas already observed during earlier checkpoints.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` → 1017 passed, 8 failed; failures were outside CRW migration paths.
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-search-only` → 877 passed, 11 failed; failures were outside removed legacy provider paths.
+  - `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` → passed: 131 unit tests, 6 e2e helper tests, doctests ignored/passed as reported.
+  - `cargo check -p oxide-agent-web-ui` → passed.
+- Artifacts inspected: goal doc audit table, current git status, recent commit history, command outputs from Checkpoint 10 partial final audit.
+- Remaining gaps: final compose re-run and final old-name sweep from Checkpoint 10 were not rerun after Checkpoint 9 because the user cancelled the goal. They had passed in Checkpoints 7 and 9 respectively.
+- User-accepted exceptions: user explicitly requested cancellation and document closure before finishing all Checkpoint 10 verification commands.
+- Final status: cancelled by user, not completed via `update_goal complete`.
