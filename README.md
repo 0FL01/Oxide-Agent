@@ -665,7 +665,6 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd |
 | `profile-lite` | Minimal Telegram bot | transport-telegram, storage-sqlx, llm-opencode-go, todos, webfetch, reminders |
 | `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
-| `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
 
 ### Atomic Features (selection)
 

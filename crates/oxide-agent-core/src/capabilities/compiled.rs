@@ -273,7 +273,6 @@ pub fn compiled_profile_name() -> Option<&'static str> {
         + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
-        + cfg!(feature = "profile-media-enabled") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -288,8 +287,6 @@ pub fn compiled_profile_name() -> Option<&'static str> {
         Some("lite")
     } else if cfg!(feature = "profile-search-only") {
         Some("search-only")
-    } else if cfg!(feature = "profile-media-enabled") {
-        Some("media-enabled")
     } else {
         Some("full")
     }

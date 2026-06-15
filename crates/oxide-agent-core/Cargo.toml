@@ -169,16 +169,6 @@ profile-search-only = [
     "tool-brave-search",
     "tool-crw",
 ]
-profile-media-enabled = [
-    "transport-telegram",
-    "storage-sqlx",
-    "llm-opencode-go",
-    "tool-media-audio",
-    "tool-media-image",
-    "tool-media-video",
-    "tool-file-delivery",
-]
-
 # Transports
 transport-telegram = []
 transport-web = []

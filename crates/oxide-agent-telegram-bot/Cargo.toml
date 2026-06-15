@@ -52,12 +52,6 @@ profile-search-only = [
     "oxide-agent-core/profile-search-only",
     "storage-sqlx",
 ]
-profile-media-enabled = [
-    "transport-telegram",
-    "oxide-agent-core/profile-media-enabled",
-    "storage-sqlx",
-]
-
 [[bin]]
 name = "oxide-agent-telegram-bot"
 path = "src/main.rs"

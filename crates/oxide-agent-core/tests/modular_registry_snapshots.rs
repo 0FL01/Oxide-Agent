@@ -3,7 +3,6 @@
     feature = "profile-web-embedded-opencode-local",
     feature = "profile-lite",
     feature = "profile-search-only",
-    feature = "profile-media-enabled",
     feature = "profile-full",
 ))]
 
@@ -425,33 +424,6 @@ fn assert_tool_availability_contract(
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
         }
-        "profile-media-enabled" => {
-            assert_present_capabilities(
-                &enabled_capability_ids,
-                &[
-                    "tool/media-audio-transcription",
-                    "tool/media-image-description",
-                    "tool/media-video-description",
-                ],
-                profile,
-            );
-            assert_present_tools(
-                &tool_names,
-                &[
-                    "transcribe_audio_file",
-                    "describe_image_file",
-                    "describe_video_file",
-                ],
-                profile,
-            );
-            assert_absent_tools(&tool_names, &["execute_command"], profile);
-            assert!(
-                enabled_module_ids
-                    .iter()
-                    .all(|module_id| !module_id.starts_with("sandbox-backend/")),
-                "media-enabled profile must expose media tools without selecting a sandbox backend"
-            );
-        }
         _ => {}
     }
 }
@@ -600,7 +572,6 @@ fn compiled_profile_label() -> &'static str {
         + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
-        + cfg!(feature = "profile-media-enabled") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -615,8 +586,6 @@ fn compiled_profile_label() -> &'static str {
         "profile-lite"
     } else if cfg!(feature = "profile-search-only") {
         "profile-search-only"
-    } else if cfg!(feature = "profile-media-enabled") {
-        "profile-media-enabled"
     } else {
         "profile-full"
     }
