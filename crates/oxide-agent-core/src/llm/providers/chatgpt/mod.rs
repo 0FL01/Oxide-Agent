@@ -10,6 +10,7 @@ pub(crate) use module::ChatGptProviderModule;
 use self::auth::ChatGptAuthManager;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{create_http_client, parse_retry_after};
+use crate::llm::support::sse;
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
     ToolDefinition,
@@ -566,12 +567,7 @@ fn process_sse_event(
     current_text_item_id: &mut Option<String>,
     diagnostics: &mut ChatGptStreamDiagnostics,
 ) -> Result<(), LlmError> {
-    let payload = raw_event
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(str::trim_start)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let payload = sse::data_payload(raw_event);
     if payload.is_empty() || payload == "[DONE]" {
         return Ok(());
     }
@@ -740,36 +736,11 @@ impl ChatGptResponseMetadata {
 }
 
 fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
-    match std::str::from_utf8(pending_bytes) {
-        Ok(valid) => {
-            let decoded = valid.to_string();
-            pending_bytes.clear();
-            Ok((!decoded.is_empty()).then_some(decoded))
-        }
-        Err(error) => {
-            let valid_up_to = error.valid_up_to();
-            if let Some(error_len) = error.error_len() {
-                return Err(LlmError::JsonError(format!(
-                    "invalid utf-8 in ChatGPT stream at {valid_up_to} (len {error_len})"
-                )));
-            }
-
-            if valid_up_to == 0 {
-                return Ok(None);
-            }
-
-            let decoded = String::from_utf8(pending_bytes[..valid_up_to].to_vec())
-                .map_err(|error| LlmError::JsonError(error.to_string()))?;
-            pending_bytes.drain(..valid_up_to);
-            Ok(Some(decoded))
-        }
-    }
+    sse::decode_utf8_prefix(pending_bytes, "ChatGPT stream")
 }
 
 fn normalize_newlines_in_place(buffer: &mut String) {
-    if buffer.contains('\r') {
-        *buffer = buffer.replace("\r\n", "\n");
-    }
+    sse::normalize_newlines_in_place(buffer);
 }
 
 fn parse_usage(value: &Value) -> Option<TokenUsage> {
@@ -797,9 +768,12 @@ mod tests {
     use super::{
         ChatGptResponseMetadata, ChatGptStreamDiagnostics, StreamedChatGptResponse,
         build_chat_request_body, decode_utf8_prefix, finish_streaming_response,
-        prepare_responses_request, process_sse_event,
+        normalize_newlines_in_place, parse_usage, prepare_responses_request, prepare_tools_json,
+        process_sse_event,
     };
-    use crate::llm::{LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use crate::llm::{
+        LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+    };
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -872,6 +846,51 @@ mod tests {
             body["input"][0]["content"][0]["text"],
             json!("Please answer in JSON.")
         );
+    }
+
+    #[test]
+    fn non_json_tool_body_keeps_responses_tool_schema_and_gpt5_policy() {
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+        }];
+        let body = build_chat_request_body(
+            "system",
+            vec![json!({"role":"user","content":[{"type":"input_text","text":"hi"}]})],
+            &tools,
+            "gpt-5.4",
+            10,
+            Some(0.2),
+            false,
+            Some("high"),
+        );
+
+        assert_eq!(body["tools"][0]["type"], json!("function"));
+        assert_eq!(body["tools"][0]["name"], json!("search"));
+        assert!(body["tools"][0].get("function").is_none());
+        assert_eq!(body["tool_choice"], json!("auto"));
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["reasoning"]["effort"], json!("high"));
+        assert_eq!(body["truncation"], json!("auto"));
+    }
+
+    #[test]
+    fn prepare_tools_json_uses_responses_shape_not_chat_completions_shape() {
+        let tools = prepare_tools_json(&[ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: json!({ "type": "object" }),
+        }]);
+
+        assert_eq!(tools[0]["type"], json!("function"));
+        assert_eq!(tools[0]["name"], json!("search"));
+        assert_eq!(tools[0]["parameters"]["type"], json!("object"));
+        assert!(tools[0].get("function").is_none());
     }
 
     #[test]
@@ -966,6 +985,61 @@ mod tests {
     }
 
     #[test]
+    fn sse_incomplete_reason_and_error_events_remain_responses_specific() {
+        let mut state = StreamedChatGptResponse::default();
+        state.content = Some("partial".to_string());
+        let mut current_text_item_id = None;
+        let mut diagnostics = ChatGptStreamDiagnostics::default();
+
+        process_sse_event(
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}",
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )
+        .expect("incomplete event parses");
+        assert_eq!(state.finish_reason, "max_output_tokens");
+
+        let err = process_sse_event(
+            "data: {\"type\":\"error\",\"message\":\"bad responses event\"}",
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )
+        .expect_err("error event should fail");
+        assert!(err.to_string().contains("ChatGPT stream error"));
+    }
+
+    #[test]
+    fn chatgpt_responses_sse_parser_remains_special() {
+        let mut state = StreamedChatGptResponse::default();
+        let mut current_text_item_id = None;
+        let mut diagnostics = ChatGptStreamDiagnostics::default();
+
+        process_sse_event(
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"Responses text\"}",
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )
+        .expect("Responses delta parses in ChatGPT parser");
+        process_sse_event(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"chat completions text\"}}]}",
+            &mut state,
+            &mut current_text_item_id,
+            &mut diagnostics,
+        )
+        .expect("Chat Completions chunk is ignored by ChatGPT parser");
+
+        assert_eq!(state.content.as_deref(), Some("Responses text"));
+        assert_eq!(diagnostics.text_delta_count, 1);
+        assert_eq!(
+            diagnostics.ignored_event_types.get("<missing_type>"),
+            Some(&1)
+        );
+    }
+
+    #[test]
     fn sse_ignored_event_types_are_tracked() {
         let mut state = StreamedChatGptResponse::default();
         let mut current_text_item_id = None;
@@ -1051,6 +1125,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_usage_accepts_responses_and_chat_alias_fields() {
+        let responses_usage = parse_usage(&json!({
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 14,
+            "prompt_tokens_details": { "cached_tokens": 6 }
+        }))
+        .expect("responses usage parses");
+        assert_eq!(responses_usage.cached_tokens, Some(6));
+
+        let alias_usage = parse_usage(&json!({
+            "prompt_tokens": 3,
+            "completion_tokens": 2,
+            "total_tokens": 5
+        }))
+        .expect("alias usage parses");
+        assert_eq!(alias_usage.prompt_tokens, 3);
+        assert_eq!(alias_usage.completion_tokens, 2);
+    }
+
+    #[test]
     fn decode_utf8_prefix_handles_split_multibyte_sequences() {
         let mut pending = vec![0xF0, 0x9F];
         assert!(
@@ -1067,5 +1162,14 @@ mod tests {
             Some("🙂")
         );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn normalize_newlines_preserves_responses_sse_frame_boundaries() {
+        let mut buffer = "data: one\r\n\r\ndata: two\n\n".to_string();
+
+        normalize_newlines_in_place(&mut buffer);
+
+        assert_eq!(buffer, "data: one\n\ndata: two\n\n");
     }
 }

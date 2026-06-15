@@ -6,7 +6,6 @@ use crate::llm::LlmProvider;
 use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 
-use super::OpenAIBaseProvider;
 use super::profile::OpenAICompatibleProfile;
 
 /// Capability module for generic OpenAI-compatible routes.
@@ -330,12 +329,17 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
 ///
 /// Creates an [`OpenAIBaseProvider`] with a Mistral-specific profile when
 /// `MISTRAL_API_KEY` is set. Module ID is `"llm-provider/mistral"`.
+#[cfg(feature = "llm-mistral")]
 pub(crate) struct MistralProviderModule;
 
+#[cfg(feature = "llm-mistral")]
 const MISTRAL_API_KEY_CONFIG_KEY: &str = "api_key";
+#[cfg(feature = "llm-mistral")]
 const MISTRAL_API_KEY_ENV: &str = "MISTRAL_API_KEY";
+#[cfg(feature = "llm-mistral")]
 const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
+#[cfg(feature = "llm-mistral")]
 impl LlmProviderModule for MistralProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/mistral"
@@ -357,7 +361,7 @@ impl LlmProviderModule for MistralProviderModule {
                 MISTRAL_API_KEY_ENV,
             )
             .map(|api_key| {
-                Arc::new(OpenAIBaseProvider::new_with_client_and_profile(
+                Arc::new(super::OpenAIBaseProvider::new_with_client_and_profile(
                     Some(api_key),
                     MISTRAL_API_BASE.to_string(),
                     ctx.http_client.clone(),

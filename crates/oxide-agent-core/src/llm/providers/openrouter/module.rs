@@ -112,3 +112,45 @@ fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::OpenRouterProviderModule;
+    use crate::config::ModelInfo;
+    use crate::llm::providers::modules::LlmProviderModule;
+
+    fn route(model_id: &str) -> ModelInfo {
+        ModelInfo {
+            id: model_id.to_string(),
+            provider: "llm-provider/openrouter".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            weight: 1,
+        }
+    }
+
+    #[test]
+    fn openrouter_capability_gating_unchanged() {
+        let module = OpenRouterProviderModule;
+
+        let gemini = route("google/gemini-3.1-flash-lite-preview");
+        let gemini_capabilities = module.capabilities_for_model(&gemini);
+        let gemini_media = module.media_capabilities_for_model(&gemini);
+
+        assert!(!gemini_capabilities.supports_tool_calling);
+        assert!(gemini_capabilities.supports_structured_output);
+        assert!(gemini_media.supports_audio_transcription);
+        assert!(gemini_media.supports_image_understanding);
+        assert!(gemini_media.supports_video_understanding);
+
+        let deepseek = route("deepseek/deepseek-v4-flash");
+        let deepseek_capabilities = module.capabilities_for_model(&deepseek);
+        let deepseek_media = module.media_capabilities_for_model(&deepseek);
+
+        assert!(deepseek_capabilities.supports_tool_calling);
+        assert!(deepseek_capabilities.supports_structured_output);
+        assert!(!deepseek_media.supports_audio_transcription);
+        assert!(!deepseek_media.supports_image_understanding);
+        assert!(!deepseek_media.supports_video_understanding);
+    }
+}

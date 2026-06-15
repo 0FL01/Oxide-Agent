@@ -3,6 +3,7 @@ pub(crate) mod profile;
 pub(crate) mod tool_ids;
 pub(crate) mod transcription;
 
+#[cfg(feature = "llm-mistral")]
 pub(crate) use module::MistralProviderModule;
 pub(crate) use module::OpenAIBaseProviderModule;
 pub(crate) use profile::OpenAICompatibleProfile;
@@ -11,31 +12,26 @@ pub(crate) use tool_ids::ToolCallIdMapper;
 use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
-use crate::llm::providers::openai_base::profile::{
-    JsonModePolicy, MessageLayoutPolicy, ReasoningPolicy, ResponseContentPolicy, StreamPolicy,
-    ThinkingPolicy,
-};
-use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+#[cfg(test)]
+use crate::llm::ToolCall;
+use crate::llm::providers::chat_completions::client::ChatCompletionsClient;
+use crate::llm::providers::chat_completions::request as chat_completions_request;
+use crate::llm::providers::chat_completions::response as chat_completions_response;
+use crate::llm::providers::chat_completions::streaming as chat_completions_streaming;
 use crate::llm::support::http::{
     APP_USER_AGENT, extract_text_content, parse_retry_after, send_json_request,
 };
 use crate::llm::{
-    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart,
-    TokenUsage, ToolCall, ToolDefinition,
+    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, ToolDefinition,
 };
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use futures_util::StreamExt;
 use reqwest::Client as HttpClient;
-use serde_json::{Value, json};
-use tracing::debug;
+use serde_json::Value;
 
 /// LLM provider for generic OpenAI-compatible Chat Completions endpoints.
 pub struct OpenAIBaseProvider {
-    http_client: HttpClient,
-    api_key: Option<String>,
-    api_base: String,
-    profile: OpenAICompatibleProfile,
+    client: ChatCompletionsClient,
+    transcription_base: String,
     tool_id_mapper: Arc<Mutex<ToolCallIdMapper>>,
 }
 
@@ -82,25 +78,24 @@ impl OpenAIBaseProvider {
         http_client: HttpClient,
         profile: OpenAICompatibleProfile,
     ) -> Self {
+        let endpoint = chat_completions_url(&api_base);
         Self {
-            http_client,
-            api_key,
-            api_base,
-            profile,
+            client: ChatCompletionsClient::new(http_client, endpoint, api_key, "", profile),
+            transcription_base: api_base,
             tool_id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
         }
     }
 
-    fn chat_completions_url(&self) -> String {
-        chat_completions_url(&self.api_base)
+    fn chat_completions_url(&self) -> &str {
+        self.client.endpoint()
     }
 
     fn auth_header(&self) -> Option<String> {
-        self.api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(|key| format!("Bearer {key}"))
+        self.client.auth_header()
+    }
+
+    fn profile(&self) -> OpenAICompatibleProfile {
+        self.client.profile()
     }
 }
 
@@ -113,273 +108,25 @@ fn chat_completions_url(api_base: &str) -> String {
     }
 }
 
-/// Dispatch message preparation based on profile layout policy.
-fn dispatch_structured_messages(
-    system_prompt: &str,
-    history: &[Message],
-    profile: &OpenAICompatibleProfile,
-    tool_id_mapper: &mut ToolCallIdMapper,
-) -> Vec<Value> {
-    match profile.message_layout {
-        MessageLayoutPolicy::GenericOpenAI => prepare_structured_messages(system_prompt, history),
-        MessageLayoutPolicy::MistralStrict => {
-            prepare_structured_messages_mistral(system_prompt, history, tool_id_mapper)
-        }
-    }
-}
-
+#[cfg(test)]
 fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
-    let mut messages = Vec::with_capacity(history.len() + 1);
-
-    if !system_prompt.trim().is_empty() {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-
-    for msg in history {
-        match msg.role.as_str() {
-            "system" => {
-                if !msg.content.trim().is_empty() {
-                    messages.push(json!({
-                        "role": "system",
-                        "content": msg.content,
-                    }));
-                }
-            }
-            "assistant" => {
-                let mut message = json!({
-                    "role": "assistant",
-                    "content": msg.content,
-                });
-                if let Some(reasoning_content) = msg
-                    .reasoning_content
-                    .as_deref()
-                    .filter(|reasoning| !reasoning.trim().is_empty())
-                {
-                    message["reasoning_content"] = json!(reasoning_content);
-                }
-                if let Some(tool_calls) = &msg.tool_calls {
-                    let api_tool_calls: Vec<Value> = tool_calls
-                        .iter()
-                        .filter_map(|tool_call| {
-                            CHAT_LIKE_TOOL_PROFILE
-                                .encode_tool_call(tool_call)
-                                .and_then(|call| call.into_chat_like())
-                                .map(|call| {
-                                    json!({
-                                        "id": call.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": call.name,
-                                            "arguments": call.arguments,
-                                        }
-                                    })
-                                })
-                        })
-                        .collect();
-
-                    if !api_tool_calls.is_empty() {
-                        message["tool_calls"] = json!(api_tool_calls);
-                    }
-                }
-                messages.push(message);
-            }
-            "tool" => {
-                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .encode_tool_result(msg)
-                    .and_then(|result| result.into_chat_like())
-                {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": result.content,
-                    }));
-                }
-            }
-            _ => messages.push(json!({
-                "role": "user",
-                "content": openai_user_message_content(msg),
-            })),
-        }
-    }
-
-    messages
+    let options =
+        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::generic());
+    chat_completions_request::prepare_messages(system_prompt, history, options, None)
 }
 
 /// Mistral-strict message layout: history system messages are collected and
 /// prepended before the main system prompt. Tool-call IDs are mapped through
 /// the [`ToolCallIdMapper`] to 9-character alphanumeric format.
+#[cfg(test)]
 fn prepare_structured_messages_mistral(
     system_prompt: &str,
     history: &[Message],
     id_mapper: &mut ToolCallIdMapper,
 ) -> Vec<Value> {
-    let mut history_systems = Vec::new();
-    let mut other_messages = Vec::new();
-
-    for msg in history {
-        match msg.role.as_str() {
-            "system" => {
-                history_systems.push(json!({
-                    "role": "system",
-                    "content": msg.content,
-                }));
-            }
-            "assistant" => {
-                let mut msg_obj = json!({
-                    "role": "assistant",
-                    "content": msg.content,
-                });
-                if let Some(tool_calls) = &msg.tool_calls
-                    && !tool_calls.is_empty()
-                {
-                    let mapped_calls: Vec<Value> = tool_calls
-                        .iter()
-                        .filter_map(|tc| {
-                            CHAT_LIKE_TOOL_PROFILE
-                                .encode_tool_call(tc)
-                                .and_then(|call| call.into_chat_like())
-                                .map(|call| {
-                                    let mistral_id = id_mapper.mistral_id_for(&call.id);
-                                    json!({
-                                        "id": mistral_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": call.name,
-                                            "arguments": call.arguments,
-                                        }
-                                    })
-                                })
-                        })
-                        .collect();
-                    msg_obj["tool_calls"] = json!(mapped_calls);
-                }
-                other_messages.push(msg_obj);
-            }
-            "tool" => {
-                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .encode_tool_result(msg)
-                    .and_then(|result| result.into_chat_like())
-                {
-                    let mistral_id = id_mapper.mistral_id_for(&result.tool_call_id);
-                    let mut tool_msg = json!({
-                        "role": "tool",
-                        "content": result.content,
-                    });
-                    tool_msg["tool_call_id"] = json!(mistral_id);
-                    if let Some(name) = result.name {
-                        tool_msg["name"] = json!(name);
-                    }
-                    other_messages.push(tool_msg);
-                }
-            }
-            _ => {
-                other_messages.push(json!({
-                    "role": "user",
-                    "content": msg.content,
-                }));
-            }
-        }
-    }
-
-    let mut messages = Vec::with_capacity(history_systems.len() + 1 + other_messages.len());
-    messages.extend(history_systems);
-    messages.push(json!({
-        "role": "system",
-        "content": system_prompt,
-    }));
-    messages.extend(other_messages);
-    messages
-}
-
-fn openai_user_message_content(message: &Message) -> Value {
-    if message.content_parts.is_empty() {
-        return json!(message.content);
-    }
-
-    let mut parts = Vec::new();
-    if !message.content.is_empty() {
-        parts.push(json!({
-            "type": "text",
-            "text": message.content,
-        }));
-    }
-
-    for part in &message.content_parts {
-        match part {
-            MessageContentPart::Image { mime_type, bytes } if !bytes.is_empty() => {
-                parts.push(json!({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url_with_mime(bytes, mime_type),
-                    },
-                }));
-            }
-            MessageContentPart::Image { .. } => {}
-        }
-    }
-
-    if parts.is_empty() {
-        json!(message.content)
-    } else {
-        json!(parts)
-    }
-}
-
-fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
-    tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                }
-            })
-        })
-        .collect()
-}
-
-fn maybe_apply_json_mode(body: &mut Value, json_mode: bool, has_tools: bool) {
-    if should_use_native_json_mode(json_mode, has_tools) {
-        body["response_format"] = json!({ "type": "json_object" });
-    }
-}
-
-fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
-    json_mode && !has_tools
-}
-
-fn apply_profile_request_policies(
-    body: &mut Value,
-    profile: &OpenAICompatibleProfile,
-    json_mode: bool,
-    has_tools: bool,
-) {
-    let native_json_mode = should_use_native_json_mode(json_mode, has_tools);
-
-    match profile.thinking {
-        ThinkingPolicy::None => {}
-        ThinkingPolicy::ZaiEnabledUnlessJsonMode => {
-            let thinking_type = if native_json_mode {
-                "disabled"
-            } else {
-                "enabled"
-            };
-            body["thinking"] = json!({ "type": thinking_type });
-        }
-    }
-
-    match profile.streaming {
-        StreamPolicy::NonStreaming => {}
-        StreamPolicy::ZaiUnlessNativeJsonMode => {
-            body["stream"] = json!(!native_json_mode);
-        }
-    }
+    let options =
+        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::mistral());
+    chat_completions_request::prepare_messages(system_prompt, history, options, Some(id_mapper))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -395,50 +142,18 @@ fn build_tool_chat_body(
     profile: &OpenAICompatibleProfile,
     tool_id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
-    let openai_tools = prepare_tools_json(tools);
-    let has_tools = !openai_tools.is_empty();
-
-    // Temperature: caller override, or reasoning-model default, or tool default.
-    let effective_temperature = if profile.is_reasoning_model(model_id) {
-        temperature.unwrap_or(profile.reasoning_temperature)
-    } else {
-        temperature.unwrap_or(profile.tool_temperature)
-    };
-
-    let mut body = json!({
-        "model": model_id,
-        "messages": dispatch_structured_messages(system_prompt, history, profile, tool_id_mapper),
-        "max_tokens": max_tokens,
-        "temperature": effective_temperature,
-        "stream": false,
-    });
-
-    if has_tools {
-        body["tools"] = json!(openai_tools);
-        body["tool_choice"] = json!("auto");
-    }
-
-    // parallel_tool_calls: explicit profile value (e.g. Mistral always sends true).
-    if let Some(parallel) = profile.parallel_tool_calls {
-        body["parallel_tool_calls"] = json!(parallel);
-    }
-
-    // reasoning_effort: only for models matching the profile's reasoning policy.
-    if let ReasoningPolicy::Mistral { default_effort, .. } = profile.reasoning
-        && profile.is_reasoning_model(model_id)
-    {
-        let effort = reasoning_effort.unwrap_or(default_effort);
-        body["reasoning_effort"] = json!(effort);
-    }
-
-    // JSON mode: dispatch on profile policy.
-    if matches!(profile.json_mode, JsonModePolicy::Standard) {
-        maybe_apply_json_mode(&mut body, json_mode, has_tools);
-    }
-
-    apply_profile_request_policies(&mut body, profile, json_mode, has_tools);
-
-    body
+    let options = chat_request_options(profile).with_reasoning_effort(reasoning_effort);
+    chat_completions_request::build_tool_body(
+        system_prompt,
+        history,
+        tools,
+        model_id,
+        max_tokens,
+        temperature,
+        json_mode,
+        options,
+        Some(tool_id_mapper),
+    )
 }
 
 fn build_image_analysis_body(
@@ -447,285 +162,32 @@ fn build_image_analysis_body(
     system_prompt: &str,
     model_id: &str,
 ) -> Value {
-    json!({
-        "model": model_id,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_data_url(image_bytes)}
-                    }
-                ]
-            }
-        ],
-        "max_tokens": 4000,
-        "temperature": OPENAI_BASE_CHAT_TEMPERATURE,
-        "stream": false,
-    })
+    chat_completions_request::build_image_body(
+        image_bytes,
+        None,
+        text_prompt,
+        system_prompt,
+        model_id,
+        4000,
+        OPENAI_BASE_CHAT_TEMPERATURE,
+        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::generic()),
+    )
 }
 
-fn image_data_url(image_bytes: &[u8]) -> String {
-    image_data_url_with_mime(image_bytes, infer_image_mime_type(image_bytes))
-}
-
-fn image_data_url_with_mime(image_bytes: &[u8], mime_type: &str) -> String {
-    let mime_type = normalized_image_mime_type(mime_type, image_bytes);
-    format!("data:{mime_type};base64,{}", BASE64.encode(image_bytes))
-}
-
-fn normalized_image_mime_type(mime_type: &str, image_bytes: &[u8]) -> String {
-    let trimmed = mime_type.trim();
-    if trimmed.starts_with("image/") {
-        trimmed.to_string()
-    } else {
-        infer_image_mime_type(image_bytes).to_string()
-    }
-}
-
+#[cfg(test)]
 fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
-    if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
-        return "image/png";
-    }
-    if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return "image/jpeg";
-    }
-    if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
-        return "image/gif";
-    }
-    if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
-        return "image/webp";
-    }
-    "image/jpeg"
+    chat_completions_request::infer_image_mime_type(image_bytes)
 }
 
-fn normalize_tool_arguments(value: &Value) -> String {
-    match value {
-        Value::String(raw) => normalize_tool_arguments_str(raw),
-        other => serde_json::to_string(other).unwrap_or_default(),
-    }
+fn chat_request_options<'a>(
+    profile: &OpenAICompatibleProfile,
+) -> chat_completions_request::ChatRequestOptions<'a> {
+    chat_completions_request::ChatRequestOptions::new(*profile)
 }
 
+#[cfg(test)]
 fn normalize_tool_arguments_str(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return "{}".to_string();
-    }
-
-    let Ok(parsed) = serde_json::from_str::<Value>(trimmed) else {
-        return trimmed.to_string();
-    };
-
-    match parsed {
-        Value::String(inner) => match serde_json::from_str::<Value>(&inner) {
-            Ok(inner_parsed) => serde_json::to_string(&inner_parsed).unwrap_or(inner),
-            Err(_) => inner,
-        },
-        other => serde_json::to_string(&other).unwrap_or_else(|_| trimmed.to_string()),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Content array parsing (used by Mistral-style response content policy)
-// ---------------------------------------------------------------------------
-
-/// Extract text segments from a JSON value recursively.
-///
-/// Handles strings, arrays, and objects with `text`/`thinking`/`content`/`reasoning` keys.
-fn extract_text_segments(value: &Value) -> Vec<String> {
-    match value {
-        Value::String(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                Vec::new()
-            } else {
-                vec![trimmed.to_string()]
-            }
-        }
-        Value::Array(items) => items.iter().flat_map(extract_text_segments).collect(),
-        Value::Object(map) => {
-            if let Some(text) = map.get("text") {
-                let extracted = extract_text_segments(text);
-                if !extracted.is_empty() {
-                    return extracted;
-                }
-            }
-
-            ["thinking", "content", "reasoning"]
-                .into_iter()
-                .filter_map(|key| map.get(key))
-                .flat_map(extract_text_segments)
-                .collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Join non-empty trimmed text segments with double newlines.
-fn join_segments(segments: Vec<String>) -> Option<String> {
-    let segments: Vec<_> = segments
-        .into_iter()
-        .map(|segment| segment.trim().to_string())
-        .filter(|segment| !segment.is_empty())
-        .collect();
-
-    if segments.is_empty() {
-        None
-    } else {
-        Some(segments.join("\n\n"))
-    }
-}
-
-/// Extract message content and reasoning from response content value.
-///
-/// Handles both simple string content and array content with
-/// `thinking`/`reasoning`/`text` chunks.
-fn extract_message_content(content: Option<&Value>) -> (Option<String>, Option<String>) {
-    let Some(content) = content else {
-        return (None, None);
-    };
-
-    match content {
-        Value::String(text) => (join_segments(vec![text.to_string()]), None),
-        Value::Array(items) => {
-            let mut content_segments = Vec::new();
-            let mut reasoning_segments = Vec::new();
-
-            for item in items {
-                let Some(item_type) = item.get("type").and_then(Value::as_str) else {
-                    content_segments.extend(extract_text_segments(item));
-                    continue;
-                };
-
-                match item_type {
-                    "thinking" | "reasoning" => {
-                        reasoning_segments.extend(extract_text_segments(item));
-                    }
-                    "text" => {
-                        if let Some(text) = item.get("text") {
-                            content_segments.extend(extract_text_segments(text));
-                        }
-                    }
-                    _ => content_segments.extend(extract_text_segments(item)),
-                }
-            }
-
-            (
-                join_segments(content_segments),
-                join_segments(reasoning_segments),
-            )
-        }
-        _ => (join_segments(extract_text_segments(content)), None),
-    }
-}
-
-/// Fall back to top-level `reasoning_content` field on the message object.
-fn extract_reasoning_content(message: &Value) -> Option<String> {
-    join_segments(extract_text_segments(message.get("reasoning_content")?))
-}
-
-// ---------------------------------------------------------------------------
-// Tool call parsing
-// ---------------------------------------------------------------------------
-
-/// Generic tool-call parser (no mapper).
-fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
-    let Some(array) = value.as_array() else {
-        return Err(LlmError::JsonError(
-            "Invalid tool_calls format from OpenAI-compatible provider".to_string(),
-        ));
-    };
-
-    let mut tool_calls = Vec::with_capacity(array.len());
-    for (index, call) in array.iter().enumerate() {
-        let Some(function) = call.get("function") else {
-            continue;
-        };
-        let Some(name) = function.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let arguments = function
-            .get("arguments")
-            .map(normalize_tool_arguments)
-            .unwrap_or_else(|| "{}".to_string());
-
-        let wire_id = call
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| {
-                debug!(
-                    tool_name = name,
-                    tool_index = index,
-                    "OpenAI-compatible provider returned empty tool call ID, generating fallback"
-                );
-                format!("openai_base_fallback_{index}")
-            });
-
-        tool_calls.push(CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
-            &wire_id,
-            None,
-            name.to_string(),
-            arguments,
-        ));
-    }
-
-    Ok(tool_calls)
-}
-
-/// Mistral-style tool-call parser with bidirectional ID reverse mapping.
-///
-/// Three cases:
-/// - Empty/whitespace ID -> `inbound_uncorrelated_tool_call`
-/// - Known mapping in mapper -> `inbound_tool_call` (restores original ID)
-/// - Unknown mapping -> `inbound_provider_tool_call` (provider-correlated)
-fn parse_tool_calls_with_mapper(message: &Value, id_mapper: &ToolCallIdMapper) -> Vec<ToolCall> {
-    let Some(tool_calls_array) = message.get("tool_calls") else {
-        return Vec::new();
-    };
-    let Some(array) = tool_calls_array.as_array() else {
-        return Vec::new();
-    };
-
-    array
-        .iter()
-        .filter_map(|tc| {
-            let provider_id = tc.get("id")?.as_str()?.to_string();
-            let original_id = id_mapper.to_original(&provider_id);
-            let has_known_mapping = id_mapper.has_mistral_id(&provider_id);
-
-            let function = tc.get("function")?;
-            let name = function.get("name")?.as_str()?.to_string();
-            let arguments = function
-                .get("arguments")
-                .map(normalize_tool_arguments)
-                .unwrap_or_else(|| "{}".to_string());
-
-            Some(if provider_id.trim().is_empty() {
-                CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments)
-            } else if has_known_mapping {
-                CHAT_LIKE_TOOL_PROFILE.inbound_tool_call(
-                    original_id,
-                    Some(&provider_id),
-                    None,
-                    name,
-                    arguments,
-                )
-            } else {
-                CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
-                    &provider_id,
-                    None,
-                    name,
-                    arguments,
-                )
-            })
-        })
-        .collect()
+    chat_completions_response::normalize_tool_arguments_str(raw)
 }
 
 fn parse_chat_response(
@@ -733,81 +195,7 @@ fn parse_chat_response(
     profile: &OpenAICompatibleProfile,
     id_mapper: &ToolCallIdMapper,
 ) -> Result<ChatResponse, LlmError> {
-    let choice = response
-        .get("choices")
-        .and_then(|choices| choices.get(0))
-        .ok_or_else(|| {
-            LlmError::ApiError(
-                "Missing choices[0] in OpenAI-compatible provider response".to_string(),
-            )
-        })?;
-    let message = choice.get("message").ok_or_else(|| {
-        LlmError::ApiError("Missing message in OpenAI-compatible provider response".to_string())
-    })?;
-
-    let (content, reasoning_content, tool_calls) = match profile.response_content {
-        ResponseContentPolicy::StringOnly => {
-            let content = message
-                .get("content")
-                .and_then(Value::as_str)
-                .map(ToString::to_string);
-            let reasoning_content = message
-                .get("reasoning_content")
-                .and_then(Value::as_str)
-                .map(ToString::to_string);
-            let tool_calls = match message.get("tool_calls") {
-                Some(value) if value.is_null() => Vec::new(),
-                Some(value) if value.is_array() => parse_tool_calls(value)?,
-                Some(_) => {
-                    return Err(LlmError::JsonError(
-                        "Invalid tool_calls format from OpenAI-compatible provider".to_string(),
-                    ));
-                }
-                None => Vec::new(),
-            };
-            (content, reasoning_content, tool_calls)
-        }
-        ResponseContentPolicy::StringOrChunkArrayWithReasoning => {
-            let (content, extracted_reasoning) = extract_message_content(message.get("content"));
-            let reasoning_content =
-                extracted_reasoning.or_else(|| extract_reasoning_content(message));
-            let tool_calls = parse_tool_calls_with_mapper(message, id_mapper);
-            (content, reasoning_content, tool_calls)
-        }
-    };
-
-    if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
-        return Err(LlmError::ApiError("Empty response".to_string()));
-    }
-
-    let finish_reason = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-    let usage = response.get("usage").and_then(parse_token_usage);
-
-    Ok(ChatResponse {
-        content,
-        tool_calls,
-        finish_reason,
-        reasoning_content,
-        usage,
-    })
-}
-
-fn parse_token_usage(usage: &Value) -> Option<TokenUsage> {
-    Some(TokenUsage {
-        prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
-        completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
-        total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
-        cached_tokens: usage
-            .get("prompt_tokens_details")
-            .and_then(|d| d.get("cached_tokens"))
-            .and_then(Value::as_u64)
-            .map(|value| value as u32),
-        cache_creation_tokens: None,
-    })
+    chat_completions_response::parse_chat_response(response, *profile, Some(id_mapper))
 }
 
 fn should_stream_chat_response(body: &Value) -> bool {
@@ -821,45 +209,12 @@ fn should_stream_chat_response(body: &Value) -> bool {
 /// be Unix seconds, Unix milliseconds, or an RFC3339 datetime string.
 #[must_use]
 pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
-    let message_lower = message.to_ascii_lowercase();
-
-    if let Some(caps) = regex::Regex::new(r"\b(\d{10,13})\b")
-        .ok()
-        .and_then(|regex| regex.captures(&message_lower))
-        && let Some(ts_str) = caps.get(1)
-    {
-        let ts = ts_str.as_str();
-        let ts_value: i64 = ts.parse().ok()?;
-        let ts_seconds = if ts.len() > 10 {
-            ts_value / 1000
-        } else {
-            ts_value
-        };
-        let wait_secs = ts_seconds - chrono::Utc::now().timestamp();
-        if wait_secs > 0 {
-            return Some(wait_secs as u64);
-        }
-    }
-
-    if let Some(caps) =
-        regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
-            .ok()
-            .and_then(|regex| regex.captures(message))
-        && let Some(dt_str) = caps.get(1)
-        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str())
-    {
-        let duration = dt.signed_duration_since(chrono::Utc::now());
-        if duration.num_seconds() > 0 {
-            return Some(duration.num_seconds() as u64);
-        }
-    }
-
-    None
+    chat_completions_response::parse_zai_flush_time(message)
 }
 
 fn apply_profile_rate_limit_wait(error: LlmError, profile: &OpenAICompatibleProfile) -> LlmError {
     match error {
-        LlmError::RateLimit { wait_secs, message } if profile.name == "zai" => {
+        LlmError::RateLimit { wait_secs, message } if profile.label == "zai" => {
             LlmError::RateLimit {
                 wait_secs: parse_zai_flush_time(&message).or(wait_secs),
                 message,
@@ -874,28 +229,13 @@ fn profile_rate_limit_wait_secs(
     message: &str,
     fallback: Option<u64>,
 ) -> Option<u64> {
-    if profile.name == "zai" {
-        parse_zai_flush_time(message).or(fallback)
-    } else {
-        fallback
-    }
+    chat_completions_response::parse_rate_limit_wait_secs(*profile, message, fallback)
 }
 
-#[derive(Default)]
-struct StreamingChatAccumulator {
-    content: String,
-    reasoning_content: String,
-    finish_reason: String,
-    usage: Option<TokenUsage>,
-    pending_tool_calls: Vec<PendingStreamingToolCall>,
-}
-
-#[derive(Default)]
-struct PendingStreamingToolCall {
-    id: Option<String>,
-    name: Option<String>,
-    arguments: String,
-}
+#[cfg(test)]
+type StreamingChatAccumulator = chat_completions_streaming::StreamingChatAccumulator;
+#[cfg(test)]
+type PendingStreamingToolCall = chat_completions_streaming::PendingStreamingToolCall;
 
 async fn send_streaming_chat_request(
     client: &HttpClient,
@@ -939,219 +279,37 @@ async fn send_streaming_chat_request(
 async fn parse_streaming_chat_response(
     response: reqwest::Response,
 ) -> Result<ChatResponse, LlmError> {
-    let mut state = StreamingChatAccumulator {
-        finish_reason: "unknown".to_string(),
-        ..StreamingChatAccumulator::default()
-    };
-    let mut buffer = String::new();
-    let mut pending_bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
-        pending_bytes.extend_from_slice(&chunk);
-        if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
-            buffer.push_str(&decoded);
-        }
-        normalize_newlines_in_place(&mut buffer);
-
-        while let Some(boundary) = buffer.find("\n\n") {
-            let raw_event = buffer[..boundary].to_string();
-            buffer = buffer[(boundary + 2)..].to_string();
-            process_chat_sse_event(&raw_event, &mut state)?;
-        }
-    }
-
-    if !pending_bytes.is_empty() {
-        let tail = String::from_utf8(pending_bytes)
-            .map_err(|error| LlmError::JsonError(error.to_string()))?;
-        buffer.push_str(&tail);
-        normalize_newlines_in_place(&mut buffer);
-    }
-
-    if !buffer.trim().is_empty() {
-        process_chat_sse_event(&buffer, &mut state)?;
-    }
-
-    finish_streaming_chat_response(state)
+    chat_completions_streaming::parse_streaming_chat_response(response).await
 }
 
+#[cfg(test)]
 fn process_chat_sse_event(
     raw_event: &str,
     state: &mut StreamingChatAccumulator,
 ) -> Result<(), LlmError> {
-    let payload = raw_event
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(str::trim_start)
-        .collect::<Vec<_>>()
-        .join("\n");
-    if payload.is_empty() || payload == "[DONE]" {
-        return Ok(());
-    }
-
-    let chunk: Value =
-        serde_json::from_str(&payload).map_err(|error| LlmError::JsonError(error.to_string()))?;
-
-    if let Some(choice) = chunk.get("choices").and_then(|choices| choices.get(0)) {
-        if let Some(delta) = choice.get("delta") {
-            if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                state.reasoning_content.push_str(reasoning);
-            }
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                state.content.push_str(text);
-            }
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                apply_streaming_tool_call_delta(tool_calls, &mut state.pending_tool_calls);
-            }
-        }
-        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            state.finish_reason = reason.to_string();
-        }
-    }
-
-    if let Some(usage) = chunk.get("usage").and_then(parse_token_usage) {
-        state.usage = Some(usage);
-    }
-
-    Ok(())
+    chat_completions_streaming::process_chat_sse_event(raw_event, state)
 }
 
-fn apply_streaming_tool_call_delta(
-    tool_calls: &[Value],
-    pending: &mut Vec<PendingStreamingToolCall>,
-) {
-    for call in tool_calls {
-        if let Some(call_type) = call.get("type").and_then(Value::as_str)
-            && call_type != "function"
-        {
-            continue;
-        }
-
-        let entry_index = streaming_tool_call_index(call, pending);
-        while pending.len() <= entry_index {
-            pending.push(PendingStreamingToolCall::default());
-        }
-
-        let entry = &mut pending[entry_index];
-        if let Some(id) = call
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            entry.id = Some(id.to_string());
-        }
-
-        if let Some(function) = call.get("function") {
-            if let Some(name) = function
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-            {
-                entry.name = Some(name.to_string());
-            }
-            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                entry.arguments.push_str(arguments);
-            }
-        }
-    }
-}
-
-fn streaming_tool_call_index(call: &Value, pending: &[PendingStreamingToolCall]) -> usize {
-    if let Some(index) = call.get("index").and_then(Value::as_u64) {
-        return index as usize;
-    }
-
-    if let Some(id) = call.get("id").and_then(Value::as_str) {
-        if let Some((index, _)) = pending
-            .iter()
-            .enumerate()
-            .find(|(_, pending_call)| pending_call.id.as_deref() == Some(id))
-        {
-            return index;
-        }
-
-        if pending
-            .last()
-            .and_then(|pending_call| pending_call.id.as_deref())
-            != Some(id)
-        {
-            return pending.len();
-        }
-    }
-
-    pending.len().saturating_sub(1)
-}
-
+#[cfg(test)]
 fn finish_streaming_chat_response(
     state: StreamingChatAccumulator,
 ) -> Result<ChatResponse, LlmError> {
-    let tool_calls = finalize_streaming_tool_calls(state.pending_tool_calls);
-    if state.content.is_empty() && state.reasoning_content.is_empty() && tool_calls.is_empty() {
-        return Err(LlmError::EmptyResponse(
-            " from OpenAI-compatible streaming response".to_string(),
-        ));
-    }
-
-    Ok(ChatResponse {
-        content: (!state.content.is_empty()).then_some(state.content),
-        tool_calls,
-        finish_reason: state.finish_reason,
-        reasoning_content: (!state.reasoning_content.is_empty()).then_some(state.reasoning_content),
-        usage: state.usage,
-    })
+    chat_completions_streaming::finish_streaming_chat_response(state)
 }
 
+#[cfg(test)]
 fn finalize_streaming_tool_calls(pending: Vec<PendingStreamingToolCall>) -> Vec<ToolCall> {
-    pending
-        .into_iter()
-        .filter_map(|call| {
-            let name = call.name?;
-            let arguments = if call.arguments.trim().is_empty() {
-                "{}".to_string()
-            } else {
-                call.arguments
-            };
-            Some(match call.id {
-                Some(id) if !id.trim().is_empty() => CHAT_LIKE_TOOL_PROFILE
-                    .inbound_provider_tool_call(id.as_str(), None, name, arguments),
-                _ => CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name, arguments),
-            })
-        })
-        .collect()
+    chat_completions_streaming::finalize_streaming_tool_calls(pending)
 }
 
+#[cfg(test)]
 fn decode_utf8_prefix(pending_bytes: &mut Vec<u8>) -> Result<Option<String>, LlmError> {
-    match std::str::from_utf8(pending_bytes) {
-        Ok(valid) => {
-            let decoded = valid.to_string();
-            pending_bytes.clear();
-            Ok((!decoded.is_empty()).then_some(decoded))
-        }
-        Err(error) => {
-            let valid_up_to = error.valid_up_to();
-            if let Some(error_len) = error.error_len() {
-                return Err(LlmError::JsonError(format!(
-                    "invalid utf-8 in OpenAI-compatible stream at {valid_up_to} (len {error_len})"
-                )));
-            }
-
-            if valid_up_to == 0 {
-                return Ok(None);
-            }
-
-            let decoded = String::from_utf8(pending_bytes[..valid_up_to].to_vec())
-                .map_err(|error| LlmError::JsonError(error.to_string()))?;
-            pending_bytes.drain(..valid_up_to);
-            Ok(Some(decoded))
-        }
-    }
+    chat_completions_streaming::decode_utf8_prefix(pending_bytes)
 }
 
+#[cfg(test)]
 fn normalize_newlines_in_place(buffer: &mut String) {
-    if buffer.contains('\r') {
-        *buffer = buffer.replace("\r\n", "\n");
-    }
+    chat_completions_streaming::normalize_newlines_in_place(buffer);
 }
 
 #[async_trait]
@@ -1164,49 +322,31 @@ impl LlmProvider for OpenAIBaseProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let mut messages = {
+        let body = {
             let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
-            let msgs =
-                dispatch_structured_messages(system_prompt, history, &self.profile, &mut mapper);
+            let profile = self.profile();
+            let body = chat_completions_request::build_text_body(
+                system_prompt,
+                history,
+                user_message,
+                model_id,
+                max_tokens,
+                chat_request_options(&profile),
+                Some(&mut *mapper),
+            );
             drop(mapper);
-            msgs
+            body
         };
-        messages.push(json!({
-            "role": "user",
-            "content": user_message,
-        }));
-
-        // Temperature: reasoning-model default, or chat default.
-        let effective_temperature = if self.profile.is_reasoning_model(model_id) {
-            self.profile.reasoning_temperature
-        } else {
-            self.profile.chat_temperature
-        };
-
-        let mut body = json!({
-            "model": model_id,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": effective_temperature,
-            "stream": false,
-        });
-
-        // reasoning_effort: only for models matching the profile's reasoning policy.
-        if let ReasoningPolicy::Mistral { default_effort, .. } = self.profile.reasoning
-            && self.profile.is_reasoning_model(model_id)
-        {
-            body["reasoning_effort"] = json!(default_effort);
-        }
         let auth = self.auth_header();
         let res_json = send_json_request(
-            &self.http_client,
-            &self.chat_completions_url(),
+            self.client.http_client(),
+            self.chat_completions_url(),
             &body,
             auth.as_deref(),
             &[],
         )
         .await
-        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
+        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile()))?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -1216,22 +356,23 @@ impl LlmProvider for OpenAIBaseProvider {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let Some(audio_profile) = self.profile.audio_transcription else {
+        let profile = self.profile();
+        let Some(audio_profile) = profile.audio_transcription else {
             return Err(LlmError::Unknown(format!(
                 "Audio transcription not supported by {} profile",
-                self.profile.name,
+                profile.label,
             )));
         };
 
         transcription::transcribe_audio(
-            &self.http_client,
-            self.api_key.as_deref(),
-            &self.api_base,
+            self.client.http_client(),
+            self.client.api_key(),
+            &self.transcription_base,
             audio_bytes,
             mime_type,
             model_id,
             &audio_profile,
-            self.profile.name,
+            profile.label,
         )
         .await
     }
@@ -1246,14 +387,14 @@ impl LlmProvider for OpenAIBaseProvider {
         let body = build_image_analysis_body(&image_bytes, text_prompt, system_prompt, model_id);
         let auth = self.auth_header();
         let res_json = send_json_request(
-            &self.http_client,
-            &self.chat_completions_url(),
+            self.client.http_client(),
+            self.chat_completions_url(),
             &body,
             auth.as_deref(),
             &[],
         )
         .await
-        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
+        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile()))?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -1273,6 +414,7 @@ impl LlmProvider for OpenAIBaseProvider {
         } = request;
         let body = {
             let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
+            let profile = self.profile();
             let body = build_tool_chat_body(
                 system_prompt,
                 history,
@@ -1282,35 +424,36 @@ impl LlmProvider for OpenAIBaseProvider {
                 temperature,
                 json_mode,
                 reasoning_effort,
-                &self.profile,
+                &profile,
                 &mut mapper,
             );
             drop(mapper);
             body
         };
         let auth = self.auth_header();
+        let profile = self.profile();
         if should_stream_chat_response(&body) {
             return send_streaming_chat_request(
-                &self.http_client,
-                &self.chat_completions_url(),
+                self.client.http_client(),
+                self.chat_completions_url(),
                 &body,
                 auth.as_deref(),
-                &self.profile,
+                &profile,
             )
             .await;
         }
 
         let res_json = send_json_request(
-            &self.http_client,
-            &self.chat_completions_url(),
+            self.client.http_client(),
+            self.chat_completions_url(),
             &body,
             auth.as_deref(),
             &[],
         )
         .await
-        .map_err(|error| apply_profile_rate_limit_wait(error, &self.profile))?;
+        .map_err(|error| apply_profile_rate_limit_wait(error, &profile))?;
         let mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
-        parse_chat_response(res_json, &self.profile, &mapper)
+        parse_chat_response(res_json, &profile, &mapper)
     }
 }
 
@@ -1318,10 +461,10 @@ impl LlmProvider for OpenAIBaseProvider {
 mod tests {
     use super::{
         OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator, ToolCallIdMapper,
-        build_image_analysis_body, build_tool_chat_body, chat_completions_url,
+        build_image_analysis_body, build_tool_chat_body, chat_completions_url, decode_utf8_prefix,
         finalize_streaming_tool_calls, finish_streaming_chat_response, infer_image_mime_type,
-        normalize_tool_arguments_str, parse_chat_response, parse_zai_flush_time,
-        process_chat_sse_event, send_streaming_chat_request,
+        normalize_newlines_in_place, normalize_tool_arguments_str, parse_chat_response,
+        parse_zai_flush_time, process_chat_sse_event, send_streaming_chat_request,
     };
     use crate::llm::{
         ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolCall,
@@ -1418,6 +561,27 @@ mod tests {
     }
 
     #[test]
+    fn openai_base_wrapper_uses_chat_completions_profile_constructor() {
+        let provider = OpenAIBaseProvider::new_with_client_and_profile(
+            Some(" token ".to_string()),
+            "https://api.mistral.ai/v1".to_string(),
+            crate::llm::support::http::create_http_client(),
+            OpenAICompatibleProfile::mistral(),
+        );
+
+        assert_eq!(
+            provider.client.profile(),
+            OpenAICompatibleProfile::mistral()
+        );
+        assert_eq!(provider.client.profile().label, "mistral");
+        assert_eq!(
+            provider.client.endpoint(),
+            "https://api.mistral.ai/v1/chat/completions"
+        );
+        assert_eq!(provider.auth_header().as_deref(), Some("Bearer token"));
+    }
+
+    #[test]
     fn builds_tool_chat_body_with_tools_and_without_parallel_tool_calls() {
         let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
@@ -1509,6 +673,38 @@ mod tests {
         assert_eq!(infer_image_mime_type(&jpeg), "image/jpeg");
         assert_eq!(infer_image_mime_type(&gif), "image/gif");
         assert_eq!(infer_image_mime_type(&webp), "image/webp");
+    }
+
+    #[test]
+    fn decode_utf8_prefix_keeps_split_multibyte_tail() {
+        let mut pending = b"hello ".to_vec();
+        pending.extend_from_slice(&[0xF0, 0x9F]);
+
+        assert_eq!(
+            decode_utf8_prefix(&mut pending)
+                .expect("valid utf8 prefix")
+                .as_deref(),
+            Some("hello ")
+        );
+        assert_eq!(pending, vec![0xF0, 0x9F]);
+
+        pending.extend_from_slice(&[0x99, 0x82]);
+        assert_eq!(
+            decode_utf8_prefix(&mut pending)
+                .expect("completed utf8")
+                .as_deref(),
+            Some("🙂")
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn normalize_newlines_keeps_sse_boundaries_predictable() {
+        let mut buffer = "data: one\r\n\r\ndata: two\n\n".to_string();
+
+        normalize_newlines_in_place(&mut buffer);
+
+        assert_eq!(buffer, "data: one\n\ndata: two\n\n");
     }
 
     #[test]

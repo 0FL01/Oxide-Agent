@@ -1,19 +1,17 @@
-//! Anthropic Messages v1 request body construction and message conversion.
+//! Anthropic-compatible Messages request body construction and conversion.
 
 use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
 use crate::llm::{Message, ToolDefinition};
 use serde_json::{Value, json};
 
-use super::ANTHROPIC_VERSION;
+use super::MessagesProfile;
 
 /// Build extra HTTP headers for an Anthropic Messages API request.
 ///
 /// Returns `(anthropic-version, x-api-key)` header pairs.
+#[allow(dead_code)]
 pub(crate) fn anthropic_extra_headers(api_key: &str) -> Vec<(&'static str, &str)> {
-    vec![
-        ("anthropic-version", ANTHROPIC_VERSION),
-        ("x-api-key", api_key),
-    ]
+    MessagesProfile::anthropic().extra_headers(api_key)
 }
 
 /// Build a non-streaming Anthropic Messages request body for text completion.
@@ -316,6 +314,35 @@ mod tests {
             json!("string")
         );
         assert_eq!(body["tool_choice"], json!({ "type": "auto" }));
+    }
+
+    #[test]
+    fn build_messages_body_folds_history_system_into_top_level_system() {
+        let history = vec![
+            Message {
+                role: "system".to_string(),
+                content: "History system".to_string(),
+                ..Message::user("")
+            },
+            Message::user("hello"),
+        ];
+
+        let body = build_messages_body(
+            "Main system",
+            &history,
+            &[],
+            "minimax-m2.7",
+            32000,
+            0.2,
+            None,
+        );
+
+        assert_eq!(body["system"], json!("Main system\n\nHistory system"));
+        assert_eq!(body["messages"].as_array().expect("messages").len(), 1);
+        assert_eq!(body["messages"][0]["role"], json!("user"));
+        assert_eq!(body["messages"][0]["content"][0]["text"], json!("hello"));
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

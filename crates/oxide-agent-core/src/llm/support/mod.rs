@@ -9,3 +9,18 @@ pub(crate) mod history;
     feature = "llm-openrouter"
 ))]
 pub mod http;
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod media;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod sse;

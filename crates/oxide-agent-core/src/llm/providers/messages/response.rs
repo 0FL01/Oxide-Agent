@@ -1,10 +1,10 @@
-//! Anthropic Messages v1 response parsing, usage extraction, and error handling.
+//! Anthropic-compatible Messages response parsing, usage extraction, and errors.
 
 use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
 use crate::llm::{ChatResponse, LlmError, TokenUsage};
 use serde_json::Value;
 
-use super::AnthropicProfile;
+use super::MessagesProfile;
 
 /// Parse an Anthropic Messages API JSON response into a `ChatResponse`.
 ///
@@ -13,7 +13,7 @@ use super::AnthropicProfile;
 /// when the provider returns empty tool_use IDs.
 pub(crate) fn parse_response(
     response: Value,
-    profile: AnthropicProfile,
+    profile: MessagesProfile,
 ) -> Result<ChatResponse, LlmError> {
     if let Some(error) = extract_error_response(&response) {
         return Err(LlmError::ApiError(error));
@@ -223,7 +223,7 @@ mod tests {
                     "output_tokens": 5
                 }
             }),
-            AnthropicProfile::opencode_go(),
+            MessagesProfile::opencode_go(),
         )
         .expect("response parses");
 
@@ -256,7 +256,7 @@ mod tests {
                 ],
                 "stop_reason": "tool_use"
             }),
-            AnthropicProfile::opencode_go(),
+            MessagesProfile::opencode_go(),
         )
         .expect("response parses");
 
@@ -264,6 +264,62 @@ mod tests {
         assert_eq!(
             response.tool_calls[0].wire_tool_call_id(),
             "opencode_go_tool_use_0"
+        );
+    }
+
+    #[test]
+    fn parse_response_keeps_redacted_thinking_and_null_tool_input() {
+        let response = parse_response(
+            json!({
+                "content": [
+                    { "type": "redacted_thinking", "data": "encrypted-reasoning" },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu-null",
+                        "name": "read_file",
+                        "input": null
+                    }
+                ],
+                "stop_reason": "tool_use"
+            }),
+            MessagesProfile::opencode_go(),
+        )
+        .expect("response parses");
+
+        assert_eq!(
+            response.reasoning_content.as_deref(),
+            Some("encrypted-reasoning")
+        );
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].wire_tool_call_id(), "toolu-null");
+        assert_eq!(response.tool_calls[0].function.arguments, "{}");
+    }
+
+    #[test]
+    fn parse_response_rejects_missing_or_empty_content_blocks() {
+        let missing = parse_response(
+            json!({ "stop_reason": "end_turn" }),
+            MessagesProfile::anthropic(),
+        )
+        .expect_err("missing content should fail");
+        assert!(missing.to_string().contains("Missing content blocks"));
+
+        let empty = parse_response(
+            json!({
+                "content": [
+                    { "type": "text", "text": "   " },
+                    { "type": "tool_use", "id": "toolu-skip" }
+                ],
+                "stop_reason": "end_turn"
+            }),
+            MessagesProfile::anthropic(),
+        )
+        .expect_err("empty content should fail");
+        assert!(
+            empty
+                .to_string()
+                .contains("Empty Anthropic messages response")
         );
     }
 
@@ -325,6 +381,28 @@ mod tests {
         assert_eq!(
             error,
             Some("Anthropic returned error response: something went wrong".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_error_response_handles_detail_and_error_code() {
+        let detail = extract_error_response(&json!({
+            "detail": "bad request"
+        }));
+        assert_eq!(
+            detail,
+            Some("Anthropic returned error response: bad request".to_string())
+        );
+
+        let coded = extract_error_response(&json!({
+            "error": {
+                "message": "slow down",
+                "code": "rate_limit"
+            }
+        }));
+        assert_eq!(
+            coded,
+            Some("Anthropic returned error response (rate_limit): slow down".to_string())
         );
     }
 

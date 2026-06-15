@@ -8,10 +8,27 @@ pub mod anthropic;
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
+#[allow(unused_imports, dead_code)]
 pub(crate) mod anthropic_messages;
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod chat_completions;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod messages;
 pub(crate) mod modules;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-openai-base")]

@@ -958,7 +958,6 @@ mod tests {
             "sandbox-backend/docker-direct/exec",
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             "sandbox-backend/sandboxd-client/exec",
-            #[cfg(feature = "sandbox-backend-bwrap")]
             "sandbox-backend/bwrap/exec",
         ];
 
@@ -1060,11 +1059,8 @@ mod tests {
             expected.insert("sandbox-backend/sandboxd-client/exec");
             expected.insert("sandbox-backend/sandboxd-client/fileops");
         }
-        #[cfg(feature = "sandbox-backend-bwrap")]
-        {
-            expected.insert("sandbox-backend/bwrap/exec");
-            expected.insert("sandbox-backend/bwrap/fileops");
-        }
+        expected.insert("sandbox-backend/bwrap/exec");
+        expected.insert("sandbox-backend/bwrap/fileops");
 
         assert_eq!(requirement_options, expected);
     }
