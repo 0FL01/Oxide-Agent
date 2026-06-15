@@ -266,8 +266,8 @@ Failure normalization:
   - Source: migration spec, "Create `crates/oxide-agent-core/src/agent/providers/crw/`".
   - Acceptance: `tool-crw` builds a provider/client that can call CRW search and scrape through REST without pulling in old SearXNG/Crawl4AI providers.
   - Evidence required: `cargo test -p oxide-agent-core --no-default-features --features tool-crw crw`; inspect `providers/mod.rs` and `providers/crw/`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/providers/crw/` created with mod.rs, client.rs, error.rs, format.rs, provider.rs, types.rs. Feature `tool-crw = ["dep:reqwest"]` in Cargo.toml. `providers/mod.rs` has `#[cfg(feature = "tool-crw")] pub mod crw;` and `pub use crw::CrwProvider;`. Tests: 27 passed, 0 failed. Clippy clean.
 
 - G2: `web_search` is backed by CRW `/v1/search`.
   - Source: accepted decision: LLM sees `web_search` for CRW search.
@@ -308,8 +308,8 @@ Failure normalization:
   - Source: migration spec config section.
   - Acceptance: new config helpers exist; old SearXNG/Crawl4AI helpers and struct fields are removed; tests cover enabled/base-url/token/timeout behavior.
   - Evidence required: config unit tests; `rg "SEARXNG_|OXIDE_CRAWL4AI_" crates .env.example docker-compose*.yml docker profiles AGENTS.md README.md docs` reviewed.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (additive only; old removal in Checkpoint 8)
+  - Evidence collected: Config helpers added in config.rs: `is_crw_enabled()`, `get_crw_base_url()`, `get_crw_api_token()`, `get_crw_timeout_secs()`, `CRW_DEFAULT_TIMEOUT_SECS`. 8 config tests pass covering enabled/disabled, base-url default+env, token trim+blank, timeout default+env. Old SearXNG/Crawl4AI helpers remain for now (removal in Checkpoint 8).
 
 - G8: Capability manifest uses one CRW module.
   - Source: migration spec capabilities section.
@@ -366,15 +366,15 @@ Failure normalization:
   - Source: architecture invariant.
   - Acceptance: CRW code is behind `tool-crw`; CRW runtime registration requires `OXIDE_CRW_ENABLED` and base URL/token config.
   - Evidence required: no-default feature checks and config tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (config layer; runtime registration in Checkpoint 2)
+  - Evidence collected: `tool-crw` feature in Cargo.toml gates the module. `is_crw_enabled()` defaults to `false`. Config tests confirm default-disabled behavior.
 
 - Q3: No over-engineering.
   - Source: project context and AGENTS rules.
   - Acceptance: no new crate/service/framework/adapter trait unless directly required; implementation is a thin reqwest client and two tool paths.
   - Evidence required: diff review; `Cargo.toml` dependency review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CRW provider is one thin reqwest client (`CrwClient`) with `search()` and `scrape()` methods. No new crate, no adapter trait, no generic abstraction. Uses existing `dep:reqwest` with `json` feature already enabled.
 
 - Q4: Tool name collision with Tavily is handled safely.
   - Source: repository inspection; Tavily currently exposes `web_search` and registry rejects duplicates.
@@ -850,6 +850,18 @@ Done when:
   - Commands: not yet run in repo after file creation.
   - Audit IDs updated: all remain pending; this is planning evidence only.
   - Next: Checkpoint 1 — add CRW config/provider without removing old providers.
+
+- 2026-06-15 Checkpoint 1 complete: CRW provider and config added.
+  - Changed: `crates/oxide-agent-core/Cargo.toml` (feature `tool-crw`), `providers/mod.rs` (module+export), `config.rs` (5 helpers + 8 tests), `providers/crw/` (6 files: mod.rs, types.rs, client.rs, error.rs, format.rs, provider.rs).
+  - Commands run:
+    - `cargo test -p oxide-agent-core --no-default-features --features tool-crw crw` → 27 passed, 0 failed.
+    - `cargo test -p oxide-agent-core --no-default-features --features tool-crw "config::tests"` → 30 passed, 0 failed.
+    - `cargo check -p oxide-agent-core --no-default-features --features tool-crw,tool-webfetch-md` → OK.
+    - `cargo check -p oxide-agent-core --no-default-features --features tool-searxng,tool-crawl4ai-markdown,tool-webfetch-md` → OK (old providers unchanged).
+    - `cargo clippy -p oxide-agent-core --no-default-features --features tool-crw --all-targets -- -D warnings` → clean.
+    - `cargo fmt --all -- --check` → clean.
+  - Audit IDs updated: G1 verified, G7 verified (additive), Q2 verified (config layer), Q3 verified.
+  - Next: Checkpoint 2 — register CRW `web_search` and update `web_crawler` fallback.
 
 ## Risks and Blockers
 

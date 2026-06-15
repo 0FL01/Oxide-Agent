@@ -2132,6 +2132,99 @@ mod tests {
 
         test_remove_env("SEARXNG_ROTATION_ENGINES");
     }
+
+    #[test]
+    fn crw_disabled_by_default() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OXIDE_CRW_ENABLED");
+
+        assert!(!is_crw_enabled());
+    }
+
+    #[test]
+    fn crw_enabled_flag() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OXIDE_CRW_ENABLED", "true");
+        assert!(is_crw_enabled());
+
+        test_set_env("OXIDE_CRW_ENABLED", "false");
+        assert!(!is_crw_enabled());
+
+        test_remove_env("OXIDE_CRW_ENABLED");
+    }
+
+    #[test]
+    fn crw_base_url_defaults_to_localhost() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OXIDE_CRW_BASE_URL");
+
+        assert_eq!(get_crw_base_url(), "http://127.0.0.1:3000");
+    }
+
+    #[test]
+    fn crw_base_url_uses_env() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
+        assert_eq!(get_crw_base_url(), "http://crw:3000");
+
+        test_set_env("OXIDE_CRW_BASE_URL", "  ");
+        assert_eq!(get_crw_base_url(), "http://127.0.0.1:3000");
+
+        test_remove_env("OXIDE_CRW_BASE_URL");
+    }
+
+    #[test]
+    fn crw_api_token_none_when_unset_or_blank() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OXIDE_CRW_API_TOKEN");
+
+        assert_eq!(get_crw_api_token(), None);
+
+        test_set_env("OXIDE_CRW_API_TOKEN", "  ");
+        assert_eq!(get_crw_api_token(), None);
+    }
+
+    #[test]
+    fn crw_api_token_uses_trimmed_env() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OXIDE_CRW_API_TOKEN", " secret-token ");
+        assert_eq!(get_crw_api_token(), Some("secret-token".to_string()));
+
+        test_remove_env("OXIDE_CRW_API_TOKEN");
+    }
+
+    #[test]
+    fn crw_timeout_defaults_to_30() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OXIDE_CRW_TIMEOUT_SECS");
+
+        assert_eq!(get_crw_timeout_secs(), 30);
+    }
+
+    #[test]
+    fn crw_timeout_uses_env() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OXIDE_CRW_TIMEOUT_SECS", "60");
+        assert_eq!(get_crw_timeout_secs(), 60);
+
+        test_remove_env("OXIDE_CRW_TIMEOUT_SECS");
+    }
 }
 
 /// Information about a supported LLM model.
@@ -2558,6 +2651,52 @@ pub fn is_crawl4ai_markdown_enabled() -> bool {
     std::env::var("OXIDE_CRAWL4AI_BASE_URL")
         .ok()
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+// CRW (web research) configuration
+/// Default timeout for CRW requests (seconds).
+pub const CRW_DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+/// Determine whether CRW tools should be registered.
+///
+/// Environment variable: `OXIDE_CRW_ENABLED`.
+/// Defaults to `false` unless explicitly set truthy.
+#[must_use]
+pub fn is_crw_enabled() -> bool {
+    parse_optional_env_bool("OXIDE_CRW_ENABLED").unwrap_or(false)
+}
+
+/// Get CRW base URL from env or default.
+///
+/// Environment variable: `OXIDE_CRW_BASE_URL`.
+/// Default: `http://127.0.0.1:3000`.
+#[must_use]
+pub fn get_crw_base_url() -> String {
+    std::env::var("OXIDE_CRW_BASE_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+}
+
+/// Get optional CRW API token from env.
+///
+/// Environment variable: `OXIDE_CRW_API_TOKEN`.
+/// Used as Bearer token when non-empty.
+#[must_use]
+pub fn get_crw_api_token() -> Option<String> {
+    std::env::var("OXIDE_CRW_API_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Get CRW request timeout from env or default.
+///
+/// Environment variable: `OXIDE_CRW_TIMEOUT_SECS`.
+#[must_use]
+pub fn get_crw_timeout_secs() -> u64 {
+    parse_env_u64("OXIDE_CRW_TIMEOUT_SECS").unwrap_or(CRW_DEFAULT_TIMEOUT_SECS)
 }
 
 /// Determine whether split URL-to-Markdown tools should be merged into `web_crawler`.
