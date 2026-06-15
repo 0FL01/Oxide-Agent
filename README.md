@@ -421,7 +421,7 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 ### Web Search and Extraction
 - **Brave Search Provider** (`tool-brave-search`) - primary indexed web discovery when `BRAVE_SEARCH_API_KEY` is configured
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
-- **CRW Provider** (`tool-crw`) - self-hosted `web_search` and rendered scrape fallback for `web_crawler`
+- **[CRW Provider](https://github.com/us/crw)** (`tool-crw`) - self-hosted `web_search` and rendered scrape fallback for `web_crawler`
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
