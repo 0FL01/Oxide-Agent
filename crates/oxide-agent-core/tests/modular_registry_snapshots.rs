@@ -3,7 +3,6 @@
     feature = "profile-web-embedded-opencode-local",
     feature = "profile-lite",
     feature = "profile-search-only",
-    feature = "profile-no-sandbox",
     feature = "profile-media-enabled",
     feature = "profile-full",
 ))]
@@ -601,7 +600,6 @@ fn compiled_profile_label() -> &'static str {
         + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
-        + cfg!(feature = "profile-no-sandbox") as usize
         + cfg!(feature = "profile-media-enabled") as usize
         + cfg!(feature = "profile-full") as usize;
 
@@ -617,8 +615,6 @@ fn compiled_profile_label() -> &'static str {
         "profile-lite"
     } else if cfg!(feature = "profile-search-only") {
         "profile-search-only"
-    } else if cfg!(feature = "profile-no-sandbox") {
-        "profile-no-sandbox"
     } else if cfg!(feature = "profile-media-enabled") {
         "profile-media-enabled"
     } else {

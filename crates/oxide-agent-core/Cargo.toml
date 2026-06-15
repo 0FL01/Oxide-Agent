@@ -169,15 +169,6 @@ profile-search-only = [
     "tool-brave-search",
     "tool-crw",
 ]
-profile-no-sandbox = [
-    "transport-telegram",
-    "storage-sqlx",
-    "llm-opencode-go",
-    "tool-todos",
-    "tool-webfetch-md",
-    "tool-reminder",
-    "tool-wiki-memory",
-]
 profile-media-enabled = [
     "transport-telegram",
     "storage-sqlx",
