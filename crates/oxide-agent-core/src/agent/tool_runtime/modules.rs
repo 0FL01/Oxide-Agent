@@ -1240,10 +1240,10 @@ fn web_crawler_http_status_fallback_reason(
     let payload = WebFetchMdProvider::failure_payload(Some(args), error);
     let status = payload.get("status_code").and_then(Value::as_u64);
     match status {
-        Some(402..=403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
+        Some(400..=403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
             Some("webfetch reddit_rss_http_status")
         }
-        Some(402..=403 | 429) => Some("webfetch http_status"),
+        Some(400..=403 | 429) => Some("webfetch http_status"),
         Some(503) => Some("webfetch http_status"),
         Some(500..=504) if web_crawler_is_reddit_thread_url(&args.url) => {
             Some("webfetch reddit_rss_http_status")
