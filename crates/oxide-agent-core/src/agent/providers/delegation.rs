@@ -45,6 +45,8 @@ use uuid::Uuid;
 use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
+#[cfg(feature = "tool-crw")]
+use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -59,6 +61,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-brave-search",
+    feature = "tool-crw",
     feature = "tool-searxng",
     feature = "tool-tavily",
     feature = "tool-todos",
@@ -712,6 +715,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-brave-search",
+            feature = "tool-crw",
             feature = "tool-searxng",
             feature = "tool-tavily",
             feature = "tool-todos",
@@ -747,6 +751,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-brave-search")]
         self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-crw")]
+        self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
 
         #[cfg(feature = "tool-searxng")]
         self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
@@ -794,6 +801,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-brave-search",
+        feature = "tool-crw",
         feature = "tool-searxng",
         feature = "tool-tavily",
         feature = "tool-todos",
@@ -831,6 +839,11 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
+        }
+
+        #[cfg(not(feature = "tool-crw"))]
+        if crate::config::is_crw_enabled() {
+            warn!("CRW enabled but feature not compiled in");
         }
     }
 

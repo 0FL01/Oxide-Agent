@@ -16,3 +16,4 @@ pub mod provider;
 pub mod types;
 
 pub use provider::CrwProvider;
+pub use types::CrwScrapeArgs;

@@ -36,6 +36,8 @@ pub use modules::BraveSearchToolModule;
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 pub use modules::Crawl4AiMarkdownToolModule;
+#[cfg(feature = "tool-crw")]
+pub use modules::CrwSearchToolModule;
 #[cfg(feature = "tool-delegation")]
 pub use modules::DelegationToolModule;
 #[cfg(feature = "tool-file-delivery")]

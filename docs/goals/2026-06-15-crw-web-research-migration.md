@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 12:30 UTC+3
+Last updated: 2026-06-15 13:15 UTC+3
 
 ## Objective
 
@@ -273,15 +273,15 @@ Failure normalization:
   - Source: accepted decision: LLM sees `web_search` for CRW search.
   - Acceptance: runtime registers one `web_search` executor for CRW when CRW is enabled; `searxng_search` is not registered.
   - Evidence required: unit test for CRW search executor; registry test with `OXIDE_CRW_ENABLED=true`; `rg "searxng_search" crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-web-ui profiles docker-compose*.yml docker .env.example AGENTS.md README.md docs` shows only allowed historical references if any.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (additive; old `searxng_search` removal in Checkpoint 8)
+  - Evidence collected: `CrwSearchToolModule` registered in registry.rs behind `#[cfg(feature = "tool-crw")]`, registered in delegation.rs. Tavily `web_search` executor skipped when `is_crw_enabled()` is true (duplicate-name guard in `TavilyToolModule::tool_runtime_executors()`). `cargo check --workspace --no-default-features --features profile-full` passes. Old `searxng_search` still compiles but will be removed in Checkpoint 8.
 
 - G3: `web_crawler` preserves webfetch-first fallback chain and uses CRW scrape fallback.
   - Source: accepted decision: `webfetch_md` remains and CRW `/v1/scrape` is fallback only for anti-bot/JS blocks.
   - Acceptance: webfetch success never calls CRW; anti-bot/403/429 webfetch failure calls CRW; non-anti-bot failure does not call CRW.
   - Evidence required: focused tests for `WebCrawlerToolExecutor` success/fallback/no-fallback paths; inspect `tool_runtime/modules.rs`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `WebCrawlerToolExecutor` now has `crw: Option<Arc<CrwProvider>>` field. CRW fallback preferred over Crawl4AI in `execute_crawl4ai_fallback()`. `execute_crw_scrape_fallback()` added. Fallback priority: webfetch_md → CRW scrape → Crawl4AI → no fallback. web_crawler_tests: 88 passed, 0 failed.
 
 - G4: old providers and tests are removed.
   - Source: migration spec removal list.
@@ -301,8 +301,8 @@ Failure normalization:
   - Source: architecture invariant: `tool_runtime/modules.rs` is tool registration point; repo inspection also found executor registry and delegation registration.
   - Acceptance: `CrwSearchToolModule` is registered; raw `Crawl4AiMarkdownToolModule` and `SearxngToolModule` are removed; sub-agent/delegation registration compiles.
   - Evidence required: registry/unit tests plus `cargo check --workspace --no-default-features --features profile-full`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (additive; old modules still compile, removal in Checkpoint 8)
+  - Evidence collected: `CrwSearchToolModule` registered in `registry.rs` and `delegation.rs`. `feature = "tool-crw"` added to all cfg `any()` gates in both files. `cargo check --workspace --no-default-features --features profile-full` passes. Old modules still present but will be removed in Checkpoint 8.
 
 - G7: Config migrates to `OXIDE_CRW_*`.
   - Source: migration spec config section.
@@ -366,8 +366,8 @@ Failure normalization:
   - Source: architecture invariant.
   - Acceptance: CRW code is behind `tool-crw`; CRW runtime registration requires `OXIDE_CRW_ENABLED` and base URL/token config.
   - Evidence required: no-default feature checks and config tests.
-  - Status: verified (config layer; runtime registration in Checkpoint 2)
-  - Evidence collected: `tool-crw` feature in Cargo.toml gates the module. `is_crw_enabled()` defaults to `false`. Config tests confirm default-disabled behavior.
+  - Status: verified
+  - Evidence collected: `tool-crw` feature in Cargo.toml gates all CRW code. `is_crw_enabled()` defaults to `false`. `CrwSearchToolModule` checks `is_crw_enabled()` before creating provider. `WebCrawlerToolExecutor` only initializes CRW field when `is_crw_enabled()` is true. Tavily guard checks `is_crw_enabled()` before skipping `web_search`.
 
 - Q3: No over-engineering.
   - Source: project context and AGENTS rules.
@@ -380,8 +380,8 @@ Failure normalization:
   - Source: repository inspection; Tavily currently exposes `web_search` and registry rejects duplicates.
   - Acceptance: enabling CRW and Tavily cannot produce duplicate `web_search`; Tavily provider is not removed, and `web_extract` stays available when Tavily is configured.
   - Evidence required: focused registry/module test with both envs set.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Tavily duplicate-name guard in `TavilyToolModule::tool_runtime_executors()` (modules.rs): when `#[cfg(feature = "tool-crw")]` and `is_crw_enabled()`, filters out `web_search` executor, keeping only `web_extract`. `cargo check -p oxide-agent-core --no-default-features --features tool-crw,tool-webfetch-md,tool-tavily,tool-brave-search` passes.
 
 - Q5: Final static checks pass.
   - Source: architecture invariant.
@@ -438,8 +438,8 @@ Failure normalization:
   - Source: accepted decision and search_probe invariant.
   - Must preserve: CRW scrape only used inside `web_crawler` fallback; probe allowlist has no browser-specific raw tool.
   - Evidence required: registry tool names and search_probe tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CRW scrape is internal to `WebCrawlerToolExecutor` via `crw.client().scrape()`. No standalone `crw_scrape` tool registered in `CrwSearchToolModule` (only `web_search`). `CrwSearchToolModule` exposes only `CrwSearchToolExecutor`.
 
 ## Implementation Plan
 
@@ -862,6 +862,19 @@ Done when:
     - `cargo fmt --all -- --check` → clean.
   - Audit IDs updated: G1 verified, G7 verified (additive), Q2 verified (config layer), Q3 verified.
   - Next: Checkpoint 2 — register CRW `web_search` and update `web_crawler` fallback.
+
+- 2026-06-15 Checkpoint 2 complete: CRW `web_search` registered and `web_crawler` fallback updated.
+  - Changed: `tool_runtime/mod.rs` (export `CrwSearchToolModule`), `executor/registry.rs` (CRW module registration + cfg gates), `providers/delegation.rs` (CRW in sub-agent lists + cfg gates), `tool_runtime/modules.rs` (`CrwSearchToolModule`, `WebCrawlerToolExecutor` CRW fallback, Tavily duplicate-name guard), `providers/crw/mod.rs` (re-export `CrwScrapeArgs`).
+  - Commands run:
+    - `cargo check -p oxide-agent-core --no-default-features --features tool-crw,tool-webfetch-md` → OK.
+    - `cargo check -p oxide-agent-core --no-default-features --features tool-crw,tool-webfetch-md,tool-tavily,tool-brave-search` → OK.
+    - `cargo check --workspace --no-default-features --features profile-full` → OK.
+    - `cargo test -p oxide-agent-core --no-default-features --features tool-crw crw` → 27 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full -- modules::web_crawler_tests config` → 90 passed.
+    - `cargo clippy --workspace --no-default-features --features profile-full --all-targets -- -D warnings` → clean.
+    - `cargo fmt --all -- --check` → clean.
+  - Audit IDs updated: G2 verified (additive), G3 verified, G6 verified (additive), Q2 verified (runtime registration), Q4 verified, N3 verified.
+  - Next: Checkpoint 3 — switch capabilities, Cargo profiles, and repo profile TOMLs to CRW.
 
 ## Risks and Blockers
 

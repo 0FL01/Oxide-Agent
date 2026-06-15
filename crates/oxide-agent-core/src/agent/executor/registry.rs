@@ -7,6 +7,8 @@ use crate::agent::tool_runtime::BraveSearchToolModule;
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
+#[cfg(feature = "tool-crw")]
+use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::tool_runtime::DelegationToolModule;
 #[cfg(feature = "tool-file-delivery")]
@@ -179,6 +181,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-brave-search")]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
+        #[cfg(feature = "tool-crw")]
+        self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
@@ -228,6 +232,7 @@ impl AgentExecutor {
         feature = "tool-media-video",
         feature = "tool-reminder",
         feature = "tool-brave-search",
+        feature = "tool-crw",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
@@ -274,6 +279,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-brave-search",
+            feature = "tool-crw",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
