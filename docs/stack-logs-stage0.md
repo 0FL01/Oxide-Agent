@@ -73,7 +73,7 @@ Arguments:
 
 ```json
 {
-  "services": ["oxide_agent", "searxng"],
+  "services": ["oxide_agent", "crw"],
   "include_stopped": false
 }
 ```

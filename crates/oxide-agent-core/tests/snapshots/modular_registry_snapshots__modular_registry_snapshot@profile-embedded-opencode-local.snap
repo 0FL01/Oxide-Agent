@@ -115,8 +115,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/sandbox-recreate"
       },
       {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
+        "id": "tool/crw-scrape",
+        "module": "tool/crw"
+      },
+      {
+        "id": "tool/crw-search",
+        "module": "tool/crw"
       },
       {
         "id": "tool/tavily-extract",
@@ -588,7 +592,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
-      "tool/searxng-search",
+      "tool/crw-scrape",
+      "tool/crw-search",
       "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
@@ -605,6 +610,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/agents-md",
       "tool/brave-search",
       "tool/compression",
+      "tool/crw",
       "tool/delegation",
       "tool/duckduckgo",
       "tool/file-delivery",
@@ -615,7 +621,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
-      "tool/searxng",
       "tool/tavily",
       "tool/todos",
       "tool/webfetch-md",

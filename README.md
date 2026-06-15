@@ -50,7 +50,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9230-fbe27ccee90e" />
 
     *   **File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Tavily, SearXNG, and Crawl4AI handle discovery and extraction; local `web_markdown` fetches one known URL as Markdown.
+    *   **Web Search and Data Extraction:** Tavily, Brave Search, CRW, and local `web_markdown`/`web_crawler` handle discovery and URL-to-Markdown extraction.
     *   **Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Tool Access Policy - enforces profile-level tool allowlists and blocklists
@@ -113,8 +113,7 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 *   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
 *   **Bubblewrap** - optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** - optional web search provider (`TAVILY_API_KEY`)
-*   **SearXNG** - optional self-hosted search aggregator (`SEARXNG_ENABLED`)
-*   **Crawl4AI** - optional browser-rendered Markdown extraction (`OXIDE_CRAWL4AI_BASE_URL`)
+*   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`)
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Kokoro TTS Server** - optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** - optional for Russian voice message synthesis (`SILERO_TTS_URL`)
@@ -306,15 +305,11 @@ TAVILY_API_KEY=...
 # BRAVE_SEARCH_API_KEY=...
 # BRAVE_SEARCH_ENABLED=true
 # Brave Search — primary indexed web discovery when BRAVE_SEARCH_API_KEY is configured.
-# SEARXNG_ENABLED=true
-# SEARXNG_URL=http://127.0.0.1:8081
-# SEARXNG_BEARER_TOKEN=...
-# SearXNG — fallback/self-hosted aggregator.
-
-# Crawl4AI (browser-rendered Markdown)
-# OXIDE_CRAWL4AI_BASE_URL=http://127.0.0.1:11235
-# OXIDE_CRAWL4AI_API_TOKEN=...
-# Crawl4AI — browser-rendered opener for selected URLs.
+# CRW (self-hosted web search + scrape fallback)
+# OXIDE_CRW_ENABLED=true
+# OXIDE_CRW_BASE_URL=http://127.0.0.1:3000
+# OXIDE_CRW_API_TOKEN=...
+# CRW backs `web_search` and the rendered fallback path of `web_crawler`.
 
 # Wiki Memory Writer (background, optional LLM-assisted)
 # WIKI_MEMORY_WRITER_ENABLED=true
@@ -426,8 +421,7 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 ### Web Search and Extraction
 - **Brave Search Provider** (`tool-brave-search`) - primary indexed web discovery when `BRAVE_SEARCH_API_KEY` is configured
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
-- **SearXNG Provider** (`tool-searxng`) - fallback/self-hosted aggregator
-- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered opener for selected search result URLs
+- **CRW Provider** (`tool-crw`) - self-hosted `web_search` and rendered scrape fallback for `web_crawler`
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
@@ -703,7 +697,7 @@ crates/
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
 │       │   │   ├── brave_search/         # Brave Search API
-│       │   │   ├── searxng/             # SearXNG search
+│       │   │   ├── crw/                 # CRW search/scrape REST client
 │       │   │   ├── tts/                  # Kokoro TTS
 │       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
@@ -801,7 +795,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-sqlx, llm-opencode-go, bwrap |
 | `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, bwrap |
 | `profile-lite` | Minimal Telegram bot | transport-telegram, storage-sqlx, llm-opencode-go, todos, webfetch, reminders |
-| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/searxng capability features |
+| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
 | `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-sqlx, llm-opencode-go, wiki memory |
 | `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
 | `profile-host-bwrap` | Host-level bwrap, no Docker | transport-telegram, llm-opencode-go + openrouter, bwrap |
@@ -811,7 +805,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Category | Features |
 |----------|----------|
 | **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
-| **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
+| **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |

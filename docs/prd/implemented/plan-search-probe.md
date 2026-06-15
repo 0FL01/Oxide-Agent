@@ -4,7 +4,7 @@
 
 Старый план про deterministic `SearchProbe` нужно считать obsolete и заменить полностью.
 
-Новая цель: перед основным агентом в web transport запускать короткий agentic research sidecar из 1-3 свежих probe-сессий. Каждая probe-сессия использует тот же core runtime path, наследует выбранную модель/route, работает с ограниченным набором web-research tools (`searxng_search`, `web_crawler` или legacy `web_markdown`), сама решает что искать, отдаёт пользователю короткий промежуточный TL;DR и возвращает компактный handoff. После этого main agent стартует с чистым attention и получает только original user prompt + `SearchProbeDossier`, без transcript шума от probe.
+Новая цель: перед основным агентом в web transport запускать короткий agentic research sidecar из 1-3 свежих probe-сессий. Каждая probe-сессия использует тот же core runtime path, наследует выбранную модель/route, работает с ограниченным набором web-research tools (`web_search`, `web_crawler` или split-mode `web_markdown`), сама решает что искать, отдаёт пользователю короткий промежуточный TL;DR и возвращает компактный handoff. После этого main agent стартует с чистым attention и получает только original user prompt + `SearchProbeDossier`, без transcript шума от probe.
 
 MVP строго web-only.
 
@@ -82,7 +82,7 @@ Generation 1:
   - fresh AgentSession / AgentExecutor
   - same selected model route
   - probe instructions
-  - allowed tools: searxng/web_crawler или searxng/web_markdown в split mode
+  - allowed tools: web_search/web_crawler или web_search/web_markdown в split mode
   - input: original user prompt
   - output: public_update + handoff + continue/stop
 
@@ -417,11 +417,11 @@ request.effort = Standard -> probe min_effort from config, default Heavy
 MVP allowlist:
 
 ```text
-searxng_search
+web_search
 web_markdown
 ```
 
-`web_markdown` — основной lightweight extraction tool для probe. `crawl4ai_markdown` запрещён для probe, чтобы браузерный рендеринг оставался у main/sub-agents и не раздувал probe stage.
+`web_markdown` — lightweight extraction tool для split-mode probe. В merged mode probe использует `web_crawler`; raw browser/scrape provider tools запрещены, чтобы rendered fallback оставался внутри `web_crawler` и не раздувал probe stage.
 
 Не давать probe tools, которые мутируют состояние или расширяют blast radius:
 
@@ -686,7 +686,7 @@ OXIDE_SEARCH_PROBE_MIN_EFFORT=heavy
 OXIDE_SEARCH_PROBE_PUBLIC_UPDATES=true
 OXIDE_SEARCH_PROBE_FORWARD_TOOL_EVENTS=true
 
-OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST=searxng_search,web_crawler
+OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST=web_search,web_crawler
 
 OXIDE_SEARCH_PROBE_DOSSIER_MAX_CHARS=80000
 ```
@@ -712,8 +712,8 @@ Search Probe best-effort.
 If probe fails:
 
 ```text
-- searxng unavailable
-- crawl4ai timeout
+- web_search unavailable
+- web_crawler rendered fallback timeout
 - model error
 - generation timeout
 - invalid final contract
@@ -868,7 +868,7 @@ Create `AgentExecutionProfile` with:
 ```text
 - agent_id = search_probe
 - prompt_instructions = stable Search Probe instructions
-- tool_policy = allowlist(searxng_search, web_crawler) with `web_markdown` kept for split-mode compatibility
+- tool_policy = allowlist(web_search, web_crawler) with `web_markdown` kept for split-mode compatibility
 - hook policy = default, except optional search_budget relaxation if needed
 ```
 
@@ -931,7 +931,7 @@ Minimum test set:
 6. Cancellation during probe prevents main runtime start.
 7. Dossier injection preserves AgentUserInput.attachments.
 8. Probe executor inherits selected model route.
-9. Probe tool policy exposes only `searxng_search` plus `web_crawler` or split-mode `web_markdown`; raw `crawl4ai_markdown` stays blocked.
+9. Probe tool policy exposes only `web_search` plus `web_crawler` or split-mode `web_markdown`; raw browser/scrape provider tools stay blocked.
 10. Invalid probe final contract falls back to raw final response handoff.
 11. decision=stop prevents unnecessary later generations.
 12. main runtime system prompt path is not modified by search_probe module.
@@ -975,7 +975,7 @@ The feature is acceptable when:
 - enabling env var causes web Execute tasks to run 1-3 probe generations before main runtime;
 - user sees short probe TL;DR updates before main answer;
 - probe uses selected model route;
-- probe can call `searxng_search` and `web_crawler` or split-mode `web_markdown`, but not raw `crawl4ai_markdown`;
+- probe can call `web_search` and `web_crawler` or split-mode `web_markdown`, but not raw browser/scrape provider tools;
 - main runtime receives only SearchProbeDossier + original prompt;
 - main runtime starts with clean attention, no probe transcript in memory;
 - attachments are preserved for main runtime;

@@ -100,7 +100,7 @@ impl Hook for SearchBudgetHook {
 Вызовы:
 1. web_search → count=1 (≤10) → Continue
 2. web_extract → count=2 (≤10) → Continue
-3. searxng_search → count=3 (≤10) → Continue
+3. web_crawler → count=3 (≤10) → Continue
 ...
 10. web_crawler → count=10 (≤10) → Continue
 ```

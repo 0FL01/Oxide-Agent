@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 15:45 UTC+3
+Last updated: 2026-06-15 16:15 UTC+3
 
 ## Objective
 
@@ -336,8 +336,8 @@ Failure normalization:
   - Source: migration spec sections for session, prompt composer, thoughts, UI, web transport tests.
   - Acceptance: user-visible messages/cards/snapshots no longer mention Crawl4AI/SearXNG as active tools; web events handle CRW/web_crawler payloads.
   - Evidence required: focused core/web/web-ui tests; snapshot review.
-  - Status: verified for active core/web/UI paths (final repo-wide stale-reference sweep in Checkpoint 9)
-  - Evidence collected: Core prompt/workflow guidance updated in `composer.rs`, effort prompt guidance in `executor/execution.rs`, thought labels in `thoughts.rs`, Brave fallback guidance in `brave_search/*`, and failure summaries in `tool_failure_summary.rs` to use `web_search`, `web_crawler`, and `web_markdown` without active SearXNG/Crawl4AI tool names. Web transport fixtures updated to `web_search` and `web_crawler` with `crw_scrape` backend display payloads. Web UI `tool_cards.rs` now maps `web_search` to generic "Web Search", maps only `web_crawler` to the crawl card, accepts `web_crawler` display payloads, and summarizes `crw_http_status`, `crw_unavailable`, `crw_auth_failed`, and `crw_timeout`. Focused tests/checks pass: composer 19 passed, thoughts 8 passed, tool_failure_summary 5 passed, brave_search 26 passed, web_transport 21 passed, `cargo check -p oxide-agent-web-ui` OK, `cargo test -p oxide-agent-web-ui` 5 passed.
+  - Status: verified
+  - Evidence collected: Core prompt/workflow guidance updated in `composer.rs`, effort prompt guidance in `executor/execution.rs`, thought labels in `thoughts.rs`, Brave fallback guidance in `brave_search/*`, and failure summaries in `tool_failure_summary.rs` to use `web_search`, `web_crawler`, and `web_markdown` without active SearXNG/Crawl4AI tool names. Web transport fixtures updated to `web_search` and `web_crawler` with `crw_scrape` backend display payloads. Web UI `tool_cards.rs` now maps `web_search` to generic "Web Search", maps only `web_crawler` to the crawl card, accepts `web_crawler` display payloads, and summarizes `crw_http_status`, `crw_unavailable`, `crw_auth_failed`, and `crw_timeout`. Active docs and snapshots were swept with `rg "SearXNG|searxng|Crawl4AI|crawl4ai|searxng_search|crawl4ai_markdown|SEARXNG_|OXIDE_CRAWL4AI" AGENTS.md README.md docs/deploy.md docs/hooks/search-budget.md docs/stack-logs-stage0.md docs/prd/implemented/plan-search-probe.md crates/oxide-agent-core/tests/snapshots` → no matches. Focused tests/checks pass: composer 19 passed, thoughts 8 passed, tool_failure_summary 5 passed, brave_search 26 passed, web_transport 21 passed, `cargo check -p oxide-agent-web-ui` OK, `cargo test -p oxide-agent-web-ui` 5 passed.
 
 - G12: Docker Compose uses one CRW service instead of SearXNG + Crawl4AI.
   - Source: migration spec compose/env sections.
@@ -351,7 +351,7 @@ Failure normalization:
   - Acceptance: active docs and README/AGENTS mention CRW and generic tool names; old names remain only in historical PRD context if intentionally preserved.
   - Evidence required: `rg` review and doc diff inspection.
   - Status: verified
-  - Evidence collected: `oxide-agent-core` dependency list in `crates/oxide-agent-core/Cargo.toml` still has no transport crate dependencies; CRW provider lives under `crates/oxide-agent-core/src/agent/providers/crw/` and uses config/env + reqwest only. `cargo check -p oxide-agent-core --no-default-features --features profile-full` passes.
+  - Evidence collected: `AGENTS.md`, `README.md`, `docs/deploy.md`, `docs/hooks/search-budget.md`, `docs/stack-logs-stage0.md`, and `docs/prd/implemented/plan-search-probe.md` now describe CRW/generic active tool names (`web_search`, `web_crawler`, `web_markdown`) and no longer contain SearXNG/Crawl4AI active setup references. `docs/prd/implemented/brave-search-prd.md` and `docs/prd/implemented/prd-crawl4ai.md` have explicit historical notes; legacy names remain there only as historical PRD context. Active-doc sweep command returned no matches.
 
 ### Quality / architecture requirements
 
@@ -359,8 +359,8 @@ Failure normalization:
   - Source: architecture invariant.
   - Acceptance: `oxide-agent-core` does not depend on transport crates; CRW provider lives under core providers and uses config/env only.
   - Evidence required: `cargo tree -p oxide-agent-core` or Cargo manifest inspection plus compile.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `oxide-agent-core` dependency list in `crates/oxide-agent-core/Cargo.toml` still has no transport crate dependencies; CRW provider lives under `crates/oxide-agent-core/src/agent/providers/crw/` and uses config/env + reqwest only. `cargo check -p oxide-agent-core --no-default-features --features profile-full` passes.
 
 - Q2: Feature gates control module existence; env controls runtime enablement.
   - Source: architecture invariant.
@@ -408,8 +408,8 @@ Failure normalization:
   - Source: migration spec snapshot/static guard notes.
   - Acceptance: snapshots/fixtures reflect `web_search` and CRW/web_crawler payloads; static guards no longer expect `SearxngProvider::new`.
   - Evidence required: snapshot test commands and diff review.
-  - Status: in progress (static guards, web transport fixtures, and UI parsing updated; snapshots later)
-  - Evidence collected: `tool_runtime_static_guards.rs` no longer expects `SearxngProvider::new`; delegation guard now checks `CrwProvider::new` is not constructed directly in delegation. Web transport fixtures now use `web_search` and `web_crawler` + `crw_scrape` payloads. Web UI `tool_cards.rs` no longer contains `SearXNG`, `Crawl4AI`, `searxng`, or `crawl4ai` active parsing/label strings. Stale false-positive static guard paths/patterns were narrowed to current architecture. `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local web_transport` → 21 passed. `cargo test -p oxide-agent-web-ui` → 5 passed.
+  - Status: verified
+  - Evidence collected: `tool_runtime_static_guards.rs` no longer expects `SearxngProvider::new`; delegation guard now checks `CrwProvider::new` is not constructed directly in delegation. Web transport fixtures now use `web_search` and `web_crawler` + `crw_scrape` payloads. Web UI `tool_cards.rs` no longer contains `SearXNG`, `Crawl4AI`, `searxng`, or `crawl4ai` active parsing/label strings. Modular registry snapshots now contain `tool/crw`, `tool/crw-search`, and `tool/crw-scrape`; stale `tool/searxng` and `tool/crawl4ai-markdown` snapshot entries were removed. Snapshot/static validation: `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` → 1 passed; `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local web_transport` → 21 passed; `cargo test -p oxide-agent-web-ui` → 5 passed.
 
 - V3: Compose configs are syntactically valid.
   - Source: migration spec compose section.
@@ -431,15 +431,15 @@ Failure normalization:
   - Source: accepted decision.
   - Must preserve: Brave provider and Tavily provider remain separate API providers; no migration to CRW internals.
   - Evidence required: diff review and focused registry test.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Brave and Tavily provider code remains separate; Checkpoint 9 only updated docs around active fallback/tool names and added historical notes to old PRDs. Checkpoint 8 moved only the required Tavily duplicate-name guard so Tavily filters its duplicate `web_search` when CRW is enabled while preserving `web_extract`. `cargo test -p oxide-agent-core --no-default-features --features profile-full brave_search` → 26 passed; registry tests passed in Checkpoint 8.
 
 - N3: Do not expose raw CRW scrape/browser tool to the LLM.
   - Source: accepted decision and search_probe invariant.
   - Must preserve: CRW scrape only used inside `web_crawler` fallback; probe allowlist has no browser-specific raw tool.
   - Evidence required: registry tool names and search_probe tests.
   - Status: verified
-  - Evidence collected: CRW scrape is internal to `WebCrawlerToolExecutor` via `crw.client().scrape()`. No standalone `crw_scrape` tool registered in `CrwSearchToolModule` (only `web_search`). `CrwSearchToolModule` exposes only `CrwSearchToolExecutor`. Search Probe allowlists now contain only `web_search`, `web_markdown`, and `web_crawler`; no raw browser/scrape tool is allowlisted.
+  - Evidence collected: CRW scrape is internal to `WebCrawlerToolExecutor` via `crw.client().scrape()`. No standalone `crw_scrape` tool registered in `CrwSearchToolModule` (only `web_search`). `CrwSearchToolModule` exposes only `CrwSearchToolExecutor`. Search Probe allowlists and docs now contain only `web_search`, `web_markdown`, and `web_crawler`; no raw browser/scrape tool is allowlisted.
 
 ## Implementation Plan
 
@@ -955,6 +955,16 @@ Done when:
   - Notes: `cargo test ... registry` broad filter also matched unrelated `model_routes` test and failed there; exact `agent::executor::tests::registry` passed. `cargo test ... config` broad filter also matched unrelated wiki-memory test and failed there; exact `config::tests` passed. Snapshot update commands for `profile-embedded-opencode-local` and `profile-host-bwrap` hit pre-existing sandbox-exec invariant failures, so stale old capability blocks were manually removed from those snapshots after inspecting diffs.
   - Audit IDs updated: G4 verified, G5 verified, G6 verified, G7 verified, G8 evidence finalized, Q1 verified, Q2 verified, N1 remains verified.
   - Next: Checkpoint 9 — documentation and snapshot fixture cleanup.
+
+- 2026-06-15 Checkpoint 9 complete: active docs and remaining registry snapshots migrated to CRW/generic web tool names.
+  - Changed: `AGENTS.md`, `README.md`, `docs/deploy.md`, `docs/hooks/search-budget.md`, `docs/stack-logs-stage0.md`, `docs/prd/implemented/plan-search-probe.md`, historical notes in `docs/prd/implemented/brave-search-prd.md` and `docs/prd/implemented/prd-crawl4ai.md`, modular registry snapshots for `profile-embedded-opencode-local`, `profile-host-bwrap`, and `all-features`.
+  - Commands run:
+    - `rg "SearXNG|searxng|Crawl4AI|crawl4ai|searxng_search|crawl4ai_markdown|SEARXNG_|OXIDE_CRAWL4AI" AGENTS.md README.md docs/deploy.md docs/hooks/search-budget.md docs/stack-logs-stage0.md docs/prd/implemented/plan-search-probe.md crates/oxide-agent-core/tests/snapshots` → no matches.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` → 1 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed.
+    - `cargo fmt --all -- --check` → clean.
+  - Audit IDs updated: G11 verified, G13 verified, V2 verified, N2 verified, N3 evidence extended.
+  - Next: Checkpoint 10 — final verification and completion audit.
 
 ## Risks and Blockers
 

@@ -135,8 +135,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/compression"
       },
       {
-        "id": "tool/crawl4ai-markdown",
-        "module": "tool/crawl4ai-markdown"
+        "id": "tool/crw-scrape",
+        "module": "tool/crw"
+      },
+      {
+        "id": "tool/crw-search",
+        "module": "tool/crw"
       },
       {
         "id": "tool/delegation",
@@ -177,10 +181,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/sandbox-recreate",
         "module": "tool/sandbox-recreate"
-      },
-      {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
       },
       {
         "id": "tool/stack-logs",
@@ -987,7 +987,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/agents-md",
       "tool/brave-search",
       "tool/compression",
-      "tool/crawl4ai-markdown",
+      "tool/crw-scrape",
+      "tool/crw-search",
       "tool/delegation",
       "tool/file-delivery",
       "tool/media-audio-transcription",
@@ -998,7 +999,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
-      "tool/searxng-search",
       "tool/stack-logs",
       "tool/tavily-extract",
       "tool/tavily-search",
@@ -1034,7 +1034,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/agents-md",
       "tool/brave-search",
       "tool/compression",
-      "tool/crawl4ai-markdown",
+      "tool/crw",
       "tool/delegation",
       "tool/file-delivery",
       "tool/media-audio",
@@ -1044,7 +1044,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
-      "tool/searxng",
       "tool/stack-logs",
       "tool/tavily",
       "tool/todos",

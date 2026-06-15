@@ -117,15 +117,15 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
-- `webfetch_md` is feature-controlled and registered by default when compiled. `crawl4ai_markdown` registers only when `OXIDE_CRAWL4AI_BASE_URL` is set or `OXIDE_CRAWL4AI_ENABLED=true`. `OXIDE_WEB_CRAWLER_MERGE=true` hides split URL-to-Markdown tools and exposes `web_crawler`, which uses webfetch first and falls back to Crawl4AI only on anti-bot blocks when configured. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps split tools in other entrypoints.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, brave-search, webfetch_md, crw, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, which uses webfetch first and falls back to CRW scrape only on anti-bot/access-block failures when `OXIDE_CRW_ENABLED=true`. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
 
 ## Configuration
 
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
 - Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`, `BWRAP_*`), Jira MCP, wiki memory writer.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local SearXNG/Crawl4AI overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
 
 ## Development Practices
 
