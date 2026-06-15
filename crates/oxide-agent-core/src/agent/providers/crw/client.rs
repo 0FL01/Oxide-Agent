@@ -1,8 +1,8 @@
 use super::error::CrwError;
 use super::types::{CrwScrapeArgs, CrwScrapeResponse, CrwSearchArgs, CrwSearchResponse};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use std::time::Duration;
-use tracing::{debug, warn};
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 const MAX_RETRIES: usize = 3;
 
@@ -112,7 +112,17 @@ impl CrwClient {
     ) -> Result<CrwSearchResponse, CrwError> {
         let endpoint = format!("{}/v1/search", self.base_url);
 
-        debug!(query = %request.query, limit = request.limit, "CRW search request");
+        info!(
+            query_len = request.query.chars().count(),
+            limit = request.limit,
+            sources = ?request.sources,
+            lang = ?request.lang,
+            tbs = ?request.tbs,
+            categories = ?request.categories,
+            token_configured = self.api_token.is_some(),
+            "CRW search request"
+        );
+        debug!(query = %request.query, "CRW search query");
 
         let mut req = self
             .http
@@ -125,9 +135,17 @@ impl CrwClient {
             req = req.header(AUTHORIZATION, format!("Bearer {token}"));
         }
 
+        let started_at = Instant::now();
         let response = req.send().await?;
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
         let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         if !status.is_success() {
             let body = response
                 .text()
@@ -141,6 +159,13 @@ impl CrwClient {
 
         let parsed = response.json::<CrwSearchResponse>().await?;
         if !parsed.success {
+            warn!(
+                status = status.as_u16(),
+                elapsed_ms,
+                content_type,
+                error_present = parsed.error.is_some(),
+                "CRW search returned failure envelope"
+            );
             return Err(CrwError::ApiFailure {
                 message: truncate_for_error(
                     parsed
@@ -149,6 +174,19 @@ impl CrwClient {
                         .unwrap_or_else(|| "search provider returned success=false".to_string()),
                 ),
             });
+        }
+
+        let result_count = parsed.data.len();
+        if result_count == 0 {
+            warn!(
+                status = status.as_u16(),
+                elapsed_ms, content_type, "CRW search returned successful empty result set"
+            );
+        } else {
+            info!(
+                status = status.as_u16(),
+                elapsed_ms, content_type, result_count, "CRW search response parsed"
+            );
         }
 
         Ok(parsed)

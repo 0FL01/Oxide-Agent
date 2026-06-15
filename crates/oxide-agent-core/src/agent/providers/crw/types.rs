@@ -17,6 +17,17 @@ pub struct CrwSearchRequest {
     pub query: String,
     /// Maximum number of results.
     pub limit: u8,
+    /// CRW search sources. Keep web explicit to avoid backend-default drift.
+    pub sources: Vec<String>,
+    /// Preferred search language code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    /// Search recency filter in SearXNG/Google-style qdr notation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tbs: Option<String>,
+    /// Optional CRW/SearXNG search categories.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 
 // --- Search response (Firecrawl-compatible) ---
@@ -70,13 +81,13 @@ fn search_results_from_value(value: &serde_json::Value) -> Option<Vec<CrwSearchR
     }
 
     if value.is_array() {
-        return serde_json::from_value(value.clone()).ok();
+        return Some(parse_search_result_array(value));
     }
 
     let object = value.as_object()?;
     if let Some(results) = object.get("results") {
         if results.is_array() {
-            return serde_json::from_value(results.clone()).ok();
+            return Some(parse_search_result_array(results));
         }
         if let Some(grouped) = results.as_object() {
             return Some(flatten_search_result_groups(grouped));
@@ -96,33 +107,89 @@ fn flatten_search_result_groups(
 ) -> Vec<CrwSearchResult> {
     let mut flattened = Vec::new();
     for entries in grouped.values() {
-        if let Ok(mut parsed) = serde_json::from_value::<Vec<CrwSearchResult>>(entries.clone()) {
+        if entries.is_array() {
+            let mut parsed = parse_search_result_array(entries);
             flattened.append(&mut parsed);
             continue;
         }
 
         if let Some(nested_results) = entries.get("results")
-            && let Ok(mut parsed) =
-                serde_json::from_value::<Vec<CrwSearchResult>>(nested_results.clone())
+            && nested_results.is_array()
         {
+            let mut parsed = parse_search_result_array(nested_results);
             flattened.append(&mut parsed);
         }
     }
     flattened
 }
 
+fn parse_search_result_array(value: &serde_json::Value) -> Vec<CrwSearchResult> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(CrwSearchResult::from_json_value)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Single search result entry.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct CrwSearchResult {
     /// Result title.
-    #[serde(default)]
     pub title: String,
     /// Result URL.
-    #[serde(default)]
     pub url: String,
     /// Snippet or content excerpt.
-    #[serde(default, alias = "description", alias = "snippet")]
     pub content: String,
+}
+
+impl<'de> Deserialize<'de> for CrwSearchResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_json_value(&value)
+            .ok_or_else(|| serde::de::Error::custom("expected search result object"))
+    }
+}
+
+impl CrwSearchResult {
+    fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            title: first_non_empty_string(object, &["title", "name"]),
+            url: first_non_empty_string(object, &["url", "link", "href"]),
+            content: first_non_empty_string(object, &["content", "description", "snippet"]),
+        })
+    }
+}
+
+fn first_non_empty_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> String {
+    for key in keys {
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
+        let text = json_value_to_string(value);
+        if !text.trim().is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
+fn json_value_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 // --- Scrape request ---
@@ -204,8 +271,62 @@ impl CrwSearchArgs {
         CrwSearchRequest {
             query: self.query.trim().to_string(),
             limit: self.normalized_max_results(),
+            sources: vec!["web".to_string()],
+            lang: normalize_optional_string(self.language.as_deref()),
+            tbs: self
+                .time_range
+                .as_deref()
+                .and_then(normalize_time_range_to_tbs),
+            categories: normalize_categories(self.categories.as_ref()),
         }
     }
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_time_range_to_tbs(value: &str) -> Option<String> {
+    match value.trim() {
+        "day" => Some("qdr:d".to_string()),
+        "week" => Some("qdr:w".to_string()),
+        "month" => Some("qdr:m".to_string()),
+        "year" => Some("qdr:y".to_string()),
+        tbs if tbs.starts_with("qdr:") => Some(tbs.to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_categories(value: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+
+    let mut categories = match value {
+        serde_json::Value::String(category) => split_category_string(category),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .flat_map(split_category_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    categories.sort();
+    categories.dedup();
+    categories
+}
+
+fn split_category_string(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 const fn default_max_results() -> u8 {
@@ -248,6 +369,10 @@ mod tests {
         let req = args.to_request();
         assert_eq!(req.query, "rust async reqwest");
         assert_eq!(req.limit, 5);
+        assert_eq!(req.sources, vec!["web"]);
+        assert_eq!(req.lang, None);
+        assert_eq!(req.tbs, None);
+        assert!(req.categories.is_empty());
     }
 
     #[test]
@@ -278,7 +403,36 @@ mod tests {
         let json = serde_json::to_value(args.to_request()).expect("serialize");
         assert_eq!(
             json,
-            serde_json::json!({"query": "rust async reqwest timeout", "limit": 5})
+            serde_json::json!({
+                "query": "rust async reqwest timeout",
+                "limit": 5,
+                "sources": ["web"]
+            })
+        );
+    }
+
+    #[test]
+    fn search_request_serializes_supported_options() {
+        let args = CrwSearchArgs {
+            query: "rust async reqwest timeout".to_string(),
+            max_results: 5,
+            language: Some(" en ".to_string()),
+            time_range: Some("month".to_string()),
+            safe_search: Some(1),
+            categories: Some(serde_json::json!(["research", " github ", "research"])),
+            page: Some(2),
+        };
+        let json = serde_json::to_value(args.to_request()).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "query": "rust async reqwest timeout",
+                "limit": 5,
+                "sources": ["web"],
+                "lang": "en",
+                "tbs": "qdr:m",
+                "categories": ["github", "research"]
+            })
         );
     }
 
@@ -385,6 +539,31 @@ mod tests {
         assert_eq!(resp.data.len(), 1);
         assert_eq!(resp.data[0].title, "Nested");
         assert_eq!(resp.data[0].content, "Nested snippet");
+    }
+
+    #[test]
+    fn search_response_keeps_grouped_results_with_null_fields() {
+        let raw = serde_json::json!({
+            "success": true,
+            "data": {
+                "results": {
+                    "web": [
+                        {"title": "Wikipedia", "url": "https://www.wikipedia.org/", "description": null},
+                        {"title": null, "url": "https://example.com/", "snippet": "Example"},
+                        {"title": "Numeric", "url": "https://example.net/", "description": 123},
+                        {"title": "Duplicate", "url": "https://example.org/", "description": "Description", "snippet": "Snippet"}
+                    ]
+                }
+            }
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(resp.data.len(), 4);
+        assert_eq!(resp.data[0].title, "Wikipedia");
+        assert_eq!(resp.data[0].content, "");
+        assert_eq!(resp.data[1].title, "");
+        assert_eq!(resp.data[1].content, "Example");
+        assert_eq!(resp.data[2].content, "123");
+        assert_eq!(resp.data[3].content, "Description");
     }
 
     #[test]
