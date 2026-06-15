@@ -1240,10 +1240,10 @@ fn web_crawler_http_status_fallback_reason(
     let payload = WebFetchMdProvider::failure_payload(Some(args), error);
     let status = payload.get("status_code").and_then(Value::as_u64);
     match status {
-        Some(403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
+        Some(402..=403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
             Some("webfetch reddit_rss_http_status")
         }
-        Some(403 | 429) => Some("webfetch http_status"),
+        Some(402..=403 | 429) => Some("webfetch http_status"),
         Some(503) => Some("webfetch http_status"),
         Some(500..=504) if web_crawler_is_reddit_thread_url(&args.url) => {
             Some("webfetch reddit_rss_http_status")
@@ -1333,6 +1333,21 @@ mod web_crawler_tests {
         };
         let error =
             anyhow::anyhow!("web_markdown fetch failed: non-success status: 429 Too Many Requests");
+
+        assert_eq!(
+            web_crawler_fallback_reason(&args, &error),
+            Some("webfetch http_status")
+        );
+    }
+
+    #[test]
+    fn web_crawler_falls_back_for_generic_payment_required_http_status() {
+        let args = WebMarkdownArgs {
+            url: "https://www.investopedia.com/article-123".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error =
+            anyhow::anyhow!("web_markdown fetch failed: non-success status: 402 Payment Required");
 
         assert_eq!(
             web_crawler_fallback_reason(&args, &error),
