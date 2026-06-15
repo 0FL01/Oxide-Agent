@@ -24,4 +24,4 @@ cargo_features = ["profile-embedded-opencode-local"]
 "tool/wiki-memory" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
 "tool/brave-search" = { enabled = true }
-"tool/searxng" = { enabled = true }
+"tool/crw" = { enabled = true }

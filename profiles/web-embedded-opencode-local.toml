@@ -1,5 +1,5 @@
 profile = "web-embedded-opencode-local"
-cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown"]
+cargo_features = ["profile-web-embedded-opencode-local"]
 
 [modules]
 "transport/web" = { enabled = true }
@@ -25,5 +25,4 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 "tool/web-crawler" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
 "tool/brave-search" = { enabled = true }
-"tool/crawl4ai-markdown" = { enabled = true }
-"tool/searxng" = { enabled = true }
+"tool/crw" = { enabled = true }

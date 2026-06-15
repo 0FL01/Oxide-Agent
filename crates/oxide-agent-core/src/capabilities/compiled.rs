@@ -477,6 +477,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         Search,
         ["tool/searxng-search"]
     );
+    push_module!(
+        modules,
+        "tool-crw",
+        "tool/crw",
+        Search,
+        ["tool/crw-search", "tool/crw-scrape"]
+    );
     push_module_with_requires!(
         modules,
         "tool-sandbox-fileops",

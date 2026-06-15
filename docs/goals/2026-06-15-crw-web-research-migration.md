@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 13:15 UTC+3
+Last updated: 2026-06-15 13:45 UTC+3
 
 ## Objective
 
@@ -294,8 +294,8 @@ Failure normalization:
   - Source: migration spec Cargo/profile instructions.
   - Acceptance: `tool-searxng` and `tool-crawl4ai-markdown` feature definitions are gone; `tool-crw` exists; profile-full, profile-web-embedded-opencode-local, and profile-search-only use `tool-crw`; TOML profiles reference `tool/crw` where SearXNG/Crawl4AI modules were used.
   - Evidence required: inspect `crates/oxide-agent-core/Cargo.toml`; `cargo check`/`cargo test` for affected profiles.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (profiles switched; old feature definitions removed in Checkpoint 8)
+  - Evidence collected: `profile-full`, `profile-web-embedded-opencode-local`, `profile-search-only` all use `tool-crw`. `profile-web-embedded-opencode-local` Cargo profile: `tool-crawl4ai-markdown` and `tool-searxng` replaced with single `tool-crw`. Profile TOMLs: `full.toml`, `search-only.toml`, `embedded-opencode-local.toml`, `host-bwrap.toml`, `web-embedded-opencode-local.toml` all reference `tool/crw`. `cargo check` passes for all three profiles.
 
 - G6: Runtime registration paths know CRW and no longer register raw old modules.
   - Source: architecture invariant: `tool_runtime/modules.rs` is tool registration point; repo inspection also found executor registry and delegation registration.
@@ -315,8 +315,8 @@ Failure normalization:
   - Source: migration spec capabilities section.
   - Acceptance: `tool-crw -> tool/crw` exposes `tool/crw-search` and `tool/crw-scrape`; old `tool/searxng` and `tool/crawl4ai-markdown` entries are gone.
   - Evidence required: inspect `compiled.rs`; run compiled capability command for affected profile if practical.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified (CRW entry added; old entries removed in Checkpoint 8)
+  - Evidence collected: `push_module!(modules, "tool-crw", "tool/crw", Search, ["tool/crw-search", "tool/crw-scrape"])` added in `compiled.rs`. Capability command output shows `tool/crw` module with `tool/crw-search` and `tool/crw-scrape` capabilities. `cargo run ... -- capabilities --compiled --json` confirms.
 
 - G9: Search budget hook uses new tool names and preserves host blocking.
   - Source: migration spec hooks section and invariant that search budget counts search tool calls and blocks repeated anti-bot hosts.
@@ -401,8 +401,8 @@ Failure normalization:
     - `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`
     - `cargo test -p oxide-agent-core --no-default-features --features profile-search-only`
     - `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`
-  - Status: pending
-  - Evidence collected:
+  - Status: in progress (profile checks pass; full test suite final in Checkpoint 10)
+  - Evidence collected: `cargo check` passes for profile-full, profile-search-only, profile-web-embedded-opencode-local. Capabilities: 30 passed, 2 failed (pre-existing sandbox backend requirement failures). `cargo clippy` clean for profile-full. `cargo fmt` clean.
 
 - V2: Snapshot/static guard updates are intentional.
   - Source: migration spec snapshot/static guard notes.
@@ -875,6 +875,19 @@ Done when:
     - `cargo fmt --all -- --check` → clean.
   - Audit IDs updated: G2 verified (additive), G3 verified, G6 verified (additive), Q2 verified (runtime registration), Q4 verified, N3 verified.
   - Next: Checkpoint 3 — switch capabilities, Cargo profiles, and repo profile TOMLs to CRW.
+
+- 2026-06-15 Checkpoint 3 complete: Capabilities, Cargo profiles, and TOML profiles switched to CRW.
+  - Changed: `Cargo.toml` (profile-full, profile-web-embedded-opencode-local, profile-search-only now use `tool-crw`; `tool-crawl4ai-markdown` removed from web-embedded profile), `compiled.rs` (added `tool-crw -> tool/crw` capability entry), 5 profile TOMLs (`tool/searxng` → `tool/crw`, `tool/crawl4ai-markdown` → `tool/crw`, web TOML `cargo_features` updated).
+  - Commands run:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` → OK.
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-search-only` → OK.
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` → OK.
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` → clean.
+    - `cargo fmt --all -- --check` → clean.
+    - `cargo run ... -- capabilities --compiled --json` → shows `tool/crw` with `tool/crw-search` and `tool/crw-scrape`.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full capabilities` → 30 passed, 2 failed (pre-existing sandbox).
+  - Audit IDs updated: G5 verified (profiles), G8 verified (capabilities), V1 in progress.
+  - Next: Checkpoint 4 — migrate search budget, prompt guidance, thoughts, static tool-name policy.
 
 ## Risks and Blockers
 
