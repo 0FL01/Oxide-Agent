@@ -53,7 +53,7 @@ fn build_date_context(tools: &[ToolDefinition]) -> String {
     let current_day = now.format("%A").to_string();
     let current_offset = now.format("UTC%:z").to_string();
     let tool_names = tool_name_set(tools);
-    let search_tools = available_tool_names(&tool_names, &["web_search", "searxng_search"]);
+    let search_tools = available_tool_names(&tool_names, &["web_search"]);
 
     let mut context = format!(
         "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}"
@@ -206,24 +206,11 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
 
     if has_any_tool(
         &tool_names,
-        &[
-            "web_search",
-            "web_extract",
-            "searxng_search",
-            "web_crawler",
-            "web_markdown",
-            "crawl4ai_markdown",
-        ],
+        &["web_search", "web_extract", "web_crawler", "web_markdown"],
     ) {
         let mut lines = Vec::new();
         if has_tool(&tool_names, "web_search") {
             lines.push("Use `web_search` for current web search, news, facts, documentation, or real-time data you cannot know locally.".to_string());
-        }
-        if has_tool(&tool_names, "searxng_search") {
-            lines.push(
-                "Use `searxng_search` for self-hosted web search with engine rotation on failure."
-                    .to_string(),
-            );
         }
         if has_tool(&tool_names, "web_extract") {
             lines.push(
@@ -235,25 +222,13 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Use `web_crawler` after search to read selected result URLs as Markdown; it tries lightweight fetch first and falls back to browser rendering only for anti-bot/JavaScript blocks."
                     .to_string(),
             );
-        } else if has_tool(&tool_names, "web_markdown")
-            && has_tool(&tool_names, "crawl4ai_markdown")
-        {
-            lines.push(
-                "Use `web_markdown` first for Reddit threads, repository README pages, Rust/PyPI package pages, Markdown files, and simple static pages; use `crawl4ai_markdown` for pages needing browser rendering, JavaScript, or overlay/consent handling."
-                    .to_string(),
-            );
-        } else if has_tool(&tool_names, "crawl4ai_markdown") {
-            lines.push(
-                "Prefer `crawl4ai_markdown` after search when you need to read a specific result URL as Markdown, especially pages needing browser rendering, JavaScript, or overlay/consent handling."
-                    .to_string(),
-            );
         } else if has_tool(&tool_names, "web_markdown") {
             lines.push(
                 "Use `web_markdown` after search when you need to read a specific result URL as Markdown."
                     .to_string(),
             );
         }
-        if has_any_tool(&tool_names, &["web_search", "searxng_search"]) {
+        if has_tool(&tool_names, "web_search") {
             lines.push(
                 "Do not fetch every search result automatically; fetch only selected URLs."
                     .to_string(),
@@ -809,7 +784,6 @@ mod tests {
         assert!(prompt.contains("Use `web_markdown`"));
         assert!(!prompt.contains("web_search"));
         assert!(!prompt.contains("web_extract"));
-        assert!(!prompt.contains("searxng_search"));
     }
 
     #[tokio::test]

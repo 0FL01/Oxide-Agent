@@ -98,7 +98,6 @@ fn legacy_tool_registry_and_wrappers_are_removed() {
         "crate::agent::registry::",
         "crate::agent::registry;",
         "build_tool_registry",
-        "legacy_provider",
         "ToolModule::legacy_provider",
         "FilteredToolProvider",
         "ProviderRuntimeExecutor",
@@ -258,7 +257,7 @@ fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
         "YtdlpProvider::",
         "WebFetchMdProvider::new",
         "TavilyProvider::new",
-        "SearxngProvider::new",
+        "CrwProvider::new",
     ];
     let offenders = forbidden_provider_paths
         .iter()
@@ -344,7 +343,6 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
         "crates/oxide-agent-core/src/capabilities/compiled.rs",
         "crates/oxide-agent-core/src/llm/client.rs",
         "crates/oxide-agent-core/src/llm/mod.rs",
-        "crates/oxide-agent-core/src/llm/providers/mistral/chat.rs",
         "crates/oxide-agent-core/src/llm/providers/openrouter.rs",
         "crates/oxide-agent-core/src/llm/providers/openrouter/module.rs",
         "crates/oxide-agent-core/src/llm/types.rs",

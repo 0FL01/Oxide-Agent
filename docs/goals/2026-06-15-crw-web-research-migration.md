@@ -322,8 +322,8 @@ Failure normalization:
   - Source: migration spec hooks section and invariant that search budget counts search tool calls and blocks repeated anti-bot hosts.
   - Acceptance: counted names include `web_search`, `web_crawler`, `web_markdown`, `brave_search`, `web_extract` as currently applicable; names do not include `searxng_search` or `crawl4ai_markdown`; fallback warning says `web_search`.
   - Evidence required: focused `search_budget` tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `search_budget.rs` counts `web_search`, `web_crawler`, `web_markdown`, `brave_search`, and `web_extract`; no `searxng_search` or `crawl4ai_markdown` remain in the hook. Brave fallback warning now says `web_search`. `cargo test -p oxide-agent-core --no-default-features --features profile-full search_budget` → 8 passed.
 
 - G10: Search probe allowlist uses generic tools only.
   - Source: migration spec search_probe section and invariant that probe has search + fetch tools, no browser-specific tools.
@@ -336,8 +336,8 @@ Failure normalization:
   - Source: migration spec sections for session, prompt composer, thoughts, UI, web transport tests.
   - Acceptance: user-visible messages/cards/snapshots no longer mention Crawl4AI/SearXNG as active tools; web events handle CRW/web_crawler payloads.
   - Evidence required: focused core/web/web-ui tests; snapshot review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in progress (core guidance/thoughts verified; web transport/UI later)
+  - Evidence collected: Core prompt/workflow guidance updated in `composer.rs`, effort prompt guidance in `executor/execution.rs`, thought labels in `thoughts.rs`, Brave fallback guidance in `brave_search/*`, and failure summaries in `tool_failure_summary.rs` to use `web_search`, `web_crawler`, and `web_markdown` without active SearXNG/Crawl4AI tool names. Focused tests pass: composer 19 passed, thoughts 8 passed, tool_failure_summary 5 passed, brave_search 26 passed.
 
 - G12: Docker Compose uses one CRW service instead of SearXNG + Crawl4AI.
   - Source: migration spec compose/env sections.
@@ -408,8 +408,8 @@ Failure normalization:
   - Source: migration spec snapshot/static guard notes.
   - Acceptance: snapshots/fixtures reflect `web_search` and CRW/web_crawler payloads; static guards no longer expect `SearxngProvider::new`.
   - Evidence required: snapshot test commands and diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in progress (static guards updated; snapshots later)
+  - Evidence collected: `tool_runtime_static_guards.rs` no longer expects `SearxngProvider::new`; delegation guard now checks `CrwProvider::new` is not constructed directly in delegation. Stale false-positive static guard paths/patterns were narrowed to current architecture. `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed.
 
 - V3: Compose configs are syntactically valid.
   - Source: migration spec compose section.
@@ -424,8 +424,8 @@ Failure normalization:
   - Source: accepted decision.
   - Must preserve: provider directory, feature `tool-webfetch-md`, and `web_markdown` lightweight fetch behavior.
   - Evidence required: `rg "tool-webfetch-md|web_markdown|webfetch_md" crates/oxide-agent-core` plus tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `tool-webfetch-md` feature remains in `crates/oxide-agent-core/Cargo.toml`; `web_markdown` and `webfetch_md` references remain in core registration/capabilities. `rg "tool-webfetch-md|web_markdown|webfetch_md" crates/oxide-agent-core/src crates/oxide-agent-core/Cargo.toml` confirms presence. `web_markdown` remains counted by search budget and preserved in prompt guidance.
 
 - N2: Do not touch Brave/Tavily beyond required duplicate-name guard.
   - Source: accepted decision.
@@ -888,6 +888,21 @@ Done when:
     - `cargo test -p oxide-agent-core --no-default-features --features profile-full capabilities` → 30 passed, 2 failed (pre-existing sandbox).
   - Audit IDs updated: G5 verified (profiles), G8 verified (capabilities), V1 in progress.
   - Next: Checkpoint 4 — migrate search budget, prompt guidance, thoughts, static tool-name policy.
+
+- 2026-06-15 Checkpoint 4 complete: Search budget, core guidance, thoughts, and static guards migrated to generic CRW-era tool names.
+  - Changed: `search_budget.rs`, `prompt/composer.rs`, `thoughts.rs`, `tool_failure_summary.rs`, `providers/brave_search/{format.rs,provider.rs}`, `executor/execution.rs`, `runner/tools.rs`, `tests/tool_runtime_static_guards.rs`.
+  - Commands run:
+    - `cargo fmt --all -- --check` → clean.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full search_budget` → 8 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::prompt::composer::tests` → 19 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::thoughts::tests` → 8 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::tool_failure_summary::tests` → 5 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full brave_search` → 26 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed.
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` → clean.
+    - Changed-file sweep for `searxng_search|crawl4ai_markdown|SearxngProvider|Crawl4Ai|SearXNG|Crawl4AI` → no matches.
+  - Audit IDs updated: G9 verified, G11 in progress (core guidance/thoughts), V2 in progress (static guards), N1 verified, N3 remains verified.
+  - Next: Checkpoint 5 — migrate web transport probe/session and transport fixtures.
 
 ## Risks and Blockers
 

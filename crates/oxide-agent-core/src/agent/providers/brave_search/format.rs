@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::fmt::Write;
 
 const MAX_OUTPUT_CHARS: usize = 20_000;
-const FALLBACK_TOOL: &str = "searxng_search";
+const FALLBACK_TOOL: &str = "web_search";
 
 #[must_use]
 pub fn format_search_results(
@@ -50,7 +50,7 @@ pub fn format_search_results(
 pub fn format_search_failure(query: &str, error: &BraveSearchError) -> (String, Value) {
     let query = query.trim();
     let markdown = format!(
-        "Brave Search failed: {error}\n\nDo not retry brave_search in this task; use searxng_search as fallback if search is still required.\n"
+        "Brave Search failed: {error}\n\nDo not retry brave_search in this task; use web_search as fallback if search is still required.\n"
     );
 
     (

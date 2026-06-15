@@ -230,7 +230,7 @@ fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal
         dead_end_scope: "provider",
         target: "brave_search".to_string(),
         summary,
-        guidance: "Do not retry brave_search in this task; use searxng_search or synthesize from existing results.".to_string(),
+        guidance: "Do not retry brave_search in this task; use web_search or synthesize from existing results.".to_string(),
     }
 }
 
@@ -366,7 +366,7 @@ mod tests {
             "error": "Brave Search is temporarily rate-limited",
             "provider_unavailable": true,
             "retryable": false,
-            "fallback": "searxng_search",
+            "fallback": "web_search",
             "results": []
         }))
         .expect("raw json");
@@ -388,7 +388,7 @@ mod tests {
             value["guidance"]
                 .as_str()
                 .expect("guidance")
-                .contains("Do not retry brave_search in this task; use searxng_search")
+                .contains("Do not retry brave_search in this task; use web_search")
         );
     }
 

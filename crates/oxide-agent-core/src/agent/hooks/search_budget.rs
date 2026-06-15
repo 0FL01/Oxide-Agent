@@ -32,13 +32,7 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search"
-                | "web_extract"
-                | "brave_search"
-                | "searxng_search"
-                | "web_crawler"
-                | "crawl4ai_markdown"
-                | "web_markdown"
+            "web_search" | "web_extract" | "brave_search" | "web_crawler" | "web_markdown"
         )
     }
 
@@ -118,7 +112,7 @@ impl Hook for SearchBudgetHook {
                     return HookResult::Block {
                         reason: concat!(
                             "Brave Search is unavailable in this task. Do not retry ",
-                            "brave_search with rewritten queries; use searxng_search fallback."
+                            "brave_search with rewritten queries; use web_search fallback."
                         )
                         .to_string(),
                     };
@@ -207,7 +201,7 @@ mod tests {
 
         let first = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "crawl4ai_markdown".to_string(),
+                tool_name: "web_crawler".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
@@ -233,14 +227,14 @@ mod tests {
 
         let first = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "web_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
         );
         let second = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "web_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
@@ -287,12 +281,12 @@ mod tests {
 
         assert!(matches!(blocked, HookResult::Block { .. }));
         if let HookResult::Block { reason } = blocked {
-            assert!(reason.contains("use searxng_search fallback"));
+            assert!(reason.contains("use web_search fallback"));
         }
     }
 
     #[test]
-    fn allows_searxng_after_brave_search_failure() {
+    fn allows_web_search_after_brave_search_failure() {
         let hook = SearchBudgetHook::new(10);
         let todos = TodoList::new();
         let memory = AgentMemory::new(1024);
@@ -317,15 +311,15 @@ mod tests {
             HookResult::Continue
         ));
 
-        let searxng = hook.handle(
+        let web_search = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "web_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
         );
 
-        assert!(matches!(searxng, HookResult::Continue));
+        assert!(matches!(web_search, HookResult::Continue));
     }
 
     #[test]
@@ -344,7 +338,7 @@ mod tests {
         );
         let search = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "web_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,

@@ -593,12 +593,12 @@ mod tests {
     #[async_trait]
     impl ToolExecutor for CountingSearchRuntimeExecutor {
         fn name(&self) -> ToolName {
-            ToolName::from("searxng_search")
+            ToolName::from("web_search")
         }
 
         fn spec(&self) -> ToolDefinition {
             ToolDefinition {
-                name: "searxng_search".to_string(),
+                name: "web_search".to_string(),
                 description: "search test executor".to_string(),
                 parameters: json!({ "type": "object" }),
             }
@@ -762,7 +762,7 @@ mod tests {
         let first = ToolCall::new(
             "invoke-search-1",
             ToolCallFunction {
-                name: "searxng_search".to_string(),
+                name: "web_search".to_string(),
                 arguments: r#"{"query":"rust"}"#.to_string(),
             },
             false,
@@ -770,7 +770,7 @@ mod tests {
         let second = ToolCall::new(
             "invoke-search-2",
             ToolCallFunction {
-                name: "searxng_search".to_string(),
+                name: "web_search".to_string(),
                 arguments: r#"{"query":"tokio"}"#.to_string(),
             },
             false,
