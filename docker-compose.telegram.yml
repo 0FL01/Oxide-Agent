@@ -29,8 +29,9 @@ services:
       - path: .env
         required: false
     environment:
-      - SEARXNG_ENABLED=true
-      - SEARXNG_URL=http://127.0.0.1:8081
+      - OXIDE_CRW_ENABLED=true
+      - OXIDE_CRW_BASE_URL=http://127.0.0.1:3000
+      - OXIDE_CRW_API_TOKEN=${OXIDE_CRW_API_TOKEN:-}
       - RUST_LOG=oxide_agent=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
@@ -42,7 +43,7 @@ services:
     depends_on:
       sandboxd:
         condition: service_healthy
-      searxng:
+      crw:
         condition: service_healthy
     logging:
       driver: json-file
@@ -81,21 +82,16 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  searxng:
-    image: searxng/searxng:2026.5.31-300695de5
-    container_name: searxng
+  crw:
+    image: ${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}
+    container_name: crw
     restart: unless-stopped
     environment:
       - TZ=Europe/Moscow
-      - SEARXNG_BASE_URL=http://127.0.0.1:8081/
-      - GRANIAN_HOST=0.0.0.0
-      - GRANIAN_PORT=8080
     ports:
-      - "127.0.0.1:8081:8080"
-    volumes:
-      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
+      - "127.0.0.1:${OXIDE_CRW_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || curl -fsS http://localhost:3000/health"]
       interval: 5s
       timeout: 3s
       retries: 30

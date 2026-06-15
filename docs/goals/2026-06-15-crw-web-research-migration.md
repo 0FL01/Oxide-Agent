@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 14:35 UTC+3
+Last updated: 2026-06-15 15:00 UTC+3
 
 ## Objective
 
@@ -308,8 +308,8 @@ Failure normalization:
   - Source: migration spec config section.
   - Acceptance: new config helpers exist; old SearXNG/Crawl4AI helpers and struct fields are removed; tests cover enabled/base-url/token/timeout behavior.
   - Evidence required: config unit tests; `rg "SEARXNG_|OXIDE_CRAWL4AI_" crates .env.example docker-compose*.yml docker profiles AGENTS.md README.md docs` reviewed.
-  - Status: verified (additive only; old removal in Checkpoint 8)
-  - Evidence collected: Config helpers added in config.rs: `is_crw_enabled()`, `get_crw_base_url()`, `get_crw_api_token()`, `get_crw_timeout_secs()`, `CRW_DEFAULT_TIMEOUT_SECS`. 8 config tests pass covering enabled/disabled, base-url default+env, token trim+blank, timeout default+env. Old SearXNG/Crawl4AI helpers remain for now (removal in Checkpoint 8).
+  - Status: verified (additive config helpers and compose/env examples migrated; old code helpers removed in Checkpoint 8)
+  - Evidence collected: Config helpers added in config.rs: `is_crw_enabled()`, `get_crw_base_url()`, `get_crw_api_token()`, `get_crw_timeout_secs()`, `CRW_DEFAULT_TIMEOUT_SECS`. 8 config tests pass covering enabled/disabled, base-url default+env, token trim+blank, timeout default+env. Compose and `.env.example` now use `OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`, `OXIDE_CRW_API_TOKEN`, `OXIDE_CRW_TIMEOUT_SECS`, `OXIDE_CRW_IMAGE`, and `OXIDE_CRW_PORT`; old SearXNG/Crawl4AI code helpers remain for Checkpoint 8 removal.
 
 - G8: Capability manifest uses one CRW module.
   - Source: migration spec capabilities section.
@@ -343,8 +343,8 @@ Failure normalization:
   - Source: migration spec compose/env sections.
   - Acceptance: listed compose files define/inject CRW service/env; SearXNG and Crawl4AI services/env/depends-on are removed; `.env.example` documents `OXIDE_CRW_*`.
   - Evidence required: `docker compose -f <file> config` for each touched compose file where Docker is available; otherwise `docker compose` unavailability documented and YAML inspected with `rg`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docker-compose.yml`, `docker-compose.telegram.yml`, `docker-compose.web.local-services.yml`, `docker-compose.telegram.local-services.yml`, `docker/compose.full.yml`, and `docker/compose.dev.yml` now define/use one `crw` service with image `${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}`, localhost port `${OXIDE_CRW_PORT:-3000}:3000`, `/health` healthcheck, and `OXIDE_CRW_*` env injection. `docker-compose.web.yml` no longer contains Crawl4AI-specific logging. Deleted `docker/searxng/settings.yml`. Old-name sweep over `docker-compose*.yml docker .env.example` returns no `SEARXNG_`, `searxng`, `OXIDE_CRAWL4AI`, `crawl4ai`, `11235`, `8081`, or `docker/searxng` matches.
 
 - G13: Documentation reflects CRW migration.
   - Source: migration spec docs section.
@@ -415,8 +415,8 @@ Failure normalization:
   - Source: migration spec compose section.
   - Acceptance: each touched compose file renders with `docker compose config`, or Docker unavailability is recorded with manual YAML review.
   - Evidence required: command outputs or blocker note.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docker compose -f docker-compose.yml config`, `docker compose -f docker-compose.telegram.yml config`, `docker compose -f docker-compose.web.yml config`, `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config`, `docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-services.yml config`, `docker compose -f docker/compose.full.yml config`, and `docker compose -f docker/compose.dev.yml config` all render successfully. The local-services overlay files are validated with their base compose files because they patch existing services and are not standalone projects.
 
 ### Non-goals / exclusions
 
@@ -924,6 +924,20 @@ Done when:
     - `rg "SearXNG|Crawl4AI|crawl4ai|searxng" crates/oxide-agent-web-ui/src/tasks/tool_cards.rs` → no matches.
   - Audit IDs updated: G11 verified for active core/web/UI paths, V2 in progress (UI parsing updated; final snapshots later).
   - Next: Checkpoint 7 — migrate Docker Compose and `.env.example`.
+
+- 2026-06-15 Checkpoint 7 complete: Compose and `.env.example` migrated from SearXNG/Crawl4AI local services to CRW.
+  - Changed: `docker-compose.yml`, `docker-compose.telegram.yml`, `docker-compose.web.yml`, `docker-compose.web.local-services.yml`, `docker-compose.telegram.local-services.yml`, `docker/compose.full.yml`, `docker/compose.dev.yml`, `.env.example`; deleted `docker/searxng/settings.yml`.
+  - Commands run:
+    - `docker compose -f docker-compose.yml config` → OK.
+    - `docker compose -f docker-compose.telegram.yml config` → OK.
+    - `docker compose -f docker-compose.web.yml config` → OK.
+    - `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config` → OK.
+    - `docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-services.yml config` → OK.
+    - `docker compose -f docker/compose.full.yml config` → OK.
+    - `docker compose -f docker/compose.dev.yml config` → OK.
+    - `rg "SEARXNG_|searxng|OXIDE_CRAWL4AI|crawl4ai|11235|8081|docker/searxng" docker-compose*.yml docker .env.example` → no matches.
+  - Audit IDs updated: G12 verified, G7 evidence extended to compose/env examples, V3 verified.
+  - Next: Checkpoint 8 — remove old providers, features, config fields, and stale compile references.
 
 ## Risks and Blockers
 
