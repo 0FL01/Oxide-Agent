@@ -1244,6 +1244,7 @@ fn web_crawler_http_status_fallback_reason(
             Some("webfetch reddit_rss_http_status")
         }
         Some(403 | 429) => Some("webfetch http_status"),
+        Some(503) => Some("webfetch http_status"),
         Some(500..=504) if web_crawler_is_reddit_thread_url(&args.url) => {
             Some("webfetch reddit_rss_http_status")
         }
@@ -1354,7 +1355,7 @@ mod web_crawler_tests {
     }
 
     #[test]
-    fn web_crawler_does_not_fallback_for_generic_server_error() {
+    fn web_crawler_falls_back_for_generic_service_unavailable() {
         let args = WebMarkdownArgs {
             url: "https://example.test/page".to_string(),
             ..WebMarkdownArgs::default()
@@ -1362,6 +1363,20 @@ mod web_crawler_tests {
         let error = anyhow::anyhow!(
             "web_markdown fetch failed: non-success status: 503 Service Unavailable"
         );
+
+        assert_eq!(
+            web_crawler_fallback_reason(&args, &error),
+            Some("webfetch http_status")
+        );
+    }
+
+    #[test]
+    fn web_crawler_does_not_fallback_for_generic_not_found() {
+        let args = WebMarkdownArgs {
+            url: "https://example.test/missing".to_string(),
+            ..WebMarkdownArgs::default()
+        };
+        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 404 Not Found");
 
         assert_eq!(web_crawler_fallback_reason(&args, &error), None);
     }
