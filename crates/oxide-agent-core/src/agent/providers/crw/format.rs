@@ -60,6 +60,7 @@ mod tests {
         let response = CrwSearchResponse {
             success: true,
             data: Vec::new(),
+            error: None,
         };
         let formatted = format_search_results("rust", &response, 5);
         assert!(formatted.contains("Search returned no results"));
@@ -81,6 +82,7 @@ mod tests {
                     content: String::new(),
                 },
             ],
+            error: None,
         };
         let formatted = format_search_results("rust", &response, 5);
         assert!(formatted.contains("Rust Programming"));
@@ -100,6 +102,7 @@ mod tests {
                 url: "https://example.com".to_string(),
                 content: large_content,
             }],
+            error: None,
         };
         let formatted = format_search_results("big", &response, 5);
         assert!(formatted.ends_with("[truncated]\n"));

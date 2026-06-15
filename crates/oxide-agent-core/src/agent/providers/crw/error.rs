@@ -17,6 +17,12 @@ pub enum CrwError {
         /// Truncated response body for diagnostics.
         body: String,
     },
+    /// CRW returned a JSON failure envelope with HTTP success status.
+    #[error("CRW API failure: {message}")]
+    ApiFailure {
+        /// Provider-supplied error message, truncated by the client.
+        message: String,
+    },
     /// Underlying reqwest transport error.
     #[error("CRW request failed: {0}")]
     Request(#[from] reqwest::Error),
@@ -32,6 +38,7 @@ impl CrwError {
         match self {
             Self::EmptyQuery | Self::InvalidUrl => false,
             Self::HttpStatus { status, .. } => matches!(status.as_u16(), 429 | 502 | 503 | 504),
+            Self::ApiFailure { .. } => false,
             Self::Request(err) => is_retryable_reqwest(err),
         }
     }
@@ -49,6 +56,13 @@ impl CrwError {
                     "Search configuration error".to_string()
                 } else {
                     "Search temporarily unavailable, please try again in a moment".to_string()
+                }
+            }
+            Self::ApiFailure { message } => {
+                if is_auth_message(message) {
+                    "Search authentication error".to_string()
+                } else {
+                    "Search provider returned an error".to_string()
                 }
             }
             Self::Request(err) => {
@@ -79,6 +93,13 @@ impl CrwError {
                     _ => "crw_http_status",
                 }
             }
+            Self::ApiFailure { message } => {
+                if is_auth_message(message) {
+                    "crw_auth_failed"
+                } else {
+                    "crw_api_failure"
+                }
+            }
             Self::Request(err) => {
                 if err.is_timeout() {
                     "crw_timeout"
@@ -90,6 +111,15 @@ impl CrwError {
             }
         }
     }
+}
+
+fn is_auth_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("auth")
+        || lower.contains("api key")
+        || lower.contains("token")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
 }
 
 fn is_retryable_reqwest(err: &reqwest::Error) -> bool {
@@ -151,5 +181,15 @@ mod tests {
         };
         assert!(err.is_retryable());
         assert_eq!(err.kind(), "crw_unavailable");
+    }
+
+    #[test]
+    fn api_failure_auth_message_is_auth_failed() {
+        let err = CrwError::ApiFailure {
+            message: "Invalid API key".to_string(),
+        };
+        assert!(!err.is_retryable());
+        assert_eq!(err.kind(), "crw_auth_failed");
+        assert_eq!(err.agent_message(), "Search authentication error");
     }
 }

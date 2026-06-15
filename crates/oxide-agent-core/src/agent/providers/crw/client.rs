@@ -139,7 +139,19 @@ impl CrwClient {
             });
         }
 
-        Ok(response.json::<CrwSearchResponse>().await?)
+        let parsed = response.json::<CrwSearchResponse>().await?;
+        if !parsed.success {
+            return Err(CrwError::ApiFailure {
+                message: truncate_for_error(
+                    parsed
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "search provider returned success=false".to_string()),
+                ),
+            });
+        }
+
+        Ok(parsed)
     }
 }
 

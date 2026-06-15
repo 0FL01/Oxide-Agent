@@ -28,6 +28,8 @@ pub struct CrwSearchResponse {
     pub success: bool,
     /// Search result entries.
     pub data: Vec<CrwSearchResult>,
+    /// Optional provider error/message when CRW returns `success: false`.
+    pub error: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for CrwSearchResponse {
@@ -38,11 +40,15 @@ impl<'de> Deserialize<'de> for CrwSearchResponse {
         #[derive(Deserialize)]
         struct RawResponse {
             #[serde(default)]
-            success: bool,
+            success: Option<bool>,
             #[serde(default)]
             data: serde_json::Value,
             #[serde(default)]
             results: serde_json::Value,
+            #[serde(default)]
+            error: Option<String>,
+            #[serde(default)]
+            message: Option<String>,
         }
 
         let raw = RawResponse::deserialize(deserializer)?;
@@ -51,8 +57,9 @@ impl<'de> Deserialize<'de> for CrwSearchResponse {
             .unwrap_or_default();
 
         Ok(Self {
-            success: raw.success,
+            success: raw.success.unwrap_or(true),
             data,
+            error: raw.error.or(raw.message),
         })
     }
 }
@@ -404,6 +411,18 @@ mod tests {
         let raw = serde_json::json!({"success": true});
         let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
         assert!(resp.data.is_empty());
+    }
+
+    #[test]
+    fn search_response_preserves_success_false_error() {
+        let raw = serde_json::json!({
+            "success": false,
+            "error": "Invalid API key"
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert!(!resp.success);
+        assert!(resp.data.is_empty());
+        assert_eq!(resp.error.as_deref(), Some("Invalid API key"));
     }
 
     #[test]
