@@ -38,9 +38,8 @@ const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
 const PREVIOUS_FINAL_MESSAGE_MAX_CHARS: usize = 12_000;
-const DEFAULT_SPLIT_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_markdown"];
-const DEFAULT_MERGED_TOOL_ALLOWLIST: &[&str] = &["searxng_search", "web_crawler"];
-const SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI: &str = "crawl4ai_markdown";
+const DEFAULT_SPLIT_TOOL_ALLOWLIST: &[&str] = &["web_search", "web_markdown"];
+const DEFAULT_MERGED_TOOL_ALLOWLIST: &[&str] = &["web_search", "web_crawler"];
 const TIMEOUT_REPORT_MAX_ITEMS: usize = 6;
 const TIMEOUT_REPORT_SNIPPET_CHARS: usize = 220;
 const PROBE_PROFILE_PROMPT: &str = "You are Search Probe, a web-only research sidecar. Use only the tools available to you and return compact handoff notes for the main agent.";
@@ -1435,7 +1434,6 @@ fn env_tool_allowlist(key: &str) -> Vec<String> {
                 .split(',')
                 .map(str::trim)
                 .filter(|tool| !tool.is_empty())
-                .filter(|tool| *tool != SEARCH_PROBE_BLOCKED_TOOL_CRAWL4AI)
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
         })
@@ -1736,10 +1734,7 @@ mod tests {
         assert_eq!(config.min_effort, WebAgentEffort::Standard);
         assert!(config.public_updates);
         assert!(config.forward_tool_events);
-        assert_eq!(
-            config.tool_allowlist,
-            vec!["searxng_search", "web_markdown"]
-        );
+        assert_eq!(config.tool_allowlist, vec!["web_search", "web_markdown"]);
         assert_eq!(config.dossier_max_chars, 80_000);
     }
 
@@ -1750,7 +1745,7 @@ mod tests {
 
         let config = SearchProbeConfig::from_env();
 
-        assert_eq!(config.tool_allowlist, vec!["searxng_search", "web_crawler"]);
+        assert_eq!(config.tool_allowlist, vec!["web_search", "web_crawler"]);
     }
 
     #[test]
@@ -1815,7 +1810,7 @@ mod tests {
         test_set_env(ENV_FORWARD_TOOL_EVENTS, "false");
         test_set_env(
             ENV_TOOL_ALLOWLIST,
-            " searxng_search, crawl4ai_markdown ,, web_markdown ",
+            " web_search, web_crawler ,, web_markdown ",
         );
         test_set_env(ENV_DOSSIER_MAX_CHARS, "12345");
 
@@ -1834,7 +1829,7 @@ mod tests {
         assert!(!config.forward_tool_events);
         assert_eq!(
             config.tool_allowlist,
-            vec!["searxng_search", "web_markdown"]
+            vec!["web_search", "web_crawler", "web_markdown"]
         );
         assert_eq!(config.dossier_max_chars, 12_345);
     }
@@ -2001,8 +1996,8 @@ stop
             "recent_messages": [
                 {
                     "role": "tool",
-                    "tool_name": "searxng_search",
-                    "content": "{\"status\":\"success\",\"stdout\":{\"text\":\"## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5\"}}",
+                    "tool_name": "web_search",
+                    "content": "{\"status\":\"success\",\"stdout\":{\"text\":\"## Web Search results for: Step 3.7 Flash GGUF Q4 Q5\"}}",
                 }
             ],
             "stats": {"iterations": 3, "tokens_used": 11970}
@@ -2166,8 +2161,8 @@ after
   "recent_messages": [
     {
       "role":"tool",
-      "tool_name":"searxng_search",
-      "content":"{\"status\":\"success\",\"stdout\":{\"text\":\"## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5\\n\\n### Results\\n\\n1. StepFun Step-3.7-Flash-GGUF model page\"}}"
+      "tool_name":"web_search",
+      "content":"{\"status\":\"success\",\"stdout\":{\"text\":\"## Web Search results for: Step 3.7 Flash GGUF Q4 Q5\\n\\n### Results\\n\\n1. StepFun Step-3.7-Flash-GGUF model page\"}}"
     },
     {
       "role":"assistant",
@@ -2176,7 +2171,7 @@ after
     },
     {
       "role":"tool",
-      "tool_name":"crawl4ai_markdown",
+      "tool_name":"web_crawler",
       "content":"{\"status\":\"failure\",\"failure_kind\":\"anti_bot\",\"summary\":\"Blocked by anti-bot protection\"}"
     }
   ],
@@ -2197,25 +2192,27 @@ after
         assert!(
             parsed
                 .handoff
-                .contains("searxng_search: ## SearXNG results for: Step 3.7 Flash GGUF Q4 Q5")
+                .contains("web_search: ## Web Search results for: Step 3.7 Flash GGUF Q4 Q5")
         );
         assert!(parsed.handoff.contains("Tool failures / dead ends:"));
         assert!(
             parsed
                 .handoff
-                .contains("crawl4ai_markdown: anti_bot: Blocked by anti-bot protection")
+                .contains("web_crawler: anti_bot: Blocked by anti-bot protection")
         );
         assert!(!parsed.handoff.contains("recent_messages"));
         assert!(!parsed.handoff.contains("private chain-of-thought"));
         let update = parsed.public_update.as_deref().unwrap_or_default();
-        assert!(update.contains("Search Probe reached its soft time budget after using searxng_search, crawl4ai_markdown"));
+        assert!(update.contains(
+            "Search Probe reached its soft time budget after using web_search, web_crawler"
+        ));
         assert!(update.contains("passing partial leads"));
     }
 
     #[test]
     fn timeout_report_sanitizer_unwraps_tool_output_wrappers() {
-        let truncated_crawl_wrapper = r#"{"artifacts":[],"cancellation_reason":null,"cleanup_status":"not_needed","duration_ms":5894,"error_message":null,"exit_code":null,"status":"success","stderr":{"text":""},"stdout":{"text":"{\"chars\":5223,\"content_mode\":\"crawl4ai_fit_markdown\",\"final_url\":\"https://huggingface.co/unsloth/Step-3.7-Flash-GGUF\"}"},"#;
-        let searxng_wrapper = r###"{"artifacts":[],"cleanup_status":"not_needed","status":"success","stdout":{"text":"## SearXNG results for: DDR3 ECC 2133 quad channel RAM bandwidth\n\n### Results\n\n1. llama.cpp / ik_llama MoE Expert Offloading"},"stderr":{"text":""}}"###;
+        let truncated_crawl_wrapper = r#"{"artifacts":[],"cancellation_reason":null,"cleanup_status":"not_needed","duration_ms":5894,"error_message":null,"exit_code":null,"status":"success","stderr":{"text":""},"stdout":{"text":"{\"chars\":5223,\"content_mode\":\"crw_scrape\",\"final_url\":\"https://huggingface.co/unsloth/Step-3.7-Flash-GGUF\"}"},"#;
+        let web_search_wrapper = r###"{"artifacts":[],"cleanup_status":"not_needed","status":"success","stdout":{"text":"## Web Search results for: DDR3 ECC 2133 quad channel RAM bandwidth\n\n### Results\n\n1. llama.cpp / ik_llama MoE Expert Offloading"},"stderr":{"text":""}}"###;
         let report = serde_json::json!({
             "status": "timeout",
             "note": "Partial results included.",
@@ -2223,13 +2220,13 @@ after
             "recent_messages": [
                 {
                     "role": "tool",
-                    "tool_name": "crawl4ai_markdown",
+                    "tool_name": "web_crawler",
                     "content": truncated_crawl_wrapper,
                 },
                 {
                     "role": "tool",
-                    "tool_name": "searxng_search",
-                    "content": searxng_wrapper,
+                    "tool_name": "web_search",
+                    "content": web_search_wrapper,
                 },
                 {
                     "role": "assistant",
@@ -2244,10 +2241,10 @@ after
 
         assert_eq!(parsed.decision, SearchProbeDecision::Stop);
         assert!(parsed.handoff.contains(
-            "crawl4ai_markdown: fetched https://huggingface.co/unsloth/Step-3.7-Flash-GGUF via crawl4ai_fit_markdown (5223 chars)"
+            "web_crawler: fetched https://huggingface.co/unsloth/Step-3.7-Flash-GGUF via crw_scrape (5223 chars)"
         ));
         assert!(parsed.handoff.contains(
-            "searxng_search: ## SearXNG results for: DDR3 ECC 2133 quad channel RAM bandwidth"
+            "web_search: ## Web Search results for: DDR3 ECC 2133 quad channel RAM bandwidth"
         ));
         assert!(!parsed.handoff.contains("{\"artifacts\""));
         assert!(!parsed.handoff.contains("cleanup_status"));

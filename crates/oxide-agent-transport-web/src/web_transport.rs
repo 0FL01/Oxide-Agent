@@ -1225,92 +1225,38 @@ fn truncate_summary(value: &str) -> String {
 }
 
 fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value> {
-    if !matches!(name, "crawl4ai_markdown" | "web_crawler") || !success {
+    if name != "web_crawler" || !success {
         return None;
     }
 
     let output = serde_json::from_str::<Value>(output).ok()?;
-    if name == "web_crawler" {
-        let payload = output.get("structured_payload")?;
-        let markdown = payload
-            .get("markdown")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let (safe_markdown, _) = redact_sensitive_text(markdown);
-        let (markdown_preview, markdown_preview_truncated) =
-            truncate_text(&safe_markdown, TOOL_DISPLAY_MARKDOWN_MAX_CHARS);
-
-        return Some(json!({
-            "provider": "web_crawler",
-            "backend": payload.get("backend").and_then(Value::as_str),
-            "fallback_reason": payload.get("fallback_reason").and_then(Value::as_str),
-            "url": payload.get("url").and_then(Value::as_str),
-            "final_url": payload.get("final_url").and_then(Value::as_str),
-            "status_code": payload.get("status_code").and_then(Value::as_u64),
-            "markdown": markdown_preview,
-            "chars": payload
-                .get("chars")
-                .and_then(Value::as_u64)
-                .unwrap_or_else(|| markdown.chars().count() as u64),
-            "truncated": payload
-                .get("truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            "markdown_preview_truncated": markdown_preview_truncated,
-        }));
-    }
-
-    let stdout_text = stream_text_from_output(&output, "stdout")?;
-    let crawl = serde_json::from_str::<Value>(&stdout_text).ok()?;
-    let markdown = crawl.get("markdown").and_then(Value::as_str).unwrap_or("");
+    let payload = output.get("structured_payload")?;
+    let markdown = payload
+        .get("markdown")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let (safe_markdown, _) = redact_sensitive_text(markdown);
     let (markdown_preview, markdown_preview_truncated) =
         truncate_text(&safe_markdown, TOOL_DISPLAY_MARKDOWN_MAX_CHARS);
 
     Some(json!({
-        "provider": "crawl4ai_markdown",
-        "url": crawl.get("url").and_then(Value::as_str),
-        "final_url": crawl.get("final_url").and_then(Value::as_str),
-        "status_code": crawl.get("status_code").and_then(Value::as_u64),
-        "markdown_kind": crawl.get("markdown_kind").and_then(Value::as_str),
+        "provider": "web_crawler",
+        "backend": payload.get("backend").and_then(Value::as_str),
+        "fallback_reason": payload.get("fallback_reason").and_then(Value::as_str),
+        "url": payload.get("url").and_then(Value::as_str),
+        "final_url": payload.get("final_url").and_then(Value::as_str),
+        "status_code": payload.get("status_code").and_then(Value::as_u64),
         "markdown": markdown_preview,
-        "chars": crawl
+        "chars": payload
             .get("chars")
             .and_then(Value::as_u64)
             .unwrap_or_else(|| markdown.chars().count() as u64),
-        "truncated": crawl
+        "truncated": payload
             .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         "markdown_preview_truncated": markdown_preview_truncated,
-        "fresh": crawl.get("fresh").and_then(Value::as_bool),
     }))
-}
-
-fn stream_text_from_output(output: &Value, stream_name: &str) -> Option<String> {
-    let stream = output.get(stream_name)?;
-    if stream
-        .get("binary")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-
-    if let Some(text) = stream.get("text").and_then(Value::as_str)
-        && !text.is_empty()
-    {
-        return Some(text.to_string());
-    }
-
-    let head = stream.get("head").and_then(Value::as_str);
-    let tail = stream.get("tail").and_then(Value::as_str);
-    match (head, tail) {
-        (Some(head), Some(tail)) => Some(format!("{head}\n...\n{tail}")),
-        (Some(head), None) => Some(head.to_string()),
-        (None, Some(tail)) => Some(tail.to_string()),
-        _ => None,
-    }
 }
 
 fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String> {
@@ -1344,7 +1290,7 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                     .unwrap_or_else(|| other.to_string()),
             })
         }
-        ("crawl4ai_markdown", Some("crawl4ai_markdown")) | ("web_crawler", Some("web_crawler")) => {
+        ("web_crawler", Some("web_crawler")) => {
             let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
             let host = payload.get("host").and_then(Value::as_str);
             let status_code = payload.get("status_code").and_then(Value::as_u64);
@@ -1353,11 +1299,12 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                 "anti_bot" => host
                     .map(|host| format!("anti_bot at {host}"))
                     .unwrap_or_else(|| "anti_bot".to_string()),
-                "crawl4ai_http_status" => status_code
+                "crw_http_status" => status_code
                     .map(|code| format!("http_status {code}"))
                     .unwrap_or_else(|| "http_status".to_string()),
-                "crawl4ai_unavailable" => "crawl4ai unavailable".to_string(),
-                "crawl4ai_auth_failed" => "auth_failed".to_string(),
+                "crw_unavailable" => "crw unavailable".to_string(),
+                "crw_auth_failed" => "auth_failed".to_string(),
+                "crw_timeout" => "crw timeout".to_string(),
                 "timeout" => host
                     .map(|host| format!("timeout at {host}"))
                     .unwrap_or_else(|| "timeout".to_string()),
@@ -1626,30 +1573,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_events_persists_crawl_display_payload_for_truncated_output() {
+    async fn collect_events_persists_web_crawler_display_payload_for_truncated_output() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let markdown = format!("# Title\n\n{}", "body ".repeat(1_200));
-        let crawl_stdout = serde_json::json!({
-            "provider": "crawl4ai_markdown",
-            "url": "https://arxiv.org/abs/2602.10604",
-            "final_url": "https://arxiv.org/abs/2602.10604",
-            "status_code": 200,
-            "markdown_kind": "markdown",
-            "markdown": markdown,
-            "truncated": false,
-            "chars": 6_009,
-            "elapsed_ms": 2936,
-            "fresh": false
-        })
-        .to_string();
         let output = serde_json::json!({
             "tool_call_id": "call-crawl",
-            "tool_name": "crawl4ai_markdown",
+            "tool_name": "web_crawler",
             "status": "success",
             "success": true,
             "duration_ms": 2968,
-            "stdout": { "binary": false, "bytes_captured": crawl_stdout.len(), "bytes_total_known": crawl_stdout.len(), "text": crawl_stdout, "truncated": false },
+            "structured_payload": {
+            "provider": "web_crawler",
+            "backend": "crw_scrape",
+            "primary_backend": "webfetch_md",
+            "fallback_backend": "crw_scrape",
+            "fallback_reason": "webfetch http_status 403",
+            "url": "https://arxiv.org/abs/2602.10604",
+            "final_url": "https://arxiv.org/abs/2602.10604",
+            "status_code": 200,
+            "markdown": markdown,
+            "truncated": false,
+            "chars": 6_009,
+            "elapsed_ms": 2936
+            },
+            "stdout": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
             "stderr": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
             "error_message": null,
             "timeout_reason": null,
@@ -1662,7 +1610,7 @@ mod tests {
         tx.send(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
             source: AgentEventSource::Root,
-            name: "crawl4ai_markdown".to_string(),
+            name: "web_crawler".to_string(),
             output,
             success: true,
         })
@@ -1687,7 +1635,8 @@ mod tests {
         let tool_result = &result.persisted_events[0];
         assert!(tool_result.truncated);
         let display = &tool_result.payload["display_payload"];
-        assert_eq!(display["provider"], "crawl4ai_markdown");
+        assert_eq!(display["provider"], "web_crawler");
+        assert_eq!(display["backend"], "crw_scrape");
         assert_eq!(display["final_url"], "https://arxiv.org/abs/2602.10604");
         assert_eq!(display["chars"], 6_009);
         assert!(
@@ -2043,7 +1992,7 @@ mod tests {
         tx.send(AgentEvent::ToolCall {
             id: "tool-a".to_string(),
             source: AgentEventSource::Root,
-            name: "searxng_search".to_string(),
+            name: "web_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         })
@@ -2052,7 +2001,7 @@ mod tests {
         tx.send(AgentEvent::ToolCall {
             id: "tool-b".to_string(),
             source: AgentEventSource::Root,
-            name: "searxng_search".to_string(),
+            name: "web_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         })
@@ -2061,7 +2010,7 @@ mod tests {
         tx.send(AgentEvent::ToolResult {
             id: "tool-b".to_string(),
             source: AgentEventSource::Root,
-            name: "searxng_search".to_string(),
+            name: "web_search".to_string(),
             output: "result2".to_string(),
             success: true,
         })
@@ -2070,7 +2019,7 @@ mod tests {
         tx.send(AgentEvent::ToolResult {
             id: "tool-a".to_string(),
             source: AgentEventSource::Root,
-            name: "searxng_search".to_string(),
+            name: "web_search".to_string(),
             output: "result1".to_string(),
             success: false,
         })
