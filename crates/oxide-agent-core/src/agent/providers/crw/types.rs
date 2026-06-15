@@ -72,19 +72,36 @@ fn search_results_from_value(value: &serde_json::Value) -> Option<Vec<CrwSearchR
             return serde_json::from_value(results.clone()).ok();
         }
         if let Some(grouped) = results.as_object() {
-            let mut flattened = Vec::new();
-            for entries in grouped.values() {
-                if let Ok(mut parsed) =
-                    serde_json::from_value::<Vec<CrwSearchResult>>(entries.clone())
-                {
-                    flattened.append(&mut parsed);
-                }
-            }
-            return Some(flattened);
+            return Some(flatten_search_result_groups(grouped));
         }
     }
 
-    None
+    let flattened = flatten_search_result_groups(object);
+    if flattened.is_empty() {
+        None
+    } else {
+        Some(flattened)
+    }
+}
+
+fn flatten_search_result_groups(
+    grouped: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<CrwSearchResult> {
+    let mut flattened = Vec::new();
+    for entries in grouped.values() {
+        if let Ok(mut parsed) = serde_json::from_value::<Vec<CrwSearchResult>>(entries.clone()) {
+            flattened.append(&mut parsed);
+            continue;
+        }
+
+        if let Some(nested_results) = entries.get("results")
+            && let Ok(mut parsed) =
+                serde_json::from_value::<Vec<CrwSearchResult>>(nested_results.clone())
+        {
+            flattened.append(&mut parsed);
+        }
+    }
+    flattened
 }
 
 /// Single search result entry.
@@ -324,6 +341,43 @@ mod tests {
         assert_eq!(resp.data.len(), 2);
         assert!(resp.data.iter().any(|result| result.title == "Web"));
         assert!(resp.data.iter().any(|result| result.title == "News"));
+    }
+
+    #[test]
+    fn search_response_deserializes_direct_grouped_data_format() {
+        let raw = serde_json::json!({
+            "success": true,
+            "data": {
+                "web": [
+                    {"title": "Speedtest", "url": "https://example.com/speed", "snippet": "Montenegro speed"}
+                ],
+                "news": [
+                    {"title": "Visa", "url": "https://example.com/visa", "snippet": "Digital nomad visa"}
+                ]
+            }
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(resp.data.len(), 2);
+        assert!(resp.data.iter().any(|result| result.title == "Speedtest"));
+        assert!(resp.data.iter().any(|result| result.title == "Visa"));
+    }
+
+    #[test]
+    fn search_response_deserializes_nested_grouped_data_format() {
+        let raw = serde_json::json!({
+            "success": true,
+            "data": {
+                "web": {
+                    "results": [
+                        {"title": "Nested", "url": "https://example.com/nested", "snippet": "Nested snippet"}
+                    ]
+                }
+            }
+        });
+        let resp: CrwSearchResponse = serde_json::from_value(raw).expect("deserialize");
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].title, "Nested");
+        assert_eq!(resp.data[0].content, "Nested snippet");
     }
 
     #[test]
