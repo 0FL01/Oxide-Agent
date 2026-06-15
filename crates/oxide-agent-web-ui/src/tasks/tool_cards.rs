@@ -32,21 +32,17 @@ pub(super) fn ToolCard(
             view! { <ShellToolCard call=call result=result output=output_json /> }.into_any()
         }
         "web_search" | "tavily_search" => view! {
-            <SearchToolCard label="Web search" preview_query_first=false call=call result=result output=output_json />
+            <SearchToolCard label="Web Search" preview_query_first=false call=call result=result output=output_json />
         }
         .into_any(),
         "brave_search" => view! {
             <SearchToolCard label="Brave Search" preview_query_first=true call=call result=result output=output_json />
         }
         .into_any(),
-        "searxng_search" => view! {
-            <SearchToolCard label="SearXNG" preview_query_first=false call=call result=result output=output_json />
-        }
-        .into_any(),
         "web_markdown" => {
             view! { <WebMarkdownToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "crawl4ai_markdown" | "web_crawler" => {
+        "web_crawler" => {
             view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
         }
         "spawn_sub_agents" => {
@@ -291,7 +287,7 @@ fn SearchToolCard(
     }
 }
 
-// ── Crawl Tool Card (crawl4ai_markdown) ───────────────────────────────────
+// ── Crawl Tool Card (web_crawler) ─────────────────────────────────────────
 
 /// Extract hostname (with port) from a URL string for compact preview.
 fn host_from_url_str(raw: &str) -> Option<String> {
@@ -482,7 +478,7 @@ fn CrawlToolCard(
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
 
-    // Parse the inner JSON from stdout.text (crawl4ai success payload). Large
+    // Parse the inner JSON from stdout.text (web_crawler success payload). Large
     // tool outputs are truncated in output_preview, so fall back to the compact
     // display_payload persisted by the web transport.
     let stdout_text = output.as_ref().and_then(|v| stream_text(v, "stdout"));
@@ -495,7 +491,7 @@ fn CrawlToolCard(
         .filter(|payload| {
             matches!(
                 payload.get("provider").and_then(Value::as_str),
-                Some("crawl4ai_markdown" | "web_crawler")
+                Some("web_crawler")
             )
         })
         .cloned();
@@ -1563,7 +1559,7 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                         .unwrap_or_else(|| other.to_string()),
                 })
             }
-            Some("crawl4ai_markdown" | "web_crawler") => {
+            Some("web_crawler") => {
                 let host = payload.get("host").and_then(Value::as_str);
                 let status_code = payload.get("status_code").and_then(Value::as_i64);
 
@@ -1571,12 +1567,12 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                     "anti_bot" => host
                         .map(|host| format!("anti_bot at {host}"))
                         .unwrap_or_else(|| "anti_bot".to_string()),
-                    "crawl4ai_http_status" => status_code
+                    "crw_http_status" | "http_status" => status_code
                         .map(|code| format!("http_status {code}"))
                         .unwrap_or_else(|| "http_status".to_string()),
-                    "crawl4ai_unavailable" => "crawl4ai unavailable".to_string(),
-                    "crawl4ai_auth_failed" => "auth_failed".to_string(),
-                    "timeout" => host
+                    "crw_unavailable" => "crw unavailable".to_string(),
+                    "crw_auth_failed" => "auth_failed".to_string(),
+                    "crw_timeout" | "timeout" => host
                         .map(|host| format!("timeout at {host}"))
                         .unwrap_or_else(|| "timeout".to_string()),
                     "dns_failed" => host

@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 14:10 UTC+3
+Last updated: 2026-06-15 14:35 UTC+3
 
 ## Objective
 
@@ -336,8 +336,8 @@ Failure normalization:
   - Source: migration spec sections for session, prompt composer, thoughts, UI, web transport tests.
   - Acceptance: user-visible messages/cards/snapshots no longer mention Crawl4AI/SearXNG as active tools; web events handle CRW/web_crawler payloads.
   - Evidence required: focused core/web/web-ui tests; snapshot review.
-  - Status: in progress (core guidance/thoughts and web transport verified; web UI later)
-  - Evidence collected: Core prompt/workflow guidance updated in `composer.rs`, effort prompt guidance in `executor/execution.rs`, thought labels in `thoughts.rs`, Brave fallback guidance in `brave_search/*`, and failure summaries in `tool_failure_summary.rs` to use `web_search`, `web_crawler`, and `web_markdown` without active SearXNG/Crawl4AI tool names. Web transport fixtures updated to `web_search` and `web_crawler` with `crw_scrape` backend display payloads. Focused tests pass: composer 19 passed, thoughts 8 passed, tool_failure_summary 5 passed, brave_search 26 passed, web_transport 21 passed.
+  - Status: verified for active core/web/UI paths (final repo-wide stale-reference sweep in Checkpoint 9)
+  - Evidence collected: Core prompt/workflow guidance updated in `composer.rs`, effort prompt guidance in `executor/execution.rs`, thought labels in `thoughts.rs`, Brave fallback guidance in `brave_search/*`, and failure summaries in `tool_failure_summary.rs` to use `web_search`, `web_crawler`, and `web_markdown` without active SearXNG/Crawl4AI tool names. Web transport fixtures updated to `web_search` and `web_crawler` with `crw_scrape` backend display payloads. Web UI `tool_cards.rs` now maps `web_search` to generic "Web Search", maps only `web_crawler` to the crawl card, accepts `web_crawler` display payloads, and summarizes `crw_http_status`, `crw_unavailable`, `crw_auth_failed`, and `crw_timeout`. Focused tests/checks pass: composer 19 passed, thoughts 8 passed, tool_failure_summary 5 passed, brave_search 26 passed, web_transport 21 passed, `cargo check -p oxide-agent-web-ui` OK, `cargo test -p oxide-agent-web-ui` 5 passed.
 
 - G12: Docker Compose uses one CRW service instead of SearXNG + Crawl4AI.
   - Source: migration spec compose/env sections.
@@ -408,8 +408,8 @@ Failure normalization:
   - Source: migration spec snapshot/static guard notes.
   - Acceptance: snapshots/fixtures reflect `web_search` and CRW/web_crawler payloads; static guards no longer expect `SearxngProvider::new`.
   - Evidence required: snapshot test commands and diff review.
-  - Status: in progress (static guards and web transport fixtures updated; snapshots later)
-  - Evidence collected: `tool_runtime_static_guards.rs` no longer expects `SearxngProvider::new`; delegation guard now checks `CrwProvider::new` is not constructed directly in delegation. Web transport fixtures now use `web_search` and `web_crawler` + `crw_scrape` payloads. Stale false-positive static guard paths/patterns were narrowed to current architecture. `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local web_transport` → 21 passed.
+  - Status: in progress (static guards, web transport fixtures, and UI parsing updated; snapshots later)
+  - Evidence collected: `tool_runtime_static_guards.rs` no longer expects `SearxngProvider::new`; delegation guard now checks `CrwProvider::new` is not constructed directly in delegation. Web transport fixtures now use `web_search` and `web_crawler` + `crw_scrape` payloads. Web UI `tool_cards.rs` no longer contains `SearXNG`, `Crawl4AI`, `searxng`, or `crawl4ai` active parsing/label strings. Stale false-positive static guard paths/patterns were narrowed to current architecture. `cargo test -p oxide-agent-core --no-default-features --features profile-full --test tool_runtime_static_guards` → 19 passed. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local web_transport` → 21 passed. `cargo test -p oxide-agent-web-ui` → 5 passed.
 
 - V3: Compose configs are syntactically valid.
   - Source: migration spec compose section.
@@ -914,6 +914,16 @@ Done when:
     - `rg "searxng_search|crawl4ai_markdown|SearXNG|Crawl4AI|crawl4ai|searxng" crates/oxide-agent-transport-web/src` → no matches.
   - Audit IDs updated: G10 verified, G11 in progress (web transport complete; web UI later), V2 in progress (web transport fixtures), N3 remains verified.
   - Next: Checkpoint 6 — migrate web UI tool cards and error parsing.
+
+- 2026-06-15 Checkpoint 6 complete: Web UI tool cards migrated to generic CRW-era search/crawler labels and errors.
+  - Changed: `crates/oxide-agent-web-ui/src/tasks/tool_cards.rs` (removed `searxng_search` and `crawl4ai_markdown` card branches, renamed Web Search label, restricted crawl card to `web_crawler`, updated display-payload parsing and failure summaries for `crw_*` error kinds).
+  - Commands run:
+    - `cargo check -p oxide-agent-web-ui` → OK.
+    - `cargo test -p oxide-agent-web-ui` → 5 passed.
+    - `cargo fmt --all -- --check` → clean.
+    - `rg "SearXNG|Crawl4AI|crawl4ai|searxng" crates/oxide-agent-web-ui/src/tasks/tool_cards.rs` → no matches.
+  - Audit IDs updated: G11 verified for active core/web/UI paths, V2 in progress (UI parsing updated; final snapshots later).
+  - Next: Checkpoint 7 — migrate Docker Compose and `.env.example`.
 
 ## Risks and Blockers
 
