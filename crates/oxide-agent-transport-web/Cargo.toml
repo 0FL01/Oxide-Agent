@@ -43,7 +43,6 @@ moka = { version = "0.12", features = ["future"] }
 
 [features]
 default = []
-profile-lite = ["oxide-agent-core/profile-lite", "storage-sqlx"]
 profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
 profile-web-embedded-opencode-local = [
     "oxide-agent-core/profile-web-embedded-opencode-local",

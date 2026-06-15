@@ -4,7 +4,7 @@ use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::storage::MockStorageProvider;
-// Feature-gated tests below may not consume both helpers in every profile (e.g. profile-lite).
+// Feature-gated tests below may not consume both helpers in every profile (e.g. profile-search-only).
 #[allow(unused_imports)]
 use crate::testing::{test_remove_env, test_set_env};
 #[cfg(feature = "tool-sandbox-exec")]

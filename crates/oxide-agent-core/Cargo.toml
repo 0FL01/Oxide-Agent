@@ -152,14 +152,6 @@ profile-web-embedded-opencode-local = [
     "tool-sandbox-recreate",
     "sandbox-backend-sandboxd-client",
 ]
-profile-lite = [
-    "transport-telegram",
-    "storage-sqlx",
-    "llm-opencode-go",
-    "tool-todos",
-    "tool-webfetch-md",
-    "tool-reminder",
-]
 profile-search-only = [
     "transport-telegram",
     "storage-sqlx",

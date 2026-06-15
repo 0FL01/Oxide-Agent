@@ -42,11 +42,6 @@ profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-sqlx",
 ]
-profile-lite = [
-    "transport-telegram",
-    "oxide-agent-core/profile-lite",
-    "storage-sqlx",
-]
 profile-search-only = [
     "transport-telegram",
     "oxide-agent-core/profile-search-only",

@@ -561,10 +561,11 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     allow(dead_code, unused_imports)
 )]
 mod tests {
+    #[cfg(feature = "llm-openai-base")]
+    use super::canonical_route_provider;
     use super::{
-        build_configured_providers, canonical_route_provider, provider_capabilities,
-        provider_capabilities_for_model, provider_key, provider_missing_route_config_message,
-        provider_module_id,
+        build_configured_providers, provider_capabilities, provider_capabilities_for_model,
+        provider_key, provider_missing_route_config_message, provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig, test_env_mutex};
     use crate::testing::{test_remove_env, test_set_env};

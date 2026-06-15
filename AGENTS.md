@@ -52,7 +52,7 @@ Default branch: `dev`.
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
 - Build and runtime composition are capability-module based. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
-- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-full`.
+- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-search-only`, `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
 - Topic-aware and thread-aware by default for agent mode and manager functions.
@@ -133,7 +133,7 @@ Default branch: `dev`.
 - `cargo check` for quick verification; `cargo build` only for final binary.
 - Embedded: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
 - Full: `cargo build --release --no-default-features --features profile-full`.
-- Other profiles: `profile-lite`, `profile-search-only`, `profile-web-embedded-opencode-local`.
+- Other profiles: `profile-search-only`, `profile-web-embedded-opencode-local`.
 - Capability output (swap `<PROFILE>` and `<profile-name>`):
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --compiled --json`
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --enabled --json`
