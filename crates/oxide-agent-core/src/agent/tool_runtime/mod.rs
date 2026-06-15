@@ -34,8 +34,6 @@ pub use modules::AgentsMdToolModule;
 pub use modules::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
-#[cfg(feature = "tool-crawl4ai-markdown")]
-pub use modules::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-crw")]
 pub use modules::CrwSearchToolModule;
 #[cfg(feature = "tool-delegation")]
@@ -66,8 +64,6 @@ pub use modules::SandboxExecToolModule;
 pub use modules::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 pub use modules::SandboxRecreateToolModule;
-#[cfg(feature = "tool-searxng")]
-pub use modules::SearxngToolModule;
 #[cfg(feature = "tool-tts-silero")]
 pub use modules::SileroTtsToolModule;
 #[cfg(feature = "integration-ssh-mcp")]

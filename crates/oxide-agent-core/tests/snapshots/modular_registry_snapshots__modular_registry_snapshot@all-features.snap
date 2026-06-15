@@ -676,17 +676,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-crawl4ai-markdown",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/crawl4ai-markdown",
-        "kind": "search",
-        "provides": [
-          "tool/crawl4ai-markdown"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-delegation",
         "config_properties": [],
         "conflicts": [],
@@ -812,17 +801,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "kind": "any-of"
           }
         ]
-      },
-      {
-        "cargo_feature": "tool-searxng",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/searxng",
-        "kind": "search",
-        "provides": [
-          "tool/searxng-search"
-        ],
-        "requires": []
       },
       {
         "cargo_feature": "tool-stack-logs",
@@ -1284,20 +1262,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/brave-search",
       "kind": "search",
       "cargo_feature": "tool-brave-search",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/crawl4ai-markdown",
-      "kind": "search",
-      "cargo_feature": "tool-crawl4ai-markdown",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
       "config_env": [],
       "requires_capabilities": []
     },

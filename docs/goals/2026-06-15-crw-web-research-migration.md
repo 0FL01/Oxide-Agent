@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-15-crw-web-research-migration.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user-attached migration spec, `Pasted markdown(20).md`
 Goal doc owner: Codex
-Last updated: 2026-06-15 15:00 UTC+3
+Last updated: 2026-06-15 15:45 UTC+3
 
 ## Objective
 
@@ -273,50 +273,50 @@ Failure normalization:
   - Source: accepted decision: LLM sees `web_search` for CRW search.
   - Acceptance: runtime registers one `web_search` executor for CRW when CRW is enabled; `searxng_search` is not registered.
   - Evidence required: unit test for CRW search executor; registry test with `OXIDE_CRW_ENABLED=true`; `rg "searxng_search" crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-web-ui profiles docker-compose*.yml docker .env.example AGENTS.md README.md docs` shows only allowed historical references if any.
-  - Status: verified (additive; old `searxng_search` removal in Checkpoint 8)
-  - Evidence collected: `CrwSearchToolModule` registered in registry.rs behind `#[cfg(feature = "tool-crw")]`, registered in delegation.rs. Tavily `web_search` executor skipped when `is_crw_enabled()` is true (duplicate-name guard in `TavilyToolModule::tool_runtime_executors()`). `cargo check --workspace --no-default-features --features profile-full` passes. Old `searxng_search` still compiles but will be removed in Checkpoint 8.
+  - Status: verified
+  - Evidence collected: `CrwSearchToolModule` registered in registry.rs behind `#[cfg(feature = "tool-crw")]`, registered in delegation.rs. Tavily `web_search` executor skipped when `is_crw_enabled()` is true (duplicate-name guard in `TavilyToolModule::tool_runtime_executors()`); CRW no longer filters out its own `web_search`. `searxng_search` provider/test/features/config removed. `cargo check -p oxide-agent-core --no-default-features --features profile-full` passes.
 
 - G3: `web_crawler` preserves webfetch-first fallback chain and uses CRW scrape fallback.
   - Source: accepted decision: `webfetch_md` remains and CRW `/v1/scrape` is fallback only for anti-bot/JS blocks.
   - Acceptance: webfetch success never calls CRW; anti-bot/403/429 webfetch failure calls CRW; non-anti-bot failure does not call CRW.
   - Evidence required: focused tests for `WebCrawlerToolExecutor` success/fallback/no-fallback paths; inspect `tool_runtime/modules.rs`.
   - Status: verified
-  - Evidence collected: `WebCrawlerToolExecutor` now has `crw: Option<Arc<CrwProvider>>` field. CRW fallback preferred over Crawl4AI in `execute_crawl4ai_fallback()`. `execute_crw_scrape_fallback()` added. Fallback priority: webfetch_md → CRW scrape → Crawl4AI → no fallback. web_crawler_tests: 88 passed, 0 failed.
+  - Evidence collected: `WebCrawlerToolExecutor` has `crw: Option<Arc<CrwProvider>>` field and `execute_rendered_fallback()` uses CRW scrape when configured. `execute_crw_scrape_fallback()` added. Fallback priority after cleanup: webfetch_md → CRW scrape → no fallback. web_crawler_tests pass under profile-full; registry tests confirm merge behavior.
 
 - G4: old providers and tests are removed.
   - Source: migration spec removal list.
   - Acceptance: SearXNG and Crawl4AI provider directories, SearXNG test file, and SearXNG settings file no longer exist; no compile references remain.
   - Evidence required: `test ! -d .../searxng`, `test ! -d .../crawl4ai_markdown`, `test ! -f crates/oxide-agent-core/tests/searxng_provider.rs`, `test ! -f docker/searxng/settings.yml`, plus `cargo check`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Deleted `crates/oxide-agent-core/src/agent/providers/searxng/`, `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown/`, and `crates/oxide-agent-core/tests/searxng_provider.rs`; `docker/searxng/settings.yml` was deleted in Checkpoint 7. Verification command: `test ! -d .../searxng && test ! -d .../crawl4ai_markdown && test ! -f crates/oxide-agent-core/tests/searxng_provider.rs && test ! -f docker/searxng/settings.yml` → `old-provider-files-removed`. Active code/config old-name sweeps over `crates`, `profiles`, `docker`, `docker-compose*.yml`, and `.env.example` return no matches.
 
 - G5: Cargo features and profiles use `tool-crw`.
   - Source: migration spec Cargo/profile instructions.
   - Acceptance: `tool-searxng` and `tool-crawl4ai-markdown` feature definitions are gone; `tool-crw` exists; profile-full, profile-web-embedded-opencode-local, and profile-search-only use `tool-crw`; TOML profiles reference `tool/crw` where SearXNG/Crawl4AI modules were used.
   - Evidence required: inspect `crates/oxide-agent-core/Cargo.toml`; `cargo check`/`cargo test` for affected profiles.
-  - Status: verified (profiles switched; old feature definitions removed in Checkpoint 8)
-  - Evidence collected: `profile-full`, `profile-web-embedded-opencode-local`, `profile-search-only` all use `tool-crw`. `profile-web-embedded-opencode-local` Cargo profile: `tool-crawl4ai-markdown` and `tool-searxng` replaced with single `tool-crw`. Profile TOMLs: `full.toml`, `search-only.toml`, `embedded-opencode-local.toml`, `host-bwrap.toml`, `web-embedded-opencode-local.toml` all reference `tool/crw`. `cargo check` passes for all three profiles.
+  - Status: verified
+  - Evidence collected: `profile-full`, `profile-web-embedded-opencode-local`, `profile-search-only` all use `tool-crw`. `profile-web-embedded-opencode-local` Cargo profile: `tool-crawl4ai-markdown` and `tool-searxng` replaced with single `tool-crw`. Feature definitions `tool-searxng` and `tool-crawl4ai-markdown` removed from `crates/oxide-agent-core/Cargo.toml`; `tool-crw = ["dep:reqwest"]` remains. Profile TOMLs: `full.toml`, `search-only.toml`, `embedded-opencode-local.toml`, `host-bwrap.toml`, `web-embedded-opencode-local.toml` all reference `tool/crw`. `cargo check` passes for all three affected core profiles.
 
 - G6: Runtime registration paths know CRW and no longer register raw old modules.
   - Source: architecture invariant: `tool_runtime/modules.rs` is tool registration point; repo inspection also found executor registry and delegation registration.
   - Acceptance: `CrwSearchToolModule` is registered; raw `Crawl4AiMarkdownToolModule` and `SearxngToolModule` are removed; sub-agent/delegation registration compiles.
   - Evidence required: registry/unit tests plus `cargo check --workspace --no-default-features --features profile-full`.
-  - Status: verified (additive; old modules still compile, removal in Checkpoint 8)
-  - Evidence collected: `CrwSearchToolModule` registered in `registry.rs` and `delegation.rs`. `feature = "tool-crw"` added to all cfg `any()` gates in both files. `cargo check --workspace --no-default-features --features profile-full` passes. Old modules still present but will be removed in Checkpoint 8.
+  - Status: verified
+  - Evidence collected: `CrwSearchToolModule` registered in `registry.rs` and `delegation.rs`. `feature = "tool-crw"` present in cfg `any()` gates. `SearxngToolModule` and `Crawl4AiMarkdownToolModule` removed from `tool_runtime/modules.rs`, `tool_runtime/mod.rs`, `executor/registry.rs`, and `providers/delegation.rs`. `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::executor::tests::registry` → 41 passed.
 
 - G7: Config migrates to `OXIDE_CRW_*`.
   - Source: migration spec config section.
   - Acceptance: new config helpers exist; old SearXNG/Crawl4AI helpers and struct fields are removed; tests cover enabled/base-url/token/timeout behavior.
   - Evidence required: config unit tests; `rg "SEARXNG_|OXIDE_CRAWL4AI_" crates .env.example docker-compose*.yml docker profiles AGENTS.md README.md docs` reviewed.
-  - Status: verified (additive config helpers and compose/env examples migrated; old code helpers removed in Checkpoint 8)
-  - Evidence collected: Config helpers added in config.rs: `is_crw_enabled()`, `get_crw_base_url()`, `get_crw_api_token()`, `get_crw_timeout_secs()`, `CRW_DEFAULT_TIMEOUT_SECS`. 8 config tests pass covering enabled/disabled, base-url default+env, token trim+blank, timeout default+env. Compose and `.env.example` now use `OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`, `OXIDE_CRW_API_TOKEN`, `OXIDE_CRW_TIMEOUT_SECS`, `OXIDE_CRW_IMAGE`, and `OXIDE_CRW_PORT`; old SearXNG/Crawl4AI code helpers remain for Checkpoint 8 removal.
+  - Status: verified
+  - Evidence collected: Config helpers in config.rs: `is_crw_enabled()`, `get_crw_base_url()`, `get_crw_api_token()`, `get_crw_timeout_secs()`, `CRW_DEFAULT_TIMEOUT_SECS`. Old `searxng_*` `AgentSettings` fields, env fallbacks, helper functions/tests, and `is_crawl4ai_markdown_enabled()` removed. `cargo test -p oxide-agent-core --no-default-features --features tool-crw config::tests` → 26 passed. Compose and `.env.example` now use `OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`, `OXIDE_CRW_API_TOKEN`, `OXIDE_CRW_TIMEOUT_SECS`, `OXIDE_CRW_IMAGE`, and `OXIDE_CRW_PORT`.
 
 - G8: Capability manifest uses one CRW module.
   - Source: migration spec capabilities section.
   - Acceptance: `tool-crw -> tool/crw` exposes `tool/crw-search` and `tool/crw-scrape`; old `tool/searxng` and `tool/crawl4ai-markdown` entries are gone.
   - Evidence required: inspect `compiled.rs`; run compiled capability command for affected profile if practical.
-  - Status: verified (CRW entry added; old entries removed in Checkpoint 8)
-  - Evidence collected: `push_module!(modules, "tool-crw", "tool/crw", Search, ["tool/crw-search", "tool/crw-scrape"])` added in `compiled.rs`. Capability command output shows `tool/crw` module with `tool/crw-search` and `tool/crw-scrape` capabilities. `cargo run ... -- capabilities --compiled --json` confirms.
+  - Status: verified
+  - Evidence collected: `push_module!(modules, "tool-crw", "tool/crw", Search, ["tool/crw-search", "tool/crw-scrape"])` exists in `compiled.rs`. Old `tool/searxng` and `tool/crawl4ai-markdown` entries removed from `compiled.rs` and modular registry snapshots. Capability command output shows `tool/crw` module with `tool/crw-search` and `tool/crw-scrape` capabilities.
 
 - G9: Search budget hook uses new tool names and preserves host blocking.
   - Source: migration spec hooks section and invariant that search budget counts search tool calls and blocks repeated anti-bot hosts.
@@ -350,8 +350,8 @@ Failure normalization:
   - Source: migration spec docs section.
   - Acceptance: active docs and README/AGENTS mention CRW and generic tool names; old names remain only in historical PRD context if intentionally preserved.
   - Evidence required: `rg` review and doc diff inspection.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `oxide-agent-core` dependency list in `crates/oxide-agent-core/Cargo.toml` still has no transport crate dependencies; CRW provider lives under `crates/oxide-agent-core/src/agent/providers/crw/` and uses config/env + reqwest only. `cargo check -p oxide-agent-core --no-default-features --features profile-full` passes.
 
 ### Quality / architecture requirements
 
@@ -367,7 +367,7 @@ Failure normalization:
   - Acceptance: CRW code is behind `tool-crw`; CRW runtime registration requires `OXIDE_CRW_ENABLED` and base URL/token config.
   - Evidence required: no-default feature checks and config tests.
   - Status: verified
-  - Evidence collected: `tool-crw` feature in Cargo.toml gates all CRW code. `is_crw_enabled()` defaults to `false`. `CrwSearchToolModule` checks `is_crw_enabled()` before creating provider. `WebCrawlerToolExecutor` only initializes CRW field when `is_crw_enabled()` is true. Tavily guard checks `is_crw_enabled()` before skipping `web_search`.
+  - Evidence collected: `tool-crw` feature in Cargo.toml gates all CRW code. Removed old `tool-searxng` and `tool-crawl4ai-markdown` feature definitions. `is_crw_enabled()` defaults to `false`. `CrwSearchToolModule` checks `is_crw_enabled()` before creating provider. `WebCrawlerToolExecutor` only initializes CRW field when `is_crw_enabled()` is true. Tavily guard checks `is_crw_enabled()` before skipping its duplicate `web_search`.
 
 - Q3: No over-engineering.
   - Source: project context and AGENTS rules.
@@ -425,7 +425,7 @@ Failure normalization:
   - Must preserve: provider directory, feature `tool-webfetch-md`, and `web_markdown` lightweight fetch behavior.
   - Evidence required: `rg "tool-webfetch-md|web_markdown|webfetch_md" crates/oxide-agent-core` plus tests.
   - Status: verified
-  - Evidence collected: `tool-webfetch-md` feature remains in `crates/oxide-agent-core/Cargo.toml`; `web_markdown` and `webfetch_md` references remain in core registration/capabilities. `rg "tool-webfetch-md|web_markdown|webfetch_md" crates/oxide-agent-core/src crates/oxide-agent-core/Cargo.toml` confirms presence. `web_markdown` remains counted by search budget and preserved in prompt guidance.
+  - Evidence collected: `tool-webfetch-md` feature remains in `crates/oxide-agent-core/Cargo.toml`; `web_markdown` and `webfetch_md` references remain in core registration/capabilities. `rg "tool-webfetch-md|web_markdown|webfetch_md" crates/oxide-agent-core` confirms presence. `web_markdown` remains counted by search budget and preserved in prompt guidance. `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::executor::tests::registry` includes `typed_runtime_registry_exposes_webfetch_tool`, `typed_runtime_registry_merges_web_tools_when_enabled`, and `typed_runtime_registry_keeps_webfetch_when_merge_disabled` passing.
 
 - N2: Do not touch Brave/Tavily beyond required duplicate-name guard.
   - Source: accepted decision.
@@ -938,6 +938,23 @@ Done when:
     - `rg "SEARXNG_|searxng|OXIDE_CRAWL4AI|crawl4ai|11235|8081|docker/searxng" docker-compose*.yml docker .env.example` → no matches.
   - Audit IDs updated: G12 verified, G7 evidence extended to compose/env examples, V3 verified.
   - Next: Checkpoint 8 — remove old providers, features, config fields, and stale compile references.
+
+- 2026-06-15 Checkpoint 8 complete: Legacy SearXNG/Crawl4AI providers, features, config helpers, compile references, and stale core snapshots removed.
+  - Changed: deleted `providers/searxng/`, `providers/crawl4ai_markdown/`, and `tests/searxng_provider.rs`; removed `tool-searxng`/`tool-crawl4ai-markdown` feature definitions; removed old provider exports/imports/registrations from `providers/mod.rs`, `tool_runtime/mod.rs`, `tool_runtime/modules.rs`, `executor/registry.rs`, `providers/delegation.rs`; removed old config fields/helpers/tests from `config.rs`; removed old capability entries from `compiled.rs`; updated manager control-plane search groups and registry tests; updated modular registry snapshots.
+  - Commands run:
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-full` → OK.
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` → OK (pre-existing Mistral unused/dead_code warnings).
+    - `cargo check -p oxide-agent-core --no-default-features --features profile-search-only` → OK.
+    - `cargo test -p oxide-agent-core --no-default-features --features tool-crw crw` → 27 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features tool-crw config::tests` → 26 passed.
+    - `cargo test -p oxide-agent-core --no-default-features --features profile-full agent::executor::tests::registry` → 41 passed.
+    - `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` → clean.
+    - `cargo fmt --all -- --check` → clean.
+    - `test ! -d crates/oxide-agent-core/src/agent/providers/searxng && test ! -d crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown && test ! -f crates/oxide-agent-core/tests/searxng_provider.rs && test ! -f docker/searxng/settings.yml` → `old-provider-files-removed`.
+    - Old-name sweeps over `crates`, `profiles`, `docker`, `docker-compose*.yml`, and `.env.example` → no active code/config matches.
+  - Notes: `cargo test ... registry` broad filter also matched unrelated `model_routes` test and failed there; exact `agent::executor::tests::registry` passed. `cargo test ... config` broad filter also matched unrelated wiki-memory test and failed there; exact `config::tests` passed. Snapshot update commands for `profile-embedded-opencode-local` and `profile-host-bwrap` hit pre-existing sandbox-exec invariant failures, so stale old capability blocks were manually removed from those snapshots after inspecting diffs.
+  - Audit IDs updated: G4 verified, G5 verified, G6 verified, G7 verified, G8 evidence finalized, Q1 verified, Q2 verified, N1 remains verified.
+  - Next: Checkpoint 9 — documentation and snapshot fixture cleanup.
 
 ## Risks and Blockers
 

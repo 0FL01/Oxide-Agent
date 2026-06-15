@@ -79,14 +79,6 @@ pub struct AgentSettings {
     pub brave_search_max_concurrent: Option<usize>,
     /// Process-wide Brave Search minimum delay between operations.
     pub brave_search_min_delay_ms: Option<u64>,
-    /// SearXNG base URL.
-    pub searxng_url: Option<String>,
-    /// Enable SearXNG tool provider registration.
-    pub searxng_enabled: Option<bool>,
-    /// SearXNG request timeout (seconds).
-    pub searxng_timeout_secs: Option<u64>,
-    /// Optional SearXNG Bearer token for protected deployments.
-    pub searxng_bearer_token: Option<String>,
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -763,26 +755,6 @@ impl AgentSettings {
 
         if self.brave_search_enabled.is_none() {
             self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
-        }
-
-        if self.searxng_url.is_none()
-            && let Ok(val) = std::env::var("SEARXNG_URL")
-            && !val.is_empty()
-        {
-            self.searxng_url = Some(val);
-        }
-
-        if self.searxng_enabled.is_none() {
-            self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
-        }
-
-        if self.searxng_bearer_token.is_none()
-            && let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN")
-        {
-            let val = val.trim();
-            if !val.is_empty() {
-                self.searxng_bearer_token = Some(val.to_string());
-            }
         }
     }
 
@@ -2068,72 +2040,6 @@ mod tests {
     }
 
     #[test]
-    fn searxng_enabled_flag_falls_back_to_url_presence() {
-        test_remove_env("SEARXNG_ENABLED");
-        test_set_env("SEARXNG_URL", "http://searxng:8080");
-
-        assert!(is_searxng_enabled());
-
-        test_remove_env("SEARXNG_URL");
-    }
-
-    #[test]
-    fn searxng_bearer_token_uses_only_non_empty_env() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("SEARXNG_BEARER_TOKEN");
-
-        assert_eq!(get_searxng_bearer_token(), None);
-
-        test_set_env("SEARXNG_BEARER_TOKEN", "  ");
-        assert_eq!(get_searxng_bearer_token(), None);
-
-        test_set_env("SEARXNG_BEARER_TOKEN", " test-token ");
-        assert_eq!(get_searxng_bearer_token(), Some("test-token".to_string()));
-
-        test_remove_env("SEARXNG_BEARER_TOKEN");
-    }
-
-    #[test]
-    fn searxng_rotation_engines_use_defaults_when_env_missing() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("SEARXNG_ROTATION_ENGINES");
-
-        assert_eq!(
-            get_searxng_rotation_engines(),
-            vec![
-                "brave".to_string(),
-                "bing".to_string(),
-                "qwant".to_string(),
-                "mojeek".to_string(),
-                "yandex".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn searxng_rotation_engines_parse_csv() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_set_env("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
-
-        assert_eq!(
-            get_searxng_rotation_engines(),
-            vec![
-                "bing".to_string(),
-                "qwant".to_string(),
-                "yandex".to_string()
-            ]
-        );
-
-        test_remove_env("SEARXNG_ROTATION_ENGINES");
-    }
-
-    #[test]
     fn crw_disabled_by_default() {
         let _guard = test_env_mutex()
             .lock()
@@ -2516,13 +2422,6 @@ pub const BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT: usize = 1;
 /// Default process-wide Brave Search minimum delay between operations.
 pub const BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS: u64 = 1_000;
 
-// Self-hosted SearXNG HTTP client configuration
-/// Default timeout for SearXNG requests (seconds)
-pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
-/// Default engines used for SearXNG rotation fallback.
-pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
-    &["brave", "bing", "qwant", "mojeek", "yandex"];
-
 /// Get Brave Search API key from env.
 ///
 /// Environment variable: `BRAVE_SEARCH_API_KEY`
@@ -2608,51 +2507,6 @@ pub fn get_brave_search_min_delay_ms() -> u64 {
     parse_env_u64("BRAVE_SEARCH_MIN_DELAY_MS").unwrap_or(BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS)
 }
 
-/// Get SearXNG base URL from env.
-///
-/// Environment variable: `SEARXNG_URL`
-#[must_use]
-pub fn get_searxng_url() -> Option<String> {
-    std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
-}
-
-/// Get optional SearXNG Bearer token from env.
-///
-/// Environment variable: `SEARXNG_BEARER_TOKEN`
-#[must_use]
-pub fn get_searxng_bearer_token() -> Option<String> {
-    std::env::var("SEARXNG_BEARER_TOKEN")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// Determine whether SearXNG tools should be registered.
-///
-/// Enabled when `SEARXNG_ENABLED` is truthy **or** when `SEARXNG_URL` is set.
-#[must_use]
-pub fn is_searxng_enabled() -> bool {
-    if let Some(enabled) = parse_optional_env_bool("SEARXNG_ENABLED") {
-        return enabled;
-    }
-    get_searxng_url().is_some()
-}
-
-/// Determine whether Crawl4AI markdown tools should be registered.
-///
-/// `OXIDE_CRAWL4AI_ENABLED=false` forces disable. Without an explicit flag,
-/// registration is enabled only when `OXIDE_CRAWL4AI_BASE_URL` is non-empty —
-/// the operator's signal that a Crawl4AI service is reachable.
-#[must_use]
-pub fn is_crawl4ai_markdown_enabled() -> bool {
-    if let Some(enabled) = parse_optional_env_bool("OXIDE_CRAWL4AI_ENABLED") {
-        return enabled;
-    }
-    std::env::var("OXIDE_CRAWL4AI_BASE_URL")
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
-}
-
 // CRW (web research) configuration
 /// Default timeout for CRW requests (seconds).
 pub const CRW_DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -2705,44 +2559,6 @@ pub fn get_crw_timeout_secs() -> u64 {
 #[must_use]
 pub fn is_web_crawler_merge_enabled() -> bool {
     parse_optional_env_bool("OXIDE_WEB_CRAWLER_MERGE").unwrap_or(false)
-}
-
-/// Get SearXNG timeout from env or default.
-///
-/// Environment variable: `SEARXNG_TIMEOUT_SECS`
-#[must_use]
-pub fn get_searxng_timeout() -> u64 {
-    std::env::var("SEARXNG_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(SEARXNG_DEFAULT_TIMEOUT_SECS)
-}
-
-/// Get preferred engines for SearXNG rotation from env or defaults.
-///
-/// Environment variable: `SEARXNG_ROTATION_ENGINES`
-/// Value format: comma-separated engine names, for example "bing,qwant,yandex".
-#[must_use]
-pub fn get_searxng_rotation_engines() -> Vec<String> {
-    let parsed = std::env::var("SEARXNG_ROTATION_ENGINES")
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if parsed.is_empty() {
-        SEARXNG_DEFAULT_ROTATION_ENGINES
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect()
-    } else {
-        parsed
-    }
 }
 
 /// Get max concurrent OpenCode Go requests from env or default.

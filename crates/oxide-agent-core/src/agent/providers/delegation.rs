@@ -43,16 +43,12 @@ use uuid::Uuid;
 
 #[cfg(feature = "tool-brave-search")]
 use crate::agent::tool_runtime::BraveSearchToolModule;
-#[cfg(feature = "tool-crawl4ai-markdown")]
-use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-crw")]
 use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
@@ -62,10 +58,8 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-fileops",
     feature = "tool-brave-search",
     feature = "tool-crw",
-    feature = "tool-searxng",
     feature = "tool-tavily",
     feature = "tool-todos",
-    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-ytdlp"
 ))]
@@ -83,7 +77,6 @@ const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
 const TOOL_CANCEL_SUB_AGENTS: &str = "cancel_sub_agents";
 const TOOL_WEB_CRAWLER: &str = "web_crawler";
 const TOOL_WEB_MARKDOWN: &str = "web_markdown";
-const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
 const SUB_AGENT_MAX_CONCURRENT_JOBS: usize = 5;
 const SUB_AGENT_DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
 const SUB_AGENT_MAX_WAIT_TIMEOUT_MS: u64 = 3_600_000;
@@ -716,10 +709,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             feature = "tool-sandbox-fileops",
             feature = "tool-brave-search",
             feature = "tool-crw",
-            feature = "tool-searxng",
             feature = "tool-tavily",
             feature = "tool-todos",
-            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
         )))]
@@ -743,9 +734,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(feature = "tool-webfetch-md")]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-crawl4ai-markdown")]
-        self.push_sub_agent_tool_module(&mut executors, &Crawl4AiMarkdownToolModule, &module_ctx);
-
         #[cfg(feature = "tool-tavily")]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
 
@@ -754,9 +742,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-crw")]
         self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
-
-        #[cfg(feature = "tool-searxng")]
-        self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
 
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
@@ -802,10 +787,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         feature = "tool-sandbox-fileops",
         feature = "tool-brave-search",
         feature = "tool-crw",
-        feature = "tool-searxng",
         feature = "tool-tavily",
         feature = "tool-todos",
-        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
@@ -834,11 +817,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(feature = "tool-brave-search"))]
         if crate::config::is_brave_search_enabled() {
             warn!("Brave Search enabled but feature not compiled in");
-        }
-
-        #[cfg(not(feature = "tool-searxng"))]
-        if crate::config::is_searxng_enabled() {
-            warn!("SearXNG enabled but feature not compiled in");
         }
 
         #[cfg(not(feature = "tool-crw"))]
@@ -889,13 +867,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             && available_tools.contains(TOOL_WEB_CRAWLER)
         {
             allowed.insert(TOOL_WEB_CRAWLER.to_string());
-        }
-
-        if requested.contains(TOOL_WEB_MARKDOWN)
-            && !blocked.contains(TOOL_CRAWL4AI_MARKDOWN)
-            && available_tools.contains(TOOL_CRAWL4AI_MARKDOWN)
-        {
-            allowed.insert(TOOL_CRAWL4AI_MARKDOWN.to_string());
         }
 
         if allowed.is_empty() {

@@ -332,9 +332,6 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Crawl4AI configuration must not affect webfetch_md registration.
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 
     let executor = build_executor();
@@ -346,29 +343,6 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(tool_names.contains("web_markdown"));
-}
-
-#[cfg(feature = "tool-crawl4ai-markdown")]
-#[test]
-fn typed_runtime_registry_exposes_crawl4ai_markdown_tool() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(tool_names.contains("crawl4ai_markdown"));
-
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
 }
 
 #[cfg(feature = "tool-ytdlp")]
@@ -396,64 +370,6 @@ fn typed_runtime_registry_exposes_ytdlp_tools() {
     }
 }
 
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-#[test]
-fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_configured() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(
-        tool_names.contains("crawl4ai_markdown"),
-        "crawl4ai_markdown should be registered when OXIDE_CRAWL4AI_BASE_URL is set"
-    );
-    assert!(
-        tool_names.contains("web_markdown"),
-        "web_markdown should remain registered when crawl4ai is configured"
-    );
-
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
-}
-
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-#[test]
-fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_unconfigured() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
-    test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(
-        tool_names.contains("web_markdown"),
-        "web_markdown should be registered when its feature is compiled"
-    );
-    assert!(
-        !tool_names.contains("crawl4ai_markdown"),
-        "crawl4ai_markdown must not be registered without OXIDE_CRAWL4AI_BASE_URL"
-    );
-}
-
 #[cfg(feature = "tool-webfetch-md")]
 #[test]
 fn typed_runtime_registry_merges_web_tools_when_enabled() {
@@ -461,8 +377,6 @@ fn typed_runtime_registry_merges_web_tools_when_enabled() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_set_env("OXIDE_WEB_CRAWLER_MERGE", "true");
-    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -474,21 +388,17 @@ fn typed_runtime_registry_merges_web_tools_when_enabled() {
 
     assert!(tool_names.contains("web_crawler"));
     assert!(!tool_names.contains("web_markdown"));
-    assert!(!tool_names.contains("crawl4ai_markdown"));
 
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
 }
 
 #[cfg(feature = "tool-webfetch-md")]
 #[test]
-fn typed_runtime_registry_merges_to_webfetch_only_when_crawl4ai_unconfigured() {
+fn typed_runtime_registry_keeps_webfetch_when_merge_disabled() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("OXIDE_WEB_CRAWLER_MERGE", "true");
-    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
-    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
+    test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 
     let executor = build_executor();
     let registry =
@@ -498,9 +408,8 @@ fn typed_runtime_registry_merges_to_webfetch_only_when_crawl4ai_unconfigured() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    assert!(tool_names.contains("web_crawler"));
-    assert!(!tool_names.contains("web_markdown"));
-    assert!(!tool_names.contains("crawl4ai_markdown"));
+    assert!(!tool_names.contains("web_crawler"));
+    assert!(tool_names.contains("web_markdown"));
 
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 }
@@ -638,30 +547,6 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
 
     assert!(!tool_names.contains("web_markdown"));
     assert!(tool_names.contains("write_todos"));
-}
-
-#[cfg(feature = "tool-crawl4ai-markdown")]
-#[test]
-fn typed_runtime_registry_skips_disabled_crawl4ai_markdown_module() {
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/crawl4ai-markdown".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("crawl4ai_markdown"));
 }
 
 #[cfg(feature = "tool-compression")]
@@ -916,41 +801,6 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
 
     test_remove_env("TAVILY_ENABLED");
     test_remove_env("TAVILY_API_KEY");
-}
-
-#[cfg(feature = "tool-searxng")]
-#[test]
-fn typed_runtime_registry_skips_disabled_searxng_module() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("SEARXNG_URL", "http://searxng:8080");
-    test_set_env("SEARXNG_ENABLED", "true");
-
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/searxng".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("searxng_search"));
-    #[cfg(feature = "tool-todos")]
-    assert!(tool_names.contains("write_todos"));
-
-    test_remove_env("SEARXNG_ENABLED");
-    test_remove_env("SEARXNG_URL");
 }
 
 #[cfg(feature = "tool-brave-search")]

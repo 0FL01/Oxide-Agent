@@ -451,13 +451,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-crawl4ai-markdown",
-        "tool/crawl4ai-markdown",
-        Search,
-        ["tool/crawl4ai-markdown"]
-    );
-    push_module!(
-        modules,
         "tool-tavily",
         "tool/tavily",
         Search,
@@ -469,13 +462,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         "tool/brave-search",
         Search,
         ["tool/brave-search"]
-    );
-    push_module!(
-        modules,
-        "tool-searxng",
-        "tool/searxng",
-        Search,
-        ["tool/searxng-search"]
     );
     push_module!(
         modules,

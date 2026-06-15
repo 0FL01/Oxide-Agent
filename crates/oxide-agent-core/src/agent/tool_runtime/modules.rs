@@ -40,8 +40,6 @@ use crate::agent::providers::AgentsMdProvider;
 use crate::agent::providers::BraveSearchProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
-#[cfg(feature = "tool-crawl4ai-markdown")]
-use crate::agent::providers::Crawl4AiMarkdownProvider;
 #[cfg(feature = "tool-crw")]
 use crate::agent::providers::CrwProvider;
 #[cfg(feature = "tool-delegation")]
@@ -54,8 +52,6 @@ use crate::agent::providers::FileHosterProvider;
     feature = "tool-media-video"
 ))]
 use crate::agent::providers::MediaFileProvider;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-stack-logs")]
@@ -70,8 +66,6 @@ use crate::agent::providers::WebFetchMdProvider;
 use crate::agent::providers::WikiMemoryProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-use crate::agent::providers::crawl4ai_markdown::types::Crawl4AiMarkdownArgs;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-webfetch-md")]
@@ -662,9 +656,21 @@ impl ToolModule for JiraMcpToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
+        let executors = self
+            .provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
+        #[cfg(feature = "tool-crw")]
+        if crate::config::is_crw_enabled() {
+            return executors
+                .into_iter()
+                .filter(|executor| executor.name().as_str() != "web_search")
+                .collect();
+        }
+
+        executors
     }
 }
 
@@ -790,8 +796,6 @@ struct WebCrawlerArgs {
 #[cfg(feature = "tool-webfetch-md")]
 struct WebCrawlerToolExecutor {
     webfetch: WebFetchMdProvider,
-    #[cfg(feature = "tool-crawl4ai-markdown")]
-    crawl4ai: Option<Crawl4AiMarkdownProvider>,
     #[cfg(feature = "tool-crw")]
     crw: Option<Arc<CrwProvider>>,
     name: ToolName,
@@ -801,10 +805,6 @@ struct WebCrawlerToolExecutor {
 #[cfg(feature = "tool-webfetch-md")]
 impl WebCrawlerToolExecutor {
     fn new() -> Self {
-        #[cfg(feature = "tool-crawl4ai-markdown")]
-        let crawl4ai =
-            crate::config::is_crawl4ai_markdown_enabled().then(Crawl4AiMarkdownProvider::new);
-
         #[cfg(feature = "tool-crw")]
         let crw = crate::config::is_crw_enabled()
             .then(CrwProvider::new)
@@ -813,8 +813,6 @@ impl WebCrawlerToolExecutor {
 
         Self {
             webfetch: WebFetchMdProvider::new(),
-            #[cfg(feature = "tool-crawl4ai-markdown")]
-            crawl4ai,
             #[cfg(feature = "tool-crw")]
             crw,
             name: ToolName::from(TOOL_WEB_CRAWLER),
@@ -872,7 +870,7 @@ impl WebCrawlerToolExecutor {
                     return Ok(output);
                 };
 
-                self.execute_crawl4ai_fallback(
+                self.execute_rendered_fallback(
                     invocation,
                     &normalizer,
                     args,
@@ -885,7 +883,7 @@ impl WebCrawlerToolExecutor {
         }
     }
 
-    async fn execute_crawl4ai_fallback(
+    async fn execute_rendered_fallback(
         &self,
         invocation: &ToolInvocation,
         normalizer: &OutputNormalizer,
@@ -894,7 +892,6 @@ impl WebCrawlerToolExecutor {
         webfetch_error: &anyhow::Error,
         fallback_reason: &'static str,
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        #[cfg(not(feature = "tool-crawl4ai-markdown"))]
         let _ = (&args.wait_for, args.fresh);
 
         #[cfg(feature = "tool-crw")]
@@ -910,81 +907,6 @@ impl WebCrawlerToolExecutor {
                     crw,
                 )
                 .await;
-        }
-
-        #[cfg(feature = "tool-crawl4ai-markdown")]
-        if let Some(crawl4ai) = &self.crawl4ai {
-            let crawl_args = Crawl4AiMarkdownArgs {
-                url: args.url.clone(),
-                timeout_secs: args.timeout_secs,
-                wait_for: args.wait_for.clone(),
-                fresh: args.fresh,
-                max_chars: args.max_chars,
-            };
-
-            return match crawl4ai
-                .crawl_markdown(crawl_args.clone(), Some(&invocation.cancellation_token))
-                .await
-            {
-                Ok(crawl_output) => {
-                    let crawl_payload = serde_json::from_str::<Value>(&crawl_output).ok();
-                    let markdown = crawl_payload
-                        .as_ref()
-                        .and_then(|payload| payload.get("markdown"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(crawl_output.as_str());
-                    let final_url = crawl_payload
-                        .as_ref()
-                        .and_then(|payload| payload.get("final_url"))
-                        .and_then(Value::as_str);
-                    let stdout = web_crawler_output(
-                        "crawl4ai_markdown",
-                        Some(fallback_reason),
-                        &args.url,
-                        final_url,
-                        markdown,
-                    );
-                    let mut output = normalizer.success(invocation, &stdout, "");
-                    output.structured_payload = Some(web_crawler_success_payload(
-                        "crawl4ai_markdown",
-                        Some(fallback_reason),
-                        &args.url,
-                        final_url,
-                        markdown,
-                        crawl_payload
-                            .as_ref()
-                            .and_then(|payload| payload.get("status_code"))
-                            .and_then(Value::as_u64),
-                        crawl_payload
-                            .as_ref()
-                            .and_then(|payload| payload.get("truncated"))
-                            .and_then(Value::as_bool),
-                        crawl_payload.as_ref(),
-                    ));
-                    Ok(output)
-                }
-                Err(crawl_error) => {
-                    let message = web_crawler_crawl_failed_message(
-                        &args.url,
-                        &webfetch_args,
-                        webfetch_error,
-                        fallback_reason,
-                        crawl4ai,
-                        &crawl_args,
-                        &crawl_error,
-                    );
-                    let mut output = normalizer.failure(invocation, message);
-                    output.structured_payload = Some(web_crawler_crawl_failure_payload(
-                        &webfetch_args,
-                        webfetch_error,
-                        fallback_reason,
-                        crawl4ai,
-                        &crawl_args,
-                        &crawl_error,
-                    ));
-                    Ok(output)
-                }
-            };
         }
 
         let mut output = normalizer.failure(
@@ -1271,53 +1193,6 @@ fn web_crawler_fallback_unavailable_message(url: &str) -> String {
     )
 }
 
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-fn web_crawler_crawl_failed_message(
-    url: &str,
-    _webfetch_args: &WebMarkdownArgs,
-    _webfetch_error: &anyhow::Error,
-    fallback_reason: &'static str,
-    crawl4ai: &Crawl4AiMarkdownProvider,
-    crawl_args: &Crawl4AiMarkdownArgs,
-    crawl_error: &anyhow::Error,
-) -> String {
-    let crawl_message = crawl4ai.failure_message(Some(crawl_args), crawl_error);
-    format!(
-        "web_crawler lightweight fetch failed for {url} ({fallback_reason}); Crawl4AI fallback also failed: {crawl_message}. This path is closed for this task; use another source."
-    )
-}
-
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
-fn web_crawler_crawl_failure_payload(
-    webfetch_args: &WebMarkdownArgs,
-    webfetch_error: &anyhow::Error,
-    fallback_reason: &'static str,
-    crawl4ai: &Crawl4AiMarkdownProvider,
-    crawl_args: &Crawl4AiMarkdownArgs,
-    crawl_error: &anyhow::Error,
-) -> Value {
-    let web_payload = WebFetchMdProvider::failure_payload(Some(webfetch_args), webfetch_error);
-    let crawl_payload = crawl4ai.failure_payload(Some(crawl_args), crawl_error);
-    let crawl_error_kind = Crawl4AiMarkdownProvider::error_kind(crawl_error);
-    json!({
-        "provider": TOOL_WEB_CRAWLER,
-        "backend": "crawl4ai_markdown",
-        "fallback_backend": "crawl4ai_markdown",
-        "fallback_attempted": true,
-        "fallback_reason": fallback_reason,
-        "url": webfetch_args.url.as_str(),
-        "host": web_payload.get("host").cloned().unwrap_or(Value::Null),
-        "error_kind": crawl_error_kind,
-        "webfetch_error_kind": WebFetchMdProvider::error_kind(webfetch_error),
-        "crawl4ai_error_kind": crawl_error_kind,
-        "status_code": crawl_payload.get("status_code").cloned().unwrap_or(Value::Null),
-        "retryable": crawl_payload.get("retryable").cloned().unwrap_or(json!(false)),
-        "provider_unavailable": true,
-        "webfetch_payload": web_payload,
-        "crawl4ai_payload": crawl_payload
-    })
-}
-
 #[cfg(all(feature = "tool-webfetch-md", feature = "tool-crw"))]
 fn web_crawler_crw_failure_payload(
     webfetch_args: &WebMarkdownArgs,
@@ -1505,40 +1380,6 @@ mod web_crawler_tests {
     }
 }
 
-/// Capability module for browser-rendered URL-to-Markdown crawls.
-#[cfg(feature = "tool-crawl4ai-markdown")]
-pub struct Crawl4AiMarkdownToolModule;
-
-#[cfg(feature = "tool-crawl4ai-markdown")]
-impl Crawl4AiMarkdownToolModule {
-    fn provider(&self) -> Option<Crawl4AiMarkdownProvider> {
-        if crate::config::is_web_crawler_merge_enabled() {
-            tracing::debug!("crawl4ai_markdown disabled: web_crawler merge mode is enabled");
-            return None;
-        }
-        if !crate::config::is_crawl4ai_markdown_enabled() {
-            tracing::debug!(
-                "crawl4ai_markdown disabled: OXIDE_CRAWL4AI_BASE_URL is not set and OXIDE_CRAWL4AI_ENABLED is not true"
-            );
-            return None;
-        }
-        Some(Crawl4AiMarkdownProvider::new())
-    }
-}
-
-#[cfg(feature = "tool-crawl4ai-markdown")]
-impl ToolModule for Crawl4AiMarkdownToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/crawl4ai-markdown")
-    }
-
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
 /// Capability module for Tavily search/extract tools.
 #[cfg(feature = "tool-tavily")]
 pub struct TavilyToolModule;
@@ -1623,52 +1464,6 @@ impl ToolModule for BraveSearchToolModule {
     }
 }
 
-/// Capability module for SearXNG web search.
-#[cfg(feature = "tool-searxng")]
-pub struct SearxngToolModule;
-
-#[cfg(feature = "tool-searxng")]
-impl SearxngToolModule {
-    fn provider(&self) -> Option<SearxngProvider> {
-        if !crate::config::is_searxng_enabled() {
-            return None;
-        }
-
-        match crate::config::get_searxng_url() {
-            Some(url) if !url.trim().is_empty() => match SearxngProvider::new(&url) {
-                Ok(provider) => Some(provider),
-                Err(error) => {
-                    tracing::warn!(error = %error, "SearXNG provider initialization failed");
-                    None
-                }
-            },
-            Some(_) => {
-                tracing::warn!("SearXNG enabled but SEARXNG_URL is empty; provider not registered");
-                None
-            }
-            None => {
-                tracing::warn!(
-                    "SearXNG enabled but SEARXNG_URL is not set; provider not registered"
-                );
-                None
-            }
-        }
-    }
-}
-
-#[cfg(feature = "tool-searxng")]
-impl ToolModule for SearxngToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/searxng")
-    }
-
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
 /// Capability module for CRW-backed web search.
 #[cfg(feature = "tool-crw")]
 pub struct CrwSearchToolModule;
@@ -1697,21 +1492,9 @@ impl ToolModule for CrwSearchToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        let executors = self
-            .provider()
+        self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default();
-
-        // When CRW is enabled, CRW owns `web_search`; skip Tavily's duplicate.
-        #[cfg(feature = "tool-crw")]
-        if crate::config::is_crw_enabled() {
-            return executors
-                .into_iter()
-                .filter(|executor| executor.name().as_str() != "web_search")
-                .collect();
-        }
-
-        executors
+            .unwrap_or_default()
     }
 }
 

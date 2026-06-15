@@ -523,17 +523,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         ]
       },
       {
-        "cargo_feature": "tool-searxng",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/searxng",
-        "kind": "search",
-        "provides": [
-          "tool/searxng-search"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-tavily",
         "config_properties": [],
         "conflicts": [],
@@ -772,13 +761,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/duckduckgo",
       "kind": "search",
       "cargo_feature": "tool-duckduckgo",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
       "config_env": [],
       "requires_capabilities": []
     },
