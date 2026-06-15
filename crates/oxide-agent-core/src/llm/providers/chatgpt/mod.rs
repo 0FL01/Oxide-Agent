@@ -986,8 +986,10 @@ mod tests {
 
     #[test]
     fn sse_incomplete_reason_and_error_events_remain_responses_specific() {
-        let mut state = StreamedChatGptResponse::default();
-        state.content = Some("partial".to_string());
+        let mut state = StreamedChatGptResponse {
+            content: Some("partial".to_string()),
+            ..Default::default()
+        };
         let mut current_text_item_id = None;
         let mut diagnostics = ChatGptStreamDiagnostics::default();
 

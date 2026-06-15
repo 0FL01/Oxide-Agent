@@ -103,7 +103,7 @@ impl MessagesProfile {
     }
 
     /// Build profile-specific extra headers.
-    pub(crate) fn extra_headers<'a>(self, api_key: &'a str) -> Vec<(&'static str, &'a str)> {
+    pub(crate) fn extra_headers(self, api_key: &str) -> Vec<(&'static str, &str)> {
         vec![
             ("anthropic-version", ANTHROPIC_VERSION),
             ("x-api-key", api_key),

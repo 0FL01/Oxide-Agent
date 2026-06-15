@@ -170,7 +170,6 @@ impl CrwClient {
                 message: truncate_for_error(
                     parsed
                         .error
-                        .clone()
                         .unwrap_or_else(|| "search provider returned success=false".to_string()),
                 ),
             });
