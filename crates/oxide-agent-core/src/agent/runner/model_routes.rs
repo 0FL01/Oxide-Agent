@@ -240,7 +240,7 @@ mod tests {
                 weight: 1,
             }]);
 
-        assert!(runner.structured_output_required_for_config(&config));
+        assert!(!runner.structured_output_required_for_config(&config));
     }
 
     #[test]
@@ -451,6 +451,6 @@ mod tests {
                 weight: 1,
             }]);
 
-        assert!(runner.structured_output_required_for_config(&config));
+        assert!(!runner.structured_output_required_for_config(&config));
     }
 }

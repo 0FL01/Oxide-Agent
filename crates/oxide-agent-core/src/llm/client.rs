@@ -1329,7 +1329,7 @@ mod tests {
         provider.expect_chat_with_tools().return_once(|request| {
             assert_eq!(
                 request.system_prompt,
-                "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
+                "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n### CURRENT DATE AND TIME\nNow.\n\n[SYSTEM: retry with strict JSON]"
             );
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, "user");

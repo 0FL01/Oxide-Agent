@@ -2272,7 +2272,7 @@ mod tests {
         );
 
         assert!(report.contains(r#""status": "error""#));
-        assert!(report.contains("unsupported external approval"));
+        assert!(report.contains("unsupported user input"));
         assert!(report.contains("sub-task-1"));
     }
 

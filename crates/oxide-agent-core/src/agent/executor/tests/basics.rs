@@ -255,6 +255,7 @@ async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
 
 #[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
+    crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
@@ -263,15 +264,15 @@ async fn executor_injects_configured_wiki_memory_context() {
     let context_id = crate::agent::wiki_memory::wiki_context_id(9, "session:9");
     let backend = Arc::new(InMemoryWikiBackend::default());
     backend.objects.lock().await.insert(
-        "prod/wiki/v1/global/index.md".to_string(),
+        "test-exec-wiki/wiki/v1/global/index.md".to_string(),
         "# Wiki Index\n".to_string(),
     );
     backend.objects.lock().await.insert(
-        format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+        format!("test-exec-wiki/wiki/v1/contexts/{context_id}/index.md"),
         "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n".to_string(),
     );
     backend.objects.lock().await.insert(
-        format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+        format!("test-exec-wiki/wiki/v1/contexts/{context_id}/overview.md"),
         "# Overview\n\nDurable project fact from wiki.".to_string(),
     );
 
@@ -307,7 +308,7 @@ async fn executor_injects_configured_wiki_memory_context() {
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
-    let wiki_store = crate::agent::wiki_memory::WikiStore::new(backend, "prod");
+    let wiki_store = crate::agent::wiki_memory::WikiStore::new(backend, "test-exec-wiki");
     let mut executor =
         AgentExecutor::new(Arc::new(llm), session, settings).with_wiki_memory_store(wiki_store);
 
