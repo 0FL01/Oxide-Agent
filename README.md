@@ -721,16 +721,33 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 
 ### Browser Live sidecar in Compose
 
-Docker Compose profiles include a `chrome-agent-sidecar` service with Chromium,
-loopback-only REST port `127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}`, named
-artifact/profile volumes, non-root runtime, dropped Linux capabilities, and a
-`/healthz` healthcheck. Browser Live remains disabled unless
-`BROWSER_AGENT_ENABLED=true` and `BROWSER_AGENT_SIDECAR_TOKEN` are set.
+The `chrome-agent-sidecar` service runs a Chromium-based headless browser
+controlled by the `chrome-agent` CLI. It is wired into the web/telegram Compose
+files but is not started until you enable it and set a token.
 
-Build example:
+Enable for the Web UI:
+
 ```bash
-cargo build --release --no-default-features --features profile-full
+# .env
+BROWSER_AGENT_SIDECAR_TOKEN=<set-a-long-random-token>
+BROWSER_AGENT_ENABLED=true
+BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:8787
+BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:8787
+BROWSER_AGENT_MIMO_PROVIDER=opencode-go
+BROWSER_AGENT_MIMO_MODEL=mimo-v2.5
 ```
+
+```bash
+# Start the web console with the sidecar
+docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
+
+# Verify the sidecar is healthy
+curl -fsS http://127.0.0.1:8787/healthz -H "Authorization: Bearer ${BROWSER_AGENT_SIDECAR_TOKEN}"
+```
+
+Browser Live is disabled by default, uses ephemeral profiles, and requires a
+shared token between the app and sidecar. Full setup details are in
+[docs/browser-live.md](docs/browser-live.md).
 
 ## Key Dependencies
 

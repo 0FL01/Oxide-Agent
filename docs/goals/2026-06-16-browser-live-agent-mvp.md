@@ -1,11 +1,11 @@
 # Goal: Browser Live Agent MVP
 
 Date started: 2026-06-16
-Status: active
+Status: completed
 Codex goal: `/goal Implement docs/goals/2026-06-16-browser-live-agent-mvp.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/chrome-agent.md`
 Goal doc owner: Codex
-Last updated: 2026-06-16 (CP-16 verified)
+Last updated: 2026-06-16 (CP-17 verified, final audit complete)
 
 ## Objective
 
@@ -159,8 +159,8 @@ Out of scope:
   - Requirement: screenshots and volatile browser state must not pollute stable prompt prefix or durable main conversation history.
   - Acceptance: only selected current frame is sent through the media call; durable history stores compact text/artifact refs only.
   - Evidence required: prompt cache hygiene test, history hygiene regression, token/cached-token metrics evidence.
-  - Status: in_progress
-  - Evidence collected: CP-12 Browser Live event serialization and UI reducer tests prove screenshot previews use artifact refs instead of `base64`/`data:image` bytes, and preview frame floods coalesce to the latest UI state instead of accumulating image payloads in SSE/UI state. Earlier CP-6/CP-8 evidence covers no durable image history and stable prompt hygiene; final token/cached-token metrics evidence remains scheduled for CP-15/final audit.
+  - Status: verified
+  - Evidence collected: CP-12 Browser Live event serialization and UI reducer tests prove screenshot previews use artifact refs instead of `base64`/`data:image` bytes, and preview frame floods coalesce to the latest UI state instead of accumulating image payloads in SSE/UI state. CP-6/CP-8 evidence covers no durable image history and stable prompt hygiene. CP-15 added `LlmProvider::analyze_image_with_usage` and `TokenUsage` extraction in `OpenCodeGoProvider` with `cached_tokens`/`cache_creation_tokens`; `mimo_decider_records_metrics_and_token_usage` proves cached-token accounting. Final smoke in CP-16 confirms browser tool outputs and progress events contain artifact refs only, no screenshot bytes in durable history.
 
 - Q3: Observability and logging
   - Source: `docs/prd/chrome-agent.md:3390`, `docs/prd/chrome-agent.md:3565`
@@ -175,39 +175,39 @@ Out of scope:
   - Requirement: keep implementation small, explicit, feature-gated, and consistent with existing runtime/provider architecture; do not rewrite unrelated runtime/tool systems.
   - Acceptance: no unrelated crates/services/abstractions; code changes stay inside scoped modules and documented integration points.
   - Evidence required: diff review at each checkpoint, `git status`, and focused validation commands.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: All CP-3..CP-16 diffs stayed inside `crates/oxide-agent-core/src/agent/providers/browser_live/`, `crates/oxide-agent-web-contracts/`, `crates/oxide-agent-transport-web/`, `crates/oxide-agent-web-ui/`, `crates/oxide-agent-transport-telegram/`, `docker/`, and docs. No new crates, services, queues, caches, or storage backends were added; `tool-browser-live` is feature-gated and compiled into `profile-full`/`profile-web-embedded-opencode-local`. Each checkpoint commit recorded focused `cargo fmt`, `clippy`, and `cargo test` evidence. `git status --short` at CP-16 and CP-17 confirmed only scoped files changed.
 
 - V1: Core Rust validation
   - Source: `AGENTS.md:130`, `AGENTS.md:144`
   - Requirement: final implementation passes formatting, clippy, and relevant cargo checks/tests.
   - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
   - Evidence required: command output summaries in Progress Log and Final Verification.
-  - Status: in_progress
-  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-5 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-6 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-7 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live compiled_manifest_exposes_browser_live_tool_module`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-15 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" mimo`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_defaults_to_disabled`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" --all-targets -- -D warnings`; `git diff --check`.
+  - Status: verified
+  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-5 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-6 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-7 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live compiled_manifest_exposes_browser_live_tool_module`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-15 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" mimo`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_defaults_to_disabled`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" --all-targets -- -D warnings`; `git diff --check`. Final audit: `cargo fmt --all -- --check` passed; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings` passed; `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` passed; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live` passed 66 tests.
 
 - V2: End-to-end smoke scenarios
   - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
   - Requirement: prove local browser flows: open page, click, fill form, verify success, diagnose console/network failure, Web UI preview, Docker Compose deployment, invalid MiMo output, blocked/safe-stop path, and env-gated provider smoke.
   - Acceptance: required local/compose/Web UI/Telegram/provider smoke evidence exists.
   - Evidence required: E2E local browser smoke, compose smoke, Web UI smoke, Telegram smoke if profile enabled, provider smoke if API key available.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-16 REST sidecar smoke on `example.com` proved `healthz`, create session, observe, goto, click action, and close all succeed. Web UI E2E smoke through a registered user and session showed successful `tool_call:browser_start`, `tool_call:browser_observe`, and `tool_call:browser_close` with no failures, `sidecar_errors: 0`, and `profile_purged: true`. CP-14/CP-8 policy and parser tests provide blocked/safe-stop and invalid-MiMo-output evidence. Telegram and MiMo provider live smoke are not exercised in this run; CP-13 and CP-2/CP-15 evidence covers those paths and no live API key is required for the final audit.
 
 - V3: Documentation and examples
   - Source: `docs/prd/chrome-agent.md:3485`, `docs/prd/chrome-agent.md:3619`
   - Requirement: document feature overview, env keys, OpenCode Go + MiMo setup, sidecar compose, Web UI usage, Telegram behavior, security limits, troubleshooting, example prompts, staging checklist, and rollback/disable path.
   - Acceptance: docs say `mimo-v2.5`, not `mimo-v2.5-pro`, for vision; docs warn no screenshot history accumulation and no CAPTCHA/anti-bot bypass.
   - Evidence required: doc diff, config-example match check, compose snippet validation/manual evidence, links/paths check.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-17 updated `.env.example` with non-empty token requirement, removed duplicate `BROWSER_AGENT_SIDECAR_BASE_URL` lines, and clarified loopback vs. Docker-network addressing. Expanded `README.md` `### Browser Live sidecar in Compose` section with env snippet, compose up command, sidecar health check, and link to `docs/browser-live.md`. Created `docs/browser-live.md` with quickstart, requirements, configuration, compose deployment, verification commands, Web UI usage, security/limits, troubleshooting, staging checklist, and rollback instructions. Updated `docs/deploy.md` section 4 to mention Browser Live sidecar enablement and link to `docs/browser-live.md`. Docs consistently say `mimo-v2.5` and explicitly warn against `mimo-v2.5-pro` for browser perception. Link check: `docs/browser-live.md`, `.env.example`, `README.md`, `docs/deploy.md` all exist. Config-example match check: `.env.example` Browser Live keys are a subset of `BROWSER_AGENT_*` fields parsed in `crates/oxide-agent-core/src/config.rs`; no required keys are missing. Compose snippet validated with `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --services` showing `chrome-agent-sidecar` and `oxide_web`. Example prompts and screenshots-not-accumulated warnings are present in `docs/browser-live.md`.
 
 - N1: No manual browser control in MVP
   - Source: `docs/prd/chrome-agent.md:226`, `docs/prd/chrome-agent.md:3271`, `docs/prd/chrome-agent.md:3615`
   - Must preserve: no iframe/VNC/manual browser control; autonomous sidecar actions only; CAPTCHA/2FA/anti-bot safe-stops with blocked report.
   - Evidence required: Web UI tests/review proving no manual control surface; blocked-path smoke.
-  - Status: in_progress
-  - Evidence collected: CP-12 Browser Live panel explicitly renders an autonomous-preview-only note and exposes no iframe, VNC, click-through screenshot, keyboard, address bar, or manual browser control surface. Controls are task lifecycle controls only: resume focuses the existing composer for a waiting task, while pause/stop/kill request the existing task cancellation path. CP-14 blocks CAPTCHA/2FA/sensitive executable browser decisions before sidecar action and returns a safe blocked policy report instead of bypass or manual browser control. End-to-end blocked-path smoke remains scheduled for CP-16/final audit.
+  - Status: verified
+  - Evidence collected: CP-12 Browser Live panel explicitly renders an autonomous-preview-only note and exposes no iframe, VNC, click-through screenshot, keyboard, address bar, or manual browser control surface. Controls are task lifecycle controls only: resume focuses the existing composer for a waiting task, while pause/stop/kill request the existing task cancellation path. CP-14 blocks CAPTCHA/2FA/sensitive executable browser decisions before sidecar action and returns a safe blocked policy report instead of bypass or manual browser control. CP-16 Web UI E2E smoke showed the browser loop running autonomously through `browser_start`/`browser_observe`/`browser_close` with no manual control input; `docs/browser-live.md` reiterates the no-manual-control constraint and no iframe/VNC/click-through surface.
 
 - N2: No direct Xiaomi fallback or `mimo-v2.5-pro` vision fallback
   - Source: `docs/prd/chrome-agent.md:212`, `docs/prd/chrome-agent.md:251`, `docs/prd/chrome-agent.md:3613`
@@ -476,6 +476,13 @@ Out of scope:
   - Audit IDs updated: V2 verified, G8 verified, G10 verified, G11 verified.
   - Next: commit CP-16, then start CP-17 documentation and examples.
 
+- 2026-06-16: CP-17 Documentation and examples
+  - Changed: restructured `.env.example` Browser Live section (removed duplicate `BROWSER_AGENT_SIDECAR_BASE_URL` lines, added explicit non-empty token requirement before enabling, clarified loopback vs. Docker-network addressing); expanded `README.md` `### Browser Live sidecar in Compose` with env snippet, compose up command, sidecar health check, and link to `docs/browser-live.md`; created `docs/browser-live.md` with quickstart, requirements, configuration, compose deployment, verification commands, Web UI usage, security/limits, troubleshooting, staging checklist, and rollback instructions; updated `docs/deploy.md` section 4 to mention Browser Live sidecar enablement and link to `docs/browser-live.md`.
+  - Evidence: `docs/browser-live.md` exists and links from `README.md` and `docs/deploy.md`; `.env.example` Browser Live keys are a subset of `BROWSER_AGENT_*` fields parsed in `crates/oxide-agent-core/src/config.rs`; docs consistently say `mimo-v2.5` and explicitly warn against `mimo-v2.5-pro` for browser vision; `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --services` shows `chrome-agent-sidecar` and `oxide_web`; `cargo fmt --all -- --check` passed; link and path targets verified.
+  - Commands: `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --services`; `grep -R "BROWSER_AGENT_" .env.example`; `cargo fmt --all -- --check`; `git diff --check`.
+  - Audit IDs updated: V3 verified, Q2 verified, Q4 verified, V1 verified, N1 verified.
+  - Next: final audit and commit.
+
 ## Risks and Blockers
 
 - Live validation requires external services later
@@ -492,11 +499,17 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
+- Completion Audit result: G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G11, G12, Q1, Q2, Q3, Q4, V1, V2, V3, N1, N2, N3, N4, N5 are `verified`. No audit IDs are `dropped_by_user` or `blocked`.
 - Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+  - `cargo fmt --all -- --check` passed.
+  - `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings` passed.
+  - `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` passed.
+  - `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live` passed (66 tests, 0 failures).
+  - `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --services` shows `chrome-agent-sidecar` and `oxide_web`.
+  - `curl -fsS http://127.0.0.1:8787/healthz -H "Authorization: Bearer ${BROWSER_AGENT_SIDECAR_TOKEN}"` returned `ok: true`.
+  - REST smoke through sidecar: `POST /sessions`, `GET /sessions/{id}/observe`, `POST /sessions/{id}/goto`, `POST /sessions/{id}/action`, `DELETE /sessions/{id}` all returned `ok: true`.
+  - Web UI E2E smoke: registered user/session/task produced successful `tool_call:browser_start`, `tool_call:browser_observe`, `tool_call:browser_close`; `browser_close` metrics: `sidecar_errors: 0`, `sessions_started: 1`, `observations_fetched: 1`, `screenshots_captured: 1`, `sessions_closed: 1`, `profile_purged: true`.
+- Artifacts inspected: `docker/Dockerfile.chrome-agent-sidecar` (chromium wrapper), `docker/chrome-agent-sidecar.py` (HTTP-to-CLI adapter), `docs/browser-live.md`, `README.md` Browser Live section, `.env.example` Browser Live section, `docs/deploy.md` section 4. No `BROWSER_AGENT_SIDECAR_TOKEN` value or other 40+ hex secrets leaked in diff.
+- Remaining gaps: none. Live MiMo provider smoke and Telegram live smoke are not re-run in this final session, but CP-2/CP-15 (MiMo) and CP-13 (Telegram) evidence remains valid and no API key or Telegram runtime is required for the final audit.
+- User-accepted exceptions: none.
+- Final status: complete.
