@@ -5,7 +5,7 @@ Status: completed
 Codex goal: `/goal Implement docs/goals/2026-06-16-browser-live-agent-mvp.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/chrome-agent.md`
 Goal doc owner: Codex
-Last updated: 2026-06-16 (CP-17 verified, final audit complete)
+Last updated: 2026-06-16 (post-completion fix for MiMo empty-response retry/logging)
 
 ## Objective
 
@@ -482,6 +482,13 @@ Out of scope:
   - Commands: `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --services`; `grep -R "BROWSER_AGENT_" .env.example`; `cargo fmt --all -- --check`; `git diff --check`.
   - Audit IDs updated: V3 verified, Q2 verified, Q4 verified, V1 verified, N1 verified.
   - Next: final audit and commit.
+
+- 2026-06-16: Post-completion fix — MiMo empty-response retry and raw-response logging
+  - Changed: `crates/oxide-agent-core/src/llm/providers/opencode_go.rs` now returns `LlmError::EmptyResponse` (instead of `LlmError::ApiError`) when image analysis returns no content, and logs the raw response JSON at WARN level for diagnosis. `crates/oxide-agent-core/src/agent/providers/browser_live/mimo.rs` now retries `analyze_image_with_usage` up to 2 times with 500ms backoff on `LlmError::EmptyResponse`, mapping the final exhausted error to `BrowserMimoError::EmptyResponse`. Added `mimo_decider_retries_empty_response_and_succeeds` and `mimo_decider_records_empty_response_after_retries` tests.
+  - Evidence: `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo` passes 6 tests including the new retry tests. `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live` passes 72 tests. `cargo fmt --all -- --check` and `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings` pass. The retry targets the intermittent `OpenCode Go returned no text content for image analysis` failure observed during the bookrix.com E2E attempt.
+  - Commands: `cargo fmt --all`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`; `git diff --check`.
+  - Audit IDs updated: Q3 (error metric coverage for empty responses), V1 (new tests/clippy), Q2 (logging hygiene — raw response is logged at WARN only when content is absent, no screenshot bytes leaked).
+  - Next: commit this fix.
 
 ## Risks and Blockers
 

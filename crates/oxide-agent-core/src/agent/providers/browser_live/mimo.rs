@@ -10,8 +10,9 @@ use super::types::{BrowserDecision, Viewport};
 use crate::llm::{LlmClient, LlmError, TokenUsage};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::time::sleep;
 use tracing::instrument;
 
 #[derive(Clone)]
@@ -20,12 +21,19 @@ pub struct BrowserMimoDecider {
     metrics: Option<Arc<BrowserMetricsCollector>>,
 }
 
+/// Number of retries when the vision provider returns an empty response for a screenshot.
+const MIMO_EMPTY_RESPONSE_RETRIES: usize = 2;
+/// Backoff between empty-response retries.
+const MIMO_EMPTY_RESPONSE_BACKOFF: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Error)]
 pub enum BrowserMimoError {
     #[error("browser MiMo route error: {0}")]
     Route(String),
     #[error("browser MiMo image call failed: {0}")]
     Llm(String),
+    #[error("browser MiMo image call returned empty response after retries: {0}")]
+    EmptyResponse(String),
     #[error("browser MiMo decision parse failed: {0}")]
     Parse(#[from] BrowserDecisionParseError),
 }
@@ -102,26 +110,48 @@ impl BrowserMimoDecider {
         text_prompt: &str,
         model_name: &str,
     ) -> Result<(String, Option<TokenUsage>), BrowserMimoError> {
-        let start = Instant::now();
-        let result: Result<(String, Option<TokenUsage>), LlmError> = self
-            .llm_client
-            .analyze_image_with_usage(image_bytes, text_prompt, stable_system_prompt(), model_name)
-            .await;
-        let latency = start.elapsed();
-        match result {
-            Ok((text, usage)) => {
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_mimo_request(latency, usage.as_ref());
+        for attempt in 0..=MIMO_EMPTY_RESPONSE_RETRIES {
+            let start = Instant::now();
+            let result: Result<(String, Option<TokenUsage>), LlmError> = self
+                .llm_client
+                .analyze_image_with_usage(
+                    image_bytes.clone(),
+                    text_prompt,
+                    stable_system_prompt(),
+                    model_name,
+                )
+                .await;
+            let latency = start.elapsed();
+            match result {
+                Ok((text, usage)) => {
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_mimo_request(latency, usage.as_ref());
+                    }
+                    return Ok((text, usage));
                 }
-                Ok((text, usage))
-            }
-            Err(error) => {
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_mimo_error();
+                Err(error) => {
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_mimo_error();
+                    }
+                    if matches!(error, LlmError::EmptyResponse(_))
+                        && attempt < MIMO_EMPTY_RESPONSE_RETRIES
+                    {
+                        tracing::warn!(
+                            attempt,
+                            max_retries = MIMO_EMPTY_RESPONSE_RETRIES,
+                            "browser MiMo received empty response; retrying after backoff"
+                        );
+                        sleep(MIMO_EMPTY_RESPONSE_BACKOFF).await;
+                        continue;
+                    }
+                    return Err(llm_error(error));
                 }
-                Err(llm_error(error))
             }
         }
+        // Unreachable because every iteration either returns or continues; kept for type safety.
+        Err(BrowserMimoError::Llm(
+            "exhausted empty-response retries".to_string(),
+        ))
     }
 }
 
@@ -138,7 +168,10 @@ impl BrowserDecisionEngine for BrowserMimoDecider {
 }
 
 fn llm_error(error: LlmError) -> BrowserMimoError {
-    BrowserMimoError::Llm(error.to_string())
+    match error {
+        LlmError::EmptyResponse(message) => BrowserMimoError::EmptyResponse(message),
+        other => BrowserMimoError::Llm(other.to_string()),
+    }
 }
 
 fn combine_usage(a: Option<TokenUsage>, b: Option<TokenUsage>) -> Option<TokenUsage> {
@@ -291,6 +324,73 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.mimo_requests, 0);
         assert_eq!(snapshot.mimo_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn mimo_decider_retries_empty_response_and_succeeds() {
+        let mut provider = MockLlmProvider::new();
+        let mut calls = 0usize;
+        provider
+            .expect_analyze_image_with_usage()
+            .times(2)
+            .returning(move |_, _, _, _| {
+                calls += 1;
+                if calls == 1 {
+                    Err(LlmError::EmptyResponse(
+                        "OpenCode Go returned no text content for image analysis".to_string(),
+                    ))
+                } else {
+                    Ok((
+                        r#"{"schema_version":1,"rationale":"ok","action":{"kind":"click_xy","x":1,"y":2,"target_description":"button"},"expected_result":"click","confidence":0.9,"risk":"low","sensitive_action":{"required":false},"needs_debug":false}"#.to_string(),
+                        None,
+                    ))
+                }
+            });
+        let llm = test_llm_with_analyze(provider);
+        let metrics = Arc::new(BrowserMetricsCollector::new());
+        let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
+        let decision = decider
+            .decide(
+                b"png".to_vec(),
+                &test_context("click login"),
+                Viewport::default(),
+            )
+            .await
+            .expect("decide succeeds after retry");
+        assert!(matches!(
+            decision.action,
+            super::super::types::BrowserDecisionAction::ClickXy { .. }
+        ));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.mimo_requests, 1);
+        assert_eq!(snapshot.mimo_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn mimo_decider_records_empty_response_after_retries() {
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_analyze_image_with_usage()
+            .times(3)
+            .returning(|_, _, _, _| {
+                Err(LlmError::EmptyResponse(
+                    "OpenCode Go returned no text content for image analysis".to_string(),
+                ))
+            });
+        let llm = test_llm_with_analyze(provider);
+        let metrics = Arc::new(BrowserMetricsCollector::new());
+        let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
+        let result = decider
+            .decide(
+                b"png".to_vec(),
+                &test_context("click login"),
+                Viewport::default(),
+            )
+            .await;
+        assert!(matches!(result, Err(BrowserMimoError::EmptyResponse(_))));
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.mimo_requests, 0);
+        assert_eq!(snapshot.mimo_errors, 3);
     }
 
     fn test_llm_with_analyze(provider: MockLlmProvider) -> Arc<LlmClient> {

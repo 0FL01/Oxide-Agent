@@ -591,11 +591,19 @@ impl LlmProvider for OpenCodeGoProvider {
 
         let result = async {
             let response = self.chat_client.post_json(&body).await?;
-            let parsed = parse_chat_response(response)?;
+            let parsed = parse_chat_response(response.clone())?;
             log_response_summary(self.profile, request_kind, model_id, &parsed);
             let usage = parsed.usage.clone();
             let text = parsed.content.ok_or_else(|| {
-                LlmError::ApiError(format!(
+                tracing::warn!(
+                    provider = self.profile.provider_id,
+                    request_kind,
+                    model = normalize_model_id_for_prefix(model_id, self.profile.model_prefix),
+                    raw_response = %response,
+                    "{} returned no text content for image analysis; raw response logged for diagnosis",
+                    self.profile.display_name
+                );
+                LlmError::EmptyResponse(format!(
                     "{} returned no text content for image analysis",
                     self.profile.display_name
                 ))
