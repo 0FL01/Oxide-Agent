@@ -946,6 +946,7 @@ mod tests {
         LlmError, LlmProvider, Message, MessageContentPart, ToolCall, ToolCallCorrelation,
         ToolCallFunction, ToolDefinition,
     };
+    use base64::Engine as _;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -965,6 +966,21 @@ mod tests {
                 "required": ["path"]
             }),
         }
+    }
+
+    fn red_left_blue_right_png() -> Vec<u8> {
+        const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAIAAABdtOgoAAAAiElEQVR42u3RAQkAAAzDsPo3ves4BCqgkFave76/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgHZHSuHSU0/t5QAAAABJRU5ErkJggg==";
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG_BASE64)
+            .expect("embedded PNG decodes")
+    }
+
+    fn opencode_go_smoke_api_key() -> String {
+        std::env::var("OPENCODE_GO_API_KEY")
+            .or_else(|_| std::env::var("OPENCODE_API_KEY"))
+            .ok()
+            .filter(|value| !value.trim().is_empty() && value.trim() != "dummy")
+            .expect("set OPENCODE_GO_API_KEY or OPENCODE_API_KEY for MiMo vision smoke test")
     }
 
     async fn run_static_json_server(body: impl Into<String>, max_requests: usize) -> String {
@@ -1393,6 +1409,41 @@ mod tests {
         assert_eq!(
             text_only_body["messages"][1]["content"],
             json!("What is written here?")
+        );
+    }
+
+    #[tokio::test]
+    async fn smoke_opencode_go_mimo_v25_accepts_image_input() {
+        if !matches!(
+            std::env::var("RUN_OPENCODE_GO_MIMO_VISION_SMOKE").as_deref(),
+            Ok("1")
+        ) {
+            return;
+        }
+
+        let api_key = opencode_go_smoke_api_key();
+        let api_base = std::env::var("OPENCODE_GO_API_BASE")
+            .unwrap_or_else(|_| "https://opencode.ai/zen/go/v1/chat/completions".to_string());
+        let provider = OpenCodeGoProvider::new(api_key, api_base);
+
+        let response = provider
+            .analyze_image(
+                red_left_blue_right_png(),
+                "Look at the image. What color is the left half, and what color is the right half? Answer in English using only the two color names and their positions.",
+                "You are validating whether an image input reached the model. Do not guess from the prompt; answer only from the visible image.",
+                "mimo-v2.5",
+            )
+            .await
+            .expect("OpenCode Go mimo-v2.5 should accept image_url data URL image input");
+
+        let normalized = response.to_ascii_lowercase();
+        assert!(
+            normalized.contains("red"),
+            "MiMo smoke response did not identify the red half: {response}"
+        );
+        assert!(
+            normalized.contains("blue"),
+            "MiMo smoke response did not identify the blue half: {response}"
         );
     }
 

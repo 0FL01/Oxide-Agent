@@ -6,7 +6,7 @@
 
 Ключевое решение: `MiMo vision = primary perception`, `screenshots = primary observation`, `chrome-agent/CDP = deterministic execution`, а DOM/a11y/UID/network/console используются как fallback/debug слой. Sidecar нужен, потому что браузерная сессия должна быть долгоживущей, наблюдаемой, управляемой и безопасно изолированной, а не запускаться как ad-hoc CLI tool внутри sandbox на каждый вызов.
 
-Главный риск — не модель как таковая, а весь end-to-end путь: Oxide provider → OpenCode Go adapter → OpenAI-compatible payload → MiMo route. По текущему репозиторию Oxide уже имеет image payload path для OpenCode Go, но релиз нельзя начинать без smoke test, который докажет, что `mimo-v2.5` реально получает screenshot как image input. Модель для MVP: **`mimo-v2.5`**, не `mimo-v2.5-pro`, потому что публичная Xiaomi/OpenCode конфигурация указывает image input для `mimo-v2.5`, а `mimo-v2.5-pro` указан как text-only route. ([MiMo][1])
+Главный риск — не модель как таковая, а весь end-to-end путь: Oxide provider → OpenCode Go adapter → OpenAI-compatible payload → MiMo route. На текущей ветке критический smoke подтверждён: `mimo-v2.5` реально получает image input через OpenCode Go `image_url` data URL path. Модель для MVP: **`mimo-v2.5`**, не `mimo-v2.5-pro`, потому что публичная Xiaomi/OpenCode конфигурация указывает image input для `mimo-v2.5`, а `mimo-v2.5-pro` указан как text-only route. ([MiMo][1])
 
 ---
 
@@ -56,6 +56,7 @@
 | `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`              | Provider читает API key из `OPENCODE_API_KEY`, `OPENCODE_ZEN_API_KEY`, `OPENCODE_GO_API_KEY`; endpoint env: `OPENCODE_GO_API_BASE`, `OPENCODE_GO_MESSAGES_API_BASE`, `OPENCODE_GO_MODELS_URL`; model cache TTL через `OPENCODE_GO_MODEL_CACHE_TTL_SECS`. |
 | `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`              | Default chat completions endpoint: `https://opencode.ai/zen/go/v1/chat/completions`; messages endpoint: `https://opencode.ai/zen/go/v1/messages`; models endpoint: `https://opencode.ai/zen/go/v1/models`.                                               |
 | `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`              | `analyze_image()` rejects model if discovery says image input unsupported. Anthropic Messages protocol path explicitly errors for image analysis.                                                                                                        |
+| `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`              | Добавлен opt-in live smoke `RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1`: deterministic PNG → provider-level `analyze_image()` → `mimo-v2.5`; подтверждён реальный OpenCode Go image input path. API key не хранится в репозитории.                              |
 | `crates/oxide-agent-core/src/llm/providers/opencode_go/discovery.rs`    | `mimo-v2.5` and `mimo-v2.5-*` fallback image-capable; `mimo-v2.5-pro` and `mimo-v2.5-pro-*` fallback not image-capable. Есть smoke test gate `RUN_OPENCODE_GO_DISCOVERY_SMOKE`.                                                                          |
 | `crates/oxide-agent-core/src/llm/providers/chat_completions/request.rs` | `build_image_body()` формирует OpenAI-compatible payload с `image_url` data URL: user content array содержит text part и image part. Это ожидаемый image path для MiMo.                                                                                  |
 | `crates/oxide-agent-core/src/llm/providers/chat_completions/request.rs` | `assistant_message()` сохраняет `reasoning_content` в assistant messages с tool calls. Это важно из-за MiMo/Xiaomi multi-turn tool-call требований.                                                                                                      |
@@ -160,7 +161,7 @@ OpenCode Go usage/pricing docs указывают щедрые лимиты дл
 
 Решение для MVP: **`BROWSER_AGENT_MIMO_MODEL=mimo-v2.5`**.
 
-Причина: Xiaomi/OpenCode конфигурация указывает `mimo-v2.5` как route с text+image input, а `mimo-v2.5-pro` как text-only input. Xiaomi также описывает MiMo V2.5 как full-modal модель с image/video/audio/text understanding, но OpenCode route-level modality всё равно нужно проверять smoke test-ом. ([MiMo][1])
+Причина: Xiaomi/OpenCode конфигурация указывает `mimo-v2.5` как route с text+image input, а `mimo-v2.5-pro` как text-only input. Xiaomi также описывает MiMo V2.5 как full-modal модель с image/video/audio/text understanding; для Oxide route-level modality подтверждена CP-2 live smoke test-ом через OpenCode Go. ([MiMo][1])
 
 `mimo-v2.5-pro` не должен использоваться для screenshot perception в MVP. Его можно оставить как text-only reasoning fallback для отдельных non-vision задач только после явного owner decision, но browser loop не должен автоматически переключаться на Pro, если vision route деградирует.
 
@@ -2736,6 +2737,8 @@ Run against:
 
 ### CP-1: Repository capability audit and final route decision
 
+**Status: PASS — completed on current branch.**
+
 **Purpose**
 Freeze the exact implementation surface before coding and confirm that `mimo-v2.5` is the only MVP vision route.
 
@@ -2748,32 +2751,50 @@ Freeze the exact implementation surface before coding and confirm that `mimo-v2.
 
 **Implementation tasks**
 
-* [ ] Re-run audit of current branch for LLM provider, tool runtime, Web UI, Telegram, Docker paths.
-* [ ] Confirm `mimo-v2.5` image support and `mimo-v2.5-pro` image rejection in provider discovery tests.
-* [ ] Confirm OpenCode Go endpoint/env keys match current provider implementation.
-* [ ] Confirm no existing browser live provider exists.
-* [ ] Record final decision: MVP uses `opencode-go` + `mimo-v2.5` + OpenAI chat completions image payload.
-* [ ] Document direct Xiaomi endpoint as non-MVP fallback only.
+* [x] Re-run audit of current branch for LLM provider, tool runtime, Web UI, Telegram, Docker paths.
+* [x] Confirm `mimo-v2.5` image support and `mimo-v2.5-pro` image rejection in provider discovery tests.
+* [x] Confirm OpenCode Go endpoint/env keys match current provider implementation.
+* [x] Confirm no existing browser live provider exists.
+* [x] Record final decision: MVP uses `opencode-go` + `mimo-v2.5` + OpenAI chat completions image payload.
+* [x] Document direct Xiaomi endpoint as non-MVP fallback only.
 
 **Acceptance criteria**
 
-* [ ] Route decision is explicit: `mimo-v2.5`, not `mimo-v2.5-pro`.
-* [ ] No implementation checkpoint depends on unverified provider-native structured output.
-* [ ] No checkpoint requires rewriting OpenCode Go provider from scratch.
-* [ ] Existing media/image path is identified as the primary integration point.
+* [x] Route decision is explicit: `mimo-v2.5`, not `mimo-v2.5-pro`.
+* [x] No implementation checkpoint depends on unverified provider-native structured output.
+* [x] No checkpoint requires rewriting OpenCode Go provider from scratch.
+* [x] Existing media/image path is identified as the primary integration point.
 
 **Tests**
 
-* [ ] Existing OpenCode Go discovery tests still pass.
-* [ ] Add or verify test that `supports_image_input_for_model_id("mimo-v2.5") == true`.
-* [ ] Add or verify test that `supports_image_input_for_model_id("mimo-v2.5-pro") == false`.
+* [x] Existing OpenCode Go discovery tests still pass.
+* [x] Add or verify test that `supports_image_input_for_model_id("mimo-v2.5") == true`.
+* [x] Add or verify test that `supports_image_input_for_model_id("mimo-v2.5-pro") == false`.
 
 **Rollback**
-Documentation-only checkpoint. Revert route docs if upstream OpenCode/Xiaomi modalities change, but do not proceed to browser implementation until CP-2 passes.
+Documentation-only checkpoint. Revert route docs if upstream OpenCode/Xiaomi modalities change. CP-2 critical live smoke has passed, so browser implementation may proceed.
 
 ---
 
 ### CP-2: OpenCode Go MiMo v2.5 vision smoke test
+
+**Status: CRITICAL GATE PASS — live `mimo-v2.5` vision path confirmed.**
+
+**Confirmed evidence**
+
+* Smoke added in `crates/oxide-agent-core/src/llm/providers/opencode_go.rs` behind `RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1`.
+* The test sends an embedded deterministic PNG with red left half and blue right half through provider-level `OpenCodeGoProvider::analyze_image()` using model `mimo-v2.5`.
+* Live run with a test OpenCode API key passed and confirmed the model identified both visible colors.
+* API key is intentionally not written to repository files or docs.
+
+**Validated commands**
+
+```bash
+cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go smoke_opencode_go_mimo_v25_accepts_image_input
+RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1 OPENCODE_API_KEY=... cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go smoke_opencode_go_mimo_v25_accepts_image_input -- --nocapture
+cargo fmt --all -- --check
+cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings
+```
 
 **Purpose**
 Prove the real end-to-end image path works: Oxide → OpenCode Go provider → `image_url` data URL → `mimo-v2.5`.
@@ -2788,30 +2809,30 @@ Prove the real end-to-end image path works: Oxide → OpenCode Go provider → `
 
 **Implementation tasks**
 
-* [ ] Add env-gated smoke test, for example `RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1`.
-* [ ] Generate or load a tiny deterministic test image.
-* [ ] Call `LlmClient::analyze_image()` or provider-level `analyze_image()` with provider `opencode-go`, model `mimo-v2.5`.
-* [ ] Prompt model to identify a simple visible object/text.
-* [ ] Assert response indicates image was seen.
-* [ ] Assert request path uses OpenAI chat completions endpoint, not Anthropic messages endpoint.
+* [x] Add env-gated smoke test, for example `RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1`.
+* [x] Generate or load a tiny deterministic test image.
+* [x] Call `LlmClient::analyze_image()` or provider-level `analyze_image()` with provider `opencode-go`, model `mimo-v2.5`.
+* [x] Prompt model to identify a simple visible object/text.
+* [x] Assert response indicates image was seen.
+* [x] Assert request path uses OpenAI chat completions endpoint, not Anthropic messages endpoint.
 * [ ] Log token usage and cached token fields if present.
-* [ ] Add negative smoke/config check for `mimo-v2.5-pro`.
+* [x] Add negative smoke/config check for `mimo-v2.5-pro`.
 
 **Acceptance criteria**
 
-* [ ] Real OpenCode Go call with `mimo-v2.5` accepts image input.
-* [ ] `mimo-v2.5-pro` is rejected before call for browser vision.
+* [x] Real OpenCode Go call with `mimo-v2.5` accepts image input.
+* [x] `mimo-v2.5-pro` is rejected before call for browser vision.
 * [ ] Failure message clearly distinguishes auth/rate/provider/image-modality failures.
-* [ ] Smoke test is opt-in and safe for CI without API key.
+* [x] Smoke test is opt-in and safe for CI without API key.
 
 **Tests**
 
-* [ ] Unit payload test for `image_url` data URL.
-* [ ] Env-gated live smoke test.
-* [ ] Negative model capability test.
+* [x] Unit payload test for `image_url` data URL.
+* [x] Env-gated live smoke test.
+* [x] Negative model capability test.
 
 **Rollback**
-If smoke fails, do not implement browser MiMo loop. Keep sidecar/client work possible behind disabled feature, and add fallback decision: use another proven media model or direct Xiaomi endpoint only after owner approval.
+If smoke regresses, pause browser MiMo loop work. Keep sidecar/client work possible behind disabled feature, and add fallback decision: use another proven media model or direct Xiaomi endpoint only after owner approval.
 
 ---
 
