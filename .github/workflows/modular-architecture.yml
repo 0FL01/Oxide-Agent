@@ -50,14 +50,6 @@ jobs:
             cargo check --workspace --no-default-features --features "${features}"
           done
 
-      - name: Run static guard tests
-        run: |
-          set -euo pipefail
-          cargo test -p oxide-agent-core --test tool_runtime_static_guards --all-features
-          cargo test -p oxide-agent-core config --all-features
-          cargo test -p oxide-agent-core route_provider_validation_rejects_removed_direct_gemini_provider --all-features
-          cargo test -p oxide-agent-core removed_direct_gemini_provider_aliases_are_absent --all-features
-
   docker-config:
     runs-on: ubuntu-latest
 

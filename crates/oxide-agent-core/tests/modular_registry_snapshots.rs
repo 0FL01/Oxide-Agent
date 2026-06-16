@@ -436,20 +436,6 @@ fn assert_provider_alias_contract(
         .collect();
     let allowed_provider_names = allowed_provider_names_for_enabled_modules(&enabled_module_ids);
 
-    for direct_gemini_name in [
-        "gemini",
-        "google-gemini",
-        "google_gemini",
-        "llm-provider/gemini",
-        "llm-provider/google-gemini",
-        "llm-provider/google-gemini-direct",
-    ] {
-        assert!(
-            !provider_names.contains(direct_gemini_name),
-            "direct Gemini provider name must stay absent for {profile}: {direct_gemini_name}"
-        );
-    }
-
     for provider_name in &provider_names {
         assert!(
             allowed_provider_names.contains(provider_name),

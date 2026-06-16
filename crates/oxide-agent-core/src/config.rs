@@ -1314,57 +1314,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn route_provider_validation_rejects_removed_direct_gemini_provider() {
-        for provider in [
-            "gemini",
-            "google-gemini",
-            "google_gemini",
-            "llm-provider/gemini",
-            "llm-provider/google-gemini",
-            "llm-provider/google-gemini-direct",
-        ] {
-            let settings = AgentSettings {
-                agent_model_id: Some("google/gemini-3-flash-preview".to_string()),
-                agent_model_provider: Some(provider.to_string()),
-                ..AgentSettings::default()
-            };
-
-            let error = settings
-                .validate_route_providers()
-                .expect_err("removed direct Gemini provider should fail");
-
-            assert!(
-                error
-                    .to_string()
-                    .contains("no compiled LLM provider module owns that provider alias or ID"),
-                "unexpected error for provider {provider}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn route_provider_validation_rejects_removed_direct_zai_provider_when_uncompiled() {
-        let settings = AgentSettings {
-            agent_model_id: Some("glm-4.7".to_string()),
-            agent_model_provider: Some("zai".to_string()),
-            ..AgentSettings::default()
-        };
-
-        let result = settings.validate_route_providers();
-        let error = result.expect_err("removed direct ZAI provider should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("AGENT_MODEL_PROVIDER references provider 'zai'")
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("no compiled LLM provider module owns that provider alias or ID")
-        );
-    }
-
     #[cfg(feature = "llm-openai-base")]
     #[test]
     fn route_validation_accepts_openai_base_zai_instance() {

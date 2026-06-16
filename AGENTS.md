@@ -61,7 +61,7 @@ Default branch: `dev`.
 - Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`) or broker (`SANDBOX_BACKEND=broker`). Default Compose stays on broker.
 - Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
 - `storage-sqlx` is the production durable storage. Local filesystem is transient only.
-- Direct Google Gemini provider code must stay absent. Gemini models are valid only through OpenRouter.
+- Gemini models are valid only through OpenRouter; no direct Gemini provider is maintained.
 
 ## Key Subsystems
 

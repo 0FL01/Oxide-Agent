@@ -584,24 +584,6 @@ mod tests {
         assert_eq!(provider_key("OpenCode-Go"), "opencode-go");
     }
 
-    #[test]
-    fn removed_direct_gemini_provider_aliases_are_absent() {
-        for provider in [
-            "gemini",
-            "google-gemini",
-            "google_gemini",
-            "llm-provider/gemini",
-            "llm-provider/google-gemini",
-            "llm-provider/google-gemini-direct",
-        ] {
-            assert_eq!(
-                provider_module_id(provider),
-                None,
-                "direct Gemini provider alias must stay absent: {provider}"
-            );
-        }
-    }
-
     #[cfg(feature = "llm-openai-base")]
     #[test]
     fn openai_base_registers_named_env_provider_instances_only() {

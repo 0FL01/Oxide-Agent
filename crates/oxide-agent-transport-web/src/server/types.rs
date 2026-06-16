@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
-use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime, sandbox_backend_available};
-use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
+use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
+use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope, sandbox_backend_available};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
