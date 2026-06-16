@@ -36,7 +36,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     - `oxide-agent-telegram-bot` - Binary entry point and configuration
 
 *   **Agent Mode:**
-        <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
     *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
@@ -47,7 +46,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Durable Context:** Topic `AGENTS.md`, wiki memory, runtime injections, and enabled tools provide deterministic prompt context.
     *   **File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
-        <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9230-fbe27ccee90e" />
 
     *   **File Hosting:** Upload files from sandbox to public hosting with short retention time.
     *   **Web Search and Data Extraction:** Tavily, Brave Search, CRW, and local `web_markdown`/`web_crawler` handle discovery and URL-to-Markdown extraction.
@@ -77,6 +75,48 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 *   **Context Management:** Dialogue history saved in SQLx/Postgres with context-scoped isolation per topic.
 *   **Wiki Memory:** Persistent SQLx/Postgres-backed memory pages with optional LLM-assisted extraction and retrieval.
 *   **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly order maximizes cache hit rate, with validated 80%+ cache hit on OpenCode Go.
+
+## Screenshots
+
+The Web Interface is a Leptos SPA with a dark theme, SSE streaming, and markdown rendering.
+
+<p align="center">
+  <img width="900" alt="Web UI empty state" src="assets/screenshots/web-ui-empty-state.jpeg" />
+  <br />
+  <em>New session screen with the session list, profile selector, and message input.</em>
+</p>
+
+<p align="center">
+  <img width="900" alt="Web UI agent working" src="assets/screenshots/web-ui-agent-thinking.jpeg" />
+  <br />
+  <em>Live agent progress with the Thinking indicator and Stop control.</em>
+</p>
+
+<p align="center">
+  <img width="900" alt="Web UI agent response" src="assets/screenshots/web-ui-agent-answer.jpeg" />
+  <br />
+  <em>Formatted agent response with tables and the Activity panel showing sub-agent execution.</em>
+</p>
+
+<p align="center">
+  <img width="900" alt="Web UI settings" src="assets/screenshots/web-ui-settings.jpeg" />
+  <br />
+  <em>Settings page for account, default model, agent profiles, and password management.</em>
+</p>
+
+### Telegram Agent Mode
+
+<p align="center">
+  <img width="900" alt="Telegram Agent Mode overview" src="assets/screenshots/telegram-agent-mode-overview.png" />
+  <br />
+  <em>Agent Mode task list, tool calls, and completed file delivery in Telegram.</em>
+</p>
+
+<p align="center">
+  <img width="900" alt="Telegram Agent Mode video" src="assets/screenshots/telegram-agent-mode-video.png" />
+  <br />
+  <em>Video download via yt-dlp and file sent back to the user in Telegram.</em>
+</p>
 
 ## System Requirements
 
