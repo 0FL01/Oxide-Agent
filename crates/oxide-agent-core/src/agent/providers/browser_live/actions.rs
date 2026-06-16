@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use super::policy::validate_navigation_url;
 use super::types::{
     ActionRequest, BrowserAction, BrowserDecision, BrowserDecisionAction, GotoRequest, WaitUntil,
 };
@@ -136,7 +137,7 @@ pub fn plan_browser_action(
             wait_for_stability: true,
         })),
         BrowserDecisionAction::Navigate { url } => {
-            if !is_http_url(url) {
+            if validate_navigation_url(url).is_err() {
                 return Err(BrowserActionPlanError::InvalidNavigationUrl);
             }
             Ok(BrowserActionPlan::Navigate(GotoRequest {
@@ -164,11 +165,6 @@ pub fn plan_browser_action(
 
 fn bounded_timeout_ms(value: u64) -> u64 {
     value.clamp(MIN_ACTION_TIMEOUT_MS, MAX_ACTION_TIMEOUT_MS)
-}
-
-fn is_http_url(value: &str) -> bool {
-    let trimmed = value.trim().to_ascii_lowercase();
-    trimmed.starts_with("http://") || trimmed.starts_with("https://")
 }
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ pub mod error;
 pub mod mimo;
 /// Strict BrowserDecision parser and validation.
 pub mod parser;
+/// Browser Live MVP security policy gates.
+pub mod policy;
 /// Prompt construction for Browser Live MiMo decisions.
 pub mod prompt;
 /// Deterministic recovery classification and bounded fallback planning.
@@ -35,6 +37,7 @@ pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
 pub use mimo::{BrowserDecisionEngine, BrowserMimoDecider};
+pub use policy::{BrowserPolicyAuditEvent, BrowserPolicyError};
 pub use session::{BrowserFrame, BrowserSessionState};
 pub use tools::BrowserLiveProvider;
 pub use types::{

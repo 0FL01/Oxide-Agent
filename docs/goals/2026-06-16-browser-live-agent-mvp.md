@@ -151,8 +151,8 @@ Out of scope:
   - Requirement: browser disabled by default, sub-agents denied, HTTP/HTTPS allow-by-default for MVP, non-web schemes rejected, sensitive actions approved, credentials handled as secret refs, prompt injection safeguards enforced, and audit events generated.
   - Acceptance: secrets never serialize into MiMo prompt/log/event; CAPTCHA/2FA safe-stops with blocked report; no bypass/manual browser control.
   - Evidence required: URL scheme, sub-agent deny, secret redaction, sensitive action gate, download/upload disabled, real profile disabled, and prompt injection fixture tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-14 added `browser_live::policy` with allow-by-default HTTP/HTTPS URL validation and explicit rejection for `file://`, `chrome://`, `devtools://`, `data:` and other non-web schemes; sensitive/CAPTCHA/2FA/payment/high-risk classifiers; raw credential value rejection with secret-reference recognition; no-download/no-upload and ephemeral-profile enforcement; and redacted `browser_policy` audit events. `browser_start` rejects unsafe start URLs and validates ephemeral/no-download/no-upload session policy; `browser_step` blocks sensitive executable decisions before sidecar action and returns a redacted policy audit payload; `browser_close` always purges the ephemeral profile. The MiMo stable prompt now treats page/browser content as untrusted prompt-injection input. CP-14 validation plus earlier CP-3/CP-7 evidence proves browser is disabled by default and sub-agents cannot access browser tools.
 
 - Q2: Prompt cache/history hygiene
   - Source: `docs/prd/chrome-agent.md:229`, `docs/prd/chrome-agent.md:3579`
@@ -207,7 +207,7 @@ Out of scope:
   - Must preserve: no iframe/VNC/manual browser control; autonomous sidecar actions only; CAPTCHA/2FA/anti-bot safe-stops with blocked report.
   - Evidence required: Web UI tests/review proving no manual control surface; blocked-path smoke.
   - Status: in_progress
-  - Evidence collected: CP-12 Browser Live panel explicitly renders an autonomous-preview-only note and exposes no iframe, VNC, click-through screenshot, keyboard, address bar, or manual browser control surface. Controls are task lifecycle controls only: resume focuses the existing composer for a waiting task, while pause/stop/kill request the existing task cancellation path. Blocked-path smoke remains scheduled for CP-16/final audit.
+  - Evidence collected: CP-12 Browser Live panel explicitly renders an autonomous-preview-only note and exposes no iframe, VNC, click-through screenshot, keyboard, address bar, or manual browser control surface. Controls are task lifecycle controls only: resume focuses the existing composer for a waiting task, while pause/stop/kill request the existing task cancellation path. CP-14 blocks CAPTCHA/2FA/sensitive executable browser decisions before sidecar action and returns a safe blocked policy report instead of bypass or manual browser control. End-to-end blocked-path smoke remains scheduled for CP-16/final audit.
 
 - N2: No direct Xiaomi fallback or `mimo-v2.5-pro` vision fallback
   - Source: `docs/prd/chrome-agent.md:212`, `docs/prd/chrome-agent.md:251`, `docs/prd/chrome-agent.md:3613`
@@ -220,15 +220,15 @@ Out of scope:
   - Source: `docs/prd/chrome-agent.md:241`, `docs/prd/chrome-agent.md:3612`
   - Must preserve: ephemeral profiles only; real profile/cookie copy disabled in MVP.
   - Evidence required: real-profile-disabled tests and compose/profile cleanup evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-11 sidecar and Compose wiring use isolated browser profile volumes with profile purge on close and no host Chrome profile attach. CP-14 session policy validates only `BrowserProfile::Ephemeral`, keeps the start schema free of profile/cookie parameters, and forces `browser_close` to purge the ephemeral profile even if the caller passes `purge_profile=false`; focused tests cover real-profile-disabled behavior.
 
 - N4: No mandatory domain allowlist in MVP
   - Source: `docs/prd/chrome-agent.md:228`, `docs/prd/chrome-agent.md:3610`
   - Must preserve: HTTP/HTTPS navigation is allow-by-default; non-web schemes are rejected.
   - Evidence required: URL policy tests and config docs review showing removed allowlist envs are not required.
   - Status: verified
-  - Evidence collected: CP-3 added no domain allowlist or required allowlist envs; `.env.example` contains Browser Live sidecar/MiMo config only. URL scheme enforcement remains scheduled for CP-14.
+  - Evidence collected: CP-3 added no domain allowlist or required allowlist envs; `.env.example` contains Browser Live sidecar/MiMo config only. CP-14 URL policy tests prove arbitrary HTTP/HTTPS URLs are allowed without a domain allowlist while non-web schemes are rejected.
 
 - N5: No Telegram browser start/control commands
   - Source: `docs/prd/chrome-agent.md:227`, `docs/prd/chrome-agent.md:3316`, `docs/prd/chrome-agent.md:3611`
@@ -454,6 +454,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-transport-telegram browser_ --no-default-features --features profile-embedded-opencode-local`; `cargo test -p oxide-agent-transport-telegram agent_control_keyboards_only_include_cancel_task --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
   - Audit IDs updated: G12 verified, N5 verified, V1 in progress.
   - Next: commit CP-13, then start CP-14 security and policy gates.
+
+- 2026-06-16: CP-14 Security and policy gates
+  - Changed: added `browser_live::policy` for URL scheme gates, sensitive/CAPTCHA/2FA/payment/high-risk classification, raw credential value rejection with secret-ref recognition, download/upload and profile policy, and redacted audit events; wired policy into `browser_start` and `browser_step`; forced profile purge on `browser_close`; added prompt-injection instructions to the stable MiMo prompt.
+  - Evidence: policy tests prove arbitrary HTTP/HTTPS URLs are allowed without a domain allowlist while `file://`, `chrome://`, `devtools://`, and `data:` are rejected; sensitive/CAPTCHA executable decisions are blocked before sidecar action with redacted `browser_policy` audit payloads; raw secret values are rejected and audit JSON excludes secret text; start/close tests prove no downloads/uploads and ephemeral profile purge; prompt fixture proves untrusted page-content instructions are explicitly ignored; existing sub-agent blocklist test proves browser tools are denied to sub-agents.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_defaults_to_disabled`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
+  - Audit IDs updated: Q1 verified, N3 verified, N4 verified, N1 in progress, V1 in progress.
+  - Next: commit CP-14, then start CP-15 observability, metrics, and logging.
 
 ## Risks and Blockers
 

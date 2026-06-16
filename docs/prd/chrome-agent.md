@@ -3458,35 +3458,37 @@ Make browser capability safe by default and integrated with existing hooks/sub-a
 
 **Implementation tasks**
 
-* [ ] Add allow-by-default HTTP/HTTPS navigation handling for MVP.
-* [ ] Reject non-web schemes such as `file://`, `chrome://`, `devtools://`, and `data:`.
-* [ ] Add sensitive action classifier.
-* [ ] Add confirmation gate for high-risk actions.
-* [ ] Add credential handle enforcement.
-* [ ] Add download/upload policy.
-* [ ] Add real profile/cookie policy.
-* [ ] Deny browser tools to sub-agents by default.
-* [ ] Add audit event generation.
-* [ ] Add prompt injection safeguards in MiMo prompt and enforcement.
+* [x] Add allow-by-default HTTP/HTTPS navigation handling for MVP.
+* [x] Reject non-web schemes such as `file://`, `chrome://`, `devtools://`, and `data:`.
+* [x] Add sensitive action classifier.
+* [x] Add confirmation gate for high-risk actions.
+* [x] Add credential handle enforcement.
+* [x] Add download/upload policy.
+* [x] Add real profile/cookie policy.
+* [x] Deny browser tools to sub-agents by default.
+* [x] Add audit event generation.
+* [x] Add prompt injection safeguards in MiMo prompt and enforcement.
 
 **Acceptance criteria**
 
-* [ ] Browser disabled by default.
-* [ ] Sub-agents cannot access browser tools by default.
-* [ ] HTTP/HTTPS navigation is not blocked by mandatory domain allowlist.
-* [ ] Secrets are never serialized into MiMo prompt/log/event.
-* [ ] Sensitive actions require approval.
-* [ ] CAPTCHA/2FA triggers blocked/safe-stop report, not bypass or manual browser control.
+* [x] Browser disabled by default.
+* [x] Sub-agents cannot access browser tools by default.
+* [x] HTTP/HTTPS navigation is not blocked by mandatory domain allowlist.
+* [x] Secrets are never serialized into MiMo prompt/log/event.
+* [x] Sensitive actions require approval.
+* [x] CAPTCHA/2FA triggers blocked/safe-stop report, not bypass or manual browser control.
 
 **Tests**
 
-* [ ] URL scheme policy tests.
-* [ ] Sub-agent deny tests.
-* [ ] Secret redaction tests.
-* [ ] Sensitive action gate tests.
-* [ ] Download/upload disabled tests.
-* [ ] Real profile disabled tests.
-* [ ] Prompt injection fixture test.
+* [x] URL scheme policy tests.
+* [x] Sub-agent deny tests.
+* [x] Secret redaction tests.
+* [x] Sensitive action gate tests.
+* [x] Download/upload disabled tests.
+* [x] Real profile disabled tests.
+* [x] Prompt injection fixture test.
+
+**Status**: PASS (2026-06-16). `browser_live::policy` centralizes URL scheme, sensitive-action, raw credential, download/upload, real-profile, and redacted audit-event gates. `browser_start` rejects non-web start URLs and always creates ephemeral no-download/no-upload sessions; `browser_step` blocks sensitive/CAPTCHA/payment/high-risk/raw-credential executable decisions before sidecar actions and returns a redacted `browser_policy` audit payload; `browser_close` always purges the ephemeral profile. Sub-agent blocklist already denies all browser tools, and the MiMo stable prompt now treats page/browser content as untrusted prompt-injection input.
 
 **Rollback**
 If any critical policy test fails, browser feature remains disabled by default and excluded from profiles.

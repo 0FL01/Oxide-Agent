@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use super::policy::{BrowserPolicyError, validate_decision_policy};
 use super::prompt::{
     BROWSER_DECISION_SCHEMA_VERSION, executable_confidence_threshold,
     sensitive_confidence_threshold,
@@ -31,6 +32,8 @@ pub enum BrowserDecisionParseError {
     SensitiveActionRequiresApproval,
     #[error("browser decision high-risk executable action is not allowed")]
     HighRiskExecutableAction,
+    #[error("browser decision violates policy: {0}")]
+    Policy(#[from] BrowserPolicyError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,6 +102,7 @@ pub fn validate_browser_decision(
     if decision.risk == BrowserDecisionRisk::High && is_executable_action(&decision.action) {
         return Err(BrowserDecisionParseError::HighRiskExecutableAction);
     }
+    validate_decision_policy(decision)?;
     Ok(())
 }
 

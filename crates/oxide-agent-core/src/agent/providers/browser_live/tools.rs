@@ -3,6 +3,10 @@ use super::artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
 use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
+use super::policy::{
+    BrowserPolicyError, policy_audit_event, validate_decision_policy, validate_navigation_url,
+    validate_session_policy,
+};
 use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
 use super::recovery::{
     BrowserRecoveryPlan, BrowserRecoveryReport, BrowserRecoverySettings, BrowserRecoveryStatus,
@@ -157,6 +161,15 @@ impl BrowserLiveProvider {
             allow_uploads: false,
             start_url: args.start_url,
         };
+        if let Some(start_url) = &request.start_url {
+            validate_navigation_url(start_url).map_err(policy_runtime_error)?;
+        }
+        validate_session_policy(
+            request.profile,
+            request.allow_downloads,
+            request.allow_uploads,
+        )
+        .map_err(policy_runtime_error)?;
         let key = idempotency_key(invocation, "start", &request.task_id)?;
         let response = self
             .sidecar
@@ -304,6 +317,23 @@ impl BrowserLiveProvider {
             )
             .await
             .map_err(mimo_runtime_error)?;
+        if let Err(error) = validate_decision_policy(&decision) {
+            let audit = policy_audit_event(&decision, false, error.to_string());
+            self.emit_progress(format!(
+                "BrowserPolicy session_id={} action_seq={} decision=block reason={}",
+                args.session_id, action_seq, audit.reason
+            ))
+            .await;
+            return Ok(json!({
+                "status": "blocked",
+                "session_id": args.session_id,
+                "action_seq": action_seq,
+                "message": error.to_string(),
+                "decision": decision,
+                "observation": observe,
+                "policy_audit": audit,
+            }));
+        }
         let plan = plan_browser_action(&decision, action_seq, args.action_timeout_ms())
             .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
         self.emit_progress(format!(
@@ -801,7 +831,7 @@ impl BrowserLiveProvider {
             .close_session(
                 &args.session_id,
                 &CloseSessionRequest {
-                    purge_profile: args.purge_profile.unwrap_or(true),
+                    purge_profile: true,
                     keep_artifacts: args.keep_artifacts.unwrap_or(true),
                     reason: args.reason.unwrap_or(CloseReason::Done),
                 },
@@ -941,7 +971,8 @@ struct DebugArgs {
 struct CloseArgs {
     session_id: String,
     #[serde(default)]
-    purge_profile: Option<bool>,
+    #[serde(rename = "purge_profile")]
+    _purge_profile: Option<bool>,
     #[serde(default)]
     keep_artifacts: Option<bool>,
     #[serde(default)]
@@ -991,6 +1022,10 @@ fn sidecar_runtime_error(error: BrowserSidecarError) -> ToolRuntimeError {
 
 fn mimo_runtime_error(error: BrowserMimoError) -> ToolRuntimeError {
     ToolRuntimeError::Failure(error.to_string())
+}
+
+fn policy_runtime_error(error: BrowserPolicyError) -> ToolRuntimeError {
+    ToolRuntimeError::InvalidArguments(error.to_string())
 }
 
 fn observation_payload(
@@ -1234,6 +1269,48 @@ mod tests {
         assert_eq!(
             close.structured_payload.as_ref().expect("payload")["status"],
             "closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_start_rejects_non_web_start_url_and_disables_downloads_uploads() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+
+        let error = execute_result(
+            &executors,
+            TOOL_BROWSER_START,
+            r#"{"task_id":"task-1","start_url":"file:///etc/passwd"}"#,
+        )
+        .await
+        .expect_err("non-web start_url should fail before sidecar call");
+
+        assert!(error.to_string().contains("http or https"));
+
+        let start = execute(
+            &executors,
+            TOOL_BROWSER_START,
+            r#"{"task_id":"task-1","start_url":"https://example.test"}"#,
+        )
+        .await;
+        assert!(start.success);
+    }
+
+    #[tokio::test]
+    async fn browser_close_always_purges_ephemeral_profile() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let close_args = format!(r#"{{"session_id":"{session_id}","purge_profile":false}}"#);
+
+        let close = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
+
+        assert_eq!(
+            close.structured_payload.as_ref().expect("payload")["profile_purged"],
+            true
         );
     }
 
@@ -1517,6 +1594,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_step_sensitive_policy_blocks_before_action() {
+        let mut decision = click_decision();
+        decision.expected_result = "CAPTCHA solved".to_string();
+        let provider = test_provider_with_decision(decision, FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "blocked");
+        assert_eq!(payload["policy_audit"]["event"], "browser_policy");
+        assert_eq!(payload["policy_audit"]["decision"], "block");
+        assert!(
+            !serde_json::to_string(payload)
+                .expect("json")
+                .contains("base64")
+        );
+    }
+
+    #[tokio::test]
     async fn browser_tool_observes_cancelled_invocation_before_sidecar_call() {
         let provider = test_provider();
         let executors = provider.tool_runtime_executors();
@@ -1618,6 +1721,18 @@ mod tests {
             .execute(invocation(name, args))
             .await
             .expect("tool execution")
+    }
+
+    async fn execute_result(
+        executors: &[Arc<dyn ToolExecutor>],
+        name: &str,
+        args: &str,
+    ) -> Result<ToolOutput, ToolRuntimeError> {
+        let executor = executors
+            .iter()
+            .find(|executor| executor.name().as_str() == name)
+            .expect("executor");
+        executor.execute(invocation(name, args)).await
     }
 
     fn invocation(name: &str, args: &str) -> ToolInvocation {
