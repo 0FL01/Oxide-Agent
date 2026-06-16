@@ -109,6 +109,40 @@ impl AgentRunner {
         let _ = self.apply_hook_result(result, ctx, Some(state));
     }
 
+    /// Evaluate hooks before a tool is executed.
+    pub(super) fn before_tool_hook_result(
+        &self,
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        tool_name: &str,
+        arguments: &str,
+    ) -> HookResult {
+        let hook_context = HookContext::new(
+            &ctx.agent.memory().todos,
+            ctx.agent.memory(),
+            state.iteration,
+            state.continuation_count,
+            ctx.config.continuation_limit,
+        )
+        .with_sub_agent(ctx.config.is_sub_agent)
+        .with_available_tools(ctx.tools)
+        .with_memory_scope(ctx.memory_scope.as_ref())
+        .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
+        .with_tokens(
+            ctx.agent.memory().token_count(),
+            ctx.agent.memory().max_tokens(),
+        );
+
+        self.hook_registry.execute(
+            &HookEvent::BeforeTool {
+                tool_name: tool_name.to_string(),
+                arguments: arguments.to_string(),
+            },
+            &hook_context,
+        )
+    }
+
     /// Evaluate hooks after the agent produces a final response.
     pub(super) fn after_agent_hook_result(
         &self,
@@ -171,7 +205,7 @@ impl AgentRunner {
         self.apply_hook_result(result, ctx, Some(state))
     }
 
-    fn apply_hook_result(
+    pub(super) fn apply_hook_result(
         &mut self,
         result: HookResult,
         ctx: &mut AgentRunnerContext<'_>,

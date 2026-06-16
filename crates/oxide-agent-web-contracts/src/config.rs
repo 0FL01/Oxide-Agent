@@ -9,6 +9,8 @@ pub struct PublicConfigResponse {
     pub registration_enabled: bool,
     pub bootstrap_required: bool,
     pub build_version: String,
+    pub max_task_input_chars: usize,
+    pub large_input_attachments_supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

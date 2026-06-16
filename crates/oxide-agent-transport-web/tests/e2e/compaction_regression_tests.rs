@@ -15,10 +15,10 @@ use oxide_agent_transport_web::session::WebSessionManager;
 
 use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
-    fetch_task_progress, session_user_id, tool_call_response, wait_for_task_status,
-    wait_for_zai_calls,
+    fetch_task_progress, session_user_id, tool_call_response, wait_for_llm_calls,
+    wait_for_task_status,
 };
-use super::providers::SequencedZaiProvider;
+use super::providers::SequencedLlmProvider;
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -102,7 +102,7 @@ fn strict_tool_history_messages(messages: Vec<AgentMessage>) -> Vec<AgentMessage
 }
 
 fn setup_web_test_with_budget(
-    zai_provider: Arc<SequencedZaiProvider>,
+    llm_provider: Arc<SequencedLlmProvider>,
     model_max_output_tokens: u32,
     context_window_tokens: u32,
 ) -> AppState {
@@ -135,9 +135,9 @@ fn setup_web_test_with_budget(
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("opencode_go".to_string(), zai_provider.clone());
-        llm.register_provider("opencode-go".to_string(), zai_provider.clone());
-        llm.register_provider("llm-provider/opencode-go".to_string(), zai_provider);
+        llm.register_provider("opencode_go".to_string(), llm_provider.clone());
+        llm.register_provider("opencode-go".to_string(), llm_provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), llm_provider);
         Arc::new(llm)
     };
 
@@ -148,12 +148,12 @@ fn setup_web_test_with_budget(
     state
 }
 
-fn setup_web_test_with_compaction_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
-    setup_web_test_with_budget(zai_provider, 32_000, 200_000)
+fn setup_web_test_with_compaction_budget(llm_provider: Arc<SequencedLlmProvider>) -> AppState {
+    setup_web_test_with_budget(llm_provider, 32_000, 200_000)
 }
 
-fn setup_web_test_with_pressure_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
-    setup_web_test_with_budget(zai_provider, 1_024, 4_096)
+fn setup_web_test_with_pressure_budget(llm_provider: Arc<SequencedLlmProvider>) -> AppState {
+    setup_web_test_with_budget(llm_provider, 1_024, 4_096)
 }
 
 fn two_todo_tool_calls_response() -> ChatResponse {
@@ -309,10 +309,10 @@ fn token_rich_payload(label: &str, words: usize) -> String {
 async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
     init_test_tracing();
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -428,7 +428,7 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -494,10 +494,10 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
 async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
     init_test_tracing();
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -605,7 +605,7 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -666,10 +666,10 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
 async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
     init_test_tracing();
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -777,7 +777,7 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -838,10 +838,10 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -919,7 +919,7 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -952,10 +952,10 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_regular_tools() {
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1041,7 +1041,7 @@ async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -1077,11 +1077,11 @@ async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let anchor = "ANCHOR_CTX_9f3a9a4bc7f14d60b2a6e8c14529f0aa";
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         two_todo_tool_calls_response(),
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1133,7 +1133,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
         .expect("failed to decode task progress");
     assert_budget_state_is_known(&progress);
 
-    let request_log = zai_provider.request_log().await;
+    let request_log = llm_provider.request_log().await;
     assert!(request_log.len() >= 2, "expected at least two LLM calls");
     assert!(
         request_contains(&request_log[0], anchor),
@@ -1165,10 +1165,10 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1247,7 +1247,7 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -1273,11 +1273,11 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary() {
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         two_todo_tool_calls_response(),
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1377,10 +1377,10 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1441,7 +1441,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -1476,11 +1476,11 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
 async fn e2e_compress_tool_triggers_manual_compaction() {
     init_test_tracing();
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         tool_call_response("compress", serde_json::json!({})),
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1519,7 +1519,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -1582,11 +1582,11 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
 async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
     init_test_tracing();
 
-    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         compress_and_write_todos_response(),
         super::helpers::structured_final_answer_response("done"),
     ]));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1622,7 +1622,7 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
 
     let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
     let event_names: Vec<String> = events

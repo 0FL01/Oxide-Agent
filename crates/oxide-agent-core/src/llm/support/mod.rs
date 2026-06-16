@@ -1,15 +1,26 @@
 pub(crate) mod backoff;
-#[cfg(feature = "llm-mistral")]
-pub(crate) mod common;
 pub(crate) mod history;
 #[cfg(any(
     feature = "llm-chatgpt",
+    feature = "llm-minimax",
     feature = "llm-mistral",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
 pub mod http;
-#[cfg(feature = "llm-mistral")]
-pub(crate) mod openai_compat;
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod media;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod sse;

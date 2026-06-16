@@ -19,6 +19,8 @@ pub struct LlmClient {
     #[cfg(feature = "llm-opencode-go")]
     opencode_zen_model_catalog:
         Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
+    #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+    openai_base_model_catalogs: Vec<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -229,6 +231,11 @@ impl LlmClient {
             settings,
             support::http::create_http_client(),
         );
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        let openai_base_model_catalogs = providers::openai_base::module::build_model_catalogs(
+            settings,
+            support::http::create_http_client(),
+        );
 
         Self {
             providers,
@@ -236,6 +243,8 @@ impl LlmClient {
             opencode_go_model_catalog,
             #[cfg(feature = "llm-opencode-go")]
             opencode_zen_model_catalog,
+            #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+            openai_base_model_catalogs,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -345,6 +354,56 @@ impl LlmClient {
             );
         }
         #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
+    }
+
+    /// Returns OpenAI Base discovered models when the provider is compiled and configured.
+    pub async fn openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        {
+            if self.openai_base_model_catalogs.is_empty() {
+                return None;
+            }
+            let mut models = Vec::new();
+            for catalog in &self.openai_base_model_catalogs {
+                models.extend(
+                    catalog
+                        .models()
+                        .await
+                        .into_iter()
+                        .map(DiscoveredLlmModel::from),
+                );
+            }
+            Some(models)
+        }
+        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
+        {
+            None
+        }
+    }
+
+    /// Refreshes OpenAI Base discovered models when the provider is compiled and configured.
+    pub async fn refresh_openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        {
+            if self.openai_base_model_catalogs.is_empty() {
+                return None;
+            }
+            let mut models = Vec::new();
+            for catalog in &self.openai_base_model_catalogs {
+                models.extend(
+                    catalog
+                        .refresh()
+                        .await
+                        .into_iter()
+                        .map(DiscoveredLlmModel::from),
+                );
+            }
+            Some(models)
+        }
+        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
         {
             None
         }
@@ -733,9 +792,7 @@ impl LlmClient {
             .await
     }
 
-    /// Transcribe audio with automatic fallback for text-only providers and retry logic.
-    ///
-    /// If the provider returns `ZAI_FALLBACK_TO_MEDIA` error, uses `media_model_provider` instead.
+    /// Transcribe audio with retry logic.
     /// Retries up to 5 times with exponential backoff for retryable errors.
     ///
     /// # Errors
@@ -748,47 +805,17 @@ impl LlmClient {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let primary_result = self
-            .retry_with_backoff(
-                || async {
-                    let provider = self.get_provider(provider_name)?;
-                    provider
-                        .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
-                        .await
-                },
-                &format!("Transcription with {}", provider_name),
-                3000,
-            )
-            .await;
-
-        match primary_result {
-            Ok(text) => Ok(text),
-            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_MEDIA" => {
-                let media_provider = self
-                    .media_model_provider
-                    .as_deref()
-                    .ok_or_else(|| LlmError::MissingConfig("media_model_provider".to_string()))?;
-                let media_model_id = self
-                    .media_model_id
-                    .as_deref()
-                    .ok_or_else(|| LlmError::MissingConfig("media_model_id".to_string()))?;
-
-                info!("ZAI does not support audio, falling back to media model {media_model_id}");
-
-                self.retry_with_backoff(
-                    || async {
-                        let provider = self.get_provider(media_provider)?;
-                        provider
-                            .transcribe_audio(audio_bytes.clone(), mime_type, media_model_id)
-                            .await
-                    },
-                    &format!("Transcription fallback with {}", media_provider),
-                    3000,
-                )
-                .await
-            }
-            Err(e) => Err(e),
-        }
+        self.retry_with_backoff(
+            || async {
+                let provider = self.get_provider(provider_name)?;
+                provider
+                    .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
+                    .await
+            },
+            &format!("Transcription with {}", provider_name),
+            3000,
+        )
+        .await
     }
 
     /// Analyze an image with a text prompt
@@ -1302,7 +1329,7 @@ mod tests {
         provider.expect_chat_with_tools().return_once(|request| {
             assert_eq!(
                 request.system_prompt,
-                "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
+                "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n### CURRENT DATE AND TIME\nNow.\n\n[SYSTEM: retry with strict JSON]"
             );
             assert_eq!(request.messages.len(), 2);
             assert_eq!(request.messages[0].role, "user");

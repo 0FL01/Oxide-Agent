@@ -6,7 +6,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.app
       args:
-        CARGO_FEATURES: oxide-agent-telegram-bot/profile-media-enabled
+        CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local
         PACKAGES: oxide-agent-telegram-bot
         BINARIES: oxide-agent-telegram-bot
         ENTRYPOINT_BINARY: oxide-agent-telegram-bot

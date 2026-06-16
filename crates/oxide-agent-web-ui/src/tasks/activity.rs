@@ -19,6 +19,8 @@ pub(super) fn ActivityStatusChip(
     active_task: ReadSignal<Option<TaskDetail>>,
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
+    activity_task_id: ReadSignal<Option<String>>,
+    set_activity_task_id: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     view! {
         {move || {
@@ -43,9 +45,10 @@ pub(super) fn ActivityStatusChip(
                 TaskStatus::Interrupted => "Interrupted",
                 TaskStatus::Completed => "Completed",
             };
+            let task_id = latest_activity_task_id(active_task, tasks);
             view! {
                 <div class="status-wrap">
-                    <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer(open, set_open)>
+                    <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
                         <span class="dot"></span>
                         <span>{label}</span>
                         <span class="chevron">"›"</span>
@@ -59,11 +62,11 @@ pub(super) fn ActivityStatusChip(
 #[component]
 pub(super) fn ThinkingButton(
     label: String,
-    open: ReadSignal<bool>,
-    set_open: WriteSignal<bool>,
+    open: bool,
+    on_click: Callback<leptos::ev::MouseEvent>,
 ) -> impl IntoView {
     view! {
-        <button class=move || if open.get() { "thinking-button open" } else { "thinking-button" } type="button" on:click=move |_| toggle_drawer(open, set_open)>
+        <button class=if open { "thinking-button open" } else { "thinking-button" } type="button" on:click=move |ev| on_click.run(ev)>
             <span class="dot"></span>
             <span>{label}</span>
             <span class="chevron">"›"</span>
@@ -71,20 +74,34 @@ pub(super) fn ThinkingButton(
     }
 }
 
-fn toggle_drawer(open: ReadSignal<bool>, set_open: WriteSignal<bool>) {
-    set_open.set(!open.get());
+fn toggle_drawer_for_task(
+    open: ReadSignal<bool>,
+    set_open: WriteSignal<bool>,
+    activity_task_id: ReadSignal<Option<String>>,
+    set_activity_task_id: WriteSignal<Option<String>>,
+    task_id: Option<String>,
+) {
+    if open.get() && activity_task_id.get() == task_id {
+        set_open.set(false);
+        set_activity_task_id.set(None);
+    } else {
+        set_activity_task_id.set(task_id);
+        set_open.set(true);
+    }
 }
 
 #[component]
 pub(super) fn ActivityDrawer(
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
+    activity_task_id: ReadSignal<Option<String>>,
+    set_activity_task_id: WriteSignal<Option<String>>,
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
-    has_older_events: ReadSignal<bool>,
-    loading_older_events: ReadSignal<bool>,
+    has_older_events: Signal<bool>,
+    loading_older_events: Signal<bool>,
     load_older_events: Callback<leptos::ev::MouseEvent>,
 ) -> impl IntoView {
     let (elapsed_now_millis, set_elapsed_now_millis) =
@@ -102,11 +119,11 @@ pub(super) fn ActivityDrawer(
     }
 
     view! {
-        <aside class=move || if open.get() && latest_activity_task_id(active_task, tasks).is_some() { "activity-drawer open" } else { "activity-drawer" }>
+        <aside class=move || if open.get() && activity_task_id.get().is_some() { "activity-drawer open" } else { "activity-drawer" }>
             <header class="activity-header">
                 <div class="activity-title-row">
                     <span class="activity-title">"Activity"</span>
-                    {move || latest_activity_elapsed_label(active_task, tasks, elapsed_now_millis).map(|elapsed| view! {
+                    {move || activity_elapsed_label(activity_task_id, active_task, tasks, elapsed_now_millis).map(|elapsed| view! {
                         <span class="activity-title-separator">"·"</span>
                         <span class="activity-elapsed">{elapsed}</span>
                     })}
@@ -119,7 +136,10 @@ pub(super) fn ActivityDrawer(
                     >
                         {move || if show_sub_agent_events.get() { "Sub-agents" } else { "Root only" }}
                     </button>
-                    <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
+                    <button class="activity-close" type="button" on:click=move |_| {
+                        set_open.set(false);
+                        set_activity_task_id.set(None);
+                    }>"×"</button>
                 </div>
             </header>
             <ContextCard progress=progress />
@@ -137,7 +157,7 @@ pub(super) fn ActivityDrawer(
                     </div>
                 })}
                 {move || {
-                    let Some(task_id) = latest_activity_task_id(active_task, tasks) else {
+                    let Some(task_id) = activity_task_id.get() else {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
                     };
                     let include_sub_agents = show_sub_agent_events.get();
@@ -149,7 +169,7 @@ pub(super) fn ActivityDrawer(
                         .filter(|event| is_chat_visible_event(&event.kind))
                         .filter(is_useful_event)
                         .collect();
-                    let task_is_terminal = latest_activity_status(active_task, tasks)
+                    let task_is_terminal = activity_task_status(&task_id, active_task, tasks)
                         .is_some_and(|status| status.is_terminal());
                     let live_owner = active_task
                         .get()
@@ -210,6 +230,24 @@ fn latest_activity_status(
     })
 }
 
+fn activity_task_status(
+    task_id: &str,
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+) -> Option<TaskStatus> {
+    active_task
+        .get()
+        .filter(|task| task.task_id == task_id)
+        .map(|task| task.status)
+        .or_else(|| {
+            tasks
+                .get()
+                .into_iter()
+                .find(|task| task.task_id == task_id)
+                .map(|task| task.status)
+        })
+}
+
 #[derive(Clone, Copy)]
 struct ActivityTiming {
     status: TaskStatus,
@@ -243,19 +281,22 @@ impl From<&TaskDetail> for ActivityTiming {
     }
 }
 
-fn latest_activity_elapsed_label(
+fn activity_elapsed_label(
+    activity_task_id: ReadSignal<Option<String>>,
     active_task: ReadSignal<Option<TaskDetail>>,
     tasks: ReadSignal<Vec<TaskSummary>>,
     now_millis: ReadSignal<i64>,
 ) -> Option<String> {
+    let task_id = activity_task_id.get()?;
     let timing = active_task
         .get()
+        .filter(|task| task.task_id == task_id)
         .map(|task| ActivityTiming::from(&task))
         .or_else(|| {
             tasks
                 .get()
                 .into_iter()
-                .max_by_key(|task| task.updated_at)
+                .find(|task| task.task_id == task_id)
                 .map(|task| ActivityTiming::from(&task))
         })?;
     Some(format_duration(activity_elapsed_seconds(

@@ -42,32 +42,11 @@ profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-sqlx",
 ]
-profile-lite = [
-    "transport-telegram",
-    "oxide-agent-core/profile-lite",
-    "storage-sqlx",
-]
 profile-search-only = [
     "transport-telegram",
     "oxide-agent-core/profile-search-only",
     "storage-sqlx",
 ]
-profile-no-sandbox = [
-    "transport-telegram",
-    "oxide-agent-core/profile-no-sandbox",
-    "storage-sqlx",
-]
-profile-media-enabled = [
-    "transport-telegram",
-    "oxide-agent-core/profile-media-enabled",
-    "storage-sqlx",
-]
-profile-host-bwrap = [
-    "transport-telegram",
-    "oxide-agent-core/profile-host-bwrap",
-    "storage-sqlx",
-]
-
 [[bin]]
 name = "oxide-agent-telegram-bot"
 path = "src/main.rs"

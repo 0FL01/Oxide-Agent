@@ -168,33 +168,6 @@ pub fn supports_structured_output_for_model(model_info: &ModelInfo) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "llm-nvidia")]
-    #[test]
-    fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
-        let supported = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-v4-flash".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-        let unsupported = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-r1".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "nvidia".to_string(),
-            weight: 1,
-        };
-
-        let supported_capabilities = super::provider_capabilities_for_model(&supported);
-        let unsupported_capabilities = super::provider_capabilities_for_model(&unsupported);
-
-        assert!(supported_capabilities.supports_tool_calling);
-        assert!(supported_capabilities.supports_structured_output);
-        assert!(!unsupported_capabilities.supports_tool_calling);
-        assert!(!unsupported_capabilities.supports_structured_output);
-    }
-
     #[cfg(feature = "llm-chatgpt")]
     #[test]
     fn chatgpt_capabilities_disable_structured_output() {
@@ -207,8 +180,8 @@ mod tests {
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_capabilities_disable_structured_output() {
-        let capabilities = super::provider_capabilities("minimax");
+    fn anthropic_capabilities_disable_structured_output() {
+        let capabilities = super::provider_capabilities("anthropic");
 
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
@@ -285,43 +258,6 @@ mod tests {
         assert_eq!(alias.tool_history_label(), "strict");
         assert!(alias.supports_tool_calling);
         assert!(!alias.supports_structured_output);
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_capabilities_disable_structured_output() {
-        let capabilities = super::provider_capabilities("zai");
-
-        assert!(capabilities.supports_tool_calling);
-        assert!(!capabilities.supports_structured_output);
-        assert_eq!(capabilities.tool_history_label(), "best_effort");
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn provider_capabilities_for_zai_model_apply_model_specific_overrides() {
-        let structured = crate::config::ModelInfo {
-            id: "glm-4.6".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "zai".to_string(),
-            weight: 1,
-        };
-        let conservative = crate::config::ModelInfo {
-            id: "glm-5".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "zai".to_string(),
-            weight: 1,
-        };
-
-        let structured_capabilities = super::provider_capabilities_for_model(&structured);
-        let conservative_capabilities = super::provider_capabilities_for_model(&conservative);
-
-        assert!(structured_capabilities.supports_tool_calling);
-        assert!(structured_capabilities.supports_structured_output);
-        assert!(conservative_capabilities.supports_tool_calling);
-        assert!(!conservative_capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-opencode-go")]

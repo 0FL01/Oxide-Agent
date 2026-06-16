@@ -5,12 +5,10 @@ use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
-#[cfg(feature = "tool-crawl4ai-markdown")]
-use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
+#[cfg(feature = "tool-crw")]
+use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::tool_runtime::DelegationToolModule;
-#[cfg(feature = "tool-duckduckgo")]
-use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]
@@ -37,8 +35,6 @@ use crate::agent::tool_runtime::SandboxExecToolModule;
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::tool_runtime::SileroTtsToolModule;
 #[cfg(feature = "tool-stack-logs")]
@@ -63,20 +59,20 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-image",
     feature = "tool-media-video",
     feature = "tool-reminder",
-    feature = "tool-duckduckgo",
     feature = "tool-brave-search",
-    feature = "tool-searxng",
+    feature = "tool-crw",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
     feature = "tool-todos",
     feature = "tool-tts-kokoro",
     feature = "tool-tts-silero",
-    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-wiki-memory",
     feature = "tool-ytdlp",
 ))]
 use crate::agent::tool_runtime::ToolModule;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebCrawlerToolModule;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(feature = "tool-wiki-memory")]
@@ -142,15 +138,13 @@ impl AgentExecutor {
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
-            feature = "tool-duckduckgo",
             feature = "tool-brave-search",
-            feature = "tool-searxng",
+            feature = "tool-crw",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
-            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
@@ -179,12 +173,10 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
         #[cfg(feature = "tool-reminder")]
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
-        #[cfg(feature = "tool-duckduckgo")]
-        self.register_tool_runtime_module(registry, &DuckDuckGoToolModule, ctx);
         #[cfg(feature = "tool-brave-search")]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
-        #[cfg(feature = "tool-searxng")]
-        self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
+        #[cfg(feature = "tool-crw")]
+        self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
         self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
@@ -197,8 +189,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
         #[cfg(feature = "tool-tts-silero")]
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
-        #[cfg(feature = "tool-crawl4ai-markdown")]
-        self.register_tool_runtime_module(registry, &Crawl4AiMarkdownToolModule, ctx);
+        #[cfg(feature = "tool-webfetch-md")]
+        self.register_tool_runtime_module(registry, &WebCrawlerToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-wiki-memory")]
@@ -229,15 +221,13 @@ impl AgentExecutor {
         feature = "tool-media-image",
         feature = "tool-media-video",
         feature = "tool-reminder",
-        feature = "tool-duckduckgo",
         feature = "tool-brave-search",
-        feature = "tool-searxng",
+        feature = "tool-crw",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-tts-kokoro",
         feature = "tool-tts-silero",
-        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
@@ -276,15 +266,13 @@ impl AgentExecutor {
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
-            feature = "tool-duckduckgo",
             feature = "tool-brave-search",
-            feature = "tool-searxng",
+            feature = "tool-crw",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
-            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"

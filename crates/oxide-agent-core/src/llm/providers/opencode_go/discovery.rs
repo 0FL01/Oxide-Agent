@@ -18,6 +18,7 @@ pub const MAX_MODEL_DISCOVERY_TTL_SECS: u64 = 60 * 60;
 
 pub const OPENCODE_GO_PROVIDER_ID: &str = "opencode-go";
 pub const OPENCODE_ZEN_PROVIDER_ID: &str = "opencode-zen";
+pub const OPENAI_BASE_PROVIDER_ID: &str = "openai-base";
 
 static FREE_MODEL_RE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"(?i)(^|[-_\s])free($|[-_\s])");
 
@@ -131,6 +132,8 @@ pub struct OpenCodeGoDiscoveryConfig {
     pub models_url: String,
     pub ttl: Duration,
     pub protocol_overrides: BTreeMap<String, ModelProtocol>,
+    default_protocol: Option<ModelProtocol>,
+    default_image_input: Option<bool>,
     filter: ModelDiscoveryFilter,
 }
 
@@ -153,6 +156,8 @@ impl OpenCodeGoDiscoveryConfig {
             models_url,
             ttl,
             protocol_overrides,
+            None,
+            None,
             ModelDiscoveryFilter::All,
         )
     }
@@ -169,7 +174,33 @@ impl OpenCodeGoDiscoveryConfig {
             models_url,
             ttl,
             protocol_overrides,
+            None,
+            None,
             ModelDiscoveryFilter::FreeOnly,
+        )
+    }
+
+    #[must_use]
+    pub fn new_openai_base(models_url: impl Into<String>, ttl: Duration) -> Self {
+        Self::new_openai_base_for_provider(OPENAI_BASE_PROVIDER_ID, models_url, ttl)
+    }
+
+    #[must_use]
+    pub fn new_openai_base_for_provider(
+        provider_id: impl Into<String>,
+        models_url: impl Into<String>,
+        ttl: Duration,
+    ) -> Self {
+        let provider_id = provider_id.into();
+        Self::new_for_provider(
+            provider_id.clone(),
+            provider_id,
+            models_url,
+            ttl,
+            BTreeMap::new(),
+            Some(ModelProtocol::OpenAiChatCompletions),
+            Some(true),
+            ModelDiscoveryFilter::All,
         )
     }
 
@@ -179,6 +210,8 @@ impl OpenCodeGoDiscoveryConfig {
         models_url: impl Into<String>,
         ttl: Duration,
         protocol_overrides: BTreeMap<String, ModelProtocol>,
+        default_protocol: Option<ModelProtocol>,
+        default_image_input: Option<bool>,
         filter: ModelDiscoveryFilter,
     ) -> Self {
         Self {
@@ -187,6 +220,8 @@ impl OpenCodeGoDiscoveryConfig {
             models_url: models_url.into(),
             ttl,
             protocol_overrides,
+            default_protocol,
+            default_image_input,
             filter,
         }
     }
@@ -211,7 +246,7 @@ impl OpenCodeGoDiscoveryConfig {
 #[derive(Debug)]
 pub struct OpenCodeGoModelCatalog {
     http_client: HttpClient,
-    api_key: String,
+    api_key: Option<String>,
     config: OpenCodeGoDiscoveryConfig,
     state: RwLock<ModelCatalogState>,
 }
@@ -240,7 +275,7 @@ impl OpenCodeGoModelCatalog {
     #[must_use]
     pub fn new(
         http_client: HttpClient,
-        api_key: String,
+        api_key: Option<String>,
         config: OpenCodeGoDiscoveryConfig,
     ) -> Self {
         Self {
@@ -313,10 +348,11 @@ impl OpenCodeGoModelCatalog {
     async fn fetch_network_models(
         &self,
     ) -> Result<Vec<RawOpenCodeGoModel>, OpenCodeGoDiscoveryError> {
-        let response = self
-            .http_client
-            .get(&self.config.models_url)
-            .bearer_auth(&self.api_key)
+        let mut request = self.http_client.get(&self.config.models_url);
+        if let Some(api_key) = self.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+            request = request.bearer_auth(api_key);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| OpenCodeGoDiscoveryError::Network(error.to_string()))?;
@@ -445,6 +481,16 @@ pub fn infer_protocol_for_prefix(
     ModelProtocol::Unknown
 }
 
+fn infer_protocol_for_config(model_id: &str, config: &OpenCodeGoDiscoveryConfig) -> ModelProtocol {
+    let inferred =
+        infer_protocol_for_prefix(model_id, &config.model_prefix, &config.protocol_overrides);
+    if inferred == ModelProtocol::Unknown {
+        config.default_protocol.unwrap_or(inferred)
+    } else {
+        inferred
+    }
+}
+
 #[must_use]
 pub fn raw_model_id(model_id: &str) -> String {
     let without_go = raw_model_id_for_prefix(model_id, OPENCODE_GO_PROVIDER_ID);
@@ -485,19 +531,20 @@ fn discovered_model_for_config(
         model_id: model_id.clone(),
         qualified_id: qualified_id.clone(),
         display_name: qualified_id,
-        protocol: infer_protocol_for_prefix(
-            &model_id,
-            &config.model_prefix,
-            &config.protocol_overrides,
-        ),
-        supports_image_input: supports_image_input(raw_model, &model_id),
+        protocol: infer_protocol_for_config(&model_id, config),
+        supports_image_input: supports_image_input(raw_model, &model_id, config),
         source,
         fetched_at,
     }
 }
 
-fn supports_image_input(model: &RawOpenCodeGoModel, model_id: &str) -> bool {
+fn supports_image_input(
+    model: &RawOpenCodeGoModel,
+    model_id: &str,
+    config: &OpenCodeGoDiscoveryConfig,
+) -> bool {
     explicit_image_input_support(model)
+        .or(config.default_image_input)
         .unwrap_or_else(|| supports_image_input_for_model_id(model_id))
 }
 
@@ -793,7 +840,7 @@ mod tests {
     async fn refresh_uses_last_known_good_cache_after_error() {
         let catalog = OpenCodeGoModelCatalog::new(
             HttpClient::new(),
-            "test-key".to_string(),
+            Some("test-key".to_string()),
             discovery_config(),
         );
 
@@ -816,7 +863,7 @@ mod tests {
     async fn refresh_returns_empty_when_cache_is_empty_after_error() {
         let catalog = OpenCodeGoModelCatalog::new(
             HttpClient::new(),
-            "test-key".to_string(),
+            Some("test-key".to_string()),
             discovery_config(),
         );
 
@@ -845,7 +892,8 @@ mod tests {
             _ => panic!("set OPENCODE_GO_API_KEY or OPENCODE_API_KEY for smoke test"),
         };
 
-        let catalog = OpenCodeGoModelCatalog::new(HttpClient::new(), api_key, discovery_config());
+        let catalog =
+            OpenCodeGoModelCatalog::new(HttpClient::new(), Some(api_key), discovery_config());
         let models = catalog.refresh().await;
         assert!(
             !models.is_empty(),

@@ -140,16 +140,6 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
     let provider = string_field(payload, "provider");
     let error_kind = string_field(payload, "error_kind");
 
-    if is_duckduckgo(provider, effective_tool_name)
-        && matches!(error_kind, Some("blocked" | "rate_limited"))
-    {
-        return Some(duckduckgo_dead_end(
-            effective_tool_name,
-            error_kind.unwrap_or("blocked"),
-            string_field(payload, "query"),
-        ));
-    }
-
     if is_brave_search(provider, effective_tool_name)
         && matches!(
             error_kind,
@@ -229,23 +219,6 @@ fn classify_text_failure(tool_name: &str, content: &str) -> Option<FailureSignal
     None
 }
 
-fn duckduckgo_dead_end(tool_name: &str, error_kind: &str, query: Option<&str>) -> FailureSignal {
-    let query = query.map(trim_for_prompt);
-    let summary = query.as_ref().map_or_else(
-        || format!("DuckDuckGo {error_kind}"),
-        |query| format!("DuckDuckGo {error_kind} query: {query}"),
-    );
-    FailureSignal {
-        failure_kind: error_kind.to_string(),
-        dead_end_scope: "provider",
-        target: "duckduckgo".to_string(),
-        summary,
-        guidance: format!(
-            "Do not retry {tool_name} with rewritten queries in this task; use existing results or another available source."
-        ),
-    }
-}
-
 fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal {
     let query = query.map(trim_for_prompt);
     let summary = query.as_ref().map_or_else(
@@ -257,7 +230,7 @@ fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal
         dead_end_scope: "provider",
         target: "brave_search".to_string(),
         summary,
-        guidance: "Do not retry brave_search in this task; use searxng_search or synthesize from existing results.".to_string(),
+        guidance: "Do not retry brave_search in this task; use web_search or synthesize from existing results.".to_string(),
     }
 }
 
@@ -305,11 +278,8 @@ fn provider_dead_end(tool_name: &str, provider: &str, error_kind: &str) -> Failu
 }
 
 fn is_web_markdown(provider: Option<&str>, tool_name: &str) -> bool {
-    provider == Some("web_markdown") || tool_name == "web_markdown"
-}
-
-fn is_duckduckgo(provider: Option<&str>, tool_name: &str) -> bool {
-    provider == Some("duckduckgo") || matches!(tool_name, "duckduckgo_search" | "duckduckgo_news")
+    matches!(provider, Some("web_markdown" | "web_crawler"))
+        || matches!(tool_name, "web_markdown" | "web_crawler")
 }
 
 fn is_brave_search(provider: Option<&str>, tool_name: &str) -> bool {
@@ -387,46 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_duckduckgo_block_as_provider_dead_end() {
-        let raw = serde_json::to_string(&json!({
-            "status": "failure",
-            "success": false,
-            "tool_name": "duckduckgo_search",
-            "error_message": "DuckDuckGo is temporarily blocking or rate-limiting requests",
-            "structured_payload": {
-                "provider": "duckduckgo",
-                "kind": "search",
-                "query": "kimi code subscription $20 per month agent API",
-                "region": "wt-wt",
-                "error_kind": "blocked",
-                "provider_unavailable": true,
-                "results": []
-            }
-        }))
-        .expect("raw json");
-
-        let summary = summarize_tool_failure_content("duckduckgo_search", &raw)
-            .expect("blocked DuckDuckGo failure should be summarized");
-        let value = parsed_summary(&summary.content);
-
-        assert_eq!(value["dead_end_scope"], "provider");
-        assert_eq!(value["failure_kind"], "blocked");
-        assert_eq!(value["target"], "duckduckgo");
-        assert!(
-            value["summary"]
-                .as_str()
-                .expect("summary")
-                .contains("kimi code subscription")
-        );
-        assert!(
-            value["guidance"]
-                .as_str()
-                .expect("guidance")
-                .contains("Do not retry duckduckgo_search")
-        );
-    }
-
-    #[test]
     fn summarizes_brave_rate_limit_as_provider_dead_end() {
         let raw = serde_json::to_string(&json!({
             "provider": "brave_search",
@@ -436,7 +366,7 @@ mod tests {
             "error": "Brave Search is temporarily rate-limited",
             "provider_unavailable": true,
             "retryable": false,
-            "fallback": "searxng_search",
+            "fallback": "web_search",
             "results": []
         }))
         .expect("raw json");
@@ -458,7 +388,7 @@ mod tests {
             value["guidance"]
                 .as_str()
                 .expect("guidance")
-                .contains("Do not retry brave_search in this task; use searxng_search")
+                .contains("Do not retry brave_search in this task; use web_search")
         );
     }
 

@@ -242,9 +242,16 @@ pub(super) struct PendingFinalDraft {
     pub source_tool_name: &'static str,
 }
 
+pub(super) enum PendingFinalDraftDecision {
+    UseDraft,
+    UseFinal,
+    MergeDraftAndFinal,
+}
+
 impl PendingFinalDraft {
     const MIN_DRAFT_CHARS: usize = 1000;
     const SHORT_FINAL_CHARS: usize = 800;
+    const ADDENDUM_FINAL_RATIO: usize = 3;
 
     pub(super) fn from_write_todos_content(
         content: String,
@@ -262,9 +269,40 @@ impl PendingFinalDraft {
         })
     }
 
-    pub(super) fn should_replace_final_response(&self, final_response: &str) -> bool {
-        final_response.trim().chars().count() < Self::SHORT_FINAL_CHARS
-            && self.content.chars().count() >= Self::MIN_DRAFT_CHARS
+    pub(super) fn final_response_decision(
+        &self,
+        final_response: &str,
+    ) -> PendingFinalDraftDecision {
+        let draft = self.content.trim();
+        let final_response = final_response.trim();
+
+        if final_response.is_empty() || draft.contains(final_response) {
+            return PendingFinalDraftDecision::UseDraft;
+        }
+
+        if final_response.contains(draft) {
+            return PendingFinalDraftDecision::UseFinal;
+        }
+
+        let final_chars = final_response.chars().count();
+        let draft_chars = draft.chars().count();
+        if final_chars < Self::SHORT_FINAL_CHARS && draft_chars >= Self::MIN_DRAFT_CHARS {
+            return PendingFinalDraftDecision::UseDraft;
+        }
+
+        if final_chars.saturating_mul(Self::ADDENDUM_FINAL_RATIO) < draft_chars {
+            return PendingFinalDraftDecision::MergeDraftAndFinal;
+        }
+
+        PendingFinalDraftDecision::UseFinal
+    }
+
+    pub(super) fn merge_with_final_response(&self, final_response: &str) -> String {
+        format!(
+            "{}\n\n---\n\n{}",
+            self.content.trim(),
+            final_response.trim()
+        )
     }
 
     pub(super) fn content_len(&self) -> usize {

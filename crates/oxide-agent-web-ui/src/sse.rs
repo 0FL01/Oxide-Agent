@@ -566,7 +566,12 @@ fn upsert_session_summary(set_sessions: WriteSignal<Vec<SessionSummary>>, summar
         } else {
             items.push(summary);
         }
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        items.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| b.session_id.cmp(&a.session_id))
+        });
     });
 }
 

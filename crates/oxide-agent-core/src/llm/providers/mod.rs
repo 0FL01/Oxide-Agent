@@ -1,15 +1,38 @@
+#[cfg(feature = "llm-minimax")]
+pub mod anthropic;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(unused_imports, dead_code)]
+pub(crate) mod anthropic_messages;
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod chat_completions;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
-#[cfg(feature = "llm-minimax")]
-pub mod minimax;
-#[allow(missing_docs)]
-#[cfg(feature = "llm-mistral")]
-pub mod mistral;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+pub(crate) mod messages;
 pub(crate) mod modules;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-nvidia")]
-pub mod nvidia;
+#[cfg(feature = "llm-openai-base")]
+pub mod openai_base;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-opencode-go")]
 pub mod opencode_go;
@@ -20,8 +43,7 @@ pub mod openrouter;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -31,8 +53,7 @@ mod protocol_profiles;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -42,8 +63,7 @@ mod tool_call_adapter;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -53,8 +73,7 @@ mod tool_call_encoder;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
@@ -64,34 +83,26 @@ mod tool_correlation;
     feature = "llm-chatgpt",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
 #[allow(dead_code)]
 mod tool_result_encoder;
-#[allow(missing_docs)]
-#[cfg(feature = "llm-zai")]
-pub mod zai;
-
+#[cfg(feature = "llm-minimax")]
+pub use anthropic::AnthropicProvider;
 #[cfg(feature = "llm-chatgpt")]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-minimax")]
-pub use minimax::MiniMaxProvider;
-#[cfg(feature = "llm-mistral")]
-pub use mistral::MistralProvider;
-#[cfg(feature = "llm-nvidia")]
-pub use nvidia::NvidiaProvider;
+#[cfg(feature = "llm-openai-base")]
+pub use openai_base::OpenAIBaseProvider;
 #[cfg(feature = "llm-opencode-go")]
 pub use opencode_go::OpenCodeGoProvider;
 #[cfg(feature = "llm-openrouter")]
 pub use openrouter::OpenRouterProvider;
-#[cfg(feature = "llm-zai")]
-pub use zai::{ZaiProvider, parse_zai_flush_time};
 
 pub(crate) use modules::{
-    build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-    provider_key, provider_media_capabilities, provider_media_capabilities_for_model,
-    provider_missing_route_config_message, provider_module_id,
+    build_configured_providers, canonical_route_provider, provider_capabilities,
+    provider_capabilities_for_model, provider_key, provider_media_capabilities,
+    provider_media_capabilities_for_model, provider_missing_route_config_message,
+    provider_module_id,
 };

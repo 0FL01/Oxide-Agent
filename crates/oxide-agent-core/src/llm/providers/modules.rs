@@ -3,27 +3,39 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+use super::super::capabilities::ToolHistoryMode;
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
 
 #[cfg(any(
     feature = "llm-chatgpt",
+    feature = "llm-minimax",
     feature = "llm-mistral",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
+    feature = "llm-openai-base",
     feature = "llm-opencode-go",
     feature = "llm-openrouter"
 ))]
 use crate::llm::support;
 
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+use super::chat_completions::{client::ChatCompletionsClient, profile::ChatCompletionsProfile};
+#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+use super::messages::{MessagesClient, MessagesProfile};
+
 /// Context shared by provider module factories.
 pub(crate) struct LlmProviderBuildContext {
     #[cfg(any(
         feature = "llm-chatgpt",
+        feature = "llm-minimax",
         feature = "llm-mistral",
-        feature = "llm-zai",
-        feature = "llm-nvidia",
+        feature = "llm-openai-base",
         feature = "llm-opencode-go",
         feature = "llm-openrouter"
     ))]
@@ -35,14 +47,295 @@ impl LlmProviderBuildContext {
         Self {
             #[cfg(any(
                 feature = "llm-chatgpt",
+                feature = "llm-minimax",
                 feature = "llm-mistral",
-                feature = "llm-zai",
-                feature = "llm-nvidia",
+                feature = "llm-openai-base",
                 feature = "llm-opencode-go",
                 feature = "llm-openrouter"
             ))]
             http_client: support::http::create_http_client(),
         }
+    }
+}
+
+/// Internal generic compatible-provider kind. This is intentionally not wired
+/// to user config yet; legacy modules remain the stable public surface.
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenericProviderKind {
+    ChatCompletions,
+    Messages,
+}
+
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+impl GenericProviderKind {
+    pub(crate) fn from_config_value(value: &str) -> Result<Self, String> {
+        match value.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+            "chat_completions" => Ok(Self::ChatCompletions),
+            "messages" => Ok(Self::Messages),
+            "chatgpt" | "openai_chatgpt" => {
+                Err("ChatGPT/Codex is not a generic compatible provider kind".to_string())
+            }
+            other => Err(format!("unsupported generic provider kind: {other}")),
+        }
+    }
+}
+
+/// Internal config shape for future compatible endpoint providers.
+///
+/// This documents the intended fields (`kind`, `endpoint_url`, `api_key`, and
+/// optional `profile`) without introducing an untested public settings stanza.
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GenericEndpointProviderConfig {
+    pub(crate) name: String,
+    pub(crate) kind: GenericProviderKind,
+    pub(crate) endpoint_url: String,
+    pub(crate) api_key: Option<String>,
+    pub(crate) profile: Option<String>,
+}
+
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+impl GenericEndpointProviderConfig {
+    pub(crate) fn from_fields(
+        name: impl Into<String>,
+        kind: &str,
+        endpoint_url: impl Into<String>,
+        api_key: Option<String>,
+        profile: Option<String>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            name: name.into(),
+            kind: GenericProviderKind::from_config_value(kind)?,
+            endpoint_url: endpoint_url.into(),
+            api_key,
+            profile,
+        })
+    }
+}
+
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) enum GenericEndpointClient {
+    #[cfg(any(
+        feature = "llm-mistral",
+        feature = "llm-openai-base",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ))]
+    ChatCompletions(ChatCompletionsClient),
+    #[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+    Messages(MessagesClient),
+}
+
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct GenericEndpointProvider {
+    pub(crate) name: String,
+    pub(crate) client: GenericEndpointClient,
+    pub(crate) capabilities: ProviderCapabilities,
+    pub(crate) media_capabilities: MediaCapabilities,
+}
+
+#[cfg(any(
+    feature = "llm-minimax",
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+pub(crate) fn build_generic_endpoint_provider(
+    config: &GenericEndpointProviderConfig,
+    ctx: &LlmProviderBuildContext,
+) -> Result<GenericEndpointProvider, String> {
+    match config.kind {
+        GenericProviderKind::ChatCompletions => {
+            build_generic_chat_completions_provider(config, ctx)
+        }
+        GenericProviderKind::Messages => build_generic_messages_provider(config, ctx),
+    }
+}
+
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+fn build_generic_chat_completions_provider(
+    config: &GenericEndpointProviderConfig,
+    ctx: &LlmProviderBuildContext,
+) -> Result<GenericEndpointProvider, String> {
+    let profile = resolve_generic_chat_completions_profile(config.profile.as_deref())?;
+    let endpoint = profile.endpoint_for(&config.endpoint_url);
+    let client = ChatCompletionsClient::new(
+        ctx.http_client.clone(),
+        endpoint,
+        config.api_key.clone(),
+        "",
+        profile,
+    );
+
+    Ok(GenericEndpointProvider {
+        name: config.name.clone(),
+        client: GenericEndpointClient::ChatCompletions(client),
+        capabilities: profile.capabilities,
+        media_capabilities: profile.media_capabilities,
+    })
+}
+
+#[cfg(all(
+    any(
+        feature = "llm-minimax",
+        feature = "llm-mistral",
+        feature = "llm-openai-base",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ),
+    not(any(
+        feature = "llm-mistral",
+        feature = "llm-openai-base",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ))
+))]
+#[allow(dead_code)]
+fn build_generic_chat_completions_provider(
+    _config: &GenericEndpointProviderConfig,
+    _ctx: &LlmProviderBuildContext,
+) -> Result<GenericEndpointProvider, String> {
+    Err("generic chat_completions providers are not compiled in this build".to_string())
+}
+
+#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[allow(dead_code)]
+fn build_generic_messages_provider(
+    config: &GenericEndpointProviderConfig,
+    ctx: &LlmProviderBuildContext,
+) -> Result<GenericEndpointProvider, String> {
+    let profile = resolve_generic_messages_profile(config.profile.as_deref())?;
+    let endpoint = profile.endpoint_for(&config.endpoint_url);
+    let client = MessagesClient::new(
+        ctx.http_client.clone(),
+        endpoint,
+        config.api_key.clone().unwrap_or_default(),
+        profile,
+    );
+
+    Ok(GenericEndpointProvider {
+        name: config.name.clone(),
+        client: GenericEndpointClient::Messages(client),
+        capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
+        media_capabilities: MediaCapabilities::new(false, false, false),
+    })
+}
+
+#[cfg(all(
+    any(
+        feature = "llm-minimax",
+        feature = "llm-mistral",
+        feature = "llm-openai-base",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ),
+    not(any(feature = "llm-minimax", feature = "llm-opencode-go"))
+))]
+#[allow(dead_code)]
+fn build_generic_messages_provider(
+    _config: &GenericEndpointProviderConfig,
+    _ctx: &LlmProviderBuildContext,
+) -> Result<GenericEndpointProvider, String> {
+    Err("generic messages providers are not compiled in this build".to_string())
+}
+
+#[cfg(any(
+    feature = "llm-mistral",
+    feature = "llm-openai-base",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+#[allow(dead_code)]
+fn resolve_generic_chat_completions_profile(
+    profile: Option<&str>,
+) -> Result<ChatCompletionsProfile, String> {
+    match profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('-', "_").to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("generic") => Ok(ChatCompletionsProfile::generic()),
+        Some("mistral") => Ok(ChatCompletionsProfile::mistral()),
+        Some("zai") => Ok(ChatCompletionsProfile::zai()),
+        Some("openrouter") => Ok(ChatCompletionsProfile::openrouter()),
+        Some("opencode_go") => Ok(ChatCompletionsProfile::opencode_go()),
+        Some("opencode_zen") => Ok(ChatCompletionsProfile::opencode_zen()),
+        Some("chatgpt" | "openai_chatgpt") => {
+            Err("ChatGPT/Codex is not a Chat Completions profile".to_string())
+        }
+        Some(other) => Err(format!("unsupported chat_completions profile: {other}")),
+    }
+}
+
+#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[allow(dead_code)]
+fn resolve_generic_messages_profile(profile: Option<&str>) -> Result<MessagesProfile, String> {
+    match profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('-', "_").to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("anthropic") | Some("messages") => Ok(MessagesProfile::anthropic()),
+        Some("opencode_go") => Ok(MessagesProfile::opencode_go()),
+        Some("chatgpt" | "openai_chatgpt") => {
+            Err("ChatGPT/Codex is not a Messages profile".to_string())
+        }
+        Some(other) => Err(format!("unsupported messages profile: {other}")),
     }
 }
 
@@ -61,8 +354,30 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>>;
 
+    /// Builds named runtime provider instances. Most modules expose one instance
+    /// under their provider ID and aliases; OpenAI Base exposes named instances.
+    fn build_providers(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Vec<(String, Arc<dyn LlmProvider>)> {
+        let Some(provider) = self.build_provider(settings, ctx) else {
+            return Vec::new();
+        };
+        let mut providers = Vec::with_capacity(self.aliases().len() + 1);
+        providers.push((self.provider_id().to_string(), Arc::clone(&provider)));
+        for alias in self.aliases() {
+            providers.push(((*alias).to_string(), Arc::clone(&provider)));
+        }
+        providers
+    }
+
     /// Returns a startup config error when this provider is routed but incomplete.
-    fn missing_route_config_message(&self, _settings: &AgentSettings) -> Option<&'static str> {
+    fn missing_route_config_message(
+        &self,
+        _provider_name: &str,
+        _settings: &AgentSettings,
+    ) -> Option<String> {
         None
     }
 
@@ -104,8 +419,8 @@ pub(crate) fn build_configured_providers(
             continue;
         }
 
-        if let Some(provider) = module.build_provider(settings, &ctx) {
-            insert_provider_aliases(&mut providers, module.as_ref(), provider);
+        for (name, provider) in module.build_providers(settings, &ctx) {
+            insert_provider(&mut providers, &name, provider);
         }
     }
 
@@ -121,7 +436,30 @@ pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapab
 /// Resolves a provider alias or module ID to the compiled provider module ID.
 #[must_use]
 pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::provider_instance_name(provider_name).is_some()
+        || super::openai_base::module::is_legacy_provider_name(provider_name)
+    {
+        return Some("llm-provider/openai-base");
+    }
+
     find_provider_module(provider_name).map(|module| module.provider_id())
+}
+
+/// Returns the canonical runtime provider key for route configuration.
+#[must_use]
+pub(crate) fn canonical_route_provider(provider_name: &str) -> Option<String> {
+    #[cfg(feature = "llm-openai-base")]
+    if let Some(instance) = super::openai_base::module::provider_instance_name(provider_name) {
+        return Some(format!("openai-base:{instance}"));
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::is_legacy_provider_name(provider_name) {
+        return None;
+    }
+
+    provider_module_id(provider_name).map(ToString::to_string)
 }
 
 /// Returns the provider-owned startup config error for a routed provider.
@@ -129,9 +467,9 @@ pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
 pub(crate) fn provider_missing_route_config_message(
     provider_name: &str,
     settings: &AgentSettings,
-) -> Option<&'static str> {
+) -> Option<String> {
     find_provider_module(provider_name)
-        .and_then(|module| module.missing_route_config_message(settings))
+        .and_then(|module| module.missing_route_config_message(provider_name, settings))
 }
 
 /// Returns media capabilities for a compiled provider module.
@@ -160,6 +498,13 @@ pub(crate) fn provider_capabilities_for_model(
 }
 
 fn find_provider_module(provider_name: &str) -> Option<Box<dyn LlmProviderModule>> {
+    #[cfg(feature = "llm-openai-base")]
+    if super::openai_base::module::provider_instance_name(provider_name).is_some()
+        || super::openai_base::module::is_legacy_provider_name(provider_name)
+    {
+        return Some(Box::new(super::openai_base::OpenAIBaseProviderModule));
+    }
+
     let provider_key = provider_key(provider_name);
     compiled_provider_modules()
         .into_iter()
@@ -172,17 +517,6 @@ fn module_matches_key(module: &dyn LlmProviderModule, expected_key: &str) -> boo
             .aliases()
             .iter()
             .any(|alias| provider_key(alias) == expected_key)
-}
-
-fn insert_provider_aliases(
-    providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
-    module: &dyn LlmProviderModule,
-    provider: Arc<dyn LlmProvider>,
-) {
-    insert_provider(providers, module.provider_id(), Arc::clone(&provider));
-    for alias in module.aliases() {
-        insert_provider(providers, alias, Arc::clone(&provider));
-    }
 }
 
 fn insert_provider(
@@ -200,13 +534,11 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
     #[cfg(feature = "llm-mistral")]
-    modules.push(Box::new(super::mistral::MistralProviderModule));
+    modules.push(Box::new(super::openai_base::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
-    modules.push(Box::new(super::minimax::MiniMaxProviderModule));
-    #[cfg(feature = "llm-zai")]
-    modules.push(Box::new(super::zai::ZaiProviderModule));
-    #[cfg(feature = "llm-nvidia")]
-    modules.push(Box::new(super::nvidia::NvidiaProviderModule));
+    modules.push(Box::new(super::anthropic::AnthropicProviderModule));
+    #[cfg(feature = "llm-openai-base")]
+    modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
     #[cfg(feature = "llm-opencode-go")]
@@ -224,12 +556,13 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
         feature = "llm-mistral",
         feature = "llm-minimax",
         feature = "llm-opencode-go",
-        feature = "llm-openrouter",
-        feature = "llm-zai"
+        feature = "llm-openrouter"
     )),
     allow(dead_code, unused_imports)
 )]
 mod tests {
+    #[cfg(feature = "llm-openai-base")]
+    use super::canonical_route_provider;
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
         provider_key, provider_missing_route_config_message, provider_module_id,
@@ -251,22 +584,82 @@ mod tests {
         assert_eq!(provider_key("OpenCode-Go"), "opencode-go");
     }
 
+    #[cfg(feature = "llm-openai-base")]
     #[test]
-    fn removed_direct_gemini_provider_aliases_are_absent() {
-        for provider in [
-            "gemini",
-            "google-gemini",
-            "google_gemini",
-            "llm-provider/gemini",
-            "llm-provider/google-gemini",
-            "llm-provider/google-gemini-direct",
-        ] {
-            assert_eq!(
-                provider_module_id(provider),
-                None,
-                "direct Gemini provider alias must stay absent: {provider}"
-            );
-        }
+    fn openai_base_registers_named_env_provider_instances_only() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OPENAI_BASE_API_BASE");
+        test_remove_env("OPENAI_BASE_API_KEY");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "local");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "http://127.0.0.1:8080/v1",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__1__NAME", "groq");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__1__API_BASE",
+            "https://api.groq.com/openai/v1",
+        );
+
+        let providers = build_configured_providers(&AgentSettings::default());
+
+        assert!(providers.contains_key("openai-base:local"));
+        assert!(providers.contains_key("openai-base:groq"));
+        assert!(!providers.contains_key("openai-base"));
+        assert_eq!(
+            canonical_route_provider("llm-provider/openai-base:Groq"),
+            Some("openai-base:groq".to_string())
+        );
+        assert_eq!(canonical_route_provider("openai-base"), None);
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__1__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__1__API_BASE");
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_legacy_env_returns_migration_error() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_set_env("OPENAI_BASE_API_BASE", "https://api.openai.com/v1");
+
+        assert_eq!(
+            provider_missing_route_config_message("openai-base:openai", &AgentSettings::default()),
+            Some(
+                "Critical: OPENAI_BASE_API_BASE is deprecated. Use OPENAI_BASE_PROVIDERS__N__NAME and OPENAI_BASE_PROVIDERS__N__API_BASE."
+                    .to_string()
+            )
+        );
+
+        test_remove_env("OPENAI_BASE_API_BASE");
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_profile_env_selects_mistral_profile() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("OPENAI_BASE_API_BASE");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "custom-mistral");
+        test_set_env(
+            "OPENAI_BASE_PROVIDERS__0__API_BASE",
+            "https://api.mistral.ai/v1",
+        );
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+
+        let providers = build_configured_providers(&AgentSettings::default());
+
+        assert!(providers.contains_key("openai-base:custom-mistral"));
+
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -324,7 +717,7 @@ mod tests {
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
             Some(
-                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
+                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes".to_string()
             )
         );
 
@@ -423,59 +816,6 @@ mod tests {
         assert!(!capabilities.supports_structured_output);
     }
 
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_module_owns_missing_route_config_message() {
-        let settings = AgentSettings::default();
-
-        assert_eq!(
-            provider_missing_route_config_message("zai", &settings),
-            Some("Critical: ZAI_API_KEY is required for configured ZAI routes")
-        );
-
-        let settings = settings_with_provider_key("llm-provider/zai", "test-zai-key");
-
-        assert_eq!(
-            provider_missing_route_config_message("llm-provider/zai", &settings),
-            None
-        );
-    }
-
-    #[cfg(feature = "llm-zai")]
-    #[test]
-    fn zai_module_owns_model_specific_structured_output() {
-        let route = crate::config::ModelInfo {
-            id: "GLM-4.7".to_string(),
-            provider: "llm-provider/zai".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            weight: 1,
-        };
-
-        let capabilities =
-            provider_capabilities_for_model(&route).expect("provider id should resolve");
-
-        assert!(capabilities.supports_structured_output);
-    }
-
-    #[cfg(feature = "llm-nvidia")]
-    #[test]
-    fn nvidia_module_owns_model_specific_capabilities() {
-        let route = crate::config::ModelInfo {
-            id: "deepseek-ai/deepseek-r1".to_string(),
-            provider: "llm-provider/nvidia".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            weight: 1,
-        };
-
-        let capabilities =
-            provider_capabilities_for_model(&route).expect("provider id should resolve");
-
-        assert!(!capabilities.supports_tool_calling);
-        assert!(!capabilities.supports_structured_output);
-    }
-
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn openrouter_module_owns_model_specific_media_capabilities() {
@@ -506,25 +846,127 @@ mod tests {
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_module_registers_provider_id_and_aliases() {
-        let settings = settings_with_provider_key("llm-provider/minimax", "test-minimax-key");
+    fn anthropic_module_registers_provider_id_and_aliases() {
+        let settings = settings_with_provider_key("llm-provider/anthropic", "test-anthropic-key");
 
         let providers = build_configured_providers(&settings);
 
-        assert!(providers.contains_key("llm-provider/minimax"));
-        assert!(providers.contains_key("minimax"));
-        assert_eq!(provider_module_id("minimax"), Some("llm-provider/minimax"));
+        assert!(providers.contains_key("llm-provider/anthropic"));
+        assert!(providers.contains_key("anthropic"));
+        assert_eq!(
+            provider_module_id("anthropic"),
+            Some("llm-provider/anthropic")
+        );
     }
 
     #[cfg(feature = "llm-minimax")]
     #[test]
-    fn minimax_module_owns_base_capabilities() {
+    fn anthropic_module_owns_base_capabilities() {
         let capabilities =
-            provider_capabilities("llm-provider/minimax").expect("provider should resolve");
+            provider_capabilities("llm-provider/anthropic").expect("provider should resolve");
 
         assert_eq!(capabilities.tool_history_label(), "strict");
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
+    }
+
+    #[cfg(all(feature = "llm-openai-base", feature = "llm-minimax"))]
+    #[test]
+    fn generic_chat_completions_provider_builds_from_kind_endpoint_profile() {
+        let ctx = super::LlmProviderBuildContext::new();
+        let config = super::GenericEndpointProviderConfig::from_fields(
+            "custom-openrouter",
+            "chat_completions",
+            "https://openrouter.ai/api/v1/chat/completions",
+            Some(" token ".to_string()),
+            Some("openrouter".to_string()),
+        )
+        .expect("generic chat completions config should parse");
+
+        let provider = super::build_generic_endpoint_provider(&config, &ctx)
+            .expect("generic chat completions provider should build");
+
+        assert_eq!(provider.name, "custom-openrouter");
+        assert_eq!(provider.capabilities.tool_history_label(), "best_effort");
+        assert!(!provider.capabilities.supports_tool_calling);
+        match provider.client {
+            super::GenericEndpointClient::ChatCompletions(client) => {
+                assert_eq!(
+                    client.endpoint(),
+                    "https://openrouter.ai/api/v1/chat/completions"
+                );
+                assert_eq!(client.profile().label, "openrouter");
+                assert_eq!(client.auth_header().as_deref(), Some("Bearer token"));
+                assert_eq!(client.extra_headers().len(), 3);
+            }
+            super::GenericEndpointClient::Messages(_) => panic!("expected chat completions client"),
+        }
+    }
+
+    #[cfg(all(feature = "llm-openai-base", feature = "llm-minimax"))]
+    #[test]
+    fn generic_messages_provider_builds_from_kind_endpoint_profile() {
+        let ctx = super::LlmProviderBuildContext::new();
+        let config = super::GenericEndpointProviderConfig::from_fields(
+            "custom-anthropic",
+            "messages",
+            "https://api.anthropic.com",
+            Some(" key ".to_string()),
+            Some("anthropic".to_string()),
+        )
+        .expect("generic messages config should parse");
+
+        let provider = super::build_generic_endpoint_provider(&config, &ctx)
+            .expect("generic messages provider should build");
+
+        assert_eq!(provider.name, "custom-anthropic");
+        assert_eq!(provider.capabilities.tool_history_label(), "strict");
+        assert!(provider.capabilities.supports_tool_calling);
+        assert!(!provider.capabilities.supports_structured_output);
+        assert!(!provider.media_capabilities.supports_image_understanding);
+        match provider.client {
+            super::GenericEndpointClient::Messages(client) => {
+                assert_eq!(client.endpoint(), "https://api.anthropic.com/v1/messages");
+                assert_eq!(client.profile().label, "Anthropic");
+                assert_eq!(client.api_key(), " key ");
+                assert!(client.profile().auth_header(client.api_key()).is_none());
+            }
+            super::GenericEndpointClient::ChatCompletions(_) => panic!("expected messages client"),
+        }
+    }
+
+    #[cfg(all(
+        feature = "llm-chatgpt",
+        feature = "llm-mistral",
+        feature = "llm-minimax",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ))]
+    #[test]
+    fn legacy_aliases_still_build_same_provider_modules() {
+        assert_eq!(provider_module_id("mistral"), Some("llm-provider/mistral"));
+        assert_eq!(
+            provider_module_id("openrouter"),
+            Some("llm-provider/openrouter")
+        );
+        assert_eq!(
+            provider_module_id("anthropic"),
+            Some("llm-provider/anthropic")
+        );
+        assert_eq!(
+            provider_module_id("opencode_go"),
+            Some("llm-provider/opencode-go")
+        );
+        assert_eq!(
+            provider_module_id("opencode_zen"),
+            Some("llm-provider/opencode-zen")
+        );
+        assert_eq!(
+            provider_module_id("chatgpt"),
+            Some("llm-provider/openai-chatgpt")
+        );
+        assert_eq!(canonical_route_provider("openai-base"), None);
+        assert!(super::GenericProviderKind::from_config_value("chatgpt").is_err());
     }
 
     #[cfg(feature = "llm-mistral")]

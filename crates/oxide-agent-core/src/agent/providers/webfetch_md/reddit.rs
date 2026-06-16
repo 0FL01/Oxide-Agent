@@ -96,7 +96,7 @@ pub(super) fn render_reddit_atom_markdown(
     output.push_str("\n\n");
     output.push_str("Source: ");
     output.push_str(target_url.as_str());
-    output.push_str("\nMode: reddit_rss_fallback\nEntries: ");
+    output.push_str("\nMode: reddit_rss_fast_path\nEntries: ");
     output.push_str(&entries.len().to_string());
     output.push_str("\n\n");
 

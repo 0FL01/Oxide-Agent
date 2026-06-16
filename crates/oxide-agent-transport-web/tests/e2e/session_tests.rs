@@ -10,9 +10,9 @@ use oxide_agent_core::agent::SessionId;
 use super::helpers::{
     create_session_http_with_user, create_task_http_expect_conflict, create_task_http_with_body,
     session_user_id, structured_awaiting_user_input_response, structured_final_answer_response,
-    wait_for_task_status, wait_for_zai_calls, with_session_auth,
+    wait_for_llm_calls, wait_for_task_status, with_session_auth,
 };
-use super::providers::{RecordedToolRequest, SequencedZaiProvider};
+use super::providers::{RecordedToolRequest, SequencedLlmProvider};
 use super::setup::{
     execute_task, setup_test, setup_web_test_with_custom_providers,
     setup_web_test_with_structured_main_provider,
@@ -168,8 +168,8 @@ async fn e2e_latency_session_ready() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_runtime_context_appended_on_next_iteration() {
-    let zai_provider = Arc::new(
-        SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(
+        SequencedLlmProvider::new(vec![
             super::helpers::tool_call_response(
                 "write_todos",
                 serde_json::json!({
@@ -184,7 +184,7 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
         ])
         .with_blocked_calls([1]),
     );
-    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -200,7 +200,7 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
     )
     .await;
 
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let sid = derive_session_id(&session_id, user_id);
     assert!(
@@ -214,10 +214,10 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
         "runtime context should be queued for the active session"
     );
 
-    zai_provider.release_call(1);
+    llm_provider.release_call(1);
 
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
-    let requests = zai_provider.request_log().await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
+    let requests = llm_provider.request_log().await;
     assert!(
         requests.len() >= 2,
         "expected a follow-up LLM call after append"
@@ -235,14 +235,14 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_web_followup_while_running_returns_session_busy() {
-    let zai_provider = Arc::new(
-        SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(
+        SequencedLlmProvider::new(vec![
             structured_final_answer_response("first answer"),
             structured_final_answer_response("second answer"),
         ])
         .with_blocked_calls([1]),
     );
-    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -252,7 +252,7 @@ async fn e2e_web_followup_while_running_returns_session_busy() {
     let task1_id =
         create_task_http_with_body(&client, &base_url, &session_id, "Initial prompt").await;
 
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let conflict = create_task_http_expect_conflict(
         &client,
@@ -266,7 +266,7 @@ async fn e2e_web_followup_while_running_returns_session_busy() {
         "running task should block a second top-level task"
     );
 
-    zai_provider.release_call(1);
+    llm_provider.release_call(1);
 
     wait_for_task_status(
         session_manager.as_ref(),
@@ -275,9 +275,9 @@ async fn e2e_web_followup_while_running_returns_session_busy() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
-    let requests = zai_provider.request_log().await;
+    let requests = llm_provider.request_log().await;
     assert_eq!(
         requests.len(),
         1,
@@ -291,14 +291,14 @@ async fn e2e_web_followup_while_running_returns_session_busy() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_web_cancel_releases_executor_for_next_task() {
-    let zai_provider = Arc::new(
-        SequencedZaiProvider::new(vec![
+    let llm_provider = Arc::new(
+        SequencedLlmProvider::new(vec![
             structured_final_answer_response("cancelled response should be dropped"),
             structured_final_answer_response("second answer"),
         ])
         .with_blocked_calls([1]),
     );
-    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(llm_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -307,7 +307,7 @@ async fn e2e_web_cancel_releases_executor_for_next_task() {
     let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
     let task1_id = create_task_http_with_body(&client, &base_url, &session_id, "Long prompt").await;
 
-    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 1, Duration::from_secs(2)).await;
 
     let cancel_status = with_session_auth(
         client.post(format!(
@@ -337,7 +337,7 @@ async fn e2e_web_cancel_releases_executor_for_next_task() {
     let task2_id =
         create_task_http_with_body(&client, &base_url, &session_id, "Continue with corrections")
             .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
     wait_for_task_status(
         session_manager.as_ref(),
         &task2_id,
@@ -352,7 +352,7 @@ async fn e2e_web_cancel_releases_executor_for_next_task() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_web_edit_version_should_clear_previous_context() {
-    let provider = Arc::new(SequencedZaiProvider::new(vec![
+    let provider = Arc::new(SequencedLlmProvider::new(vec![
         structured_final_answer_response("branch one done"),
         structured_final_answer_response("branch two done"),
     ]));
@@ -373,7 +373,7 @@ async fn e2e_web_edit_version_should_clear_previous_context() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&provider, 1, Duration::from_secs(2)).await;
 
     let edit_response = with_session_auth(
         client.post(format!(
@@ -407,7 +407,7 @@ async fn e2e_web_edit_version_should_clear_previous_context() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&provider, 2, Duration::from_secs(2)).await;
 
     let requests = provider.request_log().await;
     assert_eq!(requests.len(), 2);
@@ -423,7 +423,7 @@ async fn e2e_web_edit_version_should_clear_previous_context() {
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_resume_after_user_input_reuses_saved_task() {
-    let provider = Arc::new(SequencedZaiProvider::new(vec![
+    let provider = Arc::new(SequencedLlmProvider::new(vec![
         structured_awaiting_user_input_response("text", "Send the exact GPT-5.4-mini scope."),
         structured_final_answer_response("resumed with clarified GPT-5.4-mini scope"),
     ]));
@@ -446,7 +446,7 @@ async fn e2e_resume_after_user_input_reuses_saved_task() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&provider, 1, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&provider, 1, Duration::from_secs(2)).await;
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -479,7 +479,7 @@ async fn e2e_resume_after_user_input_reuses_saved_task() {
         outcome,
         oxide_agent_core::agent::AgentExecutionOutcome::Completed(_)
     ));
-    wait_for_zai_calls(&provider, 2, Duration::from_secs(2)).await;
+    wait_for_llm_calls(&provider, 2, Duration::from_secs(2)).await;
 
     {
         let executor = executor_arc.read().await;

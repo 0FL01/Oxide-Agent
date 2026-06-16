@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod helpers;
 pub(crate) mod module;
 
@@ -5,38 +6,29 @@ pub(crate) use module::OpenRouterProviderModule;
 
 use crate::config::{
     OPENROUTER_AUDIO_TRANSCRIBE_PROMPT, OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
-    OPENROUTER_CHAT_TEMPERATURE, OPENROUTER_IMAGE_TEMPERATURE,
+    OPENROUTER_IMAGE_TEMPERATURE,
 };
-use crate::llm::support::http::{extract_text_content, send_json_request};
-use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
+use crate::llm::providers::chat_completions::client::ChatCompletionsClient;
+use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
+use crate::llm::providers::chat_completions::request::{self as chat_request, ChatRequestOptions};
+use crate::llm::providers::chat_completions::response as chat_response;
+use crate::llm::support::http::extract_text_content;
+#[cfg(test)]
+use crate::llm::support::media;
+use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::Client as HttpClient;
-use serde_json::json;
-
-use helpers::{parse_tool_calls, prepare_structured_messages, prepare_tools_json};
-
-/// Hardcoded OpenRouter app attribution headers
-const OPENROUTER_HEADERS: [(&str, &str); 3] = [
-    ("HTTP-Referer", "https://github.com/0FL01/Oxide-Agent"),
-    ("X-Title", "Oxide Agent"),
-    ("X-OpenRouter-Title", "Oxide Agent"),
-];
 
 /// LLM provider implementation for `OpenRouter`
 pub struct OpenRouterProvider {
-    http_client: HttpClient,
-    api_key: String,
+    client: ChatCompletionsClient,
 }
 
 impl OpenRouterProvider {
     /// Create a new `OpenRouter` provider instance
     #[must_use]
     pub fn new(api_key: String) -> Self {
-        Self {
-            http_client: crate::llm::support::http::create_http_client(),
-            api_key,
-        }
+        Self::new_with_client(api_key, crate::llm::support::http::create_http_client())
     }
 
     /// Create a new `OpenRouter` provider with a shared HTTP client
@@ -45,53 +37,42 @@ impl OpenRouterProvider {
     /// significantly reducing latency for sequential requests.
     #[must_use]
     pub fn new_with_client(api_key: String, http_client: HttpClient) -> Self {
-        Self {
-            http_client,
+        Self::new_with_endpoint(
             api_key,
+            ChatCompletionsProfile::openrouter().default_endpoint,
+            http_client,
+        )
+    }
+
+    #[must_use]
+    fn new_with_endpoint(
+        api_key: String,
+        endpoint: impl Into<String>,
+        http_client: HttpClient,
+    ) -> Self {
+        Self {
+            client: ChatCompletionsClient::new(
+                http_client,
+                endpoint,
+                Some(api_key),
+                "",
+                ChatCompletionsProfile::openrouter(),
+            ),
         }
     }
 
-    fn data_url(mime_type: &str, bytes: &[u8]) -> String {
-        format!("data:{mime_type};base64,{}", BASE64.encode(bytes))
+    fn profile(&self) -> ChatCompletionsProfile {
+        self.client.profile()
     }
 
+    #[cfg(test)]
     fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
-        if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
-            return "image/png";
-        }
-
-        if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            return "image/jpeg";
-        }
-
-        if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
-            return "image/gif";
-        }
-
-        if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
-            return "image/webp";
-        }
-
-        "image/jpeg"
+        media::infer_image_mime_type(image_bytes)
     }
 
+    #[cfg(test)]
     fn audio_input_format(mime_type: &str) -> &'static str {
-        let normalized = mime_type
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-
-        match normalized.as_str() {
-            "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
-            "audio/mpeg" | "audio/mp3" => "mp3",
-            "audio/ogg" | "audio/opus" | "audio/vorbis" => "ogg",
-            "audio/flac" => "flac",
-            "audio/mp4" | "audio/x-m4a" => "m4a",
-            "audio/webm" => "webm",
-            _ => "wav",
-        }
+        media::audio_input_format(mime_type)
     }
 
     fn build_video_request_body(
@@ -101,26 +82,15 @@ impl OpenRouterProvider {
         text_prompt: &str,
         system_prompt: &str,
     ) -> serde_json::Value {
-        let data_url = Self::data_url(mime_type, video_bytes);
-
-        json!({
-            "model": model_id,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": text_prompt},
-                        {
-                            "type": "video_url",
-                            "video_url": {"url": data_url}
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 4000,
-            "temperature": OPENROUTER_IMAGE_TEMPERATURE
-        })
+        chat_request::build_video_body(
+            video_bytes,
+            mime_type,
+            text_prompt,
+            system_prompt,
+            model_id,
+            4000,
+            OPENROUTER_IMAGE_TEMPERATURE,
+        )
     }
 }
 
@@ -143,21 +113,7 @@ impl OpenRouterProvider {
 ///
 /// Returns seconds to wait, or None if parsing fails.
 pub fn parse_openrouter_rate_limit(body: &str) -> Option<u64> {
-    let json: serde_json::Value = serde_json::from_str(body).ok()?;
-    let reset_ms = json
-        .pointer("/error/metadata/headers/X-RateLimit-Reset")?
-        .as_str()?
-        .parse::<i64>()
-        .ok()?;
-
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let wait_secs = (reset_ms - now_ms) / 1000;
-
-    if wait_secs > 0 {
-        Some(wait_secs as u64)
-    } else {
-        None
-    }
+    chat_response::parse_openrouter_rate_limit(body)
 }
 
 #[async_trait]
@@ -170,66 +126,18 @@ impl LlmProvider for OpenRouterProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let body = chat_request::build_text_body(
+            system_prompt,
+            history,
+            user_message,
+            model_id,
+            max_tokens,
+            ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
+            None,
+        );
 
-        let mut messages = vec![json!({"role": "system", "content": system_prompt})];
-        for msg in history {
-            messages.push(json!({"role": msg.role, "content": msg.content}));
-        }
-        messages.push(json!({"role": "user", "content": user_message}));
-
-        let body = json!({
-            "model": model_id,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": OPENROUTER_CHAT_TEMPERATURE
-        });
-
-        let mut request = self
-            .http_client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json");
-
-        // Hardcoded app attribution headers for OpenRouter identification
-        for (key, value) in &OPENROUTER_HEADERS {
-            request = request.header(*key, *value);
-        }
-
-        let response = request
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::NetworkError(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-
-            // Handle 429 Too Many Requests
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let error_text = response.text().await.unwrap_or_default();
-                let wait_secs = parse_openrouter_rate_limit(&error_text);
-                return Err(LlmError::RateLimit {
-                    wait_secs,
-                    message: error_text,
-                });
-            }
-
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError(format!(
-                "OpenRouter API error: {status} - {error_text}"
-            )));
-        }
-
-        let res_json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LlmError::JsonError(e.to_string()))?;
-
-        res_json["choices"][0]["message"]["content"]
-            .as_str()
-            .map(ToString::to_string)
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+        let res_json = self.client.post_json(&body).await?;
+        extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
     async fn transcribe_audio(
@@ -254,40 +162,16 @@ impl LlmProvider for OpenRouterProvider {
         text_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let url = "https://openrouter.ai/api/v1/chat/completions";
-        let audio_base64 = BASE64.encode(&audio_bytes);
-        let audio_format = Self::audio_input_format(mime_type);
+        let body = chat_request::build_audio_body(
+            &audio_bytes,
+            mime_type,
+            text_prompt,
+            model_id,
+            8000,
+            OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
+        );
 
-        let body = json!({
-            "model": model_id,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": text_prompt},
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": audio_base64,
-                                "format": audio_format
-                            }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 8000,
-            "temperature": OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE
-        });
-
-        let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(
-            &self.http_client,
-            url,
-            &body,
-            Some(&auth),
-            &OPENROUTER_HEADERS,
-        )
-        .await?;
+        let res_json = self.client.post_json(&body).await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -298,37 +182,18 @@ impl LlmProvider for OpenRouterProvider {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let url = "https://openrouter.ai/api/v1/chat/completions";
-        let data_url = Self::data_url(Self::infer_image_mime_type(&image_bytes), &image_bytes);
+        let body = chat_request::build_image_body(
+            &image_bytes,
+            None,
+            text_prompt,
+            system_prompt,
+            model_id,
+            4000,
+            OPENROUTER_IMAGE_TEMPERATURE,
+            ChatRequestOptions::new(self.profile()),
+        );
 
-        let body = json!({
-            "model": model_id,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": text_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url}
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 4000,
-            "temperature": OPENROUTER_IMAGE_TEMPERATURE
-        });
-
-        let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(
-            &self.http_client,
-            url,
-            &body,
-            Some(&auth),
-            &OPENROUTER_HEADERS,
-        )
-        .await?;
+        let res_json = self.client.post_json(&body).await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -340,7 +205,6 @@ impl LlmProvider for OpenRouterProvider {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let url = "https://openrouter.ai/api/v1/chat/completions";
         let body = Self::build_video_request_body(
             model_id,
             &video_bytes,
@@ -349,15 +213,7 @@ impl LlmProvider for OpenRouterProvider {
             system_prompt,
         );
 
-        let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(
-            &self.http_client,
-            url,
-            &body,
-            Some(&auth),
-            &OPENROUTER_HEADERS,
-        )
-        .await?;
+        let res_json = self.client.post_json(&body).await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -375,95 +231,141 @@ impl LlmProvider for OpenRouterProvider {
             json_mode: _,
             reasoning_effort: _,
         } = request;
-        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let body = chat_request::build_tool_body(
+            system_prompt,
+            history,
+            tools,
+            model_id,
+            max_tokens,
+            temperature,
+            false,
+            ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
+            None,
+        );
 
-        let messages = prepare_structured_messages(system_prompt, history);
-        let openai_tools = prepare_tools_json(tools);
+        let res_json = self.client.post_json(&body).await?;
 
-        let mut body = json!({
-            "model": model_id,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature.unwrap_or(OPENROUTER_CHAT_TEMPERATURE)
-        });
-
-        if !openai_tools.is_empty() {
-            body["tools"] = json!(openai_tools);
-            body["provider"] = json!({
-                "require_parameters": true
-            });
-        }
-
-        // Hardcoded app attribution headers for OpenRouter identification
-        let extra_headers: Vec<(&str, &str)> = OPENROUTER_HEADERS.to_vec();
-
-        let auth = format!("Bearer {}", self.api_key);
-        let res_json =
-            send_json_request(&self.http_client, url, &body, Some(&auth), &extra_headers).await?;
-
-        let content = res_json
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string);
-
-        let tool_calls_value = res_json
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("tool_calls"));
-
-        let tool_calls = match tool_calls_value {
-            Some(value) if value.is_null() => Vec::new(),
-            Some(value) if value.is_array() => parse_tool_calls(value)?,
-            Some(_) => {
-                return Err(LlmError::JsonError(
-                    "Invalid tool_calls format from OpenRouter".to_string(),
-                ));
-            }
-            None => Vec::new(),
-        };
-
-        if content.is_none() && tool_calls.is_empty() {
-            return Err(LlmError::ApiError("Empty response".to_string()));
-        }
-
-        let finish_reason = res_json["choices"][0]["finish_reason"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
-
-        let usage = res_json.get("usage").and_then(|u| {
-            Some(TokenUsage {
-                prompt_tokens: u.get("prompt_tokens")?.as_u64()? as u32,
-                completion_tokens: u.get("completion_tokens")?.as_u64()? as u32,
-                total_tokens: u.get("total_tokens")?.as_u64()? as u32,
-                cached_tokens: u
-                    .get("prompt_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32),
-                cache_creation_tokens: None,
-            })
-        });
-
-        Ok(ChatResponse {
-            content,
-            tool_calls,
-            finish_reason,
-            reasoning_content: None,
-            usage,
-        })
+        chat_response::parse_chat_response(res_json, self.profile(), None)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::OpenRouterProvider;
+    use super::{OpenRouterProvider, parse_openrouter_rate_limit};
+    use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
+    use crate::llm::providers::chat_completions::request::{
+        self as chat_request, ChatRequestOptions,
+    };
+    use crate::llm::{ChatWithToolsRequest, LlmProvider, ToolDefinition};
     use base64::Engine;
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn run_capture_server(
+        body: impl Into<String>,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        let body = body.into();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server binds");
+        let addr = listener.local_addr().expect("local addr available");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = [0_u8; 8192];
+            let bytes_read = socket.read(&mut buffer).await.expect("read request");
+            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+            let _ = sender.send(request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        (format!("http://{addr}/api/v1/chat/completions"), receiver)
+    }
+
+    fn request_body(request: &str) -> serde_json::Value {
+        let (_, body) = request
+            .split_once("\r\n\r\n")
+            .expect("request contains body separator");
+        serde_json::from_str(body).expect("request body is json")
+    }
+
+    fn sample_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "search".to_string(),
+            description: "Search".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}}
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn openrouter_text_request_uses_headers_and_exact_endpoint() {
+        let (endpoint, request_rx) = run_capture_server(
+            r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let provider = OpenRouterProvider::new_with_endpoint(
+            " token ".to_string(),
+            endpoint,
+            reqwest::Client::new(),
+        );
+
+        let response = provider
+            .complete_internal_text("system", &[], "hello", "openai/gpt-4o", 32)
+            .await
+            .expect("text response succeeds");
+        let request = request_rx.await.expect("request captured");
+        let lowercase = request.to_ascii_lowercase();
+
+        assert_eq!(response, "ok");
+        assert!(request.starts_with("POST /api/v1/chat/completions HTTP/1.1"));
+        assert!(lowercase.contains("authorization: bearer token"));
+        assert!(lowercase.contains("http-referer: https://github.com/0fl01/oxide-agent"));
+        assert!(lowercase.contains("x-title: oxide agent"));
+        assert!(lowercase.contains("x-openrouter-title: oxide agent"));
+    }
+
+    #[tokio::test]
+    async fn openrouter_tool_request_sets_require_parameters() {
+        let (endpoint, request_rx) = run_capture_server(
+            r#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let provider = OpenRouterProvider::new_with_endpoint(
+            "token".to_string(),
+            endpoint,
+            reqwest::Client::new(),
+        );
+        let tools = vec![sample_tool()];
+
+        provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &tools,
+                model_id: "openai/gpt-4o",
+                max_tokens: 32,
+                temperature: Some(0.2),
+                json_mode: true,
+                reasoning_effort: None,
+            })
+            .await
+            .expect("tool response succeeds");
+
+        let body = request_body(&request_rx.await.expect("request captured"));
+        assert_eq!(body["provider"], json!({"require_parameters": true}));
+        assert!(body.get("tool_choice").is_none());
+        assert!(body.get("response_format").is_none());
+    }
 
     #[test]
     fn build_video_request_body_uses_video_url_data_part() {
@@ -486,6 +388,53 @@ mod tests {
         assert_eq!(
             body["messages"][1]["content"][1]["video_url"]["url"],
             json!("data:video/mp4;base64,dmlkZW8tYnl0ZXM=")
+        );
+    }
+
+    #[test]
+    fn openrouter_image_audio_video_requests_keep_content_part_shapes() {
+        let profile = ChatCompletionsProfile::openrouter();
+        let image = chat_request::build_image_body(
+            b"image-bytes",
+            Some("image/png"),
+            "Describe",
+            "System",
+            "google/gemini-3.1-flash-lite-preview",
+            4000,
+            0.2,
+            ChatRequestOptions::new(profile),
+        );
+        let audio = chat_request::build_audio_body(
+            b"audio-bytes",
+            "audio/mpeg",
+            "Transcribe",
+            "google/gemini-3.1-flash-lite-preview",
+            8000,
+            0.2,
+        );
+        let video = OpenRouterProvider::build_video_request_body(
+            "google/gemini-3.1-flash-lite-preview",
+            b"video-bytes",
+            "video/mp4",
+            "Describe video",
+            "System",
+        );
+
+        assert_eq!(
+            image["messages"][1]["content"][1]["type"],
+            json!("image_url")
+        );
+        assert_eq!(
+            audio["messages"][0]["content"][1]["type"],
+            json!("input_audio")
+        );
+        assert_eq!(
+            audio["messages"][0]["content"][1]["input_audio"]["format"],
+            json!("mp3")
+        );
+        assert_eq!(
+            video["messages"][1]["content"][1]["type"],
+            json!("video_url")
         );
     }
 
@@ -552,5 +501,26 @@ mod tests {
             OpenRouterProvider::infer_image_mime_type(&unknown),
             "image/jpeg"
         );
+    }
+
+    #[test]
+    fn openrouter_rate_limit_metadata_reset_is_preserved() {
+        let reset_ms = chrono::Utc::now().timestamp_millis() + 120_000;
+        let body = json!({
+            "error": {
+                "message": "rate limited",
+                "code": 429,
+                "metadata": {
+                    "headers": {
+                        "X-RateLimit-Reset": reset_ms.to_string()
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let wait_secs = parse_openrouter_rate_limit(&body).expect("reset parses");
+        assert!((115..=120).contains(&wait_secs));
+        assert!(parse_openrouter_rate_limit(r#"{"error":{"message":"rate limited"}}"#).is_none());
     }
 }

@@ -5,738 +5,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
 {
   "profile": "all-features",
   "compiled_manifest": {
-    "modules": [
-      {
-        "id": "integration/mcp-jira",
-        "kind": "mcp-integration",
-        "cargo_feature": "integration-mcp-jira",
-        "provides": [
-          "integration/mcp-jira"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "integration/mcp-mattermost",
-        "kind": "mcp-integration",
-        "cargo_feature": "integration-mcp-mattermost",
-        "provides": [
-          "integration/mcp-mattermost"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "integration/ssh-mcp",
-        "kind": "mcp-integration",
-        "cargo_feature": "integration-ssh-mcp",
-        "provides": [
-          "integration/ssh-mcp"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "llm-provider/minimax",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-minimax",
-        "provides": [
-          "llm-provider/minimax"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "MiniMax API key.",
-            "env": "MINIMAX_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/mistral",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-mistral",
-        "provides": [
-          "llm-provider/mistral"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "Mistral API key.",
-            "env": "MISTRAL_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/nvidia",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-nvidia",
-        "provides": [
-          "llm-provider/nvidia"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "NVIDIA NIM OpenAI-compatible API base URL.",
-            "env": "NVIDIA_API_BASE",
-            "secret": false,
-            "default_value": "https://integrate.api.nvidia.com/v1"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "NVIDIA NIM API key.",
-            "env": "NVIDIA_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/openai-chatgpt",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-chatgpt",
-        "provides": [
-          "llm-provider/openai-chatgpt"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "auth_path",
-            "value_kind": "string",
-            "description": "Path to the ChatGPT/Codex OAuth auth record.",
-            "env": "CHATGPT_AUTH_PATH",
-            "secret": false,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/opencode-go",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-opencode-go",
-        "provides": [
-          "llm-provider/opencode-go"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "OpenCode Go Chat Completions endpoint.",
-            "env": "OPENCODE_GO_API_BASE",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/go/v1/chat/completions"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
-            "env": "OPENCODE_API_KEY",
-            "secret": true,
-            "default_value": null
-          },
-          {
-            "name": "messages_api_base",
-            "value_kind": "string",
-            "description": "OpenCode Go Anthropic Messages endpoint.",
-            "env": "OPENCODE_GO_MESSAGES_API_BASE",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/go/v1/messages"
-          },
-          {
-            "name": "model_cache_ttl_secs",
-            "value_kind": "string",
-            "description": "OpenCode Go model discovery cache TTL.",
-            "env": "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
-            "secret": false,
-            "default_value": "1800"
-          },
-          {
-            "name": "models_url",
-            "value_kind": "string",
-            "description": "OpenCode Go model discovery endpoint.",
-            "env": "OPENCODE_GO_MODELS_URL",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/go/v1/models"
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/opencode-zen",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-opencode-go",
-        "provides": [
-          "llm-provider/opencode-zen"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "OpenCode Zen Chat Completions endpoint.",
-            "env": "OPENCODE_ZEN_API_BASE",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/v1/chat/completions"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
-            "env": "OPENCODE_ZEN_API_KEY",
-            "secret": true,
-            "default_value": null
-          },
-          {
-            "name": "messages_api_base",
-            "value_kind": "string",
-            "description": "OpenCode Zen Anthropic Messages endpoint.",
-            "env": "OPENCODE_ZEN_MESSAGES_API_BASE",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/v1/messages"
-          },
-          {
-            "name": "model_cache_ttl_secs",
-            "value_kind": "string",
-            "description": "OpenCode Zen model discovery cache TTL.",
-            "env": "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
-            "secret": false,
-            "default_value": "1800"
-          },
-          {
-            "name": "models_url",
-            "value_kind": "string",
-            "description": "OpenCode Zen free model discovery endpoint.",
-            "env": "OPENCODE_ZEN_MODELS_URL",
-            "secret": false,
-            "default_value": "https://opencode.ai/zen/v1/models"
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/openrouter",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-openrouter",
-        "provides": [
-          "llm-provider/openrouter"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "OpenRouter API key.",
-            "env": "OPENROUTER_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "llm-provider/zai",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-zai",
-        "provides": [
-          "llm-provider/zai"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_base",
-            "value_kind": "string",
-            "description": "ZAI/Zhipu Chat Completions API endpoint.",
-            "env": "ZAI_API_BASE",
-            "secret": false,
-            "default_value": "https://api.z.ai/api/coding/paas/v4/chat/completions"
-          },
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "ZAI/Zhipu API key.",
-            "env": "ZAI_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
-        "id": "manager/control-plane",
-        "kind": "manager",
-        "cargo_feature": "manager-control-plane",
-        "provides": [
-          "manager/agent-profile-admin",
-          "manager/control-plane",
-          "manager/topic-sandbox-admin"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "sandbox-backend/bwrap",
-        "kind": "sandbox-backend",
-        "cargo_feature": "sandbox-backend-bwrap",
-        "provides": [
-          "sandbox-backend/bwrap",
-          "sandbox-backend/bwrap/exec",
-          "sandbox-backend/bwrap/fileops",
-          "sandbox-backend/bwrap/lifecycle"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "sandbox-backend/docker-direct",
-        "kind": "sandbox-backend",
-        "cargo_feature": "sandbox-backend-docker-direct",
-        "provides": [
-          "sandbox-backend/docker-direct",
-          "sandbox-backend/docker-direct/diagnostics",
-          "sandbox-backend/docker-direct/exec",
-          "sandbox-backend/docker-direct/fileops",
-          "sandbox-backend/docker-direct/lifecycle"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "sandbox-backend/sandboxd-client",
-        "kind": "sandbox-backend",
-        "cargo_feature": "sandbox-backend-sandboxd-client",
-        "provides": [
-          "sandbox-backend/sandboxd-client",
-          "sandbox-backend/sandboxd-client/diagnostics",
-          "sandbox-backend/sandboxd-client/exec",
-          "sandbox-backend/sandboxd-client/fileops",
-          "sandbox-backend/sandboxd-client/lifecycle"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "sandbox-daemon/sandboxd",
-        "kind": "service",
-        "cargo_feature": "sandbox-daemon",
-        "provides": [
-          "sandbox-daemon/sandboxd"
-        ],
-        "requires": [
-          {
-            "kind": "capability",
-            "capability": "sandbox-backend/docker-direct"
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "storage/sqlx",
-        "kind": "storage-backend",
-        "cargo_feature": "storage-sqlx",
-        "provides": [
-          "storage/sqlx"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "connect_timeout_secs",
-            "value_kind": "string",
-            "description": "Postgres pool connection/acquire timeout in seconds.",
-            "env": "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
-            "secret": false,
-            "default_value": "10"
-          },
-          {
-            "name": "database_url",
-            "value_kind": "string",
-            "description": "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
-            "env": "OXIDE_DATABASE_URL",
-            "secret": true,
-            "default_value": null
-          },
-          {
-            "name": "max_connections",
-            "value_kind": "string",
-            "description": "Maximum Postgres pool connections.",
-            "env": "OXIDE_DATABASE_MAX_CONNECTIONS",
-            "secret": false,
-            "default_value": "5"
-          },
-          {
-            "name": "migrate_on_startup",
-            "value_kind": "string",
-            "description": "Run SQLx migrations during storage startup when set to true.",
-            "env": "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
-            "secret": false,
-            "default_value": "false"
-          },
-          {
-            "name": "migrations_dir",
-            "value_kind": "string",
-            "description": "Runtime path to SQLx migration files.",
-            "env": "OXIDE_DATABASE_MIGRATIONS_DIR",
-            "secret": false,
-            "default_value": "migrations"
-          }
-        ]
-      },
-      {
-        "id": "tool/agents-md",
-        "kind": "tool",
-        "cargo_feature": "tool-agents-md",
-        "provides": [
-          "tool/agents-md"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/brave-search",
-        "kind": "search",
-        "cargo_feature": "tool-brave-search",
-        "provides": [
-          "tool/brave-search"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/compression",
-        "kind": "tool",
-        "cargo_feature": "tool-compression",
-        "provides": [
-          "tool/compression"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/crawl4ai-markdown",
-        "kind": "search",
-        "cargo_feature": "tool-crawl4ai-markdown",
-        "provides": [
-          "tool/crawl4ai-markdown"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/delegation",
-        "kind": "tool",
-        "cargo_feature": "tool-delegation",
-        "provides": [
-          "tool/delegation"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/duckduckgo",
-        "kind": "search",
-        "cargo_feature": "tool-duckduckgo",
-        "provides": [
-          "tool/duckduckgo-news",
-          "tool/duckduckgo-search"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/file-delivery",
-        "kind": "file-delivery",
-        "cargo_feature": "tool-file-delivery",
-        "provides": [
-          "tool/file-delivery"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/media-audio",
-        "kind": "media",
-        "cargo_feature": "tool-media-audio",
-        "provides": [
-          "tool/media-audio-transcription"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/media-image",
-        "kind": "media",
-        "cargo_feature": "tool-media-image",
-        "provides": [
-          "tool/media-image-description"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/media-video",
-        "kind": "media",
-        "cargo_feature": "tool-media-video",
-        "provides": [
-          "tool/media-video-description"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/reminder",
-        "kind": "reminder",
-        "cargo_feature": "tool-reminder",
-        "provides": [
-          "tool/reminder"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/sandbox-exec",
-        "kind": "sandbox-tool",
-        "cargo_feature": "tool-sandbox-exec",
-        "provides": [
-          "tool/sandbox-exec"
-        ],
-        "requires": [
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
-            ]
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/sandbox-fileops",
-        "kind": "sandbox-tool",
-        "cargo_feature": "tool-sandbox-fileops",
-        "provides": [
-          "tool/sandbox-fileops",
-          "tool/sandbox-list-files"
-        ],
-        "requires": [
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
-            ]
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/sandbox-recreate",
-        "kind": "sandbox-tool",
-        "cargo_feature": "tool-sandbox-recreate",
-        "provides": [
-          "tool/sandbox-recreate"
-        ],
-        "requires": [
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
-            ]
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/searxng",
-        "kind": "search",
-        "cargo_feature": "tool-searxng",
-        "provides": [
-          "tool/searxng-search"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/stack-logs",
-        "kind": "diagnostics",
-        "cargo_feature": "tool-stack-logs",
-        "provides": [
-          "tool/stack-logs"
-        ],
-        "requires": [
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/diagnostics",
-              "sandbox-backend/sandboxd-client/diagnostics"
-            ]
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/tavily",
-        "kind": "search",
-        "cargo_feature": "tool-tavily",
-        "provides": [
-          "tool/tavily-extract",
-          "tool/tavily-search"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/todos",
-        "kind": "tool",
-        "cargo_feature": "tool-todos",
-        "provides": [
-          "tool/todos"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/tts-kokoro",
-        "kind": "media",
-        "cargo_feature": "tool-tts-kokoro",
-        "provides": [
-          "tool/tts-kokoro"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/tts-silero",
-        "kind": "media",
-        "cargo_feature": "tool-tts-silero",
-        "provides": [
-          "tool/tts-silero"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/webfetch-md",
-        "kind": "search",
-        "cargo_feature": "tool-webfetch-md",
-        "provides": [
-          "tool/webfetch-md"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/wiki-memory",
-        "kind": "memory",
-        "cargo_feature": "tool-wiki-memory",
-        "provides": [
-          "tool/wiki-memory"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "tool/ytdlp",
-        "kind": "media",
-        "cargo_feature": "tool-ytdlp",
-        "provides": [
-          "tool/ytdlp-download",
-          "tool/ytdlp-metadata",
-          "tool/ytdlp-transcript"
-        ],
-        "requires": [
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
-            ]
-          },
-          {
-            "kind": "any-of",
-            "capabilities": [
-              "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
-            ]
-          }
-        ],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "transport/telegram",
-        "kind": "transport",
-        "cargo_feature": "transport-telegram",
-        "provides": [
-          "transport/telegram"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "transport/web",
-        "kind": "transport",
-        "cargo_feature": "transport-web",
-        "provides": [
-          "transport/web"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      }
-    ],
     "capabilities": [
       {
         "id": "integration/mcp-jira",
@@ -751,16 +19,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "integration/ssh-mcp"
       },
       {
-        "id": "llm-provider/minimax",
-        "module": "llm-provider/minimax"
+        "id": "llm-provider/anthropic",
+        "module": "llm-provider/anthropic"
       },
       {
         "id": "llm-provider/mistral",
         "module": "llm-provider/mistral"
       },
       {
-        "id": "llm-provider/nvidia",
-        "module": "llm-provider/nvidia"
+        "id": "llm-provider/openai-base",
+        "module": "llm-provider/openai-base"
       },
       {
         "id": "llm-provider/openai-chatgpt",
@@ -779,10 +47,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/openrouter"
       },
       {
-        "id": "llm-provider/zai",
-        "module": "llm-provider/zai"
-      },
-      {
         "id": "manager/agent-profile-admin",
         "module": "manager/control-plane"
       },
@@ -793,22 +57,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "manager/topic-sandbox-admin",
         "module": "manager/control-plane"
-      },
-      {
-        "id": "sandbox-backend/bwrap",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/exec",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/fileops",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/lifecycle",
-        "module": "sandbox-backend/bwrap"
       },
       {
         "id": "sandbox-backend/docker-direct",
@@ -871,20 +119,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/compression"
       },
       {
-        "id": "tool/crawl4ai-markdown",
-        "module": "tool/crawl4ai-markdown"
+        "id": "tool/crw-scrape",
+        "module": "tool/crw"
+      },
+      {
+        "id": "tool/crw-search",
+        "module": "tool/crw"
       },
       {
         "id": "tool/delegation",
         "module": "tool/delegation"
-      },
-      {
-        "id": "tool/duckduckgo-news",
-        "module": "tool/duckduckgo"
-      },
-      {
-        "id": "tool/duckduckgo-search",
-        "module": "tool/duckduckgo"
       },
       {
         "id": "tool/file-delivery",
@@ -923,10 +167,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/sandbox-recreate"
       },
       {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
-      },
-      {
         "id": "tool/stack-logs",
         "module": "tool/stack-logs"
       },
@@ -949,6 +189,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/tts-silero",
         "module": "tool/tts-silero"
+      },
+      {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
       },
       {
         "id": "tool/webfetch-md",
@@ -978,72 +222,729 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "id": "transport/web",
         "module": "transport/web"
       }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "integration-mcp-jira",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "integration/mcp-jira",
+        "kind": "mcp-integration",
+        "provides": [
+          "integration/mcp-jira"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "integration-mcp-mattermost",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "integration/mcp-mattermost",
+        "kind": "mcp-integration",
+        "provides": [
+          "integration/mcp-mattermost"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "integration-ssh-mcp",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "integration/ssh-mcp",
+        "kind": "mcp-integration",
+        "provides": [
+          "integration/ssh-mcp"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-minimax",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "Anthropic API key.",
+            "env": "ANTHROPIC_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/anthropic",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/anthropic"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-mistral",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "Mistral API key.",
+            "env": "MISTRAL_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/mistral",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/mistral"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-openai-base",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "OpenAI-compatible provider instances configured via OPENAI_BASE_PROVIDERS__N__* env vars.",
+            "env": "OPENAI_BASE_PROVIDERS__N__NAME",
+            "name": "providers",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenAI-compatible API base URL or chat completions endpoint for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_BASE",
+            "name": "providers.N.api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Optional bearer token for OpenAI-compatible provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_KEY",
+            "name": "providers.N.api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenAI Base model discovery cache TTL for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+            "name": "providers.N.model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Optional OpenAI-compatible model discovery endpoint for provider instance N. Defaults to api_base /models.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+            "name": "providers.N.models_url",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+            "env": "OPENAI_BASE_PROVIDERS__N__PROFILE",
+            "name": "providers.N.profile",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/openai-base",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/openai-base"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-chatgpt",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "Path to the ChatGPT/Codex OAuth auth record.",
+            "env": "CHATGPT_AUTH_PATH",
+            "name": "auth_path",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/openai-chatgpt",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/openai-chatgpt"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/chat/completions",
+            "description": "OpenCode Go Chat Completions endpoint.",
+            "env": "OPENCODE_GO_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/messages",
+            "description": "OpenCode Go Anthropic Messages endpoint.",
+            "env": "OPENCODE_GO_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Go model discovery cache TTL.",
+            "env": "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/models",
+            "description": "OpenCode Go model discovery endpoint.",
+            "env": "OPENCODE_GO_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/v1/chat/completions",
+            "description": "OpenCode Zen Chat Completions endpoint.",
+            "env": "OPENCODE_ZEN_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_ZEN_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/messages",
+            "description": "OpenCode Zen Anthropic Messages endpoint.",
+            "env": "OPENCODE_ZEN_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Zen model discovery cache TTL.",
+            "env": "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/models",
+            "description": "OpenCode Zen free model discovery endpoint.",
+            "env": "OPENCODE_ZEN_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-zen",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-zen"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-openrouter",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "OpenRouter API key.",
+            "env": "OPENROUTER_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/openrouter",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/openrouter"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "manager-control-plane",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "manager/control-plane",
+        "kind": "manager",
+        "provides": [
+          "manager/agent-profile-admin",
+          "manager/control-plane",
+          "manager/topic-sandbox-admin"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-docker-direct",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/docker-direct",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/docker-direct",
+          "sandbox-backend/docker-direct/diagnostics",
+          "sandbox-backend/docker-direct/exec",
+          "sandbox-backend/docker-direct/fileops",
+          "sandbox-backend/docker-direct/lifecycle"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-sandboxd-client",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/sandboxd-client",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/sandboxd-client",
+          "sandbox-backend/sandboxd-client/diagnostics",
+          "sandbox-backend/sandboxd-client/exec",
+          "sandbox-backend/sandboxd-client/fileops",
+          "sandbox-backend/sandboxd-client/lifecycle"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-daemon",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-daemon/sandboxd",
+        "kind": "service",
+        "provides": [
+          "sandbox-daemon/sandboxd"
+        ],
+        "requires": [
+          {
+            "capability": "sandbox-backend/docker-direct",
+            "kind": "capability"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "storage-sqlx",
+        "config_properties": [
+          {
+            "default_value": "10",
+            "description": "Postgres pool connection/acquire timeout in seconds.",
+            "env": "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+            "name": "connect_timeout_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+            "env": "OXIDE_DATABASE_URL",
+            "name": "database_url",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "5",
+            "description": "Maximum Postgres pool connections.",
+            "env": "OXIDE_DATABASE_MAX_CONNECTIONS",
+            "name": "max_connections",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "false",
+            "description": "Run SQLx migrations during storage startup when set to true.",
+            "env": "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+            "name": "migrate_on_startup",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "migrations",
+            "description": "Runtime path to SQLx migration files.",
+            "env": "OXIDE_DATABASE_MIGRATIONS_DIR",
+            "name": "migrations_dir",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "storage/sqlx",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/sqlx"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-agents-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/agents-md",
+        "kind": "tool",
+        "provides": [
+          "tool/agents-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-brave-search",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/brave-search",
+        "kind": "search",
+        "provides": [
+          "tool/brave-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-compression",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/compression",
+        "kind": "tool",
+        "provides": [
+          "tool/compression"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-crw",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/crw",
+        "kind": "search",
+        "provides": [
+          "tool/crw-scrape",
+          "tool/crw-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-delegation",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/delegation",
+        "kind": "tool",
+        "provides": [
+          "tool/delegation"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-file-delivery",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/file-delivery",
+        "kind": "file-delivery",
+        "provides": [
+          "tool/file-delivery"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-audio",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-audio",
+        "kind": "media",
+        "provides": [
+          "tool/media-audio-transcription"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-image",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-image",
+        "kind": "media",
+        "provides": [
+          "tool/media-image-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-video",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-video",
+        "kind": "media",
+        "provides": [
+          "tool/media-video-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-reminder",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/reminder",
+        "kind": "reminder",
+        "provides": [
+          "tool/reminder"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-sandbox-exec",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-exec",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-exec"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-fileops",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-fileops",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-fileops",
+          "tool/sandbox-list-files"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-recreate",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-recreate",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-recreate"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/lifecycle",
+              "sandbox-backend/sandboxd-client/lifecycle"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-stack-logs",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/stack-logs",
+        "kind": "diagnostics",
+        "provides": [
+          "tool/stack-logs"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/diagnostics",
+              "sandbox-backend/sandboxd-client/diagnostics"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-tavily",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/tavily",
+        "kind": "search",
+        "provides": [
+          "tool/tavily-extract",
+          "tool/tavily-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-todos",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/todos",
+        "kind": "tool",
+        "provides": [
+          "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-tts-kokoro",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/tts-kokoro",
+        "kind": "media",
+        "provides": [
+          "tool/tts-kokoro"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-tts-silero",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/tts-silero",
+        "kind": "media",
+        "provides": [
+          "tool/tts-silero"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "provides": [
+          "tool/web-crawler"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-wiki-memory",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/wiki-memory",
+        "kind": "memory",
+        "provides": [
+          "tool/wiki-memory"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-ytdlp",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/ytdlp",
+        "kind": "media",
+        "provides": [
+          "tool/ytdlp-download",
+          "tool/ytdlp-metadata",
+          "tool/ytdlp-transcript"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec"
+            ],
+            "kind": "any-of"
+          },
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "transport-telegram",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "transport/telegram",
+        "kind": "transport",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-web",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "transport/web",
+        "kind": "transport",
+        "provides": [
+          "transport/web"
+        ],
+        "requires": []
+      }
     ]
   },
   "enabled_manifest_default_config": {
-    "modules": [
-      "integration/mcp-jira",
-      "integration/mcp-mattermost",
-      "integration/ssh-mcp",
-      "llm-provider/minimax",
-      "llm-provider/mistral",
-      "llm-provider/nvidia",
-      "llm-provider/openai-chatgpt",
-      "llm-provider/opencode-go",
-      "llm-provider/opencode-zen",
-      "llm-provider/openrouter",
-      "llm-provider/zai",
-      "manager/control-plane",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/docker-direct",
-      "sandbox-backend/sandboxd-client",
-      "sandbox-daemon/sandboxd",
-      "storage/sqlx",
-      "tool/agents-md",
-      "tool/brave-search",
-      "tool/compression",
-      "tool/crawl4ai-markdown",
-      "tool/delegation",
-      "tool/duckduckgo",
-      "tool/file-delivery",
-      "tool/media-audio",
-      "tool/media-image",
-      "tool/media-video",
-      "tool/reminder",
-      "tool/sandbox-exec",
-      "tool/sandbox-fileops",
-      "tool/sandbox-recreate",
-      "tool/searxng",
-      "tool/stack-logs",
-      "tool/tavily",
-      "tool/todos",
-      "tool/tts-kokoro",
-      "tool/tts-silero",
-      "tool/webfetch-md",
-      "tool/wiki-memory",
-      "tool/ytdlp",
-      "transport/telegram",
-      "transport/web"
-    ],
     "capabilities": [
       "integration/mcp-jira",
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
-      "llm-provider/minimax",
+      "llm-provider/anthropic",
       "llm-provider/mistral",
-      "llm-provider/nvidia",
+      "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
       "llm-provider/openrouter",
-      "llm-provider/zai",
       "manager/agent-profile-admin",
       "manager/control-plane",
       "manager/topic-sandbox-admin",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/bwrap/exec",
-      "sandbox-backend/bwrap/fileops",
-      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/docker-direct",
       "sandbox-backend/docker-direct/diagnostics",
       "sandbox-backend/docker-direct/exec",
@@ -1059,10 +960,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/agents-md",
       "tool/brave-search",
       "tool/compression",
-      "tool/crawl4ai-markdown",
+      "tool/crw-scrape",
+      "tool/crw-search",
       "tool/delegation",
-      "tool/duckduckgo-news",
-      "tool/duckduckgo-search",
       "tool/file-delivery",
       "tool/media-audio-transcription",
       "tool/media-image-description",
@@ -1072,18 +972,59 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
-      "tool/searxng-search",
       "tool/stack-logs",
       "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp-download",
       "tool/ytdlp-metadata",
       "tool/ytdlp-transcript",
+      "transport/telegram",
+      "transport/web"
+    ],
+    "modules": [
+      "integration/mcp-jira",
+      "integration/mcp-mattermost",
+      "integration/ssh-mcp",
+      "llm-provider/anthropic",
+      "llm-provider/mistral",
+      "llm-provider/openai-base",
+      "llm-provider/openai-chatgpt",
+      "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
+      "llm-provider/openrouter",
+      "manager/control-plane",
+      "sandbox-backend/docker-direct",
+      "sandbox-backend/sandboxd-client",
+      "sandbox-daemon/sandboxd",
+      "storage/sqlx",
+      "tool/agents-md",
+      "tool/brave-search",
+      "tool/compression",
+      "tool/crw",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio",
+      "tool/media-image",
+      "tool/media-video",
+      "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-recreate",
+      "tool/stack-logs",
+      "tool/tavily",
+      "tool/todos",
+      "tool/tts-kokoro",
+      "tool/tts-silero",
+      "tool/web-crawler",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "tool/ytdlp",
       "transport/telegram",
       "transport/web"
     ]
@@ -1094,8 +1035,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "compress",
     "describe_image_file",
     "describe_video_file",
-    "duckduckgo_news",
-    "duckduckgo_search",
     "execute_command",
     "list_files",
     "read_file",
@@ -1121,33 +1060,28 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "ytdlp_search_videos"
   ],
   "registered_llm_provider_ids_dummy_config": [
-    "llm-provider/minimax",
+    "llm-provider/anthropic",
     "llm-provider/mistral",
-    "llm-provider/nvidia",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
-    "llm-provider/openrouter",
-    "llm-provider/zai"
+    "llm-provider/openrouter"
   ],
   "registered_llm_provider_aliases_dummy_config": [
+    "anthropic",
     "chatgpt",
-    "minimax",
     "mistral",
-    "nvidia",
     "openai-chatgpt",
     "opencode-go",
     "opencode-zen",
     "opencode_go",
     "opencode_zen",
-    "openrouter",
-    "zai"
+    "openrouter"
   ],
   "storage_backend_module_ids": [
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/bwrap",
     "sandbox-backend/docker-direct",
     "sandbox-backend/sandboxd-client"
   ],
@@ -1174,11 +1108,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "llm-provider/minimax",
+      "module_id": "llm-provider/anthropic",
       "kind": "llm-provider",
       "cargo_feature": "llm-minimax",
       "config_env": [
-        "MINIMAX_API_KEY"
+        "ANTHROPIC_API_KEY"
       ],
       "requires_capabilities": []
     },
@@ -1192,12 +1126,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "llm-provider/nvidia",
+      "module_id": "llm-provider/openai-base",
       "kind": "llm-provider",
-      "cargo_feature": "llm-nvidia",
+      "cargo_feature": "llm-openai-base",
       "config_env": [
-        "NVIDIA_API_BASE",
-        "NVIDIA_API_KEY"
+        "OPENAI_BASE_PROVIDERS__N__NAME",
+        "OPENAI_BASE_PROVIDERS__N__API_BASE",
+        "OPENAI_BASE_PROVIDERS__N__API_KEY",
+        "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+        "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+        "OPENAI_BASE_PROVIDERS__N__PROFILE"
       ],
       "requires_capabilities": []
     },
@@ -1246,23 +1184,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "llm-provider/zai",
-      "kind": "llm-provider",
-      "cargo_feature": "llm-zai",
-      "config_env": [
-        "ZAI_API_BASE",
-        "ZAI_API_KEY"
-      ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "sandbox-backend/bwrap",
-      "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-bwrap",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
       "module_id": "sandbox-backend/docker-direct",
       "kind": "sandbox-backend",
       "cargo_feature": "sandbox-backend-docker-direct",
@@ -1308,23 +1229,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/crawl4ai-markdown",
+      "module_id": "tool/crw",
       "kind": "search",
-      "cargo_feature": "tool-crawl4ai-markdown",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/duckduckgo",
-      "kind": "search",
-      "cargo_feature": "tool-duckduckgo",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
+      "cargo_feature": "tool-crw",
       "config_env": [],
       "requires_capabilities": []
     },
@@ -1332,6 +1239,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/tavily",
       "kind": "search",
       "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },

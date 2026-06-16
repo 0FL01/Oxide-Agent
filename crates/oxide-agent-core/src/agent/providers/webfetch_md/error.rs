@@ -67,7 +67,10 @@ fn body_has_anti_bot_marker(body: &str) -> bool {
         || lower.contains("anubis uses a proof-of-work scheme")
         || lower.contains("set up anubis to protect the server")
         || lower.contains("cf-chl-")
-        || lower.contains("captcha")
+        || lower.contains("captcha challenge")
+        || lower.contains("captcha verification")
+        || lower.contains("please complete the captcha")
+        || lower.contains("g-recaptcha-response")
 }
 
 // --- Failure reporting ---

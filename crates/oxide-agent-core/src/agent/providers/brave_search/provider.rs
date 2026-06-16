@@ -130,8 +130,8 @@ impl BraveSearchProvider {
             name: TOOL_NAME.to_string(),
             description: concat!(
                 "Search the public web using Brave Search API. Use this to discover URLs and snippets. ",
-                "Open only selected result URLs with crawl4ai_markdown; do not crawl every result. ",
-                "If Brave is unavailable, use searxng_search as fallback."
+                "Open only selected result URLs with web_crawler or web_markdown; do not crawl every result. ",
+                "If Brave is unavailable, use web_search as fallback."
             )
             .to_string(),
             parameters: json!({

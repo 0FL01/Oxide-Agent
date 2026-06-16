@@ -53,15 +53,7 @@ fn build_date_context(tools: &[ToolDefinition]) -> String {
     let current_day = now.format("%A").to_string();
     let current_offset = now.format("UTC%:z").to_string();
     let tool_names = tool_name_set(tools);
-    let search_tools = available_tool_names(
-        &tool_names,
-        &[
-            "web_search",
-            "duckduckgo_search",
-            "duckduckgo_news",
-            "searxng_search",
-        ],
-    );
+    let search_tools = available_tool_names(&tool_names, &["web_search"]);
 
     let mut context = format!(
         "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}"
@@ -160,6 +152,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "For complex or multi-step work, call `write_todos` before starting.".to_string(),
                 "Keep exactly one task `in_progress`; keep the rest `pending`, `completed`, `cancelled`, or `blocked_on_user`.".to_string(),
                 "Update tasks as work changes; mark `completed` only after the step is actually done and verified when applicable.".to_string(),
+                "When the final `write_todos` update completes all work, return the complete final answer in the next assistant message; do not return only a summary or addendum.".to_string(),
                 "If blocked waiting for the user, mark the relevant task `blocked_on_user` before asking for input.".to_string(),
             ],
         );
@@ -213,48 +206,20 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
 
     if has_any_tool(
         &tool_names,
-        &[
-            "web_search",
-            "web_extract",
-            "duckduckgo_search",
-            "duckduckgo_news",
-            "searxng_search",
-            "web_markdown",
-            "crawl4ai_markdown",
-        ],
+        &["web_search", "web_extract", "web_crawler", "web_markdown"],
     ) {
         let mut lines = Vec::new();
         if has_tool(&tool_names, "web_search") {
             lines.push("Use `web_search` for current web search, news, facts, documentation, or real-time data you cannot know locally.".to_string());
-        }
-        if has_tool(&tool_names, "searxng_search") {
-            lines.push(
-                "Use `searxng_search` for self-hosted web search — preferred over DuckDuckGo (more reliable, engine rotation on failure).".to_string(),
-            );
-        }
-        if has_tool(&tool_names, "duckduckgo_search") {
-            lines.push(
-                "Use `duckduckgo_search` as fallback when SearXNG is unavailable.".to_string(),
-            );
-        }
-        if has_tool(&tool_names, "duckduckgo_news") {
-            lines.push(
-                "Use `duckduckgo_news` for current news queries and recent articles.".to_string(),
-            );
-        }
-        if has_tool(&tool_names, "searxng_search") && has_tool(&tool_names, "duckduckgo_search") {
-            lines.push(
-                "Prefer `searxng_search` over `duckduckgo_search` — self-hosted SearXNG is less likely to be blocked and supports engine rotation.".to_string(),
-            );
         }
         if has_tool(&tool_names, "web_extract") {
             lines.push(
                 "Use `web_extract` to read result URLs when snippets are insufficient.".to_string(),
             );
         }
-        if has_tool(&tool_names, "crawl4ai_markdown") {
+        if has_tool(&tool_names, "web_crawler") {
             lines.push(
-                "Prefer `crawl4ai_markdown` after search when you need to read a specific result URL as Markdown, especially pages needing browser rendering, JavaScript, or overlay/consent handling."
+                "Use `web_crawler` after search to read selected result URLs as Markdown; it tries lightweight fetch first and falls back to browser rendering only for anti-bot/JavaScript blocks."
                     .to_string(),
             );
         } else if has_tool(&tool_names, "web_markdown") {
@@ -263,7 +228,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                     .to_string(),
             );
         }
-        if has_tool(&tool_names, "duckduckgo_search") || has_tool(&tool_names, "duckduckgo_news") {
+        if has_tool(&tool_names, "web_search") {
             lines.push(
                 "Do not fetch every search result automatically; fetch only selected URLs."
                     .to_string(),
@@ -819,8 +784,6 @@ mod tests {
         assert!(prompt.contains("Use `web_markdown`"));
         assert!(!prompt.contains("web_search"));
         assert!(!prompt.contains("web_extract"));
-        assert!(!prompt.contains("duckduckgo_search"));
-        assert!(!prompt.contains("duckduckgo_news"));
     }
 
     #[tokio::test]

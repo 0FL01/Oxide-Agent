@@ -6,6 +6,7 @@
 mod convert;
 mod error;
 mod fetch;
+mod known_sources;
 mod reddit;
 mod url;
 
@@ -28,10 +29,14 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 20_000;
+const MIN_OUTPUT_CHARS: usize = 1_000;
+const MAX_OUTPUT_CHARS_REQUEST: usize = 100_000;
+const MAX_OFFSET_CHARS: usize = 1_000_000;
 const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
 const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+const SIMPLE_BOT_USER_AGENT: &str = "oxide-agent-webfetch/0.1";
 const ANTI_BOT_ERROR: &str = "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA challenges";
 
 /// Local provider for fetching a single URL as Markdown.
@@ -39,11 +44,15 @@ pub struct WebFetchMdProvider {
     client: reqwest::Client,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-struct WebMarkdownArgs {
-    url: String,
+#[derive(Debug, Deserialize, Clone, Default)]
+pub(crate) struct WebMarkdownArgs {
+    pub url: String,
     #[serde(default)]
-    timeout_secs: Option<u64>,
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub max_chars: Option<usize>,
+    #[serde(default)]
+    pub offset_chars: Option<usize>,
 }
 
 impl WebFetchMdProvider {
@@ -88,6 +97,24 @@ impl WebFetchMdProvider {
         })]
     }
 
+    #[must_use]
+    pub(crate) fn failure_payload(
+        args: Option<&WebMarkdownArgs>,
+        error: &anyhow::Error,
+    ) -> serde_json::Value {
+        error::webfetch_failure_payload(args, error)
+    }
+
+    #[must_use]
+    pub(crate) fn failure_message(args: Option<&WebMarkdownArgs>, error: &anyhow::Error) -> String {
+        error::webfetch_failure_message(args, error)
+    }
+
+    #[must_use]
+    pub(crate) fn error_kind(error: &anyhow::Error) -> &'static str {
+        error::webfetch_error_kind(error)
+    }
+
     fn tool_definition() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_WEB_MARKDOWN.to_string(),
@@ -102,6 +129,14 @@ impl WebFetchMdProvider {
                     "timeout_secs": {
                         "type": "integer",
                         "description": "Optional request timeout in seconds, clamped to 1..120"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Optional maximum Markdown output characters, clamped to 1000..100000; default is 20000"
+                    },
+                    "offset_chars": {
+                        "type": "integer",
+                        "description": "Optional character offset into extracted Markdown for reading later chunks; default is 0"
                     }
                 },
                 "required": ["url"]

@@ -63,19 +63,16 @@ macro_rules! push_module_with_config {
 const SANDBOX_FILEOPS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/fileops"),
     CapabilityId::new("sandbox-backend/sandboxd-client/fileops"),
-    CapabilityId::new("sandbox-backend/bwrap/fileops"),
 ];
 #[allow(dead_code)]
 const SANDBOX_EXEC_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/exec"),
     CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
-    CapabilityId::new("sandbox-backend/bwrap/exec"),
 ];
 #[allow(dead_code)]
 const SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/lifecycle"),
     CapabilityId::new("sandbox-backend/sandboxd-client/lifecycle"),
-    CapabilityId::new("sandbox-backend/bwrap/lifecycle"),
 ];
 #[allow(dead_code)]
 const SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
@@ -125,27 +122,46 @@ const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
         .with_env("MISTRAL_API_KEY")
         .secret()];
 #[allow(dead_code)]
-const MINIMAX_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "MiniMax API key.")
-        .with_env("MINIMAX_API_KEY")
-        .secret()];
+const ANTHROPIC_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[
+        ModuleConfigProperty::string("api_key", "Anthropic API key.")
+            .with_env("ANTHROPIC_API_KEY")
+            .secret(),
+    ];
 #[allow(dead_code)]
-const ZAI_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "ZAI/Zhipu API key.")
-        .with_env("ZAI_API_KEY")
-        .secret(),
-    ModuleConfigProperty::string("api_base", "ZAI/Zhipu Chat Completions API endpoint.")
-        .with_env("ZAI_API_BASE")
-        .with_default("https://api.z.ai/api/coding/paas/v4/chat/completions"),
-];
-#[allow(dead_code)]
-const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "NVIDIA NIM API key.")
-        .with_env("NVIDIA_API_KEY")
-        .secret(),
-    ModuleConfigProperty::string("api_base", "NVIDIA NIM OpenAI-compatible API base URL.")
-        .with_env("NVIDIA_API_BASE")
-        .with_default("https://integrate.api.nvidia.com/v1"),
+const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string(
+        "providers",
+        "OpenAI-compatible provider instances configured via OPENAI_BASE_PROVIDERS__N__* env vars.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__NAME"),
+    ModuleConfigProperty::string(
+        "providers.N.api_base",
+        "OpenAI-compatible API base URL or chat completions endpoint for provider instance N.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__API_BASE"),
+    ModuleConfigProperty::string(
+        "providers.N.api_key",
+        "Optional bearer token for OpenAI-compatible provider instance N.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__API_KEY")
+    .secret(),
+    ModuleConfigProperty::string(
+        "providers.N.models_url",
+        "Optional OpenAI-compatible model discovery endpoint for provider instance N. Defaults to api_base /models.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__MODELS_URL"),
+    ModuleConfigProperty::string(
+        "providers.N.model_cache_ttl_secs",
+        "OpenAI Base model discovery cache TTL for provider instance N.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS")
+    .with_default("1800"),
+    ModuleConfigProperty::string(
+        "providers.N.profile",
+        "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+    )
+    .with_env("OPENAI_BASE_PROVIDERS__N__PROFILE"),
 ];
 #[allow(dead_code)]
 const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
@@ -255,11 +271,7 @@ pub fn compiled_capability_manifest() -> Result<CompiledCapabilityManifest, Mani
 pub fn compiled_profile_name() -> Option<&'static str> {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
         + cfg!(feature = "profile-web-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
-        + cfg!(feature = "profile-no-sandbox") as usize
-        + cfg!(feature = "profile-media-enabled") as usize
-        + cfg!(feature = "profile-host-bwrap") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -270,16 +282,8 @@ pub fn compiled_profile_name() -> Option<&'static str> {
         Some("embedded-opencode-local")
     } else if cfg!(feature = "profile-web-embedded-opencode-local") {
         Some("web-embedded-opencode-local")
-    } else if cfg!(feature = "profile-lite") {
-        Some("lite")
     } else if cfg!(feature = "profile-search-only") {
         Some("search-only")
-    } else if cfg!(feature = "profile-no-sandbox") {
-        Some("no-sandbox")
-    } else if cfg!(feature = "profile-media-enabled") {
-        Some("media-enabled")
-    } else if cfg!(feature = "profile-host-bwrap") {
-        Some("host-bwrap")
     } else {
         Some("full")
     }
@@ -339,26 +343,18 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     push_module_with_config!(
         modules,
         "llm-minimax",
-        "llm-provider/minimax",
+        "llm-provider/anthropic",
         LlmProvider,
-        ["llm-provider/minimax"],
-        MINIMAX_CONFIG_PROPERTIES
+        ["llm-provider/anthropic"],
+        ANTHROPIC_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,
-        "llm-zai",
-        "llm-provider/zai",
+        "llm-openai-base",
+        "llm-provider/openai-base",
         LlmProvider,
-        ["llm-provider/zai"],
-        ZAI_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-nvidia",
-        "llm-provider/nvidia",
-        LlmProvider,
-        ["llm-provider/nvidia"],
-        NVIDIA_CONFIG_PROPERTIES
+        ["llm-provider/openai-base"],
+        OPENAI_BASE_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,
@@ -433,10 +429,10 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-crawl4ai-markdown",
-        "tool/crawl4ai-markdown",
+        "tool-webfetch-md",
+        "tool/web-crawler",
         Search,
-        ["tool/crawl4ai-markdown"]
+        ["tool/web-crawler"]
     );
     push_module!(
         modules,
@@ -447,13 +443,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-duckduckgo",
-        "tool/duckduckgo",
-        Search,
-        ["tool/duckduckgo-search", "tool/duckduckgo-news"]
-    );
-    push_module!(
-        modules,
         "tool-brave-search",
         "tool/brave-search",
         Search,
@@ -461,10 +450,10 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-searxng",
-        "tool/searxng",
+        "tool-crw",
+        "tool/crw",
         Search,
-        ["tool/searxng-search"]
+        ["tool/crw-search", "tool/crw-scrape"]
     );
     push_module_with_requires!(
         modules,
@@ -580,18 +569,6 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
             "sandbox-backend/sandboxd-client/exec",
             "sandbox-backend/sandboxd-client/lifecycle",
             "sandbox-backend/sandboxd-client/diagnostics"
-        ]
-    );
-    push_module!(
-        modules,
-        "sandbox-backend-bwrap",
-        "sandbox-backend/bwrap",
-        SandboxBackend,
-        [
-            "sandbox-backend/bwrap",
-            "sandbox-backend/bwrap/fileops",
-            "sandbox-backend/bwrap/exec",
-            "sandbox-backend/bwrap/lifecycle"
         ]
     );
     push_module_with_requires!(

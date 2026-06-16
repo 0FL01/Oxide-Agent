@@ -15,22 +15,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-zen"
       },
       {
-        "id": "sandbox-backend/bwrap",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/exec",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/fileops",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/lifecycle",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
         "id": "sandbox-backend/docker-direct",
         "module": "sandbox-backend/docker-direct"
       },
@@ -51,6 +35,26 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-backend/docker-direct"
       },
       {
+        "id": "sandbox-backend/sandboxd-client",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/diagnostics",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/exec",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/fileops",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/lifecycle",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
         "id": "storage/sqlx",
         "module": "storage/sqlx"
       },
@@ -59,24 +63,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
-        "id": "tool/brave-search",
-        "module": "tool/brave-search"
-      },
-      {
         "id": "tool/compression",
         "module": "tool/compression"
       },
       {
         "id": "tool/delegation",
         "module": "tool/delegation"
-      },
-      {
-        "id": "tool/duckduckgo-news",
-        "module": "tool/duckduckgo"
-      },
-      {
-        "id": "tool/duckduckgo-search",
-        "module": "tool/duckduckgo"
       },
       {
         "id": "tool/file-delivery",
@@ -115,10 +107,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/sandbox-recreate"
       },
       {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
-      },
-      {
         "id": "tool/tavily-extract",
         "module": "tool/tavily"
       },
@@ -129,6 +117,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/todos",
         "module": "tool/todos"
+      },
+      {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
       },
       {
         "id": "tool/webfetch-md",
@@ -249,20 +241,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "sandbox-backend-bwrap",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "sandbox-backend/bwrap",
-        "kind": "sandbox-backend",
-        "provides": [
-          "sandbox-backend/bwrap",
-          "sandbox-backend/bwrap/exec",
-          "sandbox-backend/bwrap/fileops",
-          "sandbox-backend/bwrap/lifecycle"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "sandbox-backend-docker-direct",
         "config_properties": [],
         "conflicts": [],
@@ -274,6 +252,21 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "sandbox-backend/docker-direct/exec",
           "sandbox-backend/docker-direct/fileops",
           "sandbox-backend/docker-direct/lifecycle"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-sandboxd-client",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/sandboxd-client",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/sandboxd-client",
+          "sandbox-backend/sandboxd-client/diagnostics",
+          "sandbox-backend/sandboxd-client/exec",
+          "sandbox-backend/sandboxd-client/fileops",
+          "sandbox-backend/sandboxd-client/lifecycle"
         ],
         "requires": []
       },
@@ -341,17 +334,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-brave-search",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/brave-search",
-        "kind": "search",
-        "provides": [
-          "tool/brave-search"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-compression",
         "config_properties": [],
         "conflicts": [],
@@ -370,18 +352,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/delegation"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-duckduckgo",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/duckduckgo",
-        "kind": "search",
-        "provides": [
-          "tool/duckduckgo-news",
-          "tool/duckduckgo-search"
         ],
         "requires": []
       },
@@ -453,8 +423,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           }
@@ -474,8 +443,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -494,23 +462,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
           }
         ]
-      },
-      {
-        "cargo_feature": "tool-searxng",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/searxng",
-        "kind": "search",
-        "provides": [
-          "tool/searxng-search"
-        ],
-        "requires": []
       },
       {
         "cargo_feature": "tool-tavily",
@@ -532,6 +488,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "provides": [
+          "tool/web-crawler"
         ],
         "requires": []
       },
@@ -574,22 +541,20 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "capabilities": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/bwrap/exec",
-      "sandbox-backend/bwrap/fileops",
-      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/docker-direct",
       "sandbox-backend/docker-direct/diagnostics",
       "sandbox-backend/docker-direct/exec",
       "sandbox-backend/docker-direct/fileops",
       "sandbox-backend/docker-direct/lifecycle",
+      "sandbox-backend/sandboxd-client",
+      "sandbox-backend/sandboxd-client/diagnostics",
+      "sandbox-backend/sandboxd-client/exec",
+      "sandbox-backend/sandboxd-client/fileops",
+      "sandbox-backend/sandboxd-client/lifecycle",
       "storage/sqlx",
       "tool/agents-md",
-      "tool/brave-search",
       "tool/compression",
       "tool/delegation",
-      "tool/duckduckgo-news",
-      "tool/duckduckgo-search",
       "tool/file-delivery",
       "tool/media-audio-transcription",
       "tool/media-image-description",
@@ -599,10 +564,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
-      "tool/searxng-search",
       "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "transport/telegram"
@@ -610,14 +575,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "modules": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
+      "sandbox-backend/sandboxd-client",
       "storage/sqlx",
       "tool/agents-md",
-      "tool/brave-search",
       "tool/compression",
       "tool/delegation",
-      "tool/duckduckgo",
       "tool/file-delivery",
       "tool/media-audio",
       "tool/media-image",
@@ -626,9 +589,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
-      "tool/searxng",
       "tool/tavily",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "transport/telegram"
@@ -640,8 +603,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "compress",
     "describe_image_file",
     "describe_video_file",
-    "duckduckgo_news",
-    "duckduckgo_search",
     "execute_command",
     "list_files",
     "read_file",
@@ -669,8 +630,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/bwrap",
-    "sandbox-backend/docker-direct"
+    "sandbox-backend/docker-direct",
+    "sandbox-backend/sandboxd-client"
   ],
   "external_service_requirements": [
     {
@@ -700,16 +661,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "sandbox-backend/bwrap",
+      "module_id": "sandbox-backend/docker-direct",
       "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-bwrap",
+      "cargo_feature": "sandbox-backend-docker-direct",
       "config_env": [],
       "requires_capabilities": []
     },
     {
-      "module_id": "sandbox-backend/docker-direct",
+      "module_id": "sandbox-backend/sandboxd-client",
       "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-docker-direct",
+      "cargo_feature": "sandbox-backend-sandboxd-client",
       "config_env": [],
       "requires_capabilities": []
     },
@@ -727,30 +688,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/brave-search",
-      "kind": "search",
-      "cargo_feature": "tool-brave-search",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/duckduckgo",
-      "kind": "search",
-      "cargo_feature": "tool-duckduckgo",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
       "module_id": "tool/tavily",
       "kind": "search",
       "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },

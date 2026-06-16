@@ -489,6 +489,23 @@
   line-height: 1.7;
 }
 
+.search-probe-message-wrap {
+  margin-bottom: 16px;
+}
+
+.search-probe-message {
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 12px;
+  background: rgba(96, 165, 250, 0.06);
+  padding: 12px 14px;
+}
+
+.search-probe-body {
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .pending-message {
   border: 1px solid rgba(216, 162, 30, 0.35);
   border-radius: 10px;

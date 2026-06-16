@@ -23,16 +23,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/brave-search"
       },
       {
-        "id": "tool/duckduckgo-news",
-        "module": "tool/duckduckgo"
+        "id": "tool/crw-scrape",
+        "module": "tool/crw"
       },
       {
-        "id": "tool/duckduckgo-search",
-        "module": "tool/duckduckgo"
-      },
-      {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
+        "id": "tool/crw-search",
+        "module": "tool/crw"
       },
       {
         "id": "tool/tavily-extract",
@@ -41,6 +37,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/tavily-search",
         "module": "tool/tavily"
+      },
+      {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
       },
       {
         "id": "tool/webfetch-md",
@@ -220,25 +220,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-duckduckgo",
+        "cargo_feature": "tool-crw",
         "config_properties": [],
         "conflicts": [],
-        "id": "tool/duckduckgo",
+        "id": "tool/crw",
         "kind": "search",
         "provides": [
-          "tool/duckduckgo-news",
-          "tool/duckduckgo-search"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-searxng",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/searxng",
-        "kind": "search",
-        "provides": [
-          "tool/searxng-search"
+          "tool/crw-scrape",
+          "tool/crw-search"
         ],
         "requires": []
       },
@@ -251,6 +240,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "provides": [
           "tool/tavily-extract",
           "tool/tavily-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "provides": [
+          "tool/web-crawler"
         ],
         "requires": []
       },
@@ -284,11 +284,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-zen",
       "storage/sqlx",
       "tool/brave-search",
-      "tool/duckduckgo-news",
-      "tool/duckduckgo-search",
-      "tool/searxng-search",
+      "tool/crw-scrape",
+      "tool/crw-search",
       "tool/tavily-extract",
       "tool/tavily-search",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "transport/telegram"
     ],
@@ -297,16 +297,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-zen",
       "storage/sqlx",
       "tool/brave-search",
-      "tool/duckduckgo",
-      "tool/searxng",
+      "tool/crw",
       "tool/tavily",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "transport/telegram"
     ]
   },
   "registered_tool_names_default_config": [
-    "duckduckgo_news",
-    "duckduckgo_search",
     "web_markdown"
   ],
   "registered_llm_provider_ids_dummy_config": [
@@ -371,16 +369,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/duckduckgo",
+      "module_id": "tool/crw",
       "kind": "search",
-      "cargo_feature": "tool-duckduckgo",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
+      "cargo_feature": "tool-crw",
       "config_env": [],
       "requires_capabilities": []
     },
@@ -388,6 +379,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/tavily",
       "kind": "search",
       "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },

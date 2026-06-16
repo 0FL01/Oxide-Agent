@@ -1,6 +1,6 @@
 //! Test infrastructure setup: AppState factory functions and task execution helpers.
 
-use oxide_agent_core::config::{AgentSettings, ModelInfo, ModuleRuntimeConfig};
+use oxide_agent_core::config::{AgentSettings, ModelInfo};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::{SandboxManager, SandboxScope};
 use oxide_agent_runtime::SessionRegistry;
@@ -10,7 +10,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use super::providers::SequencedZaiProvider;
+use super::providers::SequencedLlmProvider;
 
 /// Response sequence for async sub-agent spawn tests.
 ///
@@ -35,9 +35,9 @@ pub fn async_sub_agent_spawn_responses() -> Vec<oxide_agent_core::llm::ChatRespo
     ]
 }
 
-/// Set up AppState with a custom ZAI LLM provider.
-/// Uses one SequencedZaiProvider for both main-agent and sub-agent model ids.
-pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+/// Set up AppState with a custom scripted LLM provider.
+/// Uses one SequencedLlmProvider for both main-agent and sub-agent model ids.
+pub fn setup_web_test_with_custom_providers(llm_provider: Arc<SequencedLlmProvider>) -> AppState {
     let model_id = "opencode-go/deepseek-v4-flash".to_string();
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some(model_id.clone()),
@@ -65,9 +65,9 @@ pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvid
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("opencode_go".to_string(), zai_provider.clone());
-        llm.register_provider("opencode-go".to_string(), zai_provider.clone());
-        llm.register_provider("llm-provider/opencode-go".to_string(), zai_provider);
+        llm.register_provider("opencode_go".to_string(), llm_provider.clone());
+        llm.register_provider("opencode-go".to_string(), llm_provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), llm_provider);
         Arc::new(llm)
     };
 
@@ -80,7 +80,7 @@ pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvid
 
 /// Set up AppState with a structured-output-capable main-agent route.
 pub fn setup_web_test_with_structured_main_provider(
-    provider: Arc<SequencedZaiProvider>,
+    provider: Arc<SequencedLlmProvider>,
 ) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some("google/gemini-2.0-flash".to_string()),
@@ -149,39 +149,51 @@ pub async fn setup_test() -> AppState {
     state
 }
 
-/// ZAI API base URL used by live E2E tests.
-const ZAI_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+/// OpenAI Base provider env index used by live ZAI E2E tests.
+const LIVE_ZAI_OPENAI_BASE_INDEX: usize = 1;
+const LIVE_ZAI_OPENAI_BASE_PROVIDER: &str = "openai-base:zai";
 
-/// Set up web transport state backed by the real ZAI provider.
+/// Set up web transport state backed by the real ZAI OpenAI Base profile.
 pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
-    // Load .env file if present so that `ZAI_API_KEY` and `ZAI_API_BASE`
-    // are available when the test is run from a fresh shell.
+    // Load .env file if present so that `OPENAI_BASE_PROVIDERS__1__*`
+    // variables are available when the test is run from a fresh shell.
     let _ = dotenvy::dotenv();
 
-    let api_key = env::var("ZAI_API_KEY")
+    let env_prefix = format!("OPENAI_BASE_PROVIDERS__{LIVE_ZAI_OPENAI_BASE_INDEX}__");
+    let api_key_name = format!("{env_prefix}API_KEY");
+    let _api_key = env::var(&api_key_name)
         .ok()
         .filter(|value| !value.is_empty() && value != "dummy")
-        .ok_or_else(|| anyhow::anyhow!("ZAI_API_KEY is required for live ZAI E2E tests"))?;
+        .ok_or_else(|| anyhow::anyhow!("{api_key_name} is required for live ZAI E2E tests"))?;
+    let required = [
+        (format!("{env_prefix}NAME"), "zai"),
+        (
+            format!("{env_prefix}API_BASE"),
+            "https://api.z.ai/api/coding/paas/v4",
+        ),
+        (format!("{env_prefix}PROFILE"), "zai"),
+    ];
+    for (name, expected) in required {
+        let actual = env::var(&name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("{name}={expected} is required for live ZAI E2E tests")
+            })?;
+        anyhow::ensure!(
+            actual == expected,
+            "{name} must be {expected:?} for live ZAI E2E tests, got {actual:?}"
+        );
+    }
 
-    let mut settings = AgentSettings {
+    let settings = AgentSettings {
         agent_model_id: Some("glm-4.7".to_string()),
-        agent_model_provider: Some("zai".to_string()),
+        agent_model_provider: Some(LIVE_ZAI_OPENAI_BASE_PROVIDER.to_string()),
         agent_model_max_output_tokens: Some(32_000),
         agent_model_context_window_tokens: Some(200_000),
         agent_timeout_secs: Some(900),
         ..AgentSettings::default()
     };
-    let mut zai_config = ModuleRuntimeConfig::default().with_string_value("api_key", api_key);
-    if let Ok(base) = env::var("ZAI_API_BASE") {
-        if !base.is_empty() {
-            zai_config = zai_config.with_string_value("api_base", base);
-        }
-    } else {
-        zai_config = zai_config.with_string_value("api_base", ZAI_API_BASE);
-    }
-    settings
-        .modules
-        .insert("llm-provider/zai".to_string(), zai_config);
     let agent_settings = Arc::new(settings);
 
     let llm = Arc::new(LlmClient::new(&agent_settings));

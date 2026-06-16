@@ -34,11 +34,7 @@ profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-sqlx",
 ]
-profile-lite = ["oxide-agent-core/profile-lite", "storage-sqlx"]
 profile-search-only = ["oxide-agent-core/profile-search-only", "storage-sqlx"]
-profile-no-sandbox = ["oxide-agent-core/profile-no-sandbox", "storage-sqlx"]
-profile-media-enabled = ["oxide-agent-core/profile-media-enabled", "storage-sqlx"]
-profile-host-bwrap = ["oxide-agent-core/profile-host-bwrap", "storage-sqlx"]
 storage-sqlx = ["oxide-agent-core/storage-sqlx"]
 
 [dev-dependencies]

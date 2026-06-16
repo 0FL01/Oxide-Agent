@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
-use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
+use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope, sandbox_backend_available};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
@@ -42,6 +42,7 @@ pub(crate) const TASK_PREVIEW_CHARS: usize = 96;
 pub(crate) const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 pub(crate) const MAX_TASK_EVENTS_LIMIT: usize = 500;
 pub(crate) const DEFAULT_WEB_CHAT_UPLOAD_MAX_MB: u64 = 200;
+pub(crate) const DEFAULT_WEB_MAX_SANDBOX_CONTAINERS_PER_USER: usize = 10;
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -202,6 +203,7 @@ pub struct AppState {
     pub task_handles: Arc<RwLock<StdHashMap<String, Arc<tokio::task::JoinHandle<()>>>>>,
     /// When `false`, the async auto-title worker is skipped (for tests with scripted LLM).
     pub auto_title_enabled: bool,
+    large_input_attachments_supported: bool,
 }
 
 impl AppState {
@@ -256,6 +258,7 @@ impl AppState {
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
             auto_title_enabled: true,
+            large_input_attachments_supported: sandbox_backend_available(),
         }
     }
 
@@ -311,6 +314,11 @@ impl AppState {
     #[must_use]
     pub(crate) fn sandbox_control(&self) -> Arc<dyn WebSandboxControl> {
         self.sandbox_control.clone()
+    }
+
+    #[must_use]
+    pub const fn large_input_attachments_supported(&self) -> bool {
+        self.large_input_attachments_supported
     }
 
     #[cfg(test)]
@@ -612,6 +620,12 @@ pub(crate) fn web_u64_env(key: &str) -> Option<u64> {
 
 pub(crate) fn web_chat_upload_limit_mb() -> u64 {
     web_u64_env("OXIDE_WEB_CHAT_UPLOAD_MAX_MB").unwrap_or(DEFAULT_WEB_CHAT_UPLOAD_MAX_MB)
+}
+
+pub(crate) fn web_max_sandbox_containers_per_user() -> usize {
+    web_u64_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER")
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(DEFAULT_WEB_MAX_SANDBOX_CONTAINERS_PER_USER)
 }
 
 pub(crate) fn web_bootstrap_required(

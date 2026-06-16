@@ -407,7 +407,7 @@ async fn handle_agent_confirmation(
     respond(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage-sqlx"))]
 mod tests {
     use super::access_control_user_id;
     use crate::bot::handlers::get_user_id_safe;

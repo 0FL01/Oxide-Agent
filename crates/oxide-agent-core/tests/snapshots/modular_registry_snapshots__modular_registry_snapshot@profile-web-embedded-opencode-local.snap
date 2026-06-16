@@ -7,28 +7,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "compiled_manifest": {
     "capabilities": [
       {
+        "id": "llm-provider/openai-base",
+        "module": "llm-provider/openai-base"
+      },
+      {
         "id": "llm-provider/opencode-go",
         "module": "llm-provider/opencode-go"
       },
       {
         "id": "llm-provider/opencode-zen",
         "module": "llm-provider/opencode-zen"
-      },
-      {
-        "id": "sandbox-backend/bwrap",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/exec",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/fileops",
-        "module": "sandbox-backend/bwrap"
-      },
-      {
-        "id": "sandbox-backend/bwrap/lifecycle",
-        "module": "sandbox-backend/bwrap"
       },
       {
         "id": "sandbox-backend/sandboxd-client",
@@ -63,8 +51,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/compression"
       },
       {
-        "id": "tool/crawl4ai-markdown",
-        "module": "tool/crawl4ai-markdown"
+        "id": "tool/crw-scrape",
+        "module": "tool/crw"
+      },
+      {
+        "id": "tool/crw-search",
+        "module": "tool/crw"
       },
       {
         "id": "tool/delegation",
@@ -107,10 +99,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/sandbox-recreate"
       },
       {
-        "id": "tool/searxng-search",
-        "module": "tool/searxng"
-      },
-      {
         "id": "tool/tavily-extract",
         "module": "tool/tavily"
       },
@@ -121,6 +109,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/todos",
         "module": "tool/todos"
+      },
+      {
+        "id": "tool/web-crawler",
+        "module": "tool/web-crawler"
       },
       {
         "id": "tool/webfetch-md",
@@ -136,6 +128,66 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       }
     ],
     "modules": [
+      {
+        "cargo_feature": "llm-openai-base",
+        "config_properties": [
+          {
+            "default_value": null,
+            "description": "OpenAI-compatible provider instances configured via OPENAI_BASE_PROVIDERS__N__* env vars.",
+            "env": "OPENAI_BASE_PROVIDERS__N__NAME",
+            "name": "providers",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenAI-compatible API base URL or chat completions endpoint for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_BASE",
+            "name": "providers.N.api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Optional bearer token for OpenAI-compatible provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__API_KEY",
+            "name": "providers.N.api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenAI Base model discovery cache TTL for provider instance N.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+            "name": "providers.N.model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Optional OpenAI-compatible model discovery endpoint for provider instance N. Defaults to api_base /models.",
+            "env": "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+            "name": "providers.N.models_url",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+            "env": "OPENAI_BASE_PROVIDERS__N__PROFILE",
+            "name": "providers.N.profile",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/openai-base",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/openai-base"
+        ],
+        "requires": []
+      },
       {
         "cargo_feature": "llm-opencode-go",
         "config_properties": [
@@ -241,20 +293,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "sandbox-backend-bwrap",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "sandbox-backend/bwrap",
-        "kind": "sandbox-backend",
-        "provides": [
-          "sandbox-backend/bwrap",
-          "sandbox-backend/bwrap/exec",
-          "sandbox-backend/bwrap/fileops",
-          "sandbox-backend/bwrap/lifecycle"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "sandbox-backend-sandboxd-client",
         "config_properties": [],
         "conflicts": [],
@@ -344,13 +382,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-crawl4ai-markdown",
+        "cargo_feature": "tool-crw",
         "config_properties": [],
         "conflicts": [],
-        "id": "tool/crawl4ai-markdown",
+        "id": "tool/crw",
         "kind": "search",
         "provides": [
-          "tool/crawl4ai-markdown"
+          "tool/crw-scrape",
+          "tool/crw-search"
         ],
         "requires": []
       },
@@ -433,8 +472,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec",
-              "sandbox-backend/bwrap/exec"
+              "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
           }
@@ -454,8 +492,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops",
-              "sandbox-backend/bwrap/fileops"
+              "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
           }
@@ -474,23 +511,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle",
-              "sandbox-backend/bwrap/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
           }
         ]
-      },
-      {
-        "cargo_feature": "tool-searxng",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/searxng",
-        "kind": "search",
-        "provides": [
-          "tool/searxng-search"
-        ],
-        "requires": []
       },
       {
         "cargo_feature": "tool-tavily",
@@ -512,6 +537,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/web-crawler",
+        "kind": "search",
+        "provides": [
+          "tool/web-crawler"
         ],
         "requires": []
       },
@@ -552,12 +588,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   },
   "enabled_manifest_default_config": {
     "capabilities": [
+      "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
-      "sandbox-backend/bwrap/exec",
-      "sandbox-backend/bwrap/fileops",
-      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/sandboxd-client",
       "sandbox-backend/sandboxd-client/diagnostics",
       "sandbox-backend/sandboxd-client/exec",
@@ -566,7 +599,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "storage/sqlx",
       "tool/brave-search",
       "tool/compression",
-      "tool/crawl4ai-markdown",
+      "tool/crw-scrape",
+      "tool/crw-search",
       "tool/delegation",
       "tool/file-delivery",
       "tool/media-audio-transcription",
@@ -577,23 +611,23 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
-      "tool/searxng-search",
       "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "transport/web"
     ],
     "modules": [
+      "llm-provider/openai-base",
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/bwrap",
       "sandbox-backend/sandboxd-client",
       "storage/sqlx",
       "tool/brave-search",
       "tool/compression",
-      "tool/crawl4ai-markdown",
+      "tool/crw",
       "tool/delegation",
       "tool/file-delivery",
       "tool/media-audio",
@@ -603,9 +637,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
-      "tool/searxng",
       "tool/tavily",
       "tool/todos",
+      "tool/web-crawler",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "transport/web"
@@ -615,7 +649,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "apply_file_edit",
     "cancel_sub_agents",
     "compress",
-    "crawl4ai_markdown",
     "describe_image_file",
     "describe_video_file",
     "execute_command",
@@ -645,10 +678,23 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/bwrap",
     "sandbox-backend/sandboxd-client"
   ],
   "external_service_requirements": [
+    {
+      "module_id": "llm-provider/openai-base",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-openai-base",
+      "config_env": [
+        "OPENAI_BASE_PROVIDERS__N__NAME",
+        "OPENAI_BASE_PROVIDERS__N__API_BASE",
+        "OPENAI_BASE_PROVIDERS__N__API_KEY",
+        "OPENAI_BASE_PROVIDERS__N__MODEL_CACHE_TTL_SECS",
+        "OPENAI_BASE_PROVIDERS__N__MODELS_URL",
+        "OPENAI_BASE_PROVIDERS__N__PROFILE"
+      ],
+      "requires_capabilities": []
+    },
     {
       "module_id": "llm-provider/opencode-go",
       "kind": "llm-provider",
@@ -673,13 +719,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
         "OPENCODE_ZEN_MODELS_URL"
       ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "sandbox-backend/bwrap",
-      "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-bwrap",
-      "config_env": [],
       "requires_capabilities": []
     },
     {
@@ -710,16 +749,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/crawl4ai-markdown",
+      "module_id": "tool/crw",
       "kind": "search",
-      "cargo_feature": "tool-crawl4ai-markdown",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/searxng",
-      "kind": "search",
-      "cargo_feature": "tool-searxng",
+      "cargo_feature": "tool-crw",
       "config_env": [],
       "requires_capabilities": []
     },
@@ -727,6 +759,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/tavily",
       "kind": "search",
       "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/web-crawler",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },

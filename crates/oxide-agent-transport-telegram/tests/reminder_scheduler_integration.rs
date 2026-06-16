@@ -1,3 +1,5 @@
+#![cfg(feature = "storage-sqlx")]
+
 use anyhow::Result;
 use oxide_agent_core::agent::identity::SessionId;
 use oxide_agent_core::agent::providers::{

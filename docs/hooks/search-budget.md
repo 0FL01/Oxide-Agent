@@ -20,9 +20,8 @@
 Следующие инструменты считаются поисковыми и учитываются в лимите:
 - `web_search`
 - `web_extract`
-- `duckduckgo_search`
-- `duckduckgo_news`
 - `web_markdown`
+- `web_crawler`
 
 ## Логика работы
 
@@ -61,7 +60,10 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search" | "web_extract" | "duckduckgo_search" | "duckduckgo_news" | "web_markdown"
+            "web_search"
+                | "web_extract"
+                | "web_markdown"
+                | "web_crawler"
         )
     }
 }
@@ -98,9 +100,9 @@ impl Hook for SearchBudgetHook {
 Вызовы:
 1. web_search → count=1 (≤10) → Continue
 2. web_extract → count=2 (≤10) → Continue
-3. duckduckgo_search → count=3 (≤10) → Continue
+3. web_crawler → count=3 (≤10) → Continue
 ...
-10. web_markdown → count=10 (≤10) → Continue
+10. web_crawler → count=10 (≤10) → Continue
 ```
 
 ### Сценарий 2: Превышение лимита

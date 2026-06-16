@@ -95,6 +95,20 @@
   align-items: center;
 }
 
+.composer-validation {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.composer-validation.error {
+  color: var(--danger);
+}
+
+.composer-validation.info {
+  color: var(--fg-muted);
+}
+
 .agent-profile-select {
   width: 150px;
   min-height: 32px;

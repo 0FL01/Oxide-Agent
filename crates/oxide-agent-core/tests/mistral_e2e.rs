@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use dotenvy::dotenv;
-use oxide_agent_core::llm::providers::MistralProvider;
+use oxide_agent_core::llm::providers::openai_base::OpenAIBaseProvider;
 use oxide_agent_core::llm::{ChatWithToolsRequest, LlmProvider, Message, ToolDefinition};
 use serde_json::json;
 use std::env;
@@ -100,7 +100,7 @@ async fn test_mistral_simple_chat() -> Result<()> {
     };
 
     info!("=== Test: Simple Chat ===");
-    let provider = MistralProvider::new(api_key.clone());
+    let provider = OpenAIBaseProvider::new_mistral(Some(api_key.clone()), reqwest::Client::new());
 
     let messages = vec![Message::user("Say 'hello' in exactly one word.")];
 
@@ -160,7 +160,7 @@ async fn test_mistral_single_tool_call() -> Result<()> {
     };
 
     info!("=== Test: Single Tool Call ===");
-    let provider = MistralProvider::new(api_key.clone());
+    let provider = OpenAIBaseProvider::new_mistral(Some(api_key.clone()), reqwest::Client::new());
 
     let tools = vec![ToolDefinition {
         name: "get_weather".to_string(),
@@ -243,7 +243,7 @@ async fn test_mistral_tool_call_with_result() -> Result<()> {
     };
 
     info!("=== Test: Tool Call WITH Result (Multi-turn) ===");
-    let provider = MistralProvider::new(api_key.clone());
+    let provider = OpenAIBaseProvider::new_mistral(Some(api_key.clone()), reqwest::Client::new());
     let tools = vec![weather_tool()];
 
     // First turn: model should call a tool
@@ -340,7 +340,7 @@ async fn test_mistral_multiple_tool_calls_parallel() -> Result<()> {
     };
 
     info!("=== Test: Multiple Parallel Tool Calls ===");
-    let provider = MistralProvider::new(api_key.clone());
+    let provider = OpenAIBaseProvider::new_mistral(Some(api_key.clone()), reqwest::Client::new());
 
     let tools = vec![
         ToolDefinition {
@@ -426,7 +426,7 @@ async fn test_mistral_parallel_tool_results() -> Result<()> {
     };
 
     info!("=== Test: Parallel Tool Calls WITH Results ===");
-    let provider = MistralProvider::new(api_key.clone());
+    let provider = OpenAIBaseProvider::new_mistral(Some(api_key.clone()), reqwest::Client::new());
     let tools = weather_and_time_tools();
 
     // First turn: get parallel tool calls

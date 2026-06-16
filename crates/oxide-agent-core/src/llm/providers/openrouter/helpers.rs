@@ -1,144 +1,39 @@
-use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::{LlmError, Message, ToolCall, ToolDefinition};
-use serde_json::json;
+#[cfg(test)]
+use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
+#[cfg(test)]
+use crate::llm::providers::chat_completions::request::{self as chat_request, ChatRequestOptions};
+use crate::llm::providers::chat_completions::response as chat_response;
+use crate::llm::{LlmError, ToolCall};
+#[cfg(test)]
+use crate::llm::{Message, ToolDefinition};
 
+#[cfg(test)]
 pub(super) fn prepare_structured_messages(
     system_prompt: &str,
     history: &[Message],
 ) -> Vec<serde_json::Value> {
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": system_prompt
-    })];
-
-    for msg in history {
-        match msg.role.as_str() {
-            "system" => {
-                messages.push(json!({
-                    "role": "system",
-                    "content": msg.content
-                }));
-            }
-            "assistant" => {
-                let mut m = json!({
-                    "role": "assistant",
-                    "content": msg.content
-                });
-
-                if let Some(tool_calls) = &msg.tool_calls {
-                    let api_tool_calls: Vec<serde_json::Value> = tool_calls
-                        .iter()
-                        .filter_map(|tc| {
-                            CHAT_LIKE_TOOL_PROFILE
-                                .encode_tool_call(tc)
-                                .and_then(|call| call.into_chat_like())
-                                .map(|call| {
-                                    json!({
-                                        "id": call.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": call.name,
-                                            "arguments": call.arguments
-                                        }
-                                    })
-                                })
-                        })
-                        .collect();
-
-                    if !api_tool_calls.is_empty() {
-                        m["tool_calls"] = json!(api_tool_calls);
-                    }
-                }
-
-                messages.push(m);
-            }
-            "tool" => {
-                if let Some(result) = CHAT_LIKE_TOOL_PROFILE
-                    .encode_tool_result(msg)
-                    .and_then(|result| result.into_chat_like())
-                {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": result.tool_call_id,
-                        "content": result.content
-                    }));
-                }
-            }
-            _ => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": msg.content
-                }));
-            }
-        }
-    }
-    messages
+    chat_request::prepare_messages(
+        system_prompt,
+        history,
+        ChatRequestOptions::new(ChatCompletionsProfile::openrouter())
+            .with_native_image_parts(false),
+        None,
+    )
 }
 
+#[cfg(test)]
 pub(super) fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
-    tools
-        .iter()
-        .map(|t| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters
-                }
-            })
-        })
-        .collect()
+    chat_request::prepare_tools_json(tools)
 }
 
 pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall>, LlmError> {
-    let Some(array) = value.as_array() else {
-        return Err(LlmError::JsonError(
-            "Invalid tool_calls format from OpenRouter".to_string(),
-        ));
-    };
-
-    let mut tool_calls = Vec::with_capacity(array.len());
-    for call in array {
-        let Some(function) = call.get("function") else {
-            continue;
-        };
-        let Some(name) = function.get("name").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let arguments = function
-            .get("arguments")
-            .and_then(|value| {
-                value
-                    .as_str()
-                    .map(ToString::to_string)
-                    .or_else(|| serde_json::to_string(value).ok())
-            })
-            .unwrap_or_default();
-        let wire_id = call
-            .get("id")
-            .and_then(|value| value.as_str())
-            .filter(|id| !id.trim().is_empty());
-        tool_calls.push(match wire_id {
-            Some(wire_id) => CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
-                wire_id,
-                None,
-                name.to_string(),
-                arguments,
-            ),
-            None => {
-                CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
-            }
-        });
-    }
-
-    Ok(tool_calls)
+    chat_response::parse_tool_calls(value, ChatCompletionsProfile::openrouter(), None)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_tool_calls, prepare_structured_messages};
-    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use super::{parse_tool_calls, prepare_structured_messages, prepare_tools_json};
+    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition};
     use serde_json::json;
 
     #[test]
@@ -177,6 +72,23 @@ mod tests {
             json!("call-openrouter-1")
         );
         assert_eq!(messages[2]["tool_call_id"], json!("call-openrouter-1"));
+    }
+
+    #[test]
+    fn prepare_tools_json_uses_chat_completions_function_schema() {
+        let tools = prepare_tools_json(&[ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } }
+            }),
+        }]);
+
+        assert_eq!(tools[0]["type"], json!("function"));
+        assert_eq!(tools[0]["function"]["name"], json!("search"));
+        assert_eq!(tools[0]["function"]["parameters"]["type"], json!("object"));
+        assert!(tools[0].get("name").is_none());
     }
 
     #[test]

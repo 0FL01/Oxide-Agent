@@ -933,7 +933,6 @@ mod tests {
         any(
             feature = "sandbox-backend-docker-direct",
             feature = "sandbox-backend-sandboxd-client",
-            feature = "sandbox-backend-bwrap"
         )
     ))]
     #[test]
@@ -958,8 +957,6 @@ mod tests {
             "sandbox-backend/docker-direct/exec",
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             "sandbox-backend/sandboxd-client/exec",
-            #[cfg(feature = "sandbox-backend-bwrap")]
-            "sandbox-backend/bwrap/exec",
         ];
 
         assert_eq!(requirement_options, expected);
@@ -968,8 +965,7 @@ mod tests {
     #[cfg(all(
         feature = "tool-sandbox-exec",
         feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
-        feature = "sandbox-backend-bwrap"
+        feature = "sandbox-backend-sandboxd-client"
     ))]
     #[test]
     fn enabled_sandbox_exec_fails_without_enabled_exec_backend() {
@@ -979,30 +975,17 @@ mod tests {
         manifest
             .enabled_manifest_from_configured_modules([
                 ("sandbox-backend/docker-direct", false),
-                ("sandbox-backend/bwrap", false),
                 ("sandbox-daemon/sandboxd", false),
             ])
             .expect("sandboxd-client exec backend should satisfy sandbox exec");
         manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/sandboxd-client", false),
-                ("sandbox-backend/bwrap", false),
-            ])
+            .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
             .expect("docker-direct exec backend should satisfy sandbox exec");
-        manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/docker-direct", false),
-                ("sandbox-backend/sandboxd-client", false),
-                ("sandbox-daemon/sandboxd", false),
-                ("tool/stack-logs", false),
-            ])
-            .expect("bwrap exec backend should satisfy sandbox exec");
 
         let error = manifest
             .enabled_manifest_from_configured_modules([
                 ("sandbox-backend/docker-direct", false),
                 ("sandbox-backend/sandboxd-client", false),
-                ("sandbox-backend/bwrap", false),
                 ("sandbox-daemon/sandboxd", false),
                 ("tool/sandbox-fileops", false),
                 ("tool/sandbox-recreate", false),
@@ -1018,7 +1001,6 @@ mod tests {
                 capabilities: vec![
                     CapabilityId::new("sandbox-backend/docker-direct/exec"),
                     CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
-                    CapabilityId::new("sandbox-backend/bwrap/exec"),
                 ],
             }
         );
@@ -1029,7 +1011,6 @@ mod tests {
         any(
             feature = "sandbox-backend-docker-direct",
             feature = "sandbox-backend-sandboxd-client",
-            feature = "sandbox-backend-bwrap"
         )
     ))]
     #[test]
@@ -1059,11 +1040,6 @@ mod tests {
         {
             expected.insert("sandbox-backend/sandboxd-client/exec");
             expected.insert("sandbox-backend/sandboxd-client/fileops");
-        }
-        #[cfg(feature = "sandbox-backend-bwrap")]
-        {
-            expected.insert("sandbox-backend/bwrap/exec");
-            expected.insert("sandbox-backend/bwrap/fileops");
         }
 
         assert_eq!(requirement_options, expected);

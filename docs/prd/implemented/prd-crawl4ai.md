@@ -1,3 +1,5 @@
+> Historical note: this implemented PRD predates the CRW migration. Active web-research tools are now `web_search`, `web_crawler`, and split-mode `web_markdown`; legacy Crawl4AI names below are retained as historical implementation context, not current setup instructions.
+
 **Executive summary:** Выбранный дизайн: Rust-native `ToolRuntime` provider `crawl4ai_markdown`, который ходит в уже поднятый self-hosted Crawl4AI REST API через `POST /crawl`. Это самый простой вариант: Oxide остаётся Rust-only агентом, Crawl4AI остаётся внешним browser-rendering сервисом, tool schema маленькая и статичная, а недоступность сервиса возвращается как structured runtime failure, не как изменение списка tools.
 
 Ни Python subprocess, ни MCP, ни Docker lifecycle внутри Oxide здесь не нужны. Единственная неизбежная cache-hit цена — если этот tool намеренно включить в активный профиль, provider tool-surface изменится один раз; дальше он должен быть полностью стабильным.

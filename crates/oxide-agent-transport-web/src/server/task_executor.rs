@@ -6,6 +6,7 @@
 use super::{
     AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord, markdown_preview,
     pending_user_input_view, progress_snapshot_from_serializable,
+    search_probe::maybe_run_search_probe,
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
@@ -285,6 +286,33 @@ async fn execute_agent_task(
         executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
         "web task executor latency"
     );
+    let (run_request, probe_outcome) = maybe_run_search_probe(
+        &session_manager,
+        session_id,
+        task_id,
+        run_request,
+        tx.clone(),
+        (*cancellation_token).clone(),
+    )
+    .await;
+
+    if probe_outcome.cancelled || cancellation_token.is_cancelled() {
+        drop(tx);
+        if let Err(error) = event_collector_handle.await {
+            warn!(
+                task_id = %task_id,
+                error = %error,
+                "Task event collector failed after Search Probe cancellation"
+            );
+        }
+        if let Some(web_task) = &ctx.web_task {
+            persist_task_cancelled(web_task).await;
+        }
+        session_manager.cancel_task(task_id, session_id).await;
+        info!(task_id = %task_id, "Task cancelled before main runtime");
+        return;
+    }
+
     spawn_executor_task(ExecutorTaskCtx {
         session_manager,
         session_id: session_id.to_string(),
@@ -571,6 +599,23 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
         update_web_session_for_task(web_task, ApiTaskStatus::Failed, None, None, now).await;
     }
     broadcast_status_if_present(web_task, ApiTaskStatus::Failed, false).await;
+    close_event_log_if_present(web_task).await;
+}
+
+async fn persist_task_cancelled(web_task: &WebTaskPersistence) {
+    let now = chrono::Utc::now();
+    let updated = update_web_task_unless_cancelled(web_task, |task| {
+        task.status = ApiTaskStatus::Cancelled;
+        task.error_message = None;
+        task.pending_user_input = None;
+        task.updated_at = now;
+        task.finished_at = Some(now);
+    })
+    .await;
+    if updated {
+        update_web_session_for_task(web_task, ApiTaskStatus::Cancelled, None, None, now).await;
+    }
+    broadcast_status_if_present(web_task, ApiTaskStatus::Cancelled, false).await;
     close_event_log_if_present(web_task).await;
 }
 

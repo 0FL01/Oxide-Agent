@@ -2,7 +2,7 @@
 
 Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -39,7 +39,7 @@ Default branch: `dev`.
 - `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, compaction, wiki memory, providers, prompt composition.
 - `crates/oxide-agent-core/src/storage/` - storage facade, SQLx backend, domain records (control-plane, reminders, flows).
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
-- `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker, Bubblewrap (`bwrap/`).
+- `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker (`broker.rs`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
 - `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs`, with `sse.rs`, `static_assets.rs`, `task_executor.rs`, and `types.rs` for streaming/assets/execution/state.
 - `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `10-responsive.css`).
@@ -52,16 +52,16 @@ Default branch: `dev`.
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
 - Build and runtime composition are capability-module based. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
-- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`.
+- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-search-only`, `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
 - Topic-aware and thread-aware by default for agent mode and manager functions.
 - Context-scoped storage is mandatory for transport contexts; legacy fallback only for DM compatibility.
 - Topic-scoped `AGENTS.md` is stored separately, pinned during flow bootstrap, live-synced after `agents_md_update`, inherited by sub-agents.
-- Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), broker (`SANDBOX_BACKEND=broker`), or Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Compose stays on broker; bwrap must not require Docker.
+- Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`) or broker (`SANDBOX_BACKEND=broker`). Default Compose stays on broker.
 - Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
 - `storage-sqlx` is the production durable storage. Local filesystem is transient only.
-- Direct Google Gemini provider code must stay absent. Gemini models are valid only through OpenRouter.
+- Gemini models are valid only through OpenRouter; no direct Gemini provider is maintained.
 
 ## Key Subsystems
 
@@ -105,7 +105,7 @@ Default branch: `dev`.
 - SSH: native upstream tools used directly; approval flow disabled.
 
 ### Sandbox and SSH
-- Facade: `sandbox/manager.rs`; backends: direct Docker, broker (`broker.rs`), Bubblewrap (`bwrap/` -- 13 modules).
+- Facade: `sandbox/manager.rs`; backends: direct Docker, broker (`broker.rs`).
 - `SandboxScope` provides stable identity for persistent sandbox reuse.
 - SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
 - Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
@@ -117,15 +117,15 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
-- `webfetch_md` and `crawl4ai_markdown` are mutually exclusive at runtime: if `OXIDE_CRAWL4AI_BASE_URL` is set (or `OXIDE_CRAWL4AI_ENABLED=true`), only `crawl4ai_markdown` is registered; otherwise only `webfetch_md` is registered. Override with `WEBFETCH_MD_ENABLED=false` as a belt-and-braces disable.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, brave-search, webfetch_md, crw, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, which uses webfetch first and falls back to CRW scrape only on anti-bot/access-block failures when `OXIDE_CRW_ENABLED=true`. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
 
 ## Configuration
 
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
-- Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`, `BWRAP_*`), Jira MCP, wiki memory writer.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local SearXNG/Crawl4AI overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
+- Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`), Jira MCP, wiki memory writer.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
 
 ## Development Practices
 
@@ -133,8 +133,7 @@ Default branch: `dev`.
 - `cargo check` for quick verification; `cargo build` only for final binary.
 - Embedded: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
 - Full: `cargo build --release --no-default-features --features profile-full`.
-- Bwrap: `cargo check --workspace --no-default-features --features profile-host-bwrap`.
-- Other profiles: `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-web-embedded-opencode-local`.
+- Other profiles: `profile-search-only`, `profile-web-embedded-opencode-local`.
 - Capability output (swap `<PROFILE>` and `<profile-name>`):
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --compiled --json`
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --enabled --json`
@@ -151,9 +150,6 @@ Default branch: `dev`.
 - E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
 - Transport-specific profiles (e.g. `profile-web-embedded-opencode-local`) do not activate features in unrelated crates. `cargo test --workspace` will fail on crates whose modules are behind different feature gates. Use scoped `-p` for such profiles: `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`. Full and lite profiles work with `--workspace`.
 - The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
-
-### Bwrap rootfs
-- `scripts/build-bwrap-rootfs-debian.sh`, `build-bwrap-rootfs-host-smoke.sh`, `import-bwrap-rootfs-tar.sh`, `smoke-bwrap.sh`.
 
 ### Commit style
 - `<type>(<scope>): <description>` + blank line + indented `Changes:` with 2-4 bullets.
@@ -173,7 +169,6 @@ feat(sources): add bybit proof of reserves source
 - `docs/tips/cache-hit.md` - prompt cache hit analysis: architecture, assembly order, telemetry, production validation.
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
 - `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
-- `docs/bwrap-sandbox.md` - Bubblewrap sandbox backend: setup, rootfs, execution.
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.
 - `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.

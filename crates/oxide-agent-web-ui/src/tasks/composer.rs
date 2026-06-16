@@ -1,6 +1,6 @@
 use crate::auth::AuthContext;
 use crate::utils::spawn_ui;
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, TaskAttachment, UpdateUserSettingsRequest,
 };
@@ -194,6 +194,41 @@ pub(super) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile
     !input.trim().is_empty() || !attachments.is_empty()
 }
 
+pub(super) fn task_input_char_count(input: &str) -> usize {
+    input.chars().count()
+}
+
+pub(super) fn task_input_too_long(input: &str, max_chars: usize) -> bool {
+    task_input_char_count(input) > max_chars
+}
+
+pub(super) fn task_input_limit_notice(
+    input: &str,
+    max_chars: usize,
+    large_input_attachments_supported: bool,
+) -> Option<(String, bool)> {
+    let count = task_input_char_count(input);
+    if count <= max_chars {
+        return None;
+    }
+
+    if large_input_attachments_supported {
+        Some((
+            format!(
+                "Message is large ({count}/{max_chars} characters) and will be uploaded as a sandbox attachment."
+            ),
+            false,
+        ))
+    } else {
+        Some((
+            format!(
+                "Message is too large ({count}/{max_chars} characters). Sandbox attachments are not available."
+            ),
+            true,
+        ))
+    }
+}
+
 pub(super) fn handle_composer_drag(
     ev: &leptos::ev::DragEvent,
     set_drag_active: WriteSignal<bool>,
@@ -223,6 +258,14 @@ pub(super) fn handle_composer_drop(
 pub(super) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSignal<String>) {
     set_input.set(event_target_value(ev));
     resize_textarea_from_input_event(ev);
+}
+
+pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textarea>) {
+    if let Some(textarea) = textarea_ref.get() {
+        use wasm_bindgen::JsCast;
+        let el: web_sys::HtmlElement = textarea.unchecked_into();
+        el.style().remove_property("height").ok();
+    }
 }
 
 pub(super) fn handle_composer_paste(

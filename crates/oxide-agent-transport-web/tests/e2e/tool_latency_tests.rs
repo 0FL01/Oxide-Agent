@@ -18,8 +18,8 @@ use crate::setup::execute_task;
 /// active path uses the typed tool runtime.
 #[tokio::test]
 #[cfg_attr(
-    not(feature = "profile-lite"),
-    ignore = "requires profile-lite OpenCode route capabilities"
+    not(feature = "profile-web-embedded-opencode-local"),
+    ignore = "requires profile-web-embedded-opencode-local OpenCode route capabilities"
 )]
 async fn e2e_parallel_tool_execution_latency() {
     let test_start = std::time::Instant::now();

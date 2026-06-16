@@ -766,3 +766,4 @@ module id `tool/brave-search`
 [4]: https://docs.crawl4ai.com/core/quickstart/ "Quick Start - Crawl4AI Documentation (v0.8.x)"
 [5]: https://docs.crawl4ai.com/core/browser-crawler-config/ "Browser, Crawler & LLM Config - Crawl4AI Documentation (v0.8.x)"
 [6]: https://docs.crawl4ai.com/core/self-hosting/ "Self-Hosting Guide - Crawl4AI Documentation (v0.8.x)"
+> Historical note: this implemented PRD predates the CRW migration. Active web-research fallback names are now `web_search`, `web_crawler`, and split-mode `web_markdown`; legacy SearXNG/Crawl4AI names below are retained as historical implementation context, not current setup instructions.

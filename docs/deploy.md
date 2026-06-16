@@ -42,13 +42,11 @@ Web console with remote Postgres from `.env`:
 docker compose -f docker-compose.web.yml up --build -d
 ```
 
-Web console with local Postgres, SearXNG, and Crawl4AI:
+Web console with local Postgres and CRW:
 
 ```bash
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
 ```
-
-Bare host deployments should use `SANDBOX_BACKEND=bwrap`; see `docs/bwrap-sandbox.md`.
 
 ## 3. Postgres and migrations
 
@@ -71,13 +69,11 @@ docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-s
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
 ```
 
-External SearXNG, Crawl4AI, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default.
+External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first and CRW scrape fallback; set it to `false` to expose split lightweight `web_markdown` fetches.
 
 ## 5. Sandbox
 
 Docker Compose uses the broker backend. Only `sandboxd` mounts `/var/run/docker.sock`; bot/web containers talk to it over `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`.
-
-Bare-host Bubblewrap setup is documented in `docs/bwrap-sandbox.md`.
 
 ## 6. Verify
 

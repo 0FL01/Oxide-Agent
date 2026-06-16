@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use axum::http::HeaderMap;
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use std::time::Duration;
 use std::time::Instant;
 
-use oxide_agent_core::agent::AgentMemory;
+use oxide_agent_core::agent::{AgentMemory, memory::AgentMessage};
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 
 /// Wraps `unsafe { std::env::set_var }` for test code (Rust 2024).
@@ -23,7 +23,7 @@ fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
 }
 use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
 use oxide_agent_core::llm::{LlmClient, LlmProvider};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
@@ -34,22 +34,22 @@ use oxide_agent_web_contracts::{
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
     TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
-    UpdateUserSettingsRequest, WebTaskRecord,
+    UpdateUserSettingsRequest, WebSessionRecord, WebTaskRecord,
 };
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use oxide_agent_web_contracts::{
     CreateTaskRequest as ApiCreateTaskRequest, PendingUserInputView,
-    ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
-    UserMessageEventPayload,
+    ResumeTaskRequest as ApiResumeTaskRequest, UpdateSessionRequest,
+    UserInputKind as ApiUserInputKind, UserMessageEventPayload,
 };
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use tokio::sync::Notify;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord};
 
 use super::EVENT_LOGS;
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 use super::task_routes::TaskListQuery;
 use crate::web_transport::TaskEventLog;
 
@@ -59,12 +59,13 @@ use super::{
     AUTH_COOKIE_NAME, AppState, TaskEventsQuery, WEB_TASK_SCHEMA_VERSION, WebAssetsConfig,
     WebSandboxControl, WebStartupError, api_cancel_task, api_create_agent_profile,
     api_create_session, api_create_session_with_request, api_create_task_version,
-    api_delete_session, api_get_session, api_get_settings, api_get_task_events,
-    api_get_task_progress, api_list_agent_profiles, api_list_sessions, api_update_session_profile,
-    api_update_settings, auth_cookie_value, csrf_header_value, parse_web_bool,
+    api_delete_agent_profile, api_delete_session, api_get_session, api_get_settings,
+    api_get_task_events, api_get_task_progress, api_list_agent_profiles, api_list_sessions,
+    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
+    parse_web_bool,
 };
-#[cfg(feature = "profile-lite")]
-use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
+#[cfg(feature = "profile-web-embedded-opencode-local")]
+use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task, api_update_session};
 use crate::auth::{login_user, register_user};
 use crate::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
 use crate::session::WebSessionManager;
@@ -109,11 +110,18 @@ impl FakeSandboxControl {
 }
 
 fn fake_sandbox_record(scope: SandboxScope) -> SandboxContainerRecord {
+    fake_sandbox_record_with_created_at(scope, None)
+}
+
+fn fake_sandbox_record_with_created_at(
+    scope: SandboxScope,
+    created_at: Option<i64>,
+) -> SandboxContainerRecord {
     SandboxContainerRecord {
         container_id: scope.stable_name(),
         container_name: scope.container_name(),
         image: Some("fake-image".to_string()),
-        created_at: None,
+        created_at,
         state: Some("running".to_string()),
         status: Some("running".to_string()),
         running: true,
@@ -122,6 +130,32 @@ fn fake_sandbox_record(scope: SandboxScope) -> SandboxContainerRecord {
         chat_id: scope.chat_id(),
         thread_id: scope.thread_id(),
         labels: scope.docker_labels(),
+    }
+}
+
+fn fake_web_session_record(user_id: i64, session_id: &str, context_key: &str) -> WebSessionRecord {
+    let now = chrono::Utc::now();
+    WebSessionRecord {
+        schema_version: super::WEB_SESSION_SCHEMA_VERSION,
+        session_id: session_id.to_string(),
+        user_id,
+        title: "Test session".to_string(),
+        context_key: context_key.to_string(),
+        context_keys: vec![context_key.to_string()],
+        agent_flow_id: super::WEB_SESSION_FLOW_ID.to_string(),
+        model_selection: None,
+        agent_profile_id: None,
+        created_at: now,
+        updated_at: now,
+        active_task_id: None,
+        last_task_status: None,
+        last_preview: None,
+        manually_renamed: false,
+        auto_title_source_message: None,
+        auto_title_replaceable_title: None,
+        auto_title_attempts: 0,
+        auto_title_next_attempt_at: None,
+        auto_title_last_error: None,
     }
 }
 
@@ -164,7 +198,7 @@ impl WebSandboxControl for FakeSandboxControl {
     }
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 struct AutoTitleTestLlmProvider {
     title_responses: Mutex<VecDeque<ChatResponse>>,
     agent_response: String,
@@ -174,7 +208,7 @@ struct AutoTitleTestLlmProvider {
     title_returned: Arc<Notify>,
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 impl AutoTitleTestLlmProvider {
     fn new(title_response: impl Into<String>, agent_response: impl Into<String>) -> Arc<Self> {
         Self::with_title_blocking(title_response, agent_response, false)
@@ -291,7 +325,7 @@ impl AutoTitleTestLlmProvider {
     }
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[async_trait]
 impl LlmProvider for AutoTitleTestLlmProvider {
     async fn complete_internal_text(
@@ -630,6 +664,9 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
         "OPENCODE_GO_API_KEY",
         "OPENCODE_GO_MODELS_URL",
         "OPENCODE_ZEN_MODELS_URL",
+        "OPENAI_BASE_PROVIDERS__0__NAME",
+        "OPENAI_BASE_PROVIDERS__0__API_BASE",
+        "OPENAI_BASE_PROVIDERS__0__MODELS_URL",
         "LLM_HTTP_TIMEOUT_SECS",
     ]);
     test_set_env("OPENCODE_API_KEY", "test-opencode-key");
@@ -637,6 +674,9 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
     test_remove_env("OPENCODE_GO_API_KEY");
     test_set_env("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
     test_set_env("OPENCODE_ZEN_MODELS_URL", "http://127.0.0.1:9/models");
+    test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
+    test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
+    test_remove_env("OPENAI_BASE_PROVIDERS__0__MODELS_URL");
     test_set_env("LLM_HTTP_TIMEOUT_SECS", "1");
 
     let state = test_app_state();
@@ -790,6 +830,26 @@ async fn api_settings_round_trips_default_model_selection() {
         })
     );
 
+    let axum::Json(updated_openai_base) = api_update_settings(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::Json(UpdateUserSettingsRequest {
+            default_model_selection: Some(ModelSelection {
+                qualified_id: "openai-base:local/hf.co/test/model".to_string(),
+            }),
+            default_agent_profile_id: None,
+            default_effort: None,
+        }),
+    )
+    .await
+    .expect("update openai base settings");
+    assert_eq!(
+        updated_openai_base.default_model_selection,
+        Some(ModelSelection {
+            qualified_id: "openai-base:local/hf.co/test/model".to_string(),
+        })
+    );
+
     let (status, axum::Json(error)) = api_update_settings(
         axum::extract::State(state),
         auth_headers(&token, Some(&auth_session.csrf_token)),
@@ -802,7 +862,7 @@ async fn api_settings_round_trips_default_model_selection() {
         }),
     )
     .await
-    .expect_err("non-opencode model selection should fail");
+    .expect_err("unsupported model selection should fail");
     assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(error.error.code, ErrorCode::ValidationError);
 }
@@ -1024,6 +1084,112 @@ async fn api_agent_profile_default_and_session_selection_persist() {
     assert_eq!(
         updated_session.session.agent_profile_id,
         Some(created_profile.profile.agent_id.clone())
+    );
+}
+
+#[tokio::test]
+async fn deleting_agent_profile_preserves_session_chronology() {
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (user, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_profile) = api_create_agent_profile(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::Json(CreateAgentProfileRequest {
+            display_name: "Reviewer".to_string(),
+            system_prompt: "Focus on review notes.".to_string(),
+        }),
+    )
+    .await
+    .expect("create agent profile");
+
+    for index in 0..3 {
+        let axum::Json(created) = api_create_session_with_request(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(ApiCreateSessionRequest {
+                model_selection: None,
+                agent_profile_selection: AgentProfileSelection::Profile {
+                    agent_profile_id: created_profile.profile.agent_id.clone(),
+                },
+            }),
+        )
+        .await
+        .expect("create profiled session");
+        let mut record = state
+            .web_store
+            .load_session(user.user_id, &created.session.session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        record.created_at = now + chrono::Duration::seconds(index);
+        record.updated_at = now + chrono::Duration::seconds(index);
+        state
+            .web_store
+            .save_session(record)
+            .await
+            .expect("save timestamped session");
+    }
+
+    let axum::Json(before_delete) = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions before delete");
+    let before_order = before_delete
+        .sessions
+        .iter()
+        .map(|session| (session.session_id.clone(), session.updated_at))
+        .collect::<Vec<_>>();
+
+    let _ = api_delete_agent_profile(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(created_profile.profile.agent_id.clone()),
+    )
+    .await
+    .expect("delete agent profile");
+
+    let axum::Json(after_delete) = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions after delete");
+    let after_order = after_delete
+        .sessions
+        .iter()
+        .map(|session| (session.session_id.clone(), session.updated_at))
+        .collect::<Vec<_>>();
+
+    assert_eq!(before_order, after_order);
+    assert!(
+        after_delete
+            .sessions
+            .iter()
+            .all(|session| session.agent_profile_id.is_none())
     );
 }
 
@@ -1738,6 +1904,229 @@ async fn api_create_session_prunes_orphan_web_sandboxes() {
 }
 
 #[tokio::test]
+async fn api_list_sessions_prunes_web_sandboxes_over_limit_oldest_first() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..12 {
+        let session_id = format!("quota-live-{index}");
+        let context_key = format!("web-session-quota-live-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-0").container_name()
+    }));
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-1").container_name()
+    }));
+}
+
+#[tokio::test]
+async fn api_list_sessions_keeps_non_web_sandboxes_when_enforcing_limit() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-bob".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-bob".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..12 {
+        let session_id = format!("quota-web-{index}");
+        let context_key = format!("web-session-quota-web-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    for index in 0..3 {
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, format!("topic-live-{index}")),
+            Some(index),
+        ));
+    }
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    for index in 0..3 {
+        assert!(!deleted_names.iter().any(|name| {
+            name == &SandboxScope::new(user.user_id, format!("topic-live-{index}")).container_name()
+        }));
+    }
+}
+
+#[tokio::test]
+async fn api_list_sessions_prunes_orphans_before_quota() {
+    let _env_lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER"]);
+    test_set_env("OXIDE_WEB_MAX_SANDBOX_CONTAINERS_PER_USER", "10");
+
+    let (mut state, _) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "quota-carol".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "quota-carol".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let mut sandboxes = Vec::new();
+    for index in 0..10 {
+        let session_id = format!("quota-live-{index}");
+        let context_key = format!("web-session-quota-live-{index}");
+        state
+            .web_store
+            .save_session(fake_web_session_record(
+                user.user_id,
+                &session_id,
+                &context_key,
+            ))
+            .await
+            .expect("save session");
+        sandboxes.push(fake_sandbox_record_with_created_at(
+            SandboxScope::new(user.user_id, context_key),
+            Some(index),
+        ));
+    }
+    sandboxes.push(fake_sandbox_record_with_created_at(
+        SandboxScope::new(user.user_id, "web-session-quota-orphan-0"),
+        Some(-2),
+    ));
+    sandboxes.push(fake_sandbox_record_with_created_at(
+        SandboxScope::new(user.user_id, "web-session-quota-orphan-1"),
+        Some(-1),
+    ));
+    let sandbox_control = FakeSandboxControl::with_sandboxes(sandboxes);
+    state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+    let _ = api_list_sessions(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list sessions");
+
+    let deleted_names = sandbox_control.deleted_names();
+    assert_eq!(deleted_names.len(), 2);
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-orphan-0").container_name()
+    }));
+    assert!(deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-orphan-1").container_name()
+    }));
+    assert!(!deleted_names.iter().any(|name| {
+        name == &SandboxScope::new(user.user_id, "web-session-quota-live-0").container_name()
+    }));
+}
+
+#[tokio::test]
 async fn api_delete_session_destroys_web_sandbox_and_clears_flow_memory() {
     let (mut state, _) =
         test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
@@ -1884,13 +2273,28 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
     .await
     .expect("create session");
     let session_id = created_session.session.session_id;
-    let original_context_key = state
+    let original_session = state
         .web_store
         .load_session(user_one.user_id, &session_id)
         .await
         .expect("load session")
-        .expect("session exists")
-        .context_key;
+        .expect("session exists");
+    let original_context_key = original_session.context_key.clone();
+    let agent_flow_id = original_session.agent_flow_id.clone();
+    let mut source_memory = AgentMemory::new(usize::MAX);
+    source_memory.add_message(AgentMessage::user_task("Original prompt"));
+    source_memory.add_message(AgentMessage::assistant("Original answer"));
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user_one.user_id,
+            original_context_key.clone(),
+            agent_flow_id.clone(),
+            &source_memory,
+        )
+        .await
+        .expect("save original flow memory");
 
     let completed = task_record(
         user_one.user_id,
@@ -1939,6 +2343,21 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
             .context_key
             .starts_with(&format!("web-session-{session_id}-branch-"))
     );
+    let branch_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            edited_session.context_key.clone(),
+            agent_flow_id,
+        )
+        .await
+        .expect("load branch flow memory")
+        .expect("branch memory should be copied from source context");
+    let branch_messages = branch_memory.get_messages();
+    assert!(branch_messages.len() >= 2);
+    assert_eq!(branch_messages[0].content, "Original prompt");
+    assert_eq!(branch_messages[1].content, "Original answer");
     assert!(
         sandbox_control
             .list_user_sandboxes(user_one.user_id)
@@ -2741,7 +3160,7 @@ async fn api_sse_stream_delivers_live_events_via_in_process_broadcast() {
     }
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     let state = test_app_state();
@@ -2936,7 +3355,7 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     );
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_create_task_starts_runtime_without_waiting_for_auto_title() {
     let llm = AutoTitleTestLlmProvider::blocking_title("Авторизация для сервисов", "ok");
@@ -3024,7 +3443,7 @@ async fn api_create_task_starts_runtime_without_waiting_for_auto_title() {
     .await;
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empty() {
     let llm = AutoTitleTestLlmProvider::new("   ", "ok");
@@ -3102,10 +3521,13 @@ async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empt
     assert_eq!(completed.final_response_markdown.as_deref(), Some("ok"));
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
-    let llm = AutoTitleTestLlmProvider::sequence(["   ", "Политика данных CrofAI"], "ok");
+    let llm = AutoTitleTestLlmProvider::sequence(
+        ["   ", "   ", "   ", "   ", "Политика данных CrofAI"],
+        "ok",
+    );
     let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
     state.auto_title_enabled = true;
     let now = chrono::Utc::now();
@@ -3153,9 +3575,6 @@ async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
     .await
     .expect("create task");
 
-    tokio::time::timeout(Duration::from_secs(2), llm.wait_title_returned())
-        .await
-        .expect("first auto title LLM should return");
     wait_for_auto_title_attempts(&state, user.user_id, &session_id, 1).await;
 
     let mut pending_session = state
@@ -3189,7 +3608,7 @@ async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
     assert_eq!(saved_session.auto_title_attempts, 0);
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_auto_title_retries_reasoning_only_length_response_immediately() {
     let llm = AutoTitleTestLlmProvider::reasoning_length_then_title(
@@ -3254,7 +3673,7 @@ async fn api_auto_title_retries_reasoning_only_length_response_immediately() {
     assert_eq!(saved_session.auto_title_attempts, 0);
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_manual_rename_clears_pending_auto_title_retry() {
     let llm = AutoTitleTestLlmProvider::new("   ", "ok");
@@ -3336,7 +3755,7 @@ async fn api_manual_rename_clears_pending_auto_title_retry() {
     assert_eq!(processed, 0);
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 #[tokio::test]
 async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
     let state = test_app_state_with_responses(vec![
@@ -3709,7 +4128,7 @@ fn persisted_event(
     }
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 async fn wait_for_task_status(
     state: &AppState,
     user_id: i64,
@@ -3734,7 +4153,7 @@ async fn wait_for_task_status(
     panic!("task {task_id} did not reach {status:?}; last state: {last_task:?}");
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str, expected: &str) {
     let mut last_title = None;
     for _ in 0..100 {
@@ -3753,7 +4172,7 @@ async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str
     panic!("session {session_id} did not reach title {expected:?}; last title: {last_title:?}");
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 async fn wait_for_auto_title_attempts(
     state: &AppState,
     user_id: i64,
@@ -3800,7 +4219,7 @@ async fn wait_for_persisted_progress(
     panic!("task {task_id} did not receive persisted progress");
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 async fn save_active_task(
     state: &AppState,
     base_task: &WebTaskRecord,
@@ -3839,7 +4258,7 @@ async fn save_active_task(
         .expect("save active session");
 }
 
-#[cfg(feature = "profile-lite")]
+#[cfg(feature = "profile-web-embedded-opencode-local")]
 fn status_string(status: ApiTaskStatus) -> &'static str {
     match status {
         ApiTaskStatus::Queued => "queued",

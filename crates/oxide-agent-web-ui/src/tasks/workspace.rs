@@ -4,11 +4,12 @@ use crate::components::ErrorBanner;
 use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
 use futures_util::join;
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
-    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskDetail,
-    TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserSettingsResponse,
+    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskAttachment,
+    TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
+    UploadLargeInputRequest, UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
@@ -17,15 +18,16 @@ use super::composer::{
     AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, submit_parent_form_on_ctrl_enter,
+    persist_default_effort, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
+    task_input_limit_notice, task_input_too_long,
 };
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
-    upsert_session_summary, upsert_task_summary,
+    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
+    summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -35,6 +37,13 @@ const TASK_EVENTS_INITIAL_LIMIT: usize = 100;
 const TASK_EVENTS_OLDER_LIMIT: usize = 500;
 const TASKS_PAGE_LIMIT: usize = 20;
 const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
+
+#[derive(Clone, Copy, Default)]
+struct ActivityPageState {
+    before_seq: u64,
+    has_more: bool,
+    loading: bool,
+}
 
 #[derive(Clone)]
 struct SettingsProfilesCacheEntry {
@@ -105,6 +114,48 @@ async fn load_latest_task_events(
         .await
 }
 
+async fn prepare_task_input(
+    client: &ApiClient,
+    session_id: &str,
+    text: String,
+    files: &[PendingAttachmentFile],
+    max_task_input_chars: usize,
+    large_input_attachments_supported: bool,
+) -> Result<(String, Vec<TaskAttachment>), String> {
+    if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+        return Err(format!(
+            "Message is too large ({} / {max_task_input_chars} characters). Sandbox attachments are not available.",
+            text.chars().count()
+        ));
+    }
+
+    let mut attachments = if files.is_empty() {
+        Vec::new()
+    } else {
+        client
+            .upload_task_attachments(session_id, &browser_files(files))
+            .await
+            .map_err(|error| error.to_string())?
+            .attachments
+    };
+
+    if task_input_too_long(&text, max_task_input_chars) {
+        let response = client
+            .upload_large_input(
+                session_id,
+                &UploadLargeInputRequest {
+                    input_markdown: text,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        attachments.push(response.attachment);
+        Ok((response.input_markdown, attachments))
+    } else {
+        Ok((text, attachments))
+    }
+}
+
 fn merge_task_events(
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     new_events: Vec<PersistedTaskEvent>,
@@ -141,6 +192,24 @@ fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
         .map(|event| event.seq)
         .max()
         .unwrap_or_default()
+}
+
+fn latest_live_activity_task_id(
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+) -> Option<String> {
+    active_task
+        .get()
+        .filter(|task| task.status != TaskStatus::Completed)
+        .map(|task| task.task_id)
+        .or_else(|| {
+            tasks
+                .get()
+                .into_iter()
+                .max_by_key(|task| task.updated_at)
+                .filter(|task| task.status != TaskStatus::Completed)
+                .map(|task| task.task_id)
+        })
 }
 
 fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
@@ -191,6 +260,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
     let (effort_touched, set_effort_touched) = signal(false);
+    let textarea_ref = NodeRef::<html::Textarea>::new();
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -214,6 +284,19 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         let text = input.get();
         let files = pending_files.get();
         if !can_submit_input(&text, &files) {
+            return;
+        }
+        let auth_state = auth.auth.get();
+        let max_task_input_chars = auth_state.max_task_input_chars;
+        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
+        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+            if let Some((message, _)) = task_input_limit_notice(
+                &text,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            ) {
+                set_error.set(Some(message));
+            }
             return;
         }
         set_loading.set(true);
@@ -241,19 +324,23 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                     return;
                 }
             };
-            let attachments = if files.is_empty() {
-                Vec::new()
-            } else {
-                match client
-                    .upload_task_attachments(&session_id, &browser_files(&files))
-                    .await
-                {
-                    Ok(response) => response.attachments,
-                    Err(error) => {
-                        set_error.set(Some(error.to_string()));
-                        set_loading.set(false);
-                        return;
-                    }
+            let (task_input, attachments) = match prepare_task_input(
+                &client,
+                &session_id,
+                text,
+                &files,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            )
+            .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let _ = client.delete_session(&session_id).await;
+                    remove_session_summary(set_sessions, &session_id);
+                    set_error.set(Some(error));
+                    set_loading.set(false);
+                    return;
                 }
             };
             // 2. Create task with the user's message
@@ -261,7 +348,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                 .create_task(
                     &session_id,
                     &CreateTaskRequest {
-                        input_markdown: text,
+                        input_markdown: task_input,
                         attachments,
                         effort: Some(effort),
                     },
@@ -270,10 +357,13 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
             {
                 Ok(_) => {
                     set_input.set(String::new());
+                    reset_composer_textarea_height(textarea_ref);
                     set_pending_files.set(Vec::new());
                     navigate(&format!("/app/session/{session_id}"));
                 }
                 Err(e) => {
+                    let _ = client.delete_session(&session_id).await;
+                    remove_session_summary(set_sessions, &session_id);
                     set_error.set(Some(e.to_string()));
                     set_loading.set(false);
                 }
@@ -322,6 +412,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                         }
                     >
                         <textarea
+                            node_ref=textarea_ref
                             placeholder="Message Oxide Agent…"
                             prop:value=input
                             disabled=loading
@@ -344,8 +435,24 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             attachments=pending_files
                             set_attachments=set_pending_files
                         />
+                        {move || {
+                            let auth_state = auth.auth.get();
+                            task_input_limit_notice(
+                                &input.get(),
+                                auth_state.max_task_input_chars,
+                                auth_state.large_input_attachments_supported,
+                            )
+                            .map(|(message, is_error)| {
+                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
+                            })
+                        }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get())>
+                            <div class="composer-actions" class:btn-hidden=move || {
+                                let auth_state = auth.auth.get();
+                                let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                    && !auth_state.large_input_attachments_supported;
+                                !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
+                            }>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -384,7 +491,12 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || !can_submit_input(&input.get(), &pending_files.get())
+                                    disabled=move || {
+                                        let auth_state = auth.auth.get();
+                                        let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                            && !auth_state.large_input_attachments_supported;
+                                        loading.get() || !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
+                                    }
                                     class="btn-primary"
                                 >
                                     "Send"
@@ -412,9 +524,7 @@ fn SessionWorkspace(
     let (tasks_has_more, set_tasks_has_more) = signal(false);
     let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
     let (loading_older_tasks, set_loading_older_tasks) = signal(false);
-    let (activity_has_older_events, set_activity_has_older_events) = signal(false);
-    let (activity_before_seq, set_activity_before_seq) = signal(0_u64);
-    let (loading_older_activity, set_loading_older_activity) = signal(false);
+    let (activity_pages, set_activity_pages) = signal(HashMap::<String, ActivityPageState>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
@@ -430,8 +540,10 @@ fn SessionWorkspace(
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
     let (effort_touched, set_effort_touched) = signal(false);
+    let textarea_ref = NodeRef::<html::Textarea>::new();
 
     let (drawer_open, set_drawer_open) = signal(false);
+    let (activity_task_id, set_activity_task_id) = signal(None::<String>);
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -460,8 +572,9 @@ fn SessionWorkspace(
         set_active_task.set(None);
         set_streaming_task_id.set(None);
         set_selected_versions.set(HashMap::new());
-        set_activity_has_older_events.set(false);
-        set_activity_before_seq.set(0);
+        set_activity_pages.set(HashMap::new());
+        set_activity_task_id.set(None);
+        set_drawer_open.set(false);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -507,8 +620,16 @@ fn SessionWorkspace(
                         {
                             Ok(response) => {
                                 let last_seq = max_event_seq(&response.events);
-                                set_activity_has_older_events.set(response.has_more);
-                                set_activity_before_seq.set(response.first_seq);
+                                set_activity_pages.update(|items| {
+                                    items.insert(
+                                        task_id.clone(),
+                                        ActivityPageState {
+                                            before_seq: response.first_seq,
+                                            has_more: response.has_more,
+                                            loading: false,
+                                        },
+                                    );
+                                });
                                 merge_task_events(set_events, response.events);
                                 last_seq
                             }
@@ -545,8 +666,9 @@ fn SessionWorkspace(
                         set_events.set(Vec::new());
                         set_progress.set(None);
                         set_active_task.set(None);
-                        set_activity_has_older_events.set(false);
-                        set_activity_before_seq.set(0);
+                        set_activity_pages.set(HashMap::new());
+                        set_activity_task_id.set(None);
+                        set_drawer_open.set(false);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -583,22 +705,30 @@ fn SessionWorkspace(
 
     let session_id_for_load_older_activity = session_id.clone();
     let load_older_activity = Callback::new(move |_| {
-        if loading_older_activity.get_untracked() || !activity_has_older_events.get_untracked() {
-            return;
-        }
-        let Some(task) = latest_task(&tasks.get_untracked()) else {
+        let Some(task_id) = activity_task_id.get_untracked() else {
             return;
         };
-        let before_seq = activity_before_seq.get_untracked();
+        let page_state = activity_pages
+            .get_untracked()
+            .get(&task_id)
+            .copied()
+            .unwrap_or_default();
+        if page_state.loading || !page_state.has_more {
+            return;
+        }
+        let before_seq = page_state.before_seq;
         if before_seq == 0 {
-            set_activity_has_older_events.set(false);
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().has_more = false;
+            });
             return;
         }
 
-        set_loading_older_activity.set(true);
+        set_activity_pages.update(|items| {
+            items.entry(task_id.clone()).or_default().loading = true;
+        });
         set_error.set(None);
         let session_id = session_id_for_load_older_activity.clone();
-        let task_id = task.task_id.clone();
         spawn_ui(async move {
             let client = auth.client();
             match client
@@ -606,13 +736,67 @@ fn SessionWorkspace(
                 .await
             {
                 Ok(response) => {
-                    set_activity_has_older_events.set(response.has_more);
-                    set_activity_before_seq.set(response.first_seq);
+                    set_activity_pages.update(|items| {
+                        items.insert(
+                            task_id.clone(),
+                            ActivityPageState {
+                                before_seq: response.first_seq,
+                                has_more: response.has_more,
+                                loading: false,
+                            },
+                        );
+                    });
                     merge_task_events(set_events, response.events);
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
             }
-            set_loading_older_activity.set(false);
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().loading = false;
+            });
+        });
+    });
+
+    let session_id_for_activity_load = session_id.clone();
+    Effect::new(move |_| {
+        if !drawer_open.get() {
+            return;
+        }
+        let Some(task_id) = activity_task_id.get() else {
+            return;
+        };
+        if activity_pages.get().contains_key(&task_id) {
+            return;
+        }
+        let Some(task) = tasks.get().into_iter().find(|task| task.task_id == task_id) else {
+            return;
+        };
+
+        set_activity_pages.update(|items| {
+            items.entry(task_id.clone()).or_default().loading = true;
+        });
+        let session_id = session_id_for_activity_load.clone();
+        spawn_ui(async move {
+            let client = auth.client();
+            match load_latest_task_events(&client, &session_id, &task_id, task.last_event_seq).await
+            {
+                Ok(response) => {
+                    set_activity_pages.update(|items| {
+                        items.insert(
+                            task_id.clone(),
+                            ActivityPageState {
+                                before_seq: response.first_seq,
+                                has_more: response.has_more,
+                                loading: false,
+                            },
+                        );
+                    });
+                    merge_task_events(set_events, response.events);
+                }
+                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
+            }
+            set_activity_pages.update(|items| {
+                items.entry(task_id).or_default().loading = false;
+            });
         });
     });
 
@@ -664,28 +848,46 @@ fn SessionWorkspace(
         if !can_submit_input(&text, &files) {
             return;
         }
+        let auth_state = auth.auth.get();
+        let max_task_input_chars = auth_state.max_task_input_chars;
+        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
+        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+            if let Some((message, _)) = task_input_limit_notice(
+                &text,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            ) {
+                set_error.set(Some(message));
+            }
+            return;
+        }
         set_loading.set(true);
         set_error.set(None);
         // Clear stale activity for the new task
         set_events.set(Vec::new());
         set_progress.set(None);
+        set_activity_pages.set(HashMap::new());
+        set_activity_task_id.set(None);
+        set_drawer_open.set(false);
         let session_id = session_id_for_submit.clone();
         let effort = selected_effort.get();
         spawn_ui(async move {
             let client = auth.client();
-            let attachments = if files.is_empty() {
-                Vec::new()
-            } else {
-                match client
-                    .upload_task_attachments(&session_id, &browser_files(&files))
-                    .await
-                {
-                    Ok(response) => response.attachments,
-                    Err(error) => {
-                        set_error.set(Some(error.to_string()));
-                        set_loading.set(false);
-                        return;
-                    }
+            let (task_input, attachments) = match prepare_task_input(
+                &client,
+                &session_id,
+                text,
+                &files,
+                max_task_input_chars,
+                large_input_attachments_supported,
+            )
+            .await
+            {
+                Ok(payload) => payload,
+                Err(error) => {
+                    set_error.set(Some(error));
+                    set_loading.set(false);
+                    return;
                 }
             };
             let resume_task_id = active_task
@@ -698,7 +900,7 @@ fn SessionWorkspace(
                         &session_id,
                         task_id,
                         &ResumeTaskRequest {
-                            input_markdown: text,
+                            input_markdown: task_input,
                             attachments,
                             effort: Some(effort),
                         },
@@ -709,7 +911,7 @@ fn SessionWorkspace(
                     .create_task(
                         &session_id,
                         &CreateTaskRequest {
-                            input_markdown: text,
+                            input_markdown: task_input,
                             attachments,
                             effort: Some(effort),
                         },
@@ -720,8 +922,8 @@ fn SessionWorkspace(
 
             match result {
                 Ok(task) => {
-                    set_drawer_open.set(false);
                     set_input.set(String::new());
+                    reset_composer_textarea_height(textarea_ref);
                     set_pending_files.set(Vec::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
                     set_selected_versions.update(|items| {
@@ -860,6 +1062,14 @@ fn SessionWorkspace(
                                                     set_selected_versions,
                                                     drawer_open,
                                                     set_drawer_open,
+                                                    activity_task_id,
+                                                    set_activity_task_id,
+                                                    live_activity_task_id: Signal::derive(move || {
+                                                        latest_live_activity_task_id(
+                                                            active_task,
+                                                            tasks,
+                                                        )
+                                                    }),
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
                                                         set_progress,
@@ -885,6 +1095,8 @@ fn SessionWorkspace(
                         active_task=active_task
                         open=drawer_open
                         set_open=set_drawer_open
+                        activity_task_id=activity_task_id
+                        set_activity_task_id=set_activity_task_id
                     />
                 </div>
 
@@ -914,6 +1126,7 @@ fn SessionWorkspace(
                         }
                     >
                         <textarea
+                            node_ref=textarea_ref
                             placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
                             prop:value=input
                             disabled=is_running
@@ -936,8 +1149,24 @@ fn SessionWorkspace(
                             attachments=pending_files
                             set_attachments=set_pending_files
                         />
+                        {move || {
+                            let auth_state = auth.auth.get();
+                            task_input_limit_notice(
+                                &input.get(),
+                                auth_state.max_task_input_chars,
+                                auth_state.large_input_attachments_supported,
+                            )
+                            .map(|(message, is_error)| {
+                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
+                            })
+                        }}
                         <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) && !is_waiting()>
+                            <div class="composer-actions" class:btn-hidden=move || {
+                                let auth_state = auth.auth.get();
+                                let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                    && !auth_state.large_input_attachments_supported;
+                                input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                            }>
                                 <AgentProfileSelect
                                     profiles=profiles
                                     selected_profile=selected_profile
@@ -974,7 +1203,12 @@ fn SessionWorkspace(
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || is_running() || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                    disabled=move || {
+                                        let auth_state = auth.auth.get();
+                                        let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
+                                            && !auth_state.large_input_attachments_supported;
+                                        loading.get() || is_running() || input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                    }
                                     class="btn-primary"
                                     style=move || if is_running() { "display:none" } else { "" }
                                 >
@@ -998,12 +1232,24 @@ fn SessionWorkspace(
             <ActivityDrawer
                 open=drawer_open
                 set_open=set_drawer_open
+                activity_task_id=activity_task_id
+                set_activity_task_id=set_activity_task_id
                 tasks=tasks
                 active_task=active_task
                 events=events
                 progress=progress
-                has_older_events=activity_has_older_events
-                loading_older_events=loading_older_activity
+                has_older_events=Signal::derive(move || {
+                    activity_task_id
+                        .get()
+                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
+                        .is_some_and(|state| state.has_more)
+                })
+                loading_older_events=Signal::derive(move || {
+                    activity_task_id
+                        .get()
+                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
+                        .is_some_and(|state| state.loading)
+                })
                 load_older_events=load_older_activity
             />
         </section>

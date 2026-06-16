@@ -682,6 +682,15 @@ fn append_context_log_entry(
 }
 
 #[cfg(test)]
+/// Clear process-wide shared wiki caches. Test-only: prevents cross-test
+/// cache pollution when multiple tests share the same object keys.
+#[cfg(test)]
+pub(crate) async fn invalidate_shared_caches_for_tests() {
+    SHARED_WIKI_PAGE_CACHE.invalidate_all();
+    SHARED_WIKI_EMPTY_CONTEXT_CACHE.invalidate_all();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::wiki_memory::{

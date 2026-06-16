@@ -40,13 +40,45 @@ pub enum AgentExecutionEffort {
 pub struct AgentExecutionOptions {
     /// Effort preset applied to runner budgets.
     pub effort: AgentExecutionEffort,
+    /// Exact per-run timeout override in seconds.
+    pub timeout_secs: Option<u64>,
+    /// Exact per-run search tool call limit override.
+    pub search_limit: Option<usize>,
+    /// Explicit per-run provider reasoning effort override.
+    pub reasoning_effort_override: Option<&'static str>,
 }
 
 impl AgentExecutionOptions {
     /// Create options for a specific effort preset.
     #[must_use]
     pub const fn with_effort(effort: AgentExecutionEffort) -> Self {
-        Self { effort }
+        Self {
+            effort,
+            timeout_secs: None,
+            search_limit: None,
+            reasoning_effort_override: None,
+        }
+    }
+
+    /// Set an exact per-run timeout override in seconds.
+    #[must_use]
+    pub const fn with_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = Some(timeout_secs);
+        self
+    }
+
+    /// Set an exact per-run search tool call limit override.
+    #[must_use]
+    pub const fn with_search_limit(mut self, search_limit: usize) -> Self {
+        self.search_limit = Some(search_limit);
+        self
+    }
+
+    /// Set an explicit per-run provider reasoning effort override.
+    #[must_use]
+    pub const fn with_reasoning_effort(mut self, reasoning_effort: &'static str) -> Self {
+        self.reasoning_effort_override = Some(reasoning_effort);
+        self
     }
 
     pub(crate) const fn min_max_iterations(self) -> Option<usize> {
@@ -82,9 +114,12 @@ impl AgentExecutionOptions {
     }
 
     pub(crate) const fn reasoning_effort(self) -> Option<&'static str> {
-        match self.effort {
-            AgentExecutionEffort::Standard => None,
-            AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
+        match self.reasoning_effort_override {
+            Some(reasoning_effort) => Some(reasoning_effort),
+            None => match self.effort {
+                AgentExecutionEffort::Standard => None,
+                AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
+            },
         }
     }
 }

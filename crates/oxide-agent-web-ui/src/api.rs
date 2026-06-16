@@ -8,7 +8,8 @@ use oxide_agent_web_contracts::{
     ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, RegisterRequest,
     ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse, UpdateAgentProfileRequest,
     UpdateAgentProfileResponse, UpdateSessionProfileRequest, UpdateSessionResponse,
-    UpdateUserSettingsRequest, UploadTaskAttachmentsResponse, UserSettingsResponse,
+    UpdateUserSettingsRequest, UploadLargeInputRequest, UploadLargeInputResponse,
+    UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt;
@@ -26,6 +27,17 @@ impl ApiClient {
 
     pub async fn me(&self) -> Result<CurrentUserResponse, ApiClientError> {
         decode(with_credentials(Request::get("/api/v1/me")).send().await?).await
+    }
+
+    pub async fn public_config(
+        &self,
+    ) -> Result<oxide_agent_web_contracts::PublicConfigResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get("/api/v1/public-config"))
+                .send()
+                .await?,
+        )
+        .await
     }
 
     pub async fn login(&self, request: &LoginRequest) -> Result<AuthUserResponse, ApiClientError> {
@@ -318,6 +330,19 @@ impl ApiClient {
             "/api/v1/sessions/{session_id}/uploads"
         ))))?;
         decode(builder.body(form_data)?.send().await?).await
+    }
+
+    pub async fn upload_large_input(
+        &self,
+        session_id: &str,
+        request: &UploadLargeInputRequest,
+    ) -> Result<UploadLargeInputResponse, ApiClientError> {
+        self.post(
+            &format!("/api/v1/sessions/{session_id}/large-input"),
+            request,
+            true,
+        )
+        .await
     }
 
     pub async fn cancel_task(

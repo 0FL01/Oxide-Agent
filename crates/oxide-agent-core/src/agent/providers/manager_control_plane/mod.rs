@@ -202,14 +202,12 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 ];
 #[cfg(feature = "tool-tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
-#[cfg(feature = "tool-duckduckgo")]
-const TOPIC_AGENT_DUCKDUCKGO_TOOLS: &[&str] = &["duckduckgo_search", "duckduckgo_news"];
-#[cfg(feature = "tool-searxng")]
-const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
+#[cfg(feature = "tool-crw")]
+const TOPIC_AGENT_CRW_TOOLS: &[&str] = &["web_search"];
+#[cfg(feature = "tool-webfetch-md")]
+const TOPIC_AGENT_WEB_CRAWLER_TOOLS: &[&str] = &["web_crawler"];
 #[cfg(feature = "tool-webfetch-md")]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
-#[cfg(feature = "tool-crawl4ai-markdown")]
-const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["crawl4ai_markdown"];
 #[cfg(feature = "integration-ssh-mcp")]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",

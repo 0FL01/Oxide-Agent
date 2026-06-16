@@ -9,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **8 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
 
 ### Architecture Highlights
 
@@ -18,7 +18,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Web Interface:** Browser-based chat with the agent (Leptos SPA, SSE streaming, dark theme, markdown rendering)
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
-- **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
+- **Sandbox Backends:** Docker broker isolation by default, with optional direct Docker access
 - **Wiki Memory:** SQLx/Postgres-backed persistent memory with optional LLM-assisted extraction
 - **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly with validated 80%+ cache hit rate on OpenCode Go
 </details>
@@ -38,7 +38,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 *   **Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
-    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path; Bubblewrap is available for bare-host setups.
+    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
     *   **Fire-and-Forget Checkpoint:** Memory persistence is async, non-blocking for reduced latency.
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.
@@ -50,7 +50,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9230-fbe27ccee90e" />
 
     *   **File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** DuckDuckGo, Tavily, SearXNG, and Crawl4AI handle discovery and extraction; local `web_markdown` fetches one known URL as Markdown.
+    *   **Web Search and Data Extraction:** Tavily, Brave Search, CRW, and local `web_markdown`/`web_crawler` handle discovery and URL-to-Markdown extraction.
     *   **Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Tool Access Policy - enforces profile-level tool allowlists and blocklists
@@ -66,7 +66,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Telegram Authorization:** Access control via `TELEGRAM_ALLOWED_USERS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 8 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
+*   **Multi-LLM Support:** 7 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Web Interface:** Browser-based chat with the agent -- Leptos SPA with SSE streaming for real-time responses, dark theme, and markdown rendering.
 *   **Multimedia Processing:**
@@ -89,22 +89,21 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** - recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
+| **Zhipu AI (ZAI)** | `OPENAI_BASE_PROVIDERS__1__*` | Configure as OpenAI Base profile `zai` for GLM routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 | **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
 
 ### Supported LLM Providers for Agent Mode
-The bot supports **8 providers** for Agent Mode with tool calling:
+The bot supports these Agent Mode provider routes/profiles with tool calling:
 
 *   **OpenCode Go** (`OPENCODE_GO_API_KEY`) - **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, reasoning content parsing, adaptive throttling, and unbounded retry.
 *   **OpenCode Zen** - Free-tier filtered variant of OpenCode Go. Same provider code, filtered to free-only models via discovery. Provider alias: `opencode-zen`.
 *   **ChatGPT/Codex** (`CHATGPT_AUTH_PATH`) - Headless OAuth provider for OpenAI Codex Responses API at `chatgpt.com/backend-api/codex/responses`. SSE streaming. No audio/image support. Use `cargo run -p oxide-agent-telegram-bot --bin chatgpt-login -- login` for initial auth.
-*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) - Alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
+*   **Zhipu AI / ZAI** (`OPENAI_BASE_PROVIDERS__1__PROFILE=zai`) - Alternative OpenAI Base profile for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) - Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
 *   **Mistral** (`MISTRAL_API_KEY`) - Cost-effective agent routes and Voxtral audio transcription (`voxtral-mini-latest`).
 *   **OpenRouter** (`OPENROUTER_API_KEY`) - Multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
-*   **NVIDIA NIM** (`NVIDIA_API_KEY`) - Tool calling support for approved model routes, hosted inference.
 
 > [!NOTE]
 > Voice recognition and image analysis require an explicit `MEDIA_MODEL_ID` / `MEDIA_MODEL_PROVIDER` route.
@@ -112,11 +111,8 @@ The bot supports **8 providers** for Agent Mode with tool calling:
 ### Infrastructure
 *   **Docker** - run the default code sandbox (`agent-sandbox:latest`)
 *   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
-*   **Bubblewrap** - optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** - optional web search provider (`TAVILY_API_KEY`)
-*   **DuckDuckGo** - built-in public web/news discovery provider (`DUCKDUCKGO_ENABLED`)
-*   **SearXNG** - optional self-hosted search aggregator (`SEARXNG_ENABLED`)
-*   **Crawl4AI** - optional browser-rendered Markdown extraction (`OXIDE_CRAWL4AI_BASE_URL`)
+*   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`)
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Kokoro TTS Server** - optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** - optional for Russian voice message synthesis (`SILERO_TTS_URL`)
@@ -136,134 +132,6 @@ cp .env.example .env
 $EDITOR .env
 docker compose up --build -d
 ```
-
-<details>
-<summary>Alpine 3.23 deployment from the release binary (embedded profile)</summary>
-
-This path is for the prebuilt `x86_64` release artifact built with the embedded profile. Download the Alpine release archive from GitHub Releases, unpack it under `/opt/oxide-agent`, and run the binary directly or through OpenRC.
-
-1. Install host packages:
-
-   ```bash
-   apk add --no-cache bubblewrap ca-certificates tar xz curl
-   ```
-
-2. Create a dedicated service user and prepare directories:
-
-   ```bash
-   addgroup -S oxide
-   adduser -S -D -H -h /var/lib/oxide-agent -s /sbin/nologin -G oxide oxide
-   mkdir -p /opt/oxide-agent/bin
-   mkdir -p /opt/oxide-agent/bwrap-images
-   mkdir -p /var/lib/oxide-agent/sandbox/scopes
-   mkdir -p /var/lib/oxide-agent/sandbox/locks
-   mkdir -p /var/lib/oxide-agent/sandbox/root-upper
-   mkdir -p /var/log/oxide-agent
-   chown -R oxide:oxide /opt/oxide-agent /var/lib/oxide-agent /var/log/oxide-agent
-   ```
-
-3. Download the Alpine release archive from GitHub Releases, unpack it, and move the binary to `/opt/oxide-agent/bin/oxide-agent-telegram-bot`.
-
-4. Create `/opt/oxide-agent/.env`. The release binary reads `.env` from its working directory. Minimal example:
-
-   ```dotenv
-   TELEGRAM_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
-   TELEGRAM_ALLOWED_USERS=123456789
-   TELEGRAM_MANAGER_ALLOWED_USERS=123456789
-
-    OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
-    OXIDE_DATABASE_MAX_CONNECTIONS=5
-    OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
-    OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
-
-   OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
-   OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
-
-   AGENT_MODEL_ID=deepseek-v4-flash
-   AGENT_MODEL_PROVIDER=opencode-go
-   SUB_AGENT_MODEL_ID=deepseek-v4-flash
-   SUB_AGENT_MODEL_PROVIDER=opencode-go
-
-   SANDBOX_BACKEND=bwrap
-   BWRAP_BIN=/usr/bin/bwrap
-   BWRAP_IMAGE=alpine-3.23-dev
-   BWRAP_IMAGE_BOOTSTRAP=download
-   BWRAP_IMAGE_URL=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-minirootfs-3.23.4-x86_64.tar.gz
-   BWRAP_IMAGE_SHA256=85498865362aa7ebececa0d725a2f2e4db7ac4e4b2850b8df21645afa0d03ee3
-   BWRAP_IMAGE_PACKAGE_MANAGER=apk
-   BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
-   BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
-   BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
-   BWRAP_ROOT_MODE=overlay-rw
-   BWRAP_ROOT_UPPER_DIR=/var/lib/oxide-agent/sandbox/root-upper
-   BWRAP_NET=host
-   BWRAP_ALLOW_OVERLAY=true
-   BWRAP_RESOLV_CONF=auto
-   BWRAP_DISABLE_NESTED_USERNS=true
-
-   RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
-   DEBUG_MODE=false
-   ```
-
-   When `SANDBOX_BACKEND=bwrap` is set, startup checks `/usr/bin/bwrap` immediately. If bubblewrap is missing, the bot exits with an error telling you to install `bubblewrap`, set `BWRAP_BIN`, or choose another sandbox backend.
-
-   `BWRAP_RESOLV_CONF=auto` stages the host resolver config and bind-mounts it into the sandbox. With `BWRAP_ROOT_MODE=overlay-rw`, the bot also creates the missing `/etc/resolv.conf` bind target for Alpine minirootfs images.
-
-5. On startup, `BWRAP_IMAGE_BOOTSTRAP=download` downloads the Alpine minirootfs, verifies `BWRAP_IMAGE_SHA256`, extracts it to `/opt/oxide-agent/bwrap-images/alpine-3.23-dev`, and writes the bwrap `image.json`. If `/opt/oxide-agent/bwrap-images/alpine-3.23-dev/image.json` already exists, bootstrap is a no-op.
-
-6. Optional OpenRC wrapper:
-
-   ```bash
-   cat >/opt/oxide-agent/bin/run-oxide-agent.sh <<'EOF'
-   #!/bin/sh
-   set -a
-   . /opt/oxide-agent/.env
-   set +a
-   cd /opt/oxide-agent
-   exec /opt/oxide-agent/bin/oxide-agent-telegram-bot
-   EOF
-   chmod +x /opt/oxide-agent/bin/run-oxide-agent.sh
-   chown oxide:oxide /opt/oxide-agent/bin/run-oxide-agent.sh
-   ```
-
-7. Optional OpenRC service:
-
-   ```bash
-   cat >/etc/init.d/oxide-agent <<'EOF'
-   #!/sbin/openrc-run
-
-   name="oxide-agent"
-   description="Oxide Agent Telegram bot"
-   command="/opt/oxide-agent/bin/run-oxide-agent.sh"
-   directory="/opt/oxide-agent"
-   command_user="oxide:oxide"
-   command_background="true"
-   pidfile="/run/${RC_SVCNAME}.pid"
-   output_log="/var/log/oxide-agent/current.log"
-   error_log="/var/log/oxide-agent/current.log"
-
-   depend() {
-       need net
-       use dns logger
-   }
-   EOF
-   chmod +x /etc/init.d/oxide-agent
-   rc-update add oxide-agent default
-   rc-service oxide-agent start
-   ```
-
-   The bot writes structured logs to `stderr`, so the OpenRC example sends both `stdout` and `stderr` to the same `current.log` file.
-
-8. Manual verification:
-
-   ```bash
-   cd /opt/oxide-agent
-   ./bin/oxide-agent-telegram-bot capabilities --compiled --json
-   tail -f /var/log/oxide-agent/current.log
-   ```
-
-For a more detailed bare-host Bubblewrap reference, see `docs/bwrap-sandbox.md`.
-</details>
 
 ## Configuration (.env)
 
@@ -293,30 +161,26 @@ OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
-NVIDIA_API_KEY=...
-NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
-ZAI_API_KEY=...
 OPENCODE_GO_API_KEY=...
 OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 MINIMAX_API_KEY=...
+
+# ZAI / GLM through OpenAI Base
+OPENAI_BASE_PROVIDERS__1__NAME=zai
+OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4
+OPENAI_BASE_PROVIDERS__1__API_KEY=...
+OPENAI_BASE_PROVIDERS__1__PROFILE=zai
 
 # Web Search Providers (can be enabled together)
 TAVILY_API_KEY=...
 # BRAVE_SEARCH_API_KEY=...
 # BRAVE_SEARCH_ENABLED=true
 # Brave Search — primary indexed web discovery when BRAVE_SEARCH_API_KEY is configured.
-DUCKDUCKGO_ENABLED=true
-DUCKDUCKGO_MIN_DELAY_MS=2500
-DUCKDUCKGO_JITTER_MS=1500
-# SEARXNG_ENABLED=true
-# SEARXNG_URL=http://127.0.0.1:8081
-# SEARXNG_BEARER_TOKEN=...
-# SearXNG — fallback/self-hosted aggregator.
-
-# Crawl4AI (browser-rendered Markdown)
-# OXIDE_CRAWL4AI_BASE_URL=http://127.0.0.1:11235
-# OXIDE_CRAWL4AI_API_TOKEN=...
-# Crawl4AI — browser-rendered opener for selected URLs.
+# CRW (self-hosted web search + scrape fallback)
+# OXIDE_CRW_ENABLED=true
+# OXIDE_CRW_BASE_URL=http://127.0.0.1:3000
+# OXIDE_CRW_API_TOKEN=...
+# CRW backs `web_search` and the rendered fallback path of `web_crawler`.
 
 # Wiki Memory Writer (background, optional LLM-assisted)
 # WIKI_MEMORY_WRITER_ENABLED=true
@@ -341,13 +205,18 @@ SUB_AGENT_MODEL_ID="deepseek-v4-flash"
 SUB_AGENT_MODEL_PROVIDER="opencode-go"
 ```
 
-  **Alternative (ZAI):** If you prefer the ZAI provider, use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
+  **Alternative (ZAI):** If you prefer ZAI/GLM, configure it as an OpenAI Base `zai` profile and use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
 ```dotenv
+OPENAI_BASE_PROVIDERS__1__NAME=zai
+OPENAI_BASE_PROVIDERS__1__API_BASE=https://api.z.ai/api/coding/paas/v4
+OPENAI_BASE_PROVIDERS__1__API_KEY=...
+OPENAI_BASE_PROVIDERS__1__PROFILE=zai
+
 AGENT_MODEL_ID="glm-4.7"
-AGENT_MODEL_PROVIDER="zai"
+AGENT_MODEL_PROVIDER="openai-base:zai"
 
 SUB_AGENT_MODEL_ID="glm-4.5-air"
-SUB_AGENT_MODEL_PROVIDER="zai"
+SUB_AGENT_MODEL_PROVIDER="openai-base:zai"
 ```
   **Alternative (ChatGPT/Codex):** OAuth-based provider using the Codex Responses API:
 ```dotenv
@@ -372,41 +241,19 @@ MEDIA_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI (GLM-4.7) > Mistral
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI/OpenAI Base (GLM-4.7) > Mistral
 AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
-AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__PROVIDER="openai-base:zai"
 AGENT_MODEL_ROUTES__1__WEIGHT=5
 
 AGENT_MODEL_ROUTES__2__ID="mistral-small-2603"
 AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
-
-</details>
-
-<details>
-<summary>Weighted failover with NVIDIA NIM</summary>
-
-Use NVIDIA NIM only with the explicit Agent Mode allowlist. If you are unsure, keep NIM behind a proven primary route first:
-
-```dotenv
-NVIDIA_API_KEY=...
-NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
-
-AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
-AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
-AGENT_MODEL_ROUTES__0__WEIGHT=5
-
-AGENT_MODEL_ROUTES__1__ID="deepseek-ai/deepseek-v4-flash"
-AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
-AGENT_MODEL_ROUTES__1__WEIGHT=3
-```
-
-The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execution. Structured output is enabled only for explicitly approved model routes.
 
 </details>
 
@@ -436,7 +283,6 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 | **MiniMax** | Claude SDK-compatible, high context (MiniMax-M2.7) |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
 | **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
-| **NVIDIA NIM** | Tool calling support, hosted inference |
 
 > **Note:** Gemini-family models are configured through OpenRouter routes, not a direct Google Gemini provider.
 
@@ -444,11 +290,9 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 <summary>Tool Providers</summary>
 
 ### Web Search and Extraction
-- **DuckDuckGo Provider** (`tool-duckduckgo`) - public web/news URL discovery, no API key required
 - **Brave Search Provider** (`tool-brave-search`) - primary indexed web discovery when `BRAVE_SEARCH_API_KEY` is configured
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
-- **SearXNG Provider** (`tool-searxng`) - fallback/self-hosted aggregator
-- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered opener for selected search result URLs
+- **[CRW Provider](https://github.com/us/crw)** (`tool-crw`) - self-hosted `web_search` and rendered scrape fallback for `web_crawler`
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
@@ -723,9 +567,8 @@ crates/
 │       │   │   ├── ssh_mcp.rs            # SSH infrastructure
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
-│       │   │   ├── duckduckgo/           # DuckDuckGo search
 │       │   │   ├── brave_search/         # Brave Search API
-│       │   │   ├── searxng/             # SearXNG search
+│       │   │   ├── crw/                 # CRW search/scrape REST client
 │       │   │   ├── tts/                  # Kokoro TTS
 │       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
@@ -736,12 +579,11 @@ crates/
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, nvidia, opencode_go)
+│       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, opencode_go)
 │       │   └── tool_correlation.rs
 │       ├── sandbox/            # Sandbox facade and backends
-│       │   ├── bwrap/          # Bubblewrap backend (14 modules)
+│       │   ├── broker.rs        # Unix-socket sandbox broker protocol
 │       │   ├── manager.rs      # Sandbox manager facade
-│       │   ├── broker.rs       # Broker client/protocol
 │       │   └── traits.rs       # Sandbox backend traits
 │       ├── storage/            # Storage facade, SQLx backend, control-plane records
 │       ├── capabilities/       # Capability module manifests
@@ -796,7 +638,6 @@ tests/                          # Integration and functional tests
 │   └── tool_latency_tests.rs
 docs/                           # Documentation
 ├── wiki-memory.md              # Wiki memory system
-├── bwrap-sandbox.md            # Bubblewrap sandbox backend
 ├── silero-tts-api.md           # Silero TTS integration
 ├── stack-logs-stage0.md        # Stack logs tool
 ├── context-window-tracking.md  # Token budget management
@@ -820,22 +661,18 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Profile | Description | Key Components |
 |---------|-------------|----------------|
 | `profile-full` | Full production deployment | All features |
-| `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-sqlx, llm-opencode-go, bwrap |
-| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, bwrap |
-| `profile-lite` | Minimal Telegram bot | transport-telegram, storage-sqlx, llm-opencode-go, todos, webfetch, reminders |
-| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/duckduckgo/brave-search/searxng capability features |
-| `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-sqlx, llm-opencode-go, wiki memory |
-| `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
-| `profile-host-bwrap` | Host-level bwrap, no Docker | transport-telegram, llm-opencode-go + openrouter, bwrap |
+| `profile-embedded-opencode-local` | Telegram + local OpenCode | transport-telegram, storage-sqlx, llm-opencode-go, docker + sandboxd |
+| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd |
+| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
 
 ### Atomic Features (selection)
 
 | Category | Features |
 |----------|----------|
-| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-nvidia`, `llm-opencode-go`, `llm-openrouter` |
-| **Search Tools** | `tool-tavily`, `tool-duckduckgo`, `tool-brave-search`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
+| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
+| **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
-| **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
+| **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
 | **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |
@@ -854,7 +691,6 @@ cargo build --release --no-default-features --features profile-full
 
 - **teloxide** (0.17) - Telegram Bot API with macros and handlers
 - **tokio** (1.52) - asynchronous runtime
-- **async-openai** (0.40) - OpenAI-compatible APIs
 - **sqlx-postgres/sqlx-core** (0.8) - PostgreSQL durable storage
 - **bollard** (0.20) - Docker API for sandbox management
 - **leptos** (0.8) - Web interface frontend (CSR)
@@ -863,7 +699,6 @@ cargo build --release --no-default-features --features profile-full
 - **serde_json** (1.0) - JSON serialization/deserialization
 - **tiktoken-rs** (0.9) - token counting for various models
 - **claudius** (0.19) - MiniMax Anthropic SDK
-- **zai-rs** (0.1) - Zhipu AI SDK
 - **rmcp** (1.2) - MCP client for Jira/SSH/Mattermost
 - **moka** (0.12) - high-performance cache with TTL
 - **chrono** (0.4) - date and time handling

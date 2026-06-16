@@ -5,8 +5,6 @@
 /// Topic-scoped self-editing tools for `AGENTS.md`.
 pub mod agents_md;
 pub mod compression;
-#[cfg(feature = "tool-crawl4ai-markdown")]
-pub mod crawl4ai_markdown;
 pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
@@ -44,14 +42,11 @@ pub mod ytdlp;
 #[cfg(feature = "tool-tavily")]
 pub mod tavily;
 
-#[cfg(feature = "tool-duckduckgo")]
-pub mod duckduckgo;
-
 #[cfg(feature = "tool-brave-search")]
 pub mod brave_search;
 
-#[cfg(feature = "tool-searxng")]
-pub mod searxng;
+#[cfg(feature = "tool-crw")]
+pub mod crw;
 
 #[cfg(feature = "integration-mcp-jira")]
 pub mod jira_mcp;
@@ -61,8 +56,6 @@ pub mod mattermost_mcp;
 
 pub use agents_md::{AgentsMdProvider, agents_md_tool_names};
 pub use compression::{CompressionProvider, TOOL_COMPRESS, compress_tool_names};
-#[cfg(feature = "tool-crawl4ai-markdown")]
-pub use crawl4ai_markdown::Crawl4AiMarkdownProvider;
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
@@ -111,14 +104,11 @@ pub use ytdlp::YtdlpProvider;
 #[cfg(feature = "tool-tavily")]
 pub use tavily::TavilyProvider;
 
-#[cfg(feature = "tool-duckduckgo")]
-pub use duckduckgo::DuckDuckGoProvider;
-
 #[cfg(feature = "tool-brave-search")]
 pub use brave_search::BraveSearchProvider;
 
-#[cfg(feature = "tool-searxng")]
-pub use searxng::SearxngProvider;
+#[cfg(feature = "tool-crw")]
+pub use crw::CrwProvider;
 
 #[cfg(feature = "integration-mcp-jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};

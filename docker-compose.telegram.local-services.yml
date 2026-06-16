@@ -4,55 +4,25 @@ services:
   oxide_agent:
     build:
       args:
-        CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local,oxide-agent-core/tool-crawl4ai-markdown,oxide-agent-sandboxd/profile-full
+        CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local,oxide-agent-core/tool-crw,oxide-agent-sandboxd/profile-full
     environment:
-      SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
-      SEARXNG_URL: ${SEARXNG_URL:-http://127.0.0.1:8081}
-      SEARXNG_BEARER_TOKEN: ${SEARXNG_BEARER_TOKEN:-}
-      OXIDE_CRAWL4AI_BASE_URL: ${OXIDE_CRAWL4AI_BASE_URL:-http://127.0.0.1:11235}
-      OXIDE_CRAWL4AI_API_TOKEN: ${OXIDE_CRAWL4AI_API_TOKEN:-}
+      OXIDE_CRW_ENABLED: ${OXIDE_CRW_ENABLED:-true}
+      OXIDE_CRW_BASE_URL: ${OXIDE_CRW_BASE_URL:-http://127.0.0.1:3000}
+      OXIDE_CRW_API_TOKEN: ${OXIDE_CRW_API_TOKEN:-}
     depends_on:
-      searxng:
-        condition: service_healthy
-      crawl4ai:
+      crw:
         condition: service_healthy
 
-  searxng:
-    image: searxng/searxng:2026.5.31-300695de5
-    container_name: searxng
+  crw:
+    image: ${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}
+    container_name: crw
     restart: unless-stopped
     environment:
       TZ: Europe/Moscow
-      SEARXNG_BASE_URL: http://127.0.0.1:8081/
-      GRANIAN_HOST: 0.0.0.0
-      GRANIAN_PORT: "8080"
     ports:
-      - "127.0.0.1:8081:8080"
-    volumes:
-      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
+      - "127.0.0.1:${OXIDE_CRW_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
-
-  crawl4ai:
-    image: unclecode/crawl4ai:0.8.7
-    container_name: crawl4ai
-    restart: unless-stopped
-    shm_size: "3g"
-    environment:
-      TZ: Europe/Moscow
-    ports:
-      - "127.0.0.1:11235:11235"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:11235/health || wget -qO- http://localhost:11235/health"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || curl -fsS http://localhost:3000/health"]
       interval: 5s
       timeout: 3s
       retries: 30

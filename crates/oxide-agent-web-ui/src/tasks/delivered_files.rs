@@ -230,31 +230,25 @@ mod tests {
 
     #[test]
     fn linkifies_delivered_file_code_spans_in_final_markdown() {
-        let markdown = "Done: `duckduckgo.zip`\n\n- File: `duckduckgo.zip`";
+        let markdown = "Done: `archive.zip`\n\n- File: `archive.zip`";
         let rendered = linkify_delivered_files_in_markdown(
             markdown,
-            &[delivered_file(
-                "duckduckgo.zip",
-                "/api/v1/files/duckduckgo.zip",
-            )],
+            &[delivered_file("archive.zip", "/api/v1/files/archive.zip")],
         );
 
-        assert!(rendered.contains("[`duckduckgo.zip`](/api/v1/files/duckduckgo.zip)"));
-        assert!(!rendered.contains("- File: `duckduckgo.zip`"));
+        assert!(rendered.contains("[`archive.zip`](/api/v1/files/archive.zip)"));
+        assert!(!rendered.contains("- File: `archive.zip`"));
     }
 
     #[test]
     fn does_not_linkify_inside_fenced_code_blocks() {
-        let markdown = "Before `duckduckgo.zip`\n\n```text\n`duckduckgo.zip`\n```\n";
+        let markdown = "Before `archive.zip`\n\n```text\n`archive.zip`\n```\n";
         let rendered = linkify_delivered_files_in_markdown(
             markdown,
-            &[delivered_file(
-                "duckduckgo.zip",
-                "/api/v1/files/duckduckgo.zip",
-            )],
+            &[delivered_file("archive.zip", "/api/v1/files/archive.zip")],
         );
 
-        assert!(rendered.contains("Before [`duckduckgo.zip`](/api/v1/files/duckduckgo.zip)"));
-        assert!(rendered.contains("```text\n`duckduckgo.zip`\n```"));
+        assert!(rendered.contains("Before [`archive.zip`](/api/v1/files/archive.zip)"));
+        assert!(rendered.contains("```text\n`archive.zip`\n```"));
     }
 }

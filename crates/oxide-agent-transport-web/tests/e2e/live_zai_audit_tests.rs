@@ -85,7 +85,7 @@ async fn latest_assistant_response(
 }
 
 #[tokio::test]
-#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, Docker sandbox, and network access"]
+#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, OPENAI_BASE_PROVIDERS__1__API_KEY, Docker sandbox, and network access"]
 async fn e2e_zai_heavy_sandbox_audit_logs_baselines() {
     if std::env::var("RUN_LLM_E2E_CHECKS").as_deref() != Ok("1") {
         eprintln!("[LIVE-ZAI] Skipping heavy audit test: RUN_LLM_E2E_CHECKS != 1");
@@ -189,7 +189,7 @@ async fn e2e_zai_heavy_sandbox_audit_logs_baselines() {
 }
 
 #[tokio::test]
-#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, ZAI_API_KEY, Docker sandbox, and network access"]
+#[ignore = "Requires RUN_LLM_E2E_CHECKS=1, OPENAI_BASE_PROVIDERS__1__API_KEY, Docker sandbox, and network access"]
 async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
     if std::env::var("RUN_LLM_E2E_CHECKS").as_deref() != Ok("1") {
         eprintln!("[LIVE-ZAI] Skipping anchor cleanup test: RUN_LLM_E2E_CHECKS != 1");

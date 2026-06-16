@@ -3,6 +3,7 @@
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
+use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
@@ -21,6 +22,7 @@ use crate::llm::{
     ToolTransport,
 };
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
 
@@ -184,7 +186,7 @@ impl AgentRunner {
             .ok_or_else(|| anyhow::anyhow!("typed tool runtime requires an active model route"))?;
         if !v1_tool_runtime_enabled_for_model(&route) {
             return Err(anyhow::anyhow!(
-                "typed tool runtime v1 requires an opencode-go or opencode-zen route; active route is {}/{}",
+                "typed tool runtime v1 requires a chat-like tool route; active route is {}/{}",
                 route.provider,
                 route.id
             ));
@@ -199,15 +201,6 @@ impl AgentRunner {
         let finish_after_todo_update = tool_calls
             .iter()
             .all(|tool_call| tool_call.function.name == "write_todos");
-        if let Some(draft) = state.pending_final_draft.take() {
-            tracing::debug!(
-                task_id = ctx.task_id,
-                draft_len = draft.content_len(),
-                source_iteration = draft.source_iteration,
-                source_tool_name = draft.source_tool_name,
-                "clearing pending final draft before another tool-call turn"
-            );
-        }
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
         let native_assistant_content = assistant_content.assistant_content();
@@ -219,6 +212,26 @@ impl AgentRunner {
             reasoning_content,
             native_assistant_content,
         ));
+        let mut blocked_calls = BTreeMap::new();
+        for call in &batch.calls {
+            let hook_result = self.before_tool_hook_result(
+                ctx,
+                state,
+                call.tool_name.as_str(),
+                &call.raw_arguments,
+            );
+            match hook_result {
+                HookResult::Continue => {}
+                HookResult::Block { reason } => {
+                    blocked_calls.insert(call.batch_index, reason);
+                }
+                other => {
+                    if let Some(report) = self.apply_hook_result(other, ctx, Some(&mut *state))? {
+                        return Ok(Some(AgentRunResult::Final(report)));
+                    }
+                }
+            }
+        }
         let history_writer: Arc<dyn ToolHistoryWriter> =
             Arc::<BufferedRuntimeHistory>::clone(&history);
         let runtime = ToolCallRuntime::new(registry, history_writer, runtime_config.clone());
@@ -236,7 +249,9 @@ impl AgentRunner {
         );
         turn_context.cancellation_token = ctx.agent.cancellation_token().clone();
 
-        let result = runtime.execute_batch(batch, turn_context).await;
+        let result = runtime
+            .execute_batch_with_blocked_calls(batch, turn_context, blocked_calls)
+            .await;
         self.apply_buffered_runtime_history(ctx, state, history.drain_events())
             .await;
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
@@ -410,6 +425,7 @@ mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::hooks::SearchBudgetHook;
     use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
@@ -431,6 +447,9 @@ mod tests {
     }
     struct CompleteTodosRuntimeExecutor {
         todos: Arc<tokio::sync::Mutex<TodoList>>,
+    }
+    struct CountingSearchRuntimeExecutor {
+        executions: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -571,6 +590,33 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ToolExecutor for CountingSearchRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("web_search")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "search test executor".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(OutputNormalizer::new(ToolRuntimeConfig::default()).success(
+                &invocation,
+                "search-ok",
+                "",
+            ))
+        }
+    }
+
     #[tokio::test]
     async fn typed_runtime_path_records_paired_assistant_and_tool_history() {
         let settings = AgentSettings {
@@ -661,6 +707,98 @@ mod tests {
                 .map(ToolCallCorrelation::wire_tool_call_id),
             Some("call-read-1")
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_enforces_search_budget_before_tool_execution() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(SearchBudgetHook::new(10)));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(CountingSearchRuntimeExecutor {
+                executions: Arc::clone(&executions),
+            }))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "search through runtime",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-search-budget-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }])
+                .with_search_limit(1),
+        };
+        let mut state = RunState::new();
+        let first = ToolCall::new(
+            "invoke-search-1",
+            ToolCallFunction {
+                name: "web_search".to_string(),
+                arguments: r#"{"query":"rust"}"#.to_string(),
+            },
+            false,
+        );
+        let second = ToolCall::new(
+            "invoke-search-2",
+            ToolCallFunction {
+                name: "web_search".to_string(),
+                arguments: r#"{"query":"tokio"}"#.to_string(),
+            },
+            false,
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![first, second],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 3);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+        assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-search-1"));
+        assert!(memory[1].content.contains("\"status\":\"success\""));
+        assert_eq!(memory[2].kind, AgentMessageKind::ToolResult);
+        assert_eq!(memory[2].tool_call_id.as_deref(), Some("invoke-search-2"));
+        assert!(memory[2].content.contains("\"status\":\"failure\""));
+        assert!(memory[2].content.contains("Search budget exceeded (2/1)"));
     }
 
     #[tokio::test]
@@ -1371,11 +1509,94 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route")
+                .contains("typed tool runtime v1 requires a chat-like tool route")
         );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "unsupported route must not write partial assistant/tool history"
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_path_accepts_openai_base_chat_like_route() {
+        let settings = AgentSettings {
+            agent_model_id: Some("gemma4-12b-it-q8_0-mtp".to_string()),
+            agent_model_provider: Some("openai-base:local".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(StaticRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "openai base typed runtime route",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-openai-base-route-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("openai-base:local")
+                .with_model_routes(vec![ModelInfo {
+                    id: "gemma4-12b-it-q8_0-mtp".to_string(),
+                    provider: "openai-base:local".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "call-read-openai-base",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-read-openai-base")
+                .with_provider_tool_call_id("call-read-openai-base")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(""),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("openai-base chat-like route should execute tools");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+        assert_eq!(
+            memory[1].tool_call_id.as_deref(),
+            Some("invoke-read-openai-base")
+        );
+        assert!(memory[1].content.contains("runtime-ok"));
     }
 }

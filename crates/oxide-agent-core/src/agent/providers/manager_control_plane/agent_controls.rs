@@ -235,9 +235,7 @@ impl ManagerControlPlaneProvider {
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
         #[cfg(not(any(
             feature = "tool-tavily",
-            feature = "tool-duckduckgo",
-            feature = "tool-searxng",
-            feature = "tool-crawl4ai-markdown",
+            feature = "tool-crw",
             feature = "tool-webfetch-md"
         )))]
         let _ = groups;
@@ -251,37 +249,29 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "tool-duckduckgo")]
-        if crate::config::is_duckduckgo_enabled() {
+        #[cfg(feature = "tool-crw")]
+        if crate::config::is_crw_enabled() {
             groups.push(TopicAgentToolGroup {
-                provider: "duckduckgo",
-                aliases: &["search", "duckduckgo", "ddg", "news"],
-                tools: TOPIC_AGENT_DUCKDUCKGO_TOOLS,
-            });
-        }
-
-        #[cfg(feature = "tool-searxng")]
-        if crate::config::is_searxng_enabled() {
-            groups.push(TopicAgentToolGroup {
-                provider: "searxng",
-                aliases: &["search", "searxng"],
-                tools: TOPIC_AGENT_SEARXNG_TOOLS,
+                provider: "crw",
+                aliases: &["search", "crw", "web_search"],
+                tools: TOPIC_AGENT_CRW_TOOLS,
             });
         }
 
         #[cfg(feature = "tool-webfetch-md")]
-        groups.push(TopicAgentToolGroup {
-            provider: "webfetch_md",
-            aliases: &["search", "webfetch", "web_markdown"],
-            tools: TOPIC_AGENT_WEBFETCH_TOOLS,
-        });
-
-        #[cfg(feature = "tool-crawl4ai-markdown")]
-        groups.push(TopicAgentToolGroup {
-            provider: "crawl4ai",
-            aliases: &["search", "crawl4ai", "browser_markdown"],
-            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-        });
+        if crate::config::is_web_crawler_merge_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "web_crawler",
+                aliases: &["search", "crawler", "web_crawler", "web_markdown"],
+                tools: TOPIC_AGENT_WEB_CRAWLER_TOOLS,
+            });
+        } else {
+            groups.push(TopicAgentToolGroup {
+                provider: "webfetch_md",
+                aliases: &["search", "webfetch", "web_markdown"],
+                tools: TOPIC_AGENT_WEBFETCH_TOOLS,
+            });
+        }
     }
 
     pub(super) async fn topic_agent_tool_catalog(
@@ -1508,9 +1498,9 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "duckduckgo",
-                    aliases: &["search", "duckduckgo", "ddg", "news"],
-                    tools: &["duckduckgo_search", "duckduckgo_news"],
+                    provider: "crw",
+                    aliases: &["search", "crw", "web_search"],
+                    tools: &["web_search"],
                 },
                 TopicAgentToolGroup {
                     provider: "webfetch_md",
@@ -1518,16 +1508,10 @@ mod tests {
                     tools: &["web_markdown"],
                 },
             ],
-            tool_names: [
-                "web_search",
-                "web_extract",
-                "duckduckgo_search",
-                "duckduckgo_news",
-                "web_markdown",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+            tool_names: ["web_extract", "web_markdown", "web_search"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         };
 
         let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
@@ -1539,8 +1523,6 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "duckduckgo_news".to_string(),
-                "duckduckgo_search".to_string(),
                 "web_extract".to_string(),
                 "web_markdown".to_string(),
                 "web_search".to_string(),

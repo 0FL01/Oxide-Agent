@@ -384,7 +384,7 @@ fn init_logging(patterns: Arc<RedactionPatterns>) {
         // Production режим: фильтрованные настройки
         EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             EnvFilter::new(
-                "oxide_agent_core=info,oxide_agent_transport_telegram=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn",
+                "oxide_agent_core=info,oxide_agent_transport_telegram=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn",
             )
         })
     };

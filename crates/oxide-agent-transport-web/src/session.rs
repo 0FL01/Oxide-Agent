@@ -27,10 +27,11 @@
 use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
 use chrono::{DateTime, Utc};
-use oxide_agent_core::agent::memory::AgentMessage;
+use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
     AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+    ToolAccessPolicy,
 };
 use oxide_agent_core::config::{
     AgentSettings, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -42,7 +43,7 @@ use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::ModelSelection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -105,6 +106,12 @@ pub struct WebSessionRuntimeOptions {
     pub agent_profile_id: Option<String>,
     pub execution_profile: Option<AgentExecutionProfile>,
     pub skip_fresh_durable_bootstrap: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SearchProbeRuntimeOptions {
+    pub(crate) tool_allowlist: Vec<String>,
+    pub(crate) prompt_instructions: Option<String>,
 }
 
 /// Task metadata.
@@ -222,37 +229,54 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
-fn parse_opencode_model_id(value: &str) -> Option<(&'static str, String)> {
+fn parse_web_model_id(value: &str) -> Option<(String, String)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
         let model_id = model_id.trim();
         return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-go", model_id.to_string()));
+            .then(|| ("opencode-go".to_string(), model_id.to_string()));
     }
     if let Some(model_id) = value.strip_prefix("opencode-zen/") {
         let model_id = model_id.trim();
         return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-zen", model_id.to_string()));
+            .then(|| ("opencode-zen".to_string(), model_id.to_string()));
+    }
+    if let Some(rest) = value.strip_prefix("openai-base:") {
+        let (name, model_id) = rest.split_once('/')?;
+        let name = normalized_openai_base_instance_name(name)?;
+        let model_id = model_id.trim();
+        return (!model_id.is_empty())
+            .then(|| (format!("openai-base:{name}"), model_id.to_string()));
     }
     if value.is_empty() || value.contains('/') {
         return None;
     }
-    Some(("opencode-go", value.to_string()))
+    Some(("opencode-go".to_string(), value.to_string()))
 }
 
-fn opencode_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
+fn web_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
     let value = value.trim();
-    if value.starts_with("opencode-go/") || value.starts_with("opencode-zen/") {
-        let (prefix, model_id) = parse_opencode_model_id(value)?;
+    if value.starts_with("opencode-go/")
+        || value.starts_with("opencode-zen/")
+        || value.starts_with("openai-base:")
+    {
+        let (prefix, model_id) = parse_web_model_id(value)?;
         return (prefix == model_prefix).then(|| format!("{prefix}/{model_id}"));
     }
-    if value.is_empty() || value.contains('/') {
+    if value.is_empty() || (!is_openai_base_prefix(model_prefix) && value.contains('/')) {
         return None;
     }
     Some(format!("{model_prefix}/{value}"))
 }
 
-fn selected_opencode_route(
+fn raw_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
+    let qualified = web_qualified_model_id_for_prefix(value, model_prefix)?;
+    qualified
+        .strip_prefix(&format!("{model_prefix}/"))
+        .map(ToString::to_string)
+}
+
+fn selected_web_model_route(
     selected_qualified_id: &str,
     selected_prefix: &str,
     provider: &str,
@@ -261,14 +285,19 @@ fn selected_opencode_route(
     configured_routes
         .iter()
         .find(|route| {
-            opencode_provider_prefix(&route.provider) == Some(selected_prefix)
-                && opencode_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
+            web_model_provider_prefix(&route.provider).as_deref() == Some(selected_prefix)
+                && web_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
                     == Some(selected_qualified_id)
         })
         .cloned()
         .and_then(|route| normalize_model_route(route, provider, provider))
         .unwrap_or_else(|| ModelInfo {
-            id: selected_qualified_id.to_string(),
+            id: if is_openai_base_prefix(selected_prefix) {
+                raw_model_id_for_prefix(selected_qualified_id, selected_prefix)
+                    .unwrap_or_else(|| selected_qualified_id.to_string())
+            } else {
+                selected_qualified_id.to_string()
+            },
             provider: provider.to_string(),
             max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
             context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -287,10 +316,16 @@ fn normalize_model_route(
         return None;
     }
 
-    if let Some(model_prefix) = opencode_provider_prefix(provider) {
-        route.id = opencode_qualified_model_id_for_prefix(id, model_prefix)?;
+    if let Some(model_prefix) = web_model_provider_prefix(provider) {
+        route.id = if is_openai_base_prefix(&model_prefix) {
+            raw_model_id_for_prefix(id, &model_prefix)?
+        } else {
+            web_qualified_model_id_for_prefix(id, &model_prefix)?
+        };
         route.provider = if model_prefix == "opencode-zen" {
             opencode_zen_provider.to_string()
+        } else if is_openai_base_prefix(&model_prefix) {
+            preferred_provider_name(&model_prefix, opencode_go_provider)
         } else {
             opencode_go_provider.to_string()
         };
@@ -317,12 +352,40 @@ fn normalized_provider_name(provider: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
-    match normalized_provider_name(provider).as_str() {
-        "opencode-go" => Some("opencode-go"),
-        "opencode-zen" => Some("opencode-zen"),
-        _ => None,
+fn web_model_provider_prefix(provider: &str) -> Option<String> {
+    let normalized = normalized_provider_name(provider);
+    match normalized.as_str() {
+        "opencode-go" => Some("opencode-go".to_string()),
+        "opencode-zen" => Some("opencode-zen".to_string()),
+        _ => normalized
+            .strip_prefix("openai-base:")
+            .and_then(normalized_openai_base_instance_name)
+            .map(|name| format!("openai-base:{name}")),
     }
+}
+
+fn preferred_provider_name(model_prefix: &str, fallback: &str) -> String {
+    if is_openai_base_prefix(model_prefix) {
+        model_prefix.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+fn is_openai_base_prefix(prefix: &str) -> bool {
+    prefix.starts_with("openai-base:")
+}
+
+fn normalized_openai_base_instance_name(name: &str) -> Option<String> {
+    let name = name.trim().replace('_', "-").to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    {
+        return None;
+    }
+    Some(name)
 }
 
 impl WebSessionManager {
@@ -394,14 +457,14 @@ impl WebSessionManager {
         selection: Option<&ModelSelection>,
     ) -> Option<Vec<ModelInfo>> {
         let selection = selection?;
-        let (selected_prefix, _) = parse_opencode_model_id(&selection.qualified_id)?;
+        let (selected_prefix, _) = parse_web_model_id(&selection.qualified_id)?;
         let selected_model_id =
-            opencode_qualified_model_id_for_prefix(&selection.qualified_id, selected_prefix)?;
+            web_qualified_model_id_for_prefix(&selection.qualified_id, &selected_prefix)?;
         let configured_routes = self.agent_settings.get_configured_agent_model_routes();
-        let selected_provider = self.preferred_opencode_provider_name(selected_prefix);
-        let selected_route = selected_opencode_route(
+        let selected_provider = self.preferred_web_model_provider_name(&selected_prefix);
+        let selected_route = selected_web_model_route(
             &selected_model_id,
-            selected_prefix,
+            &selected_prefix,
             &selected_provider,
             &configured_routes,
         );
@@ -409,11 +472,13 @@ impl WebSessionManager {
         Some(vec![selected_route])
     }
 
-    fn preferred_opencode_provider_name(&self, model_prefix: &str) -> String {
-        let (dash, underscore) = if model_prefix == "opencode-zen" {
-            ("opencode-zen", "opencode_zen")
-        } else {
-            ("opencode-go", "opencode_go")
+    fn preferred_web_model_provider_name(&self, model_prefix: &str) -> String {
+        if is_openai_base_prefix(model_prefix) {
+            return model_prefix.to_string();
+        }
+        let (dash, underscore) = match model_prefix {
+            "opencode-zen" => ("opencode-zen", "opencode_zen"),
+            _ => ("opencode-go", "opencode_go"),
         };
         if self.llm.is_provider_available(dash) {
             dash.to_string()
@@ -422,6 +487,53 @@ impl WebSessionManager {
         } else {
             dash.to_string()
         }
+    }
+
+    pub(crate) async fn create_search_probe_executor(
+        &self,
+        parent_session_id: &str,
+        options: SearchProbeRuntimeOptions,
+    ) -> Option<AgentExecutor> {
+        let parent_meta = self.get_session(parent_session_id).await?;
+        let probe_sid = derive_search_probe_session_id(parent_session_id);
+        let session = AgentSession::new(probe_sid);
+        let mut executor =
+            AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
+
+        if let Some(model_routes) = self
+            .model_routes_override_for_selection(parent_meta.model_selection.as_ref())
+            .await
+        {
+            executor.set_model_routes_override(model_routes);
+        }
+
+        executor.set_execution_profile(search_probe_execution_profile(options));
+        Some(executor)
+    }
+
+    pub(crate) async fn last_main_agent_final_message(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<String> {
+        let sid = self.resolve_session_id(parent_session_id).await?;
+        let executor_arc = self.registry.get(&sid).await?;
+        let executor = executor_arc.read().await;
+        executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .rev()
+            .find(|message| {
+                let content = message.content.trim();
+                message.role == MessageRole::Assistant
+                    && !content.is_empty()
+                    && message
+                        .tool_calls
+                        .as_ref()
+                        .is_none_or(std::vec::Vec::is_empty)
+            })
+            .map(|message| message.content.trim().to_string())
     }
 
     // --- Session CRUD ---
@@ -1035,6 +1147,30 @@ fn derive_web_session_id(user_id: i64, session_id: &str) -> SessionId {
     SessionId::from(h.finish() as i64)
 }
 
+fn derive_search_probe_session_id(parent_session_id: &str) -> SessionId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    "search-probe".hash(&mut h);
+    parent_session_id.hash(&mut h);
+    Uuid::new_v4().hash(&mut h);
+    SessionId::from(h.finish() as i64)
+}
+
+fn search_probe_execution_profile(options: SearchProbeRuntimeOptions) -> AgentExecutionProfile {
+    let allowed_tools = options
+        .tool_allowlist
+        .into_iter()
+        .map(|tool| tool.trim().to_string())
+        .filter(|tool| !tool.is_empty())
+        .collect::<HashSet<_>>();
+    AgentExecutionProfile::new(
+        Some("search-probe".to_string()),
+        options.prompt_instructions,
+        ToolAccessPolicy::new(Some(allowed_tools), HashSet::new()),
+    )
+}
+
 fn is_fresh_web_session_context(context_key: &str) -> bool {
     context_key.starts_with("web-session-")
 }
@@ -1367,6 +1503,217 @@ mod tests {
                 .iter()
                 .all(|route| route.id != "opencode-go/deepseek-v4-flash")
         );
+    }
+
+    #[tokio::test]
+    async fn web_session_applies_openai_base_model_route_override_from_selection() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "hf.co/test/model".to_string(),
+                provider: "openai-base:local".to_string(),
+                max_output_tokens: 8_000,
+                context_window_tokens: 64_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "openai-base-model-selection-test".to_string(),
+                "web-session-openai-base-selection-test".to_string(),
+                "main".to_string(),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "openai-base:local/hf.co/test/model".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "openai-base-model-selection-test").await;
+        let executor = executor_arc.read().await;
+        let routes = executor
+            .model_routes_override()
+            .expect("model route override should be set");
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "hf.co/test/model");
+        assert_eq!(routes[0].provider, "openai-base:local");
+        assert_eq!(routes[0].max_output_tokens, 8_000);
+        assert_eq!(routes[0].context_window_tokens, 64_000);
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_inherits_model_route_without_registry_insert() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "opencode-go/deepseek-v4-flash".to_string(),
+                provider: "opencode_go".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "search-probe-model-selection-test".to_string(),
+                "web-session-search-probe-model-selection-test".to_string(),
+                "main".to_string(),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-go/deepseek-v4-flash".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+        let registry_len_before = manager.session_registry().len().await;
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-model-selection-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["web_markdown".to_string()],
+                    prompt_instructions: Some("probe instructions".to_string()),
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+        let registry_len_after = manager.session_registry().len().await;
+
+        assert_eq!(registry_len_before, 1);
+        assert_eq!(registry_len_after, registry_len_before);
+        assert_ne!(
+            probe.session().session_id,
+            derive_web_session_id(91, "search-probe-model-selection-test")
+        );
+        assert!(probe.session().memory.get_messages().is_empty());
+
+        let routes = probe
+            .model_routes_override()
+            .expect("probe should inherit selected model route");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
+        assert_eq!(routes[0].provider, "opencode-go");
+        assert_eq!(routes[0].max_output_tokens, 32_000);
+    }
+
+    #[tokio::test]
+    async fn last_main_agent_final_message_reads_latest_parent_assistant_response() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        manager
+            .create_session_with_id(
+                92,
+                "search-probe-final-message-test".to_string(),
+                "web-session-search-probe-final-message-test".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "search-probe-final-message-test").await;
+        {
+            let mut executor = executor_arc.write().await;
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::user_task("Initial question"));
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::assistant("Older final answer"));
+            executor
+                .session_mut()
+                .memory
+                .add_message(AgentMessage::assistant("Latest final answer  "));
+        }
+
+        let message = manager
+            .last_main_agent_final_message("search-probe-final-message-test")
+            .await;
+
+        assert_eq!(message.as_deref(), Some("Latest final answer"));
+        assert_eq!(manager.last_main_agent_final_message("missing").await, None);
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_applies_tool_allowlist() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        manager
+            .create_session_with_id(
+                92,
+                "search-probe-tool-policy-test".to_string(),
+                "web-session-search-probe-tool-policy-test".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-tool-policy-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["definitely_not_a_real_tool".to_string()],
+                    prompt_instructions: None,
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+
+        assert!(probe.current_tool_definitions().is_empty());
+
+        let probe = manager
+            .create_search_probe_executor(
+                "search-probe-tool-policy-test",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["web_markdown".to_string(), "web_crawler".to_string()],
+                    prompt_instructions: None,
+                },
+            )
+            .await
+            .expect("probe executor should be created for existing web session");
+
+        let tool_names = probe
+            .current_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(tool_names.contains("web_markdown"));
+    }
+
+    #[tokio::test]
+    async fn search_probe_executor_requires_existing_parent_session() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+
+        let probe = manager
+            .create_search_probe_executor(
+                "missing-session",
+                SearchProbeRuntimeOptions {
+                    tool_allowlist: vec!["web_markdown".to_string()],
+                    prompt_instructions: None,
+                },
+            )
+            .await;
+
+        assert!(probe.is_none());
+        assert_eq!(manager.session_registry().len().await, 0);
     }
 
     // -----------------------------------------------------------------------

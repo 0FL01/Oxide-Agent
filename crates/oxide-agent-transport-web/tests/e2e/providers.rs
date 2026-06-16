@@ -14,10 +14,10 @@ pub struct RecordedToolRequest {
     pub messages: Vec<Message>,
 }
 
-/// Scripted ZAI provider that returns pre-programmed responses in sequence.
+/// Scripted LLM provider that returns pre-programmed responses in sequence.
 /// Logs each model_id call for verification.
 #[derive(Clone)]
-pub struct SequencedZaiProvider {
+pub struct SequencedLlmProvider {
     responses: Arc<Mutex<VecDeque<ChatResponse>>>,
     model_log: Arc<Mutex<Vec<String>>>,
     request_log: Arc<Mutex<Vec<RecordedToolRequest>>>,
@@ -27,7 +27,7 @@ pub struct SequencedZaiProvider {
     notify: Arc<Notify>,
 }
 
-impl SequencedZaiProvider {
+impl SequencedLlmProvider {
     pub fn new(responses: Vec<ChatResponse>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
@@ -94,7 +94,7 @@ impl SequencedZaiProvider {
 }
 
 #[async_trait]
-impl LlmProvider for SequencedZaiProvider {
+impl LlmProvider for SequencedLlmProvider {
     async fn complete_internal_text(
         &self,
         _system_prompt: &str,
@@ -128,7 +128,7 @@ impl LlmProvider for SequencedZaiProvider {
             .lock()
             .await
             .pop_front()
-            .ok_or_else(|| LlmError::ApiError("No scripted ZAI response available".to_string()))
+            .ok_or_else(|| LlmError::ApiError("No scripted LLM response available".to_string()))
     }
 
     async fn transcribe_audio(

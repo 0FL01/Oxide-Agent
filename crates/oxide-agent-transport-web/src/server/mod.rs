@@ -25,6 +25,7 @@ mod auto_title;
 mod converters;
 mod model_routes;
 mod router;
+mod search_probe;
 mod session_routes;
 mod settings_routes;
 mod sse;
@@ -52,8 +53,8 @@ pub use router::{build_router, serve};
 pub(crate) use session_routes::api_create_session;
 pub(crate) use session_routes::{
     api_create_session_with_request, api_delete_session, api_get_session, api_list_sessions,
-    api_update_session, api_update_session_profile, api_upload_task_attachments,
-    invalidate_session_summaries_cache,
+    api_update_session, api_update_session_profile, api_upload_large_input,
+    api_upload_task_attachments, invalidate_session_summaries_cache,
 };
 pub(crate) use settings_routes::{api_get_settings, api_update_settings, load_current_user_record};
 pub(crate) use task_routes::{
@@ -90,6 +91,8 @@ async fn api_public_config(State(state): State<AppState>) -> Json<PublicConfigRe
             bootstrap_token_configured,
         ),
         build_version: env!("CARGO_PKG_VERSION").to_string(),
+        max_task_input_chars: MAX_TASK_INPUT_CHARS,
+        large_input_attachments_supported: state.large_input_attachments_supported(),
     })
 }
 

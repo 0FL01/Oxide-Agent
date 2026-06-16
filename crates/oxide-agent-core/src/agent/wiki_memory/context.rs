@@ -577,6 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn assembler_bootstraps_missing_indexes_without_writes() {
+        crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
         let store_backend = Arc::clone(&backend);
         let store = WikiStore::new(store_backend, "prod");
@@ -596,6 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn assembler_loads_overview_and_matching_topic_page() {
+        crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
         let context_id = wiki_context_id(42, "topic");
         backend.objects.lock().await.insert(
@@ -632,6 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn assembler_reuses_cache_on_repeated_assembly() {
+        crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
         let context_id = wiki_context_id(42, "topic");
         backend.objects.lock().await.insert(

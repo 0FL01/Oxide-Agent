@@ -19,7 +19,7 @@ use super::{
     api_list_agent_profiles, api_list_model_routes, api_list_sessions, api_list_tasks, api_login,
     api_logout, api_me, api_public_config, api_refresh_model_routes, api_register, api_resume_task,
     api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_task_attachments, auto_title, health, sse, static_assets,
+    api_upload_large_input, api_upload_task_attachments, auto_title, health, sse, static_assets,
 };
 
 pub fn build_router(state: AppState) -> Router {
@@ -65,6 +65,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/:session_id/uploads",
             post(api_upload_task_attachments),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/large-input",
+            post(api_upload_large_input),
         )
         .route("/api/v1/sessions/:session_id/tasks", get(api_list_tasks))
         .route("/api/v1/sessions/:session_id/tasks", post(api_create_task))
