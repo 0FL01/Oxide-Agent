@@ -29,6 +29,8 @@ cargo_features = ["profile-full"]
 "tool/sandbox-fileops" = { enabled = true }
 "tool/sandbox-recreate" = { enabled = true }
 "tool/brave-search" = { enabled = true }
+# Browser Live Agent profile wiring lands with CP-7 after the tool/browser-live
+# capability module exists; CP-3 only adds BROWSER_AGENT_* config parsing.
 "tool/crw" = { enabled = true }
 "tool/stack-logs" = { enabled = true }
 "tool/tavily" = { enabled = true }

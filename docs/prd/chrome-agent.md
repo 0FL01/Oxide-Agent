@@ -2828,6 +2828,26 @@ If smoke regresses, pause browser MiMo loop work. Keep sidecar/client work possi
 
 ### CP-3: Provider capability/model config additions
 
+**Status: PASS — browser config/model validation added on current branch.**
+
+**Confirmed evidence**
+
+* Added `BrowserAgentSettings`-backed `BROWSER_AGENT_*` config fields in `AgentSettings`.
+* Browser feature is disabled by default and validates sidecar URL/token only when enabled.
+* Browser MiMo route uses `BROWSER_AGENT_MIMO_*` override with fallback to `MEDIA_MODEL_*`.
+* `mimo-v2.5-pro` fails fast with a browser-specific text-only error before use as screenshot vision.
+* Non-image OpenCode Go routes fail browser image-capability validation.
+* Existing `MEDIA_MODEL_*` and OpenCode Go bootstrap route behavior remains covered by focused regression tests.
+
+**Validated commands**
+
+```bash
+cargo fmt --all -- --check
+cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_
+cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only
+cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings
+```
+
 **Purpose**
 Add browser-specific config without breaking existing `MEDIA_MODEL_*` and OpenCode Go routes.
 
@@ -2842,28 +2862,28 @@ Add browser-specific config without breaking existing `MEDIA_MODEL_*` and OpenCo
 
 **Implementation tasks**
 
-* [ ] Add `BrowserAgentSettings` or equivalent config section under `AgentSettings`.
-* [ ] Parse `BROWSER_AGENT_*` env keys.
-* [ ] Add browser MiMo provider/model override with fallback to `MEDIA_MODEL_*`.
-* [ ] Validate selected browser model has image capability.
-* [ ] Fail fast with clear error if model is `mimo-v2.5-pro`.
-* [ ] Document `OPENCODE_API_KEY`/`OPENCODE_GO_API_KEY` behavior.
-* [ ] Keep existing media file provider behavior unchanged.
+* [x] Add `BrowserAgentSettings` or equivalent config section under `AgentSettings`.
+* [x] Parse `BROWSER_AGENT_*` env keys.
+* [x] Add browser MiMo provider/model override with fallback to `MEDIA_MODEL_*`.
+* [x] Validate selected browser model has image capability.
+* [x] Fail fast with clear error if model is `mimo-v2.5-pro`.
+* [x] Document `OPENCODE_API_KEY`/`OPENCODE_GO_API_KEY` behavior.
+* [x] Keep existing media file provider behavior unchanged.
 
 **Acceptance criteria**
 
-* [ ] Browser feature disabled by default.
-* [ ] Enabling browser feature without sidecar URL/token fails clearly.
-* [ ] Enabling browser feature with `mimo-v2.5-pro` fails clearly.
-* [ ] Existing non-browser media config still works.
-* [ ] Existing OpenCode Go bootstrap route still works.
+* [x] Browser feature disabled by default.
+* [x] Enabling browser feature without sidecar URL/token fails clearly.
+* [x] Enabling browser feature with `mimo-v2.5-pro` fails clearly.
+* [x] Existing non-browser media config still works.
+* [x] Existing OpenCode Go bootstrap route still works.
 
 **Tests**
 
-* [ ] Config parse tests for defaults.
-* [ ] Config parse tests for browser MiMo override.
-* [ ] Config validation tests for unsupported image model.
-* [ ] Regression test for existing `MEDIA_MODEL_*`.
+* [x] Config parse tests for defaults.
+* [x] Config parse tests for browser MiMo override.
+* [x] Config validation tests for unsupported image model.
+* [x] Regression test for existing `MEDIA_MODEL_*`.
 
 **Rollback**
 Remove browser config section and env docs. Existing provider/media routes remain untouched.

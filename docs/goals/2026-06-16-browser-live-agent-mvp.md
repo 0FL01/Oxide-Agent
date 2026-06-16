@@ -55,16 +55,16 @@ Out of scope:
   - Requirement: add disabled-by-default browser configuration, `BROWSER_AGENT_*` env parsing, sidecar URL/token validation, browser MiMo provider/model override, and profile wiring.
   - Acceptance: disabled by default; enabling without required sidecar URL/token fails clearly; existing `MEDIA_MODEL_*` and OpenCode Go routes still work.
   - Evidence required: config parse/validation tests, `.env.example` diff, profile diff, `cargo test -p oxide-agent-core ...` focused config tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/config.rs` adds `BrowserAgentSettings` and `BROWSER_AGENT_*` fields/validation; `.env.example` documents disabled-by-default Browser Live config and OpenCode Go key fallback; profile files document that actual `tool/browser-live` module wiring waits for CP-7 to avoid unknown module IDs. Focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; OpenCode bootstrap regression passed: `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`.
 
 - G2: MiMo vision route is OpenCode Go `mimo-v2.5` only
   - Source: `docs/prd/chrome-agent.md:9`, `docs/prd/chrome-agent.md:160`, `docs/prd/chrome-agent.md:2769`
   - Requirement: browser screenshot perception uses `opencode-go` + `mimo-v2.5` through direct OpenAI chat completions `image_url` data URL path.
   - Acceptance: live smoke proves image input; `mimo-v2.5-pro` is rejected for browser vision before any call.
   - Evidence required: CP-2 smoke test command, payload/model capability tests, config validation test for `mimo-v2.5-pro`.
-  - Status: in_progress
-  - Evidence collected: CP-2 live smoke and provider tests were committed before this goal doc; remaining browser-config rejection evidence belongs to CP-3.
+  - Status: verified
+  - Evidence collected: CP-2 live smoke and provider tests were committed before this goal doc; CP-3 adds browser config validation that rejects `mimo-v2.5-pro` with a text-only browser screenshot vision error and rejects non-image OpenCode Go models via `browser_agent_config_rejects_mimo_v25_pro_for_vision` and `browser_agent_config_rejects_non_image_model`.
 
 - G3: Typed sidecar API client
   - Source: `docs/prd/chrome-agent.md:2873`
@@ -183,8 +183,8 @@ Out of scope:
   - Requirement: final implementation passes formatting, clippy, and relevant cargo checks/tests.
   - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
   - Evidence required: command output summaries in Progress Log and Final Verification.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`.
 
 - V2: End-to-end smoke scenarios
   - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
@@ -213,8 +213,8 @@ Out of scope:
   - Source: `docs/prd/chrome-agent.md:212`, `docs/prd/chrome-agent.md:251`, `docs/prd/chrome-agent.md:3613`
   - Must preserve: MVP uses only OpenCode Go + `mimo-v2.5` for vision; `mimo-v2.5-pro` is not a vision route.
   - Evidence required: config validation tests and docs review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `BROWSER_AGENT_MIMO_MODEL=mimo-v2.5-pro` is rejected by config validation; `.env.example` documents `mimo-v2.5` only and explicitly warns not to use `mimo-v2.5-pro` for browser perception. No direct Xiaomi fallback config was added.
 
 - N3: No real Chrome profile attach
   - Source: `docs/prd/chrome-agent.md:241`, `docs/prd/chrome-agent.md:3612`
@@ -227,8 +227,8 @@ Out of scope:
   - Source: `docs/prd/chrome-agent.md:228`, `docs/prd/chrome-agent.md:3610`
   - Must preserve: HTTP/HTTPS navigation is allow-by-default; non-web schemes are rejected.
   - Evidence required: URL policy tests and config docs review showing removed allowlist envs are not required.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-3 added no domain allowlist or required allowlist envs; `.env.example` contains Browser Live sidecar/MiMo config only. URL scheme enforcement remains scheduled for CP-14.
 
 - N5: No Telegram browser start/control commands
   - Source: `docs/prd/chrome-agent.md:227`, `docs/prd/chrome-agent.md:3316`, `docs/prd/chrome-agent.md:3611`
@@ -377,6 +377,13 @@ Out of scope:
   - Commands: `git status --short`; `git add -N docs/goals/2026-06-16-browser-live-agent-mvp.md && git diff --stat -- docs/goals/2026-06-16-browser-live-agent-mvp.md && git diff --check -- docs/goals/2026-06-16-browser-live-agent-mvp.md`; secret-pattern scan across the goal doc, PRD, and OpenCode Go provider source.
   - Audit IDs updated: G2 is `in_progress`; all other non-completed implementation items remain `pending`.
   - Next: commit this goal doc, then start CP-3 config/model validation.
+
+- 2026-06-16: CP-3 provider capability/model config additions
+  - Changed: added Browser Live config fields/resolution/validation in `crates/oxide-agent-core/src/config.rs`, browser vision model storage/resolution in `crates/oxide-agent-core/src/llm/client.rs`, disabled-by-default Browser Live env examples in `.env.example`, and profile comments deferring actual `tool/browser-live` module enablement to CP-7.
+  - Evidence: browser config defaults to disabled; enabled config requires sidecar URL/token; `BROWSER_AGENT_MIMO_*` overrides media config; unset browser MiMo route falls back to `MEDIA_MODEL_*`; `mimo-v2.5-pro` and non-image routes fail fast; existing media model and OpenCode Go bootstrap route behavior is covered by regression tests.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`.
+  - Audit IDs updated: G1 verified, G2 verified, N2 verified, N4 verified, V1 in progress.
+  - Next: commit CP-3, then start CP-4 sidecar API contract and typed client.
 
 ## Risks and Blockers
 

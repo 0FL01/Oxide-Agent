@@ -14,6 +14,8 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "tool/media-audio" = { enabled = true }
 "tool/media-image" = { enabled = true }
 "tool/media-video" = { enabled = true }
+# Browser Live Agent profile wiring lands with CP-7 after the tool/browser-live
+# capability module exists; CP-3 only adds BROWSER_AGENT_* config parsing.
 "tool/todos" = { enabled = true }
 "tool/reminder" = { enabled = true }
 "tool/sandbox-exec" = { enabled = true }
