@@ -148,6 +148,7 @@ profile-web-embedded-opencode-local = [
     "tool-tavily",
     "tool-brave-search",
     "tool-crw",
+    "tool-browser-live",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",

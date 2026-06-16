@@ -38,6 +38,12 @@ services:
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:dev}
       SANDBOX_BACKEND: broker
       SANDBOXD_SOCKET: /run/sandboxd/sandboxd.sock
+      BROWSER_AGENT_ENABLED: ${BROWSER_AGENT_ENABLED:-false}
+      BROWSER_AGENT_SIDECAR_BASE_URL: http://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
+      BROWSER_AGENT_SIDECAR_WS_URL: ws://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
+      BROWSER_AGENT_SIDECAR_TOKEN: ${BROWSER_AGENT_SIDECAR_TOKEN:-}
+      BROWSER_AGENT_MIMO_PROVIDER: ${BROWSER_AGENT_MIMO_PROVIDER:-opencode-go}
+      BROWSER_AGENT_MIMO_MODEL: ${BROWSER_AGENT_MIMO_MODEL:-mimo-v2.5}
     volumes:
       - ../config:/app/config:ro
       - sandboxd-run:/run/sandboxd
@@ -46,6 +52,8 @@ services:
       sandboxd:
         condition: service_healthy
       crw:
+        condition: service_healthy
+      chrome-agent-sidecar:
         condition: service_healthy
     logging:
       driver: json-file
@@ -105,5 +113,41 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  chrome-agent-sidecar:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.chrome-agent-sidecar
+    image: oxide-chrome-agent-sidecar:dev
+    container_name: oxide_chrome_agent_sidecar_dev
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+      BROWSER_AGENT_SIDECAR_TOKEN: ${BROWSER_AGENT_SIDECAR_TOKEN:-}
+      BROWSER_AGENT_ARTIFACT_DIR: /var/lib/oxide-browser/artifacts
+      BROWSER_AGENT_PROFILE_DIR: /tmp/oxide-browser-profiles
+    ports:
+      - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
+    volumes:
+      - browser-artifacts:/var/lib/oxide-browser/artifacts
+      - browser-profiles:/tmp/oxide-browser-profiles
+    shm_size: "1gb"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8787/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
 volumes:
   sandboxd-run:
+  browser-artifacts:
+  browser-profiles:

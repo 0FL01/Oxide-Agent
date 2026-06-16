@@ -702,7 +702,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 |---------|-------------|----------------|
 | `profile-full` | Full production deployment | All features |
 | `profile-embedded-opencode-local` | Telegram + local OpenCode | transport-telegram, storage-sqlx, llm-opencode-go, docker + sandboxd |
-| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd |
+| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd, Browser Live tools |
 | `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
 
 ### Atomic Features (selection)
@@ -717,7 +717,15 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
 | **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |
 | **Integrations** | `integration-mcp-jira`, `integration-mcp-mattermost`, `integration-ssh-mcp` |
-| **Other** | `tool-todos`, `tool-delegation`, `tool-reminder`, `tool-file-delivery`, `tool-stack-logs`, `manager-control-plane` |
+| **Other** | `tool-todos`, `tool-delegation`, `tool-reminder`, `tool-browser-live`, `tool-file-delivery`, `tool-stack-logs`, `manager-control-plane` |
+
+### Browser Live sidecar in Compose
+
+Docker Compose profiles include a `chrome-agent-sidecar` service with Chromium,
+loopback-only REST port `127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}`, named
+artifact/profile volumes, non-root runtime, dropped Linux capabilities, and a
+`/healthz` healthcheck. Browser Live remains disabled unless
+`BROWSER_AGENT_ENABLED=true` and `BROWSER_AGENT_SIDECAR_TOKEN` are set.
 
 Build example:
 ```bash

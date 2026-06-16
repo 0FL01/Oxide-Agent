@@ -3289,6 +3289,8 @@ Disable recovery engine and fail safely on verification failure.
 
 ### CP-11: Docker Compose sidecar deployment
 
+**Status: PASS — Compose sidecar image/service, healthcheck, volumes, app env wiring, and safe defaults are implemented on current branch.**
+
 **Purpose**
 Make the browser sidecar runnable in Docker Compose with safe defaults.
 
@@ -3305,33 +3307,33 @@ Make the browser sidecar runnable in Docker Compose with safe defaults.
 
 **Implementation tasks**
 
-* [ ] Add sidecar Dockerfile with Chromium and `chrome-agent`.
-* [ ] Add REST/WS wrapper entrypoint.
-* [ ] Add compose service with healthcheck.
-* [ ] Add artifact/profile volumes.
-* [ ] Configure app env to point at sidecar.
-* [ ] Ensure sidecar port not publicly exposed by default.
-* [ ] Add token env requirement.
-* [ ] Add resource limits/shm settings.
-* [ ] Add non-root/read-only/drop-cap hardening where compatible.
-* [ ] Document dev-only port exposure.
+* [x] Add sidecar Dockerfile with Chromium and `chrome-agent`.
+* [x] Add REST/WS wrapper entrypoint.
+* [x] Add compose service with healthcheck.
+* [x] Add artifact/profile volumes.
+* [x] Configure app env to point at sidecar.
+* [x] Ensure sidecar port not publicly exposed by default.
+* [x] Add token env requirement.
+* [x] Add resource limits/shm settings.
+* [x] Add non-root/read-only/drop-cap hardening where compatible.
+* [x] Document dev-only port exposure.
 
 **Acceptance criteria**
 
-* [ ] Compose up starts app + sidecar.
-* [ ] App health can reach sidecar health.
-* [ ] CDP port is not exposed to host.
-* [ ] Missing token fails startup or disables browser feature.
-* [ ] Session profile purged on close.
-* [ ] Screenshots land in artifact volume.
+* [x] Compose up starts app + sidecar.
+* [x] App health can reach sidecar health.
+* [x] CDP port is not exposed to host.
+* [x] Missing token fails startup or disables browser feature.
+* [x] Session profile purged on close.
+* [x] Screenshots land in artifact volume.
 
 **Tests**
 
-* [ ] Compose smoke test.
-* [ ] Healthcheck test.
-* [ ] Port exposure check.
-* [ ] Artifact volume check.
-* [ ] Profile cleanup check.
+* [x] Compose smoke test.
+* [x] Healthcheck test.
+* [x] Port exposure check.
+* [x] Artifact volume check.
+* [x] Profile cleanup check.
 
 **Rollback**
 Remove sidecar service from compose and keep browser feature disabled. Core code remains dormant.
