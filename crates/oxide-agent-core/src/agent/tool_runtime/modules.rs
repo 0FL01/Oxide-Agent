@@ -359,6 +359,7 @@ impl BrowserLiveToolModule {
             token,
             BrowserArtifactSettings::default(),
             ctx.progress_tx(),
+            ctx.llm_client(),
         )
         .ok()
     }

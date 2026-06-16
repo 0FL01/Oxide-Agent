@@ -365,6 +365,80 @@ pub enum BrowserAction {
     },
 }
 
+/// Strict MiMo browser decision returned by the Browser Live visual planner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserDecision {
+    pub schema_version: u8,
+    pub rationale: String,
+    pub action: BrowserDecisionAction,
+    pub expected_result: String,
+    pub confidence: f32,
+    pub risk: BrowserDecisionRisk,
+    pub sensitive_action: BrowserSensitiveAction,
+    pub needs_debug: bool,
+}
+
+/// Browser action selected by MiMo after local validation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrowserDecisionAction {
+    ClickXy {
+        x: u32,
+        y: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_description: Option<String>,
+    },
+    ClickSelector {
+        selector: String,
+    },
+    Fill {
+        selector: String,
+        value: String,
+    },
+    TypeText {
+        text: String,
+    },
+    Press {
+        key: String,
+    },
+    Scroll {
+        delta_x: i32,
+        delta_y: i32,
+    },
+    Wait {
+        timeout_ms: u64,
+    },
+    Debug {
+        reason: String,
+    },
+    AskUser {
+        question: String,
+    },
+    Done {
+        final_answer: String,
+        evidence: String,
+    },
+}
+
+/// Risk classification assigned by MiMo and enforced locally.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserDecisionRisk {
+    Low,
+    Medium,
+    High,
+}
+
+/// Sensitive-action annotation assigned by MiMo.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct BrowserSensitiveAction {
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Response from `POST /sessions/{id}/action`.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ActionResponse {

@@ -10,6 +10,12 @@ pub mod artifacts;
 pub mod client;
 /// Error types and retry classification for browser sidecar operations.
 pub mod error;
+/// MiMo screenshot decision caller.
+pub mod mimo;
+/// Strict BrowserDecision parser and validation.
+pub mod parser;
+/// Prompt construction for Browser Live MiMo decisions.
+pub mod prompt;
 /// Browser session state model.
 pub mod session;
 #[cfg(test)]
@@ -22,9 +28,10 @@ pub mod types;
 pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
+pub use mimo::BrowserMimoDecider;
 pub use session::{BrowserFrame, BrowserSessionState};
 pub use tools::BrowserLiveProvider;
 pub use types::{
-    BrowserAction, BrowserObservation, CreateSessionRequest, ScreenshotArtifact, SidecarErrorBody,
-    Viewport,
+    BrowserAction, BrowserDecision, BrowserDecisionAction, BrowserDecisionRisk, BrowserObservation,
+    BrowserSensitiveAction, CreateSessionRequest, ScreenshotArtifact, SidecarErrorBody, Viewport,
 };

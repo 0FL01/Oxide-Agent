@@ -318,6 +318,25 @@ impl BrowserSidecar for FakeBrowserSidecar {
         })
     }
 
+    async fn latest_screenshot_bytes(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<Vec<u8>, BrowserSidecarError> {
+        self.maybe_crash()?;
+        if query.format != ScreenshotFormat::Binary {
+            return Err(api_failure(
+                "policy_denied",
+                "fake sidecar binary endpoint requires binary format",
+                false,
+                None,
+            ));
+        }
+        let mut state = self.state();
+        state.session_mut(session_id)?;
+        Ok(b"fake-browser-screenshot-bytes".to_vec())
+    }
+
     async fn debug_network(
         &self,
         session_id: &str,

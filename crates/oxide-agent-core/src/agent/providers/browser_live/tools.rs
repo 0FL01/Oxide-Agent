@@ -1,17 +1,20 @@
 use super::artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
+use super::mimo::{BrowserMimoDecider, BrowserMimoError};
+use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
 use super::session::BrowserSessionState;
 use super::types::{
     BrowserProfile, CloseReason, CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel,
     CreateSessionRequest, DebugLevel, NetworkDebugQuery, NetworkFilter, ObserveQuery,
-    ScreenshotArtifact, Viewport,
+    ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
 };
+use crate::llm::LlmClient;
 use crate::llm::ToolDefinition;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -38,6 +41,7 @@ pub struct BrowserLiveProvider {
     states: Arc<Mutex<BTreeMap<String, BrowserSessionState>>>,
     artifact_settings: BrowserArtifactSettings,
     progress_tx: Option<Sender<AgentEvent>>,
+    decision_engine: Option<BrowserMimoDecider>,
 }
 
 impl BrowserLiveProvider {
@@ -50,12 +54,14 @@ impl BrowserLiveProvider {
         token: &str,
         artifact_settings: BrowserArtifactSettings,
         progress_tx: Option<Sender<AgentEvent>>,
+        llm_client: Arc<LlmClient>,
     ) -> Result<Self, BrowserSidecarError> {
         Ok(Self::new(
             Arc::new(BrowserSidecarClient::new(base_url, token)?),
             artifact_settings,
             progress_tx,
         ))
+        .map(|provider| provider.with_decision_engine(BrowserMimoDecider::new(llm_client)))
     }
 
     /// Create a provider with an injected sidecar implementation.
@@ -70,7 +76,15 @@ impl BrowserLiveProvider {
             states: Arc::new(Mutex::new(BTreeMap::new())),
             artifact_settings,
             progress_tx,
+            decision_engine: None,
         }
+    }
+
+    /// Attach the Browser MiMo decision engine used by `browser_step`.
+    #[must_use]
+    pub fn with_decision_engine(mut self, decision_engine: BrowserMimoDecider) -> Self {
+        self.decision_engine = Some(decision_engine);
+        self
     }
 
     /// Build typed runtime executors for Browser Live tools.
@@ -200,20 +214,82 @@ impl BrowserLiveProvider {
         invocation: &ToolInvocation,
         args: StepArgs,
     ) -> Result<Value, ToolRuntimeError> {
-        let observe = self
-            .observe(
-                invocation,
-                ObserveArgs {
-                    session_id: args.session_id,
-                    fresh: true,
-                    include_a11y: false,
-                    max_debug_items: Some(20),
+        ensure_not_cancelled(invocation)?;
+        let query = ObserveQuery {
+            fresh: true,
+            include_dom: false,
+            include_a11y: false,
+            include_network_summary: true,
+            include_console_summary: true,
+            max_debug_items: 20,
+        };
+        let response = self
+            .sidecar
+            .observe(&args.session_id, &query)
+            .await
+            .map_err(sidecar_runtime_error)?;
+        let (frame, history_summary) = {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(&args.session_id).ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+            let frame = state
+                .record_observation(&response.observation, BrowserArtifactPurpose::LiveFrame, 0)
+                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
+                .clone();
+            (frame, state.compact_history_summary())
+        };
+        let observe =
+            observation_payload(&args.session_id, &response.observation.screenshot, &frame);
+
+        let Some(decision_engine) = &self.decision_engine else {
+            return Ok(json!({
+                "status": "decision_pending",
+                "message": "browser_step MiMo decision engine is not configured; current checkpoint returns a fresh observation shell",
+                "observation": observe,
+            }));
+        };
+
+        let screenshot_bytes = self
+            .sidecar
+            .latest_screenshot_bytes(
+                &args.session_id,
+                &ScreenshotQuery {
+                    format: ScreenshotFormat::Binary,
+                    max_width: Some(response.observation.viewport.width),
+                    redacted: true,
                 },
             )
-            .await?;
+            .await
+            .map_err(sidecar_runtime_error)?;
+        let task = args
+            .task
+            .as_deref()
+            .unwrap_or("Continue the user's browser task safely.");
+        let prompt_context = BrowserDecisionPromptContext {
+            task,
+            session_id: &args.session_id,
+            observation: &response.observation,
+            history_summary: Some(&history_summary),
+        };
+        let decision = decision_engine
+            .decide(
+                screenshot_bytes,
+                &prompt_context,
+                viewport_from_observation(&response.observation),
+            )
+            .await
+            .map_err(mimo_runtime_error)?;
+        self.emit_progress(format!(
+            "Browser session {} produced validated MiMo decision",
+            args.session_id
+        ))
+        .await;
+
         Ok(json!({
-            "status": "decision_pending",
-            "message": "browser_step decision/action loop is added by CP-8/CP-9; current checkpoint returns a fresh observation shell",
+            "status": "decision_ready",
+            "message": "validated MiMo decision returned; action execution is added by CP-9",
+            "decision": decision,
             "observation": observe,
         }))
     }
@@ -403,6 +479,8 @@ struct ObserveArgs {
 #[derive(Debug, Deserialize)]
 struct StepArgs {
     session_id: String,
+    #[serde(default)]
+    task: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,6 +548,10 @@ fn sidecar_runtime_error(error: BrowserSidecarError) -> ToolRuntimeError {
     }
 }
 
+fn mimo_runtime_error(error: BrowserMimoError) -> ToolRuntimeError {
+    ToolRuntimeError::Failure(error.to_string())
+}
+
 fn observation_payload(
     session_id: &str,
     screenshot: &ScreenshotArtifact,
@@ -522,11 +604,14 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
             }),
         ),
         TOOL_BROWSER_STEP => (
-            "Run one bounded Browser Live step shell. Decision/action execution is added by later checkpoints.",
+            "Run one Browser Live MiMo decision step and return a validated decision without executing it.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
-                "properties": {"session_id": {"type": "string"}},
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "task": {"type": "string"}
+                },
                 "additionalProperties": false
             }),
         ),

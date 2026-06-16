@@ -103,8 +103,8 @@ Out of scope:
   - Requirement: build stable system prompt, dynamic compact state prompt, strict `BrowserDecision` schema/parser, one repair retry, action validation, risk/sensitive-action fields, and confidence thresholds.
   - Acceptance: invalid/malformed/unsafe output never executes an action; stable prompt and volatile screenshot/state are separated; screenshots not appended to main history.
   - Evidence required: golden valid/invalid parser tests, repair behavior tests, coordinate bounds/sensitive action tests, and prompt cache hygiene test.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-8 added `BrowserDecision`, action/risk/sensitive-action types, strict JSON extraction/parser, coordinate/action/confidence/sensitive/high-risk validation, stable/dynamic prompt builders, one-repair MiMo caller through `LlmClient::analyze_image()`, and binary screenshot sidecar retrieval for `browser_step` decision-only mode. Focused tests cover golden valid decisions, single-object extraction, multiple-object invalid output, coordinate bounds, low-confidence rejection, sensitive executable-action rejection, prompt cache/history hygiene with no `base64`/`data:image`, `mimo-v2.5` image-route invocation, and one repair retry. `browser_step` returns a validated decision without executing it; invalid parser output therefore cannot execute an action before CP-9.
 
 - G8: Bounded action execution and post-action verification
   - Source: `docs/prd/chrome-agent.md:3099`, `docs/prd/chrome-agent.md:3546`, `docs/prd/chrome-agent.md:3559`
@@ -412,6 +412,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live compiled_manifest_exposes_browser_live_tool_module`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
   - Audit IDs updated: G6 verified, N5 verified, V1 in progress.
   - Next: commit CP-7, then start CP-8 MiMo prompt/schema/parser.
+
+- 2026-06-16: CP-8 MiMo browser decision prompt, schema, and parser
+  - Changed: added `browser_live::prompt`, `parser`, and `mimo`; extended browser types with `BrowserDecision`; added binary latest-screenshot sidecar retrieval; and connected configured Browser Live tools to a decision-only `browser_step` MiMo path.
+  - Evidence: parser tests cover golden valid/invalid decisions, safe single-object extraction, malformed/multiple-object rejection, coordinate bounds, low confidence, and sensitive executable-action rejection; prompt test proves stable prompt excludes volatile URL/screenshot IDs while dynamic prompt contains only artifact refs, no `base64`/`data:image`; MiMo tests prove `LlmClient::analyze_image()` is called with `mimo-v2.5` and one repair retry occurs after invalid JSON.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`.
+  - Audit IDs updated: G7 verified, Q2 in progress.
+  - Next: commit CP-8, then start CP-9 action execution and post-action verification loop.
 
 ## Risks and Blockers
 

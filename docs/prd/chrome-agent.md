@@ -3142,6 +3142,8 @@ Remove provider registration and capability manifest entry; keep sidecar client 
 
 ### CP-8: MiMo browser decision prompt, schema, and parser
 
+**Status: PASS — Browser Live decision schema, prompt, parser, and MiMo repair caller are implemented on current branch.**
+
 **Purpose**
 Build the model-facing decision layer with strict local validation.
 
@@ -3155,33 +3157,33 @@ Build the model-facing decision layer with strict local validation.
 
 **Implementation tasks**
 
-* [ ] Define `BrowserDecision` schema.
-* [ ] Define action enum with validation.
-* [ ] Build stable system prompt.
-* [ ] Build dynamic compact state prompt.
-* [ ] Add screenshot image call via `LlmClient::analyze_image()`.
-* [ ] Implement strict JSON parser.
-* [ ] Implement one repair retry prompt.
-* [ ] Reject markdown/prose unless exactly one JSON object can be extracted safely.
-* [ ] Add policy annotations: risk, sensitive action, needs debug.
-* [ ] Add confidence thresholds.
+* [x] Define `BrowserDecision` schema.
+* [x] Define action enum with validation.
+* [x] Build stable system prompt.
+* [x] Build dynamic compact state prompt.
+* [x] Add screenshot image call via `LlmClient::analyze_image()`.
+* [x] Implement strict JSON parser.
+* [x] Implement one repair retry prompt.
+* [x] Reject markdown/prose unless exactly one JSON object can be extracted safely.
+* [x] Add policy annotations: risk, sensitive action, needs debug.
+* [x] Add confidence thresholds.
 
 **Acceptance criteria**
 
-* [ ] MiMo call uses `mimo-v2.5` image route.
-* [ ] Parser rejects malformed/unsafe output.
-* [ ] Invalid JSON never executes action.
-* [ ] Stable prompt and dynamic state are separated.
-* [ ] Screenshots are not appended to main agent history.
+* [x] MiMo call uses `mimo-v2.5` image route.
+* [x] Parser rejects malformed/unsafe output.
+* [x] Invalid JSON never executes action.
+* [x] Stable prompt and dynamic state are separated.
+* [x] Screenshots are not appended to main agent history.
 
 **Tests**
 
-* [ ] Golden valid decisions.
-* [ ] Golden invalid decisions.
-* [ ] Repair retry behavior.
-* [ ] Coordinate bounds validation.
-* [ ] Sensitive action validation.
-* [ ] Prompt cache hygiene test.
+* [x] Golden valid decisions.
+* [x] Golden invalid decisions.
+* [x] Repair retry behavior.
+* [x] Coordinate bounds validation.
+* [x] Sensitive action validation.
+* [x] Prompt cache hygiene test.
 
 **Rollback**
 Keep browser tools start/observe/debug/close; disable `browser_step` decision execution until parser is fixed.

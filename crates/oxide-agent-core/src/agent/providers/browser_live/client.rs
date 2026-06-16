@@ -161,6 +161,13 @@ pub trait BrowserSidecar: Send + Sync {
         query: &ScreenshotQuery,
     ) -> Result<ScreenshotResponse, BrowserSidecarError>;
 
+    /// Return latest screenshot image bytes for model-side vision calls.
+    async fn latest_screenshot_bytes(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<Vec<u8>, BrowserSidecarError>;
+
     /// Return network debug diagnostics.
     async fn debug_network(
         &self,
@@ -318,6 +325,17 @@ impl BrowserSidecarClient {
             .await
     }
 
+    /// `GET /sessions/{id}/screenshot/latest?format=binary` binary endpoint.
+    pub async fn latest_screenshot_bytes(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<Vec<u8>, BrowserSidecarError> {
+        let path = session_path(session_id, "/screenshot/latest")?;
+        self.get_bytes(&path, Some(query), self.timeouts.screenshot_metadata)
+            .await
+    }
+
     /// `GET /sessions/{id}/debug/network`.
     pub async fn debug_network(
         &self,
@@ -383,6 +401,39 @@ impl BrowserSidecarClient {
             .headers(self.common_headers(None)?)
             .timeout(timeout);
         parse_response(req.send().await?).await
+    }
+
+    async fn get_bytes<Q>(
+        &self,
+        path: &str,
+        query: Option<&Q>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, BrowserSidecarError>
+    where
+        Q: Serialize + ?Sized,
+    {
+        let mut endpoint = self.endpoint(path);
+        if let Some(query) = query {
+            endpoint = endpoint_with_query(&endpoint, query)?;
+        }
+        let mut headers = self.common_headers(None)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("image/*"));
+        let response = self
+            .http
+            .get(endpoint)
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(BrowserSidecarError::HttpStatus {
+                status,
+                body: truncate_for_error(body),
+            });
+        }
+        Ok(response.bytes().await?.to_vec())
     }
 
     fn common_headers(
@@ -466,6 +517,14 @@ impl BrowserSidecar for BrowserSidecarClient {
         query: &ScreenshotQuery,
     ) -> Result<ScreenshotResponse, BrowserSidecarError> {
         BrowserSidecarClient::latest_screenshot(self, session_id, query).await
+    }
+
+    async fn latest_screenshot_bytes(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<Vec<u8>, BrowserSidecarError> {
+        BrowserSidecarClient::latest_screenshot_bytes(self, session_id, query).await
     }
 
     async fn debug_network(
