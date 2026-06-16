@@ -3,6 +3,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(feature = "tool-brave-search")]
 use crate::agent::tool_runtime::BraveSearchToolModule;
+#[cfg(feature = "tool-browser-live")]
+use crate::agent::tool_runtime::BrowserLiveToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-crw")]
@@ -60,6 +62,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-video",
     feature = "tool-reminder",
     feature = "tool-brave-search",
+    feature = "tool-browser-live",
     feature = "tool-crw",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
@@ -139,6 +142,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-brave-search",
+            feature = "tool-browser-live",
             feature = "tool-crw",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
@@ -175,6 +179,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-brave-search")]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
+        #[cfg(feature = "tool-browser-live")]
+        self.register_tool_runtime_module(registry, &BrowserLiveToolModule, ctx);
         #[cfg(feature = "tool-crw")]
         self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
@@ -222,6 +228,7 @@ impl AgentExecutor {
         feature = "tool-media-video",
         feature = "tool-reminder",
         feature = "tool-brave-search",
+        feature = "tool-browser-live",
         feature = "tool-crw",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
@@ -267,6 +274,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-brave-search",
+            feature = "tool-browser-live",
             feature = "tool-crw",
             feature = "tool-stack-logs",
             feature = "tool-tavily",

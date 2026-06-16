@@ -70,6 +70,8 @@ use crate::agent::providers::YtdlpProvider;
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::webfetch_md::WebMarkdownArgs;
+#[cfg(feature = "tool-browser-live")]
+use crate::agent::providers::{BrowserArtifactSettings, BrowserLiveProvider};
 #[cfg(feature = "integration-mcp-jira")]
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
@@ -336,6 +338,43 @@ pub trait ToolModule {
 
     /// Builds typed tool executors owned by this module.
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
+}
+
+/// Capability module for Browser Live autonomous browser tools.
+#[cfg(feature = "tool-browser-live")]
+pub struct BrowserLiveToolModule;
+
+#[cfg(feature = "tool-browser-live")]
+impl BrowserLiveToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<BrowserLiveProvider> {
+        let settings = ctx.settings();
+        let browser = settings.get_browser_agent_settings();
+        if !browser.enabled {
+            return None;
+        }
+        let base_url = browser.sidecar_base_url.as_deref()?;
+        let token = browser.sidecar_token.as_deref()?;
+        BrowserLiveProvider::from_sidecar_config(
+            base_url,
+            token,
+            BrowserArtifactSettings::default(),
+            ctx.progress_tx(),
+        )
+        .ok()
+    }
+}
+
+#[cfg(feature = "tool-browser-live")]
+impl ToolModule for BrowserLiveToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/browser-live")
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
 }
 
 /// Capability module for the runner-handled `compress` tool.

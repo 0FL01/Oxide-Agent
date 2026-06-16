@@ -112,9 +112,9 @@ pub use brave_search::BraveSearchProvider;
 
 #[cfg(feature = "tool-browser-live")]
 pub use browser_live::{
-    BrowserAction, BrowserObservation, BrowserSidecarClient, BrowserSidecarError,
-    BrowserSidecarTimeouts, CreateSessionRequest, IdempotencyKey, ScreenshotArtifact,
-    SidecarErrorBody, Viewport,
+    BrowserAction, BrowserArtifactSettings, BrowserLiveProvider, BrowserObservation,
+    BrowserSidecarClient, BrowserSidecarError, BrowserSidecarTimeouts, CreateSessionRequest,
+    IdempotencyKey, ScreenshotArtifact, SidecarErrorBody, Viewport,
 };
 
 #[cfg(feature = "tool-crw")]

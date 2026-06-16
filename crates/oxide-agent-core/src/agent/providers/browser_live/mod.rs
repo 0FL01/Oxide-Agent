@@ -14,6 +14,8 @@ pub mod error;
 pub mod session;
 #[cfg(test)]
 pub(crate) mod test_support;
+/// Native tool executors for Browser Live.
+pub mod tools;
 /// Request, response, artifact, and event contract types.
 pub mod types;
 
@@ -21,6 +23,7 @@ pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
 pub use session::{BrowserFrame, BrowserSessionState};
+pub use tools::BrowserLiveProvider;
 pub use types::{
     BrowserAction, BrowserObservation, CreateSessionRequest, ScreenshotArtifact, SidecarErrorBody,
     Viewport,

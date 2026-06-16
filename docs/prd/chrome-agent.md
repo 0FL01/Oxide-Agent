@@ -3074,6 +3074,26 @@ Disable browser provider registration; artifact model remains unused.
 
 ### CP-7: Core browser provider tools: start/observe/step/debug/close
 
+**Status: PASS — Browser Live native tool module registered on current branch.**
+
+**Evidence added**
+
+* Added `browser_start`, `browser_observe`, `browser_step`, `browser_debug`, and `browser_close` typed executors behind `tool-browser-live`.
+* Added `BrowserLiveToolModule`, executor registry wiring, compiled `tool/browser-live` capability manifest entry, and `profile-full` feature inclusion.
+* Runtime config gate only constructs tools when Browser Live config resolves enabled with sidecar URL/token; feature-disabled core build still compiles.
+* All browser tools are blocked for sub-agents by default.
+* Focused validation passed:
+
+```bash
+cargo fmt --all -- --check
+cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live
+cargo test -p oxide-agent-core --no-default-features --features tool-browser-live compiled_manifest_exposes_browser_live_tool_module
+cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools
+cargo check -p oxide-agent-core --no-default-features
+cargo check -p oxide-agent-core --no-default-features --features tool-browser-live
+cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings
+```
+
 **Purpose**
 Register minimal native tools for the main Oxide agent.
 
@@ -3088,32 +3108,32 @@ Register minimal native tools for the main Oxide agent.
 
 **Implementation tasks**
 
-* [ ] Add `tool-browser-live` feature flag.
-* [ ] Register browser provider in provider exports.
-* [ ] Add compiled capability manifest entry.
-* [ ] Implement `browser_start`.
-* [ ] Implement `browser_observe`.
-* [ ] Implement `browser_step` as placeholder one-step shell if CP-8/9 not done.
-* [ ] Implement `browser_debug`.
-* [ ] Implement `browser_close`.
-* [ ] Emit basic progress events.
-* [ ] Enforce feature enabled + config valid.
+* [x] Add `tool-browser-live` feature flag.
+* [x] Register browser provider in provider exports.
+* [x] Add compiled capability manifest entry.
+* [x] Implement `browser_start`.
+* [x] Implement `browser_observe`.
+* [x] Implement `browser_step` as placeholder one-step shell if CP-8/9 not done.
+* [x] Implement `browser_debug`.
+* [x] Implement `browser_close`.
+* [x] Emit basic progress events.
+* [x] Enforce feature enabled + config valid.
 
 **Acceptance criteria**
 
-* [ ] Main agent can see browser tools only when feature/config enabled.
-* [ ] Tools return compact JSON/text outputs with artifact refs.
-* [ ] Tools respect timeout and cancellation.
-* [ ] Sub-agent access remains denied by default.
-* [ ] Existing tools unaffected.
+* [x] Main agent can see browser tools only when feature/config enabled.
+* [x] Tools return compact JSON/text outputs with artifact refs.
+* [x] Tools respect timeout and cancellation.
+* [x] Sub-agent access remains denied by default.
+* [x] Existing tools unaffected.
 
 **Tests**
 
-* [ ] Tool registration tests.
-* [ ] Feature-disabled tests.
-* [ ] Start/observe/close with fake sidecar.
-* [ ] Tool output schema tests.
-* [ ] Sub-agent deny test.
+* [x] Tool registration tests.
+* [x] Feature-disabled tests.
+* [x] Start/observe/close with fake sidecar.
+* [x] Tool output schema tests.
+* [x] Sub-agent deny test.
 
 **Rollback**
 Remove provider registration and capability manifest entry; keep sidecar client module dormant.
