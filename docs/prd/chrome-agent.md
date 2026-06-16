@@ -3413,28 +3413,30 @@ Add compact Telegram integration without live frame spam.
 
 **Implementation tasks**
 
-* [ ] Render browser milestones in progress message.
-* [ ] Send blocked/safe-stop reports.
-* [ ] Send final screenshot/artifacts only once.
-* [ ] Suppress live frame events by default.
-* [ ] Do not expose browser start/control commands in Telegram for MVP.
-* [ ] Redact sensitive artifact summaries.
+* [x] Render browser milestones in progress message.
+* [x] Send blocked/safe-stop reports.
+* [x] Send final screenshot/artifacts only once.
+* [x] Suppress live frame events by default.
+* [x] Do not expose browser start/control commands in Telegram for MVP.
+* [x] Redact sensitive artifact summaries.
 
 **Acceptance criteria**
 
-* [ ] Telegram receives concise browser progress.
-* [ ] Telegram does not receive every screenshot.
-* [ ] Blocked report clearly explains why the agent stopped.
-* [ ] Final screenshot delivery uses existing file delivery path.
-* [ ] Sensitive screenshots are not auto-sent.
+* [x] Telegram receives concise browser progress.
+* [x] Telegram does not receive every screenshot.
+* [x] Blocked report clearly explains why the agent stopped.
+* [x] Final screenshot delivery uses existing file delivery path.
+* [x] Sensitive screenshots are not auto-sent.
 
 **Tests**
 
-* [ ] Progress render tests.
-* [ ] Milestone event tests.
-* [ ] Final artifact delivery test.
-* [ ] No Telegram browser start/control command test.
-* [ ] Sensitive artifact suppression test.
+* [x] Progress render tests.
+* [x] Milestone event tests.
+* [x] Final artifact delivery test.
+* [x] No Telegram browser start/control command test.
+* [x] Sensitive artifact suppression test.
+
+**Status**: PASS (2026-06-16). `progress_render.rs` renders only `BrowserAction`/`BrowserVerification`/`BrowserRecovery` milestones and blocked/safe-stop reasons, suppressing generic browser observe messages from Telegram progress. `agent_transport.rs` keeps screenshot bytes on the existing file-delivery path, suppresses live-frame browser artifacts, suppresses sensitive browser artifact names, and de-duplicates final browser artifacts. Telegram commands/keyboards remain cancel/session controls only, with no browser start/control surface.
 
 **Rollback**
 Disable Telegram browser-specific rendering; browser remains available in Web UI/core.

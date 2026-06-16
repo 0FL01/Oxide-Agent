@@ -467,11 +467,22 @@ mod tests {
         let buttons: Vec<_> = keyboard.keyboard.iter().flatten().collect();
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0].text, "❌ Cancel Task");
+        assert_no_browser_control_text(&buttons[0].text);
 
         let inline = get_agent_inline_keyboard();
         let inline_buttons: Vec<_> = inline.inline_keyboard.iter().flatten().collect();
         assert_eq!(inline_buttons.len(), 1);
         assert_eq!(inline_buttons[0].text, "❌ Cancel Task");
+        assert_no_browser_control_text(&inline_buttons[0].text);
+        assert_no_browser_control_text(&format!("{:?}", inline_buttons[0].kind));
+    }
+
+    fn assert_no_browser_control_text(value: &str) {
+        let value = value.to_ascii_lowercase();
+        assert!(!value.contains("browser"));
+        assert!(!value.contains("chrome"));
+        assert!(!value.contains("start"));
+        assert!(!value.contains("control"));
     }
 
     #[test]

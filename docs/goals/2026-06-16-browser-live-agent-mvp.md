@@ -143,8 +143,8 @@ Out of scope:
   - Requirement: Telegram receives compact progress, blocked/safe-stop reports, and final screenshot/artifacts through existing delivery paths, without live frame spam or browser start/control commands.
   - Acceptance: sensitive screenshots are not auto-sent; final screenshot delivery uses existing file delivery; no Telegram start/control command exists for MVP.
   - Evidence required: progress render, milestone event, final artifact delivery, no-command, and sensitive artifact suppression tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-13 added Telegram progress rendering for `BrowserAction`/`BrowserVerification`/`BrowserRecovery` milestones only, including blocked/safe-stop reason text for `NeedsUser`, `VerificationFailed`, `Timeout`, `SafeStopped`, and `RepeatedLoopStopped` statuses. Generic browser observe/session progress is suppressed from the Telegram thought area to avoid live frame spam. Browser artifact delivery still goes through the existing Telegram `deliver_file` path, but live-frame artifacts are suppressed, final artifacts are de-duplicated, and sensitive browser artifact names are not auto-sent. Tests cover milestone rendering, blocked reports, observe suppression, final artifact once, sensitive/live suppression, and no Telegram browser start/control commands or keyboard controls.
 
 - Q1: Security and policy gates
   - Source: `docs/prd/chrome-agent.md:3340`, `docs/prd/chrome-agent.md:3560`
@@ -234,8 +234,8 @@ Out of scope:
   - Source: `docs/prd/chrome-agent.md:227`, `docs/prd/chrome-agent.md:3316`, `docs/prd/chrome-agent.md:3611`
   - Must preserve: browser sessions start from Web UI only; Telegram is milestones/final/blocked reporting only.
   - Evidence required: Telegram no-command test and progress rendering review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-13 command and keyboard tests prove Telegram exposes only existing task/session controls and no browser/chrome start/control commands or callback buttons; progress rendering review shows Telegram Browser Live behavior is milestone/final/blocked reporting only.
 
 ## Implementation Plan
 
@@ -447,6 +447,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-web-contracts browser_live_event_payload_serializes_artifact_refs_without_image_bytes`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local collect_events_maps_browser_reasoning_to_typed_browser_live_events`; `cargo test -p oxide-agent-web-ui browser_live_state_`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-web-ui`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`.
   - Audit IDs updated: G11 verified, Q2 in progress, N1 in progress, V1 in progress.
   - Next: commit CP-12, then start CP-13 Telegram milestone reporting.
+
+- 2026-06-16: CP-13 Telegram milestone reporting
+  - Changed: added compact Telegram Browser Live milestone rendering for `BrowserAction`/`BrowserVerification`/`BrowserRecovery`; suppressed generic browser observe/session progress from the Telegram thought area; added blocked/safe-stop reason rendering; added browser artifact delivery policy for live-frame suppression, final artifact de-duplication, and sensitive artifact-name suppression; verified Telegram commands/keyboards expose no browser start/control surface.
+  - Evidence: progress render tests prove concise browser milestones and blocked/safe-stop reports; observe suppression test proves Telegram does not render every browser frame; file policy tests prove final browser artifacts are delivered once through the existing file delivery path while live frames and sensitive browser artifact names are suppressed; command/keyboard tests prove no browser/chrome start/control command or callback is exposed.
+  - Commands: `cargo test -p oxide-agent-transport-telegram browser_ --no-default-features --features profile-embedded-opencode-local`; `cargo test -p oxide-agent-transport-telegram agent_control_keyboards_only_include_cancel_task --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
+  - Audit IDs updated: G12 verified, N5 verified, V1 in progress.
+  - Next: commit CP-13, then start CP-14 security and policy gates.
 
 ## Risks and Blockers
 
