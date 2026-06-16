@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-16-browser-live-agent-mvp.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/chrome-agent.md`
 Goal doc owner: Codex
-Last updated: 2026-06-16
+Last updated: 2026-06-16 (CP-16 verified)
 
 ## Objective
 
@@ -468,6 +468,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" mimo`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_defaults_to_disabled`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "llm-opencode-go tool-browser-live" --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`.
   - Audit IDs updated: Q3 verified, N1 in progress, V1 in progress.
   - Next: commit CP-15, then start CP-16 end-to-end smoke scenarios.
+
+- 2026-06-16: CP-16 End-to-end smoke scenarios
+  - Changed: rewrote `docker/chrome-agent-sidecar.py` as a thin HTTP-to-CLI adapter over the installed `chrome-agent` binary, added a `/home/browser/bin/chromium` wrapper with `--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage` to `docker/Dockerfile.chrome-agent-sidecar`, and fixed `_handle_create_session` to capture `title`/`url` from the initial `goto --inspect` result because `chrome-agent inspect` only returns a DOM snapshot.
+  - Evidence: REST smoke against the running sidecar proves `healthz`, `POST /sessions`, `GET /sessions/{id}/observe`, `POST /sessions/{id}/goto`, `POST /sessions/{id}/action`, `DELETE /sessions/{id}` all return `ok=true`; first observe returns `title="Example Domain"`, `url="https://example.com"`, a screenshot artifact ref, and empty network/console summaries. Web UI E2E smoke through a registered user/session/task shows successful `tool_call:browser_start`, `tool_call:browser_observe`, and `tool_call:browser_close` with no failures; `browser_close` metrics show `sidecar_errors: 0`, `sessions_started: 1`, `observations_fetched: 1`, `screenshots_captured: 1`, `sessions_closed: 1`, `profile_purged: true`. Cargo capabilities check for `profile-web-embedded-opencode-local` confirms `tool/browser-start`, `tool/browser-observe`, `tool/browser-step`, `tool/browser-debug`, `tool/browser-close` are enabled. Telegram smoke is not run live in this checkpoint; CP-13 evidence remains valid.
+  - Commands: `docker compose -f docker-compose.web.yml build --no-cache chrome-agent-sidecar`; `docker compose -f docker-compose.web.yml up -d --force-recreate --no-deps chrome-agent-sidecar`; `curl -fsS http://127.0.0.1:8787/healthz -H "Authorization: Bearer ${BROWSER_AGENT_SIDECAR_TOKEN}"`; `./test_sidecar.sh`; `curl -fsS http://127.0.0.1:8080/health`; `./test_web_ui_e2e.sh`; `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-web-embedded-opencode-local -- capabilities --enabled --json`; `cargo fmt --all -- --check`; `git diff --check`; secret-pattern scan. (Temporary test scripts were removed after verification.)
+  - Audit IDs updated: V2 verified, G8 verified, G10 verified, G11 verified.
+  - Next: commit CP-16, then start CP-17 documentation and examples.
 
 ## Risks and Blockers
 

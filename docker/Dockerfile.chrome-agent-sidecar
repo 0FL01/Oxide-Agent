@@ -26,19 +26,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN groupadd --system --gid 10002 browser \
     && useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/browser browser \
-    && mkdir -p /var/lib/oxide-browser/artifacts /tmp/oxide-browser-profiles \
+    && mkdir -p /var/lib/oxide-browser/artifacts /tmp/oxide-browser-profiles /home/browser/bin \
     && chown -R browser:browser /var/lib/oxide-browser /tmp/oxide-browser-profiles /home/browser
 
 COPY docker/chrome-agent-sidecar.py /usr/local/bin/chrome-agent-sidecar
 COPY --from=chrome-agent-builder /opt/chrome-agent/bin/chrome-agent /usr/local/bin/chrome-agent
 RUN chmod 0755 /usr/local/bin/chrome-agent-sidecar
 
+# chrome-agent launches Chromium directly and needs --no-sandbox inside the
+# container. We provide a wrapper that prepends the required flags while
+# preserving any additional arguments passed by chrome-agent.
+RUN printf '%s\n' '#!/bin/sh' 'exec /usr/bin/chromium --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"' > /home/browser/bin/chromium \
+    && chmod 0755 /home/browser/bin/chromium
+
 ENV BROWSER_AGENT_SIDECAR_ADDR=0.0.0.0 \
     BROWSER_AGENT_SIDECAR_PORT=8787 \
     BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts \
     BROWSER_AGENT_PROFILE_DIR=/tmp/oxide-browser-profiles \
     CHROME_BIN=/usr/bin/chromium \
-    CHROME_REMOTE_DEBUGGING_PORT=9222
+    CHROME_REMOTE_DEBUGGING_PORT=9222 \
+    PATH=/home/browser/bin:$PATH
 
 USER browser
 WORKDIR /home/browser
