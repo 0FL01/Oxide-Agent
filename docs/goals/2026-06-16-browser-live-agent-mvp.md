@@ -79,8 +79,8 @@ Out of scope:
   - Requirement: implement deterministic fake sidecar for session lifecycle, observations/actions, stale screenshots, no-op/failure, debug endpoints, and crash simulation.
   - Acceptance: browser loop tests run without Chromium, `chrome-agent`, OpenCode Go, or external services.
   - Evidence required: fake create/goto/observe/action/close tests and fake error/debug tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-5 added the `BrowserSidecar` trait seam in `client.rs` and a `cfg(test)` fake sidecar in `test_support.rs`. Focused tests prove deterministic fake create/goto/observe/action/close, scripted success/no-op/failure/stale-frame outcomes, network/console debug endpoints, browser crash simulation, metadata-only screenshots, and no external HTTP/Chromium/OpenCode Go dependency. Validation passed with `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live` (14 focused Browser Live tests), `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`, and `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
 
 - G5: Browser session state and screenshot artifact model
   - Source: `docs/prd/chrome-agent.md:2957`, `docs/prd/chrome-agent.md:3546`, `docs/prd/chrome-agent.md:3554`
@@ -184,7 +184,7 @@ Out of scope:
   - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
   - Evidence required: command output summaries in Progress Log and Final Verification.
   - Status: in_progress
-  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
+  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-5 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
 
 - V2: End-to-end smoke scenarios
   - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
@@ -391,6 +391,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `rg -n "sandbox|Sandbox|std::process|Command::" crates/oxide-agent-core/src/agent/providers/browser_live || true`.
   - Audit IDs updated: G3 verified, V1 in progress.
   - Next: commit CP-4, then start CP-5 fake sidecar for tests.
+
+- 2026-06-16: CP-5 fake sidecar for tests
+  - Changed: added `BrowserSidecar` async trait seam, implemented it for the production `BrowserSidecarClient`, and added a `cfg(test)` `FakeBrowserSidecar` with scripted action outcomes, lifecycle state, stale-frame behavior, debug payloads, metadata-only screenshots, and crash simulation.
+  - Evidence: fake tests cover session create/goto/observe/action/close, deterministic action sequence, no-op action, stale screenshot reuse, error envelope mapping for failed action and browser crash, network debug, console debug, and observation debug summaries. The fake is only compiled under `cfg(test)` and does not start Chromium, `chrome-agent`, OpenCode Go, or an HTTP server.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
+  - Audit IDs updated: G4 verified, V1 in progress.
+  - Next: commit CP-5, then start CP-6 session state, ring-buffer, and artifacts.
 
 ## Risks and Blockers
 

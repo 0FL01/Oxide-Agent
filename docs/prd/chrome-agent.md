@@ -2955,6 +2955,22 @@ Disable `tool-browser-live` feature and remove module export. No runtime behavio
 
 ### CP-5: Fake sidecar for tests
 
+**Status: PASS — test-only fake sidecar seam added on current branch.**
+
+**Evidence added**
+
+* `BrowserSidecar` async trait seam wraps the typed sidecar client contract.
+* Production `BrowserSidecarClient` implements the seam without changing wire behavior.
+* `cfg(test)` `FakeBrowserSidecar` supports deterministic lifecycle, goto/observe/action/close, scripted success/no-op/failure/stale-frame outcomes, network/console debug payloads, metadata-only screenshots, and browser crash simulation.
+* Focused validation passed:
+
+```bash
+cargo fmt --all -- --check
+cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live
+cargo check -p oxide-agent-core --no-default-features --features tool-browser-live
+cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings
+```
+
 **Purpose**
 Make browser provider testable without Chromium, `chrome-agent`, or OpenCode Go.
 
@@ -2967,26 +2983,26 @@ Make browser provider testable without Chromium, `chrome-agent`, or OpenCode Go.
 
 **Implementation tasks**
 
-* [ ] Define `BrowserSidecar` trait or test seam around typed client.
-* [ ] Implement fake sidecar with scripted observations/actions.
-* [ ] Simulate session lifecycle.
-* [ ] Simulate stale screenshots.
-* [ ] Simulate action no-op/failure.
-* [ ] Simulate network/console debug.
-* [ ] Simulate browser crash.
+* [x] Define `BrowserSidecar` trait or test seam around typed client.
+* [x] Implement fake sidecar with scripted observations/actions.
+* [x] Simulate session lifecycle.
+* [x] Simulate stale screenshots.
+* [x] Simulate action no-op/failure.
+* [x] Simulate network/console debug.
+* [x] Simulate browser crash.
 
 **Acceptance criteria**
 
-* [ ] Browser loop tests can run with fake sidecar.
-* [ ] Fake sidecar supports deterministic action sequence.
-* [ ] Test support is gated to tests or non-production module.
-* [ ] No external services required for unit CI.
+* [x] Browser loop tests can run with fake sidecar.
+* [x] Fake sidecar supports deterministic action sequence.
+* [x] Test support is gated to tests or non-production module.
+* [x] No external services required for unit CI.
 
 **Tests**
 
-* [ ] Fake session create/goto/observe/action/close.
-* [ ] Fake error envelope cases.
-* [ ] Fake debug endpoints.
+* [x] Fake session create/goto/observe/action/close.
+* [x] Fake error envelope cases.
+* [x] Fake debug endpoints.
 
 **Rollback**
 Remove fake sidecar/test seam if client contract changes before loop implementation.

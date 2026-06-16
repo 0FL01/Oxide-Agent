@@ -5,6 +5,7 @@ use super::types::{
     NetworkDebugQuery, NetworkDebugResponse, ObserveQuery, ObserveResponse, ScreenshotQuery,
     ScreenshotResponse, SidecarErrorBody,
 };
+use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -103,6 +104,76 @@ pub struct BrowserSidecarClient {
     token: String,
     http: reqwest::Client,
     timeouts: BrowserSidecarTimeouts,
+}
+
+/// Testable browser sidecar seam used by browser tools and loop code.
+///
+/// Production uses [`BrowserSidecarClient`]. Unit tests can use the fake
+/// implementation from the test-only `test_support` module without running
+/// Chromium, OpenCode Go, or any external service.
+#[async_trait]
+pub trait BrowserSidecar: Send + Sync {
+    /// Check sidecar health without exposing browser state.
+    async fn healthz(&self) -> Result<serde_json::Value, BrowserSidecarError>;
+
+    /// Create a browser session.
+    async fn create_session(
+        &self,
+        request: &CreateSessionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<CreateSessionResponse, BrowserSidecarError>;
+
+    /// Close a browser session.
+    async fn close_session(
+        &self,
+        session_id: &str,
+        request: &CloseSessionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<CloseSessionResponse, BrowserSidecarError>;
+
+    /// Navigate an existing session.
+    async fn goto(
+        &self,
+        session_id: &str,
+        request: &GotoRequest,
+        key: &IdempotencyKey,
+    ) -> Result<GotoResponse, BrowserSidecarError>;
+
+    /// Observe the current browser state.
+    async fn observe(
+        &self,
+        session_id: &str,
+        query: &ObserveQuery,
+    ) -> Result<ObserveResponse, BrowserSidecarError>;
+
+    /// Execute one browser action.
+    async fn execute_action(
+        &self,
+        session_id: &str,
+        request: &ActionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<ActionResponse, BrowserSidecarError>;
+
+    /// Return latest screenshot metadata without image bytes.
+    async fn latest_screenshot(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<ScreenshotResponse, BrowserSidecarError>;
+
+    /// Return network debug diagnostics.
+    async fn debug_network(
+        &self,
+        session_id: &str,
+        query: &NetworkDebugQuery,
+    ) -> Result<NetworkDebugResponse, BrowserSidecarError>;
+
+    /// Return console debug diagnostics.
+    async fn debug_console(
+        &self,
+        session_id: &str,
+        query: &ConsoleDebugQuery,
+    ) -> Result<ConsoleDebugResponse, BrowserSidecarError>;
 }
 
 impl BrowserSidecarClient {
@@ -337,6 +408,80 @@ impl BrowserSidecarClient {
 
     fn endpoint(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+}
+
+#[async_trait]
+impl BrowserSidecar for BrowserSidecarClient {
+    async fn healthz(&self) -> Result<serde_json::Value, BrowserSidecarError> {
+        BrowserSidecarClient::healthz(self).await
+    }
+
+    async fn create_session(
+        &self,
+        request: &CreateSessionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<CreateSessionResponse, BrowserSidecarError> {
+        BrowserSidecarClient::create_session(self, request, key).await
+    }
+
+    async fn close_session(
+        &self,
+        session_id: &str,
+        request: &CloseSessionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<CloseSessionResponse, BrowserSidecarError> {
+        BrowserSidecarClient::close_session(self, session_id, request, key).await
+    }
+
+    async fn goto(
+        &self,
+        session_id: &str,
+        request: &GotoRequest,
+        key: &IdempotencyKey,
+    ) -> Result<GotoResponse, BrowserSidecarError> {
+        BrowserSidecarClient::goto(self, session_id, request, key).await
+    }
+
+    async fn observe(
+        &self,
+        session_id: &str,
+        query: &ObserveQuery,
+    ) -> Result<ObserveResponse, BrowserSidecarError> {
+        BrowserSidecarClient::observe(self, session_id, query).await
+    }
+
+    async fn execute_action(
+        &self,
+        session_id: &str,
+        request: &ActionRequest,
+        key: &IdempotencyKey,
+    ) -> Result<ActionResponse, BrowserSidecarError> {
+        BrowserSidecarClient::execute_action(self, session_id, request, key).await
+    }
+
+    async fn latest_screenshot(
+        &self,
+        session_id: &str,
+        query: &ScreenshotQuery,
+    ) -> Result<ScreenshotResponse, BrowserSidecarError> {
+        BrowserSidecarClient::latest_screenshot(self, session_id, query).await
+    }
+
+    async fn debug_network(
+        &self,
+        session_id: &str,
+        query: &NetworkDebugQuery,
+    ) -> Result<NetworkDebugResponse, BrowserSidecarError> {
+        BrowserSidecarClient::debug_network(self, session_id, query).await
+    }
+
+    async fn debug_console(
+        &self,
+        session_id: &str,
+        query: &ConsoleDebugQuery,
+    ) -> Result<ConsoleDebugResponse, BrowserSidecarError> {
+        BrowserSidecarClient::debug_console(self, session_id, query).await
     }
 }
 
