@@ -617,6 +617,7 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
     matches!(
         kind,
         TaskEventKind::Reasoning
+            | TaskEventKind::BrowserLive
             | TaskEventKind::ToolCall
             | TaskEventKind::ToolResult
             | TaskEventKind::TodosUpdated
@@ -672,6 +673,7 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
         TaskEventKind::ToolResult => "tool result",
         TaskEventKind::TodosUpdated => "todos",
         TaskEventKind::Reasoning => "reasoning",
+        TaskEventKind::BrowserLive => "browser",
         TaskEventKind::Error => "error",
         TaskEventKind::Finished => "done",
         TaskEventKind::Cancelling => "cancelling",
@@ -725,6 +727,7 @@ fn event_body(event: &PersistedTaskEvent) -> Option<String> {
         TaskEventKind::ToolResult => payload_str_event(event, "output_preview"),
         TaskEventKind::TodosUpdated => None,
         TaskEventKind::Reasoning => payload_str_event(event, "summary"),
+        TaskEventKind::BrowserLive => serde_json::to_string_pretty(&event.payload).ok(),
         _ => serde_json::to_string_pretty(&event.payload).ok(),
     }
 }

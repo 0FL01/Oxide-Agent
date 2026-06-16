@@ -135,8 +135,8 @@ Out of scope:
   - Requirement: expose latest screenshot, URL/title/action/confidence/debug badges, pause/resume/stop/kill, blocked state, and artifact replay without SSE/base64 frame flood.
   - Acceptance: Web UI shows live latest screenshot and final artifacts; event stream is coalesced/throttled; no iframe/VNC/manual browser control is exposed.
   - Evidence required: event serialization, web transport mapping, UI state reducer/rendering, artifact ref rendering, and flood/coalescing tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-12 added shared Browser Live event contracts, web transport mapping from BrowserAction/BrowserVerification/BrowserRecovery progress messages to typed `browser_live` persisted events, compact observation payload URL/title/debug metadata, frontend Browser Live state reduction, and a Browser Live panel that shows latest screenshot artifact refs, URL/title/action/confidence/debug badges, blocked/final artifact state, and autonomous-only controls. The panel exposes no iframe, VNC, click-through, keyboard, or manual browser surface; preview state is coalesced to the latest artifact ref and no base64/data image bytes are serialized into Browser Live event payloads.
 
 - G12: Telegram milestone/final/blocked reporting
   - Source: `docs/prd/chrome-agent.md:3298`, `docs/prd/chrome-agent.md:3552`
@@ -159,8 +159,8 @@ Out of scope:
   - Requirement: screenshots and volatile browser state must not pollute stable prompt prefix or durable main conversation history.
   - Acceptance: only selected current frame is sent through the media call; durable history stores compact text/artifact refs only.
   - Evidence required: prompt cache hygiene test, history hygiene regression, token/cached-token metrics evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP-12 Browser Live event serialization and UI reducer tests prove screenshot previews use artifact refs instead of `base64`/`data:image` bytes, and preview frame floods coalesce to the latest UI state instead of accumulating image payloads in SSE/UI state. Earlier CP-6/CP-8 evidence covers no durable image history and stable prompt hygiene; final token/cached-token metrics evidence remains scheduled for CP-15/final audit.
 
 - Q3: Observability and logging
   - Source: `docs/prd/chrome-agent.md:3390`, `docs/prd/chrome-agent.md:3565`
@@ -206,8 +206,8 @@ Out of scope:
   - Source: `docs/prd/chrome-agent.md:226`, `docs/prd/chrome-agent.md:3271`, `docs/prd/chrome-agent.md:3615`
   - Must preserve: no iframe/VNC/manual browser control; autonomous sidecar actions only; CAPTCHA/2FA/anti-bot safe-stops with blocked report.
   - Evidence required: Web UI tests/review proving no manual control surface; blocked-path smoke.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP-12 Browser Live panel explicitly renders an autonomous-preview-only note and exposes no iframe, VNC, click-through screenshot, keyboard, address bar, or manual browser control surface. Controls are task lifecycle controls only: resume focuses the existing composer for a waiting task, while pause/stop/kill request the existing task cancellation path. Blocked-path smoke remains scheduled for CP-16/final audit.
 
 - N2: No direct Xiaomi fallback or `mimo-v2.5-pro` vision fallback
   - Source: `docs/prd/chrome-agent.md:212`, `docs/prd/chrome-agent.md:251`, `docs/prd/chrome-agent.md:3613`
@@ -440,6 +440,13 @@ Out of scope:
   - Commands: `python3 -m py_compile docker/chrome-agent-sidecar.py`; `python3 docker/chrome-agent-sidecar.py --self-test`; `docker compose -f docker-compose.web.yml config --services`; `docker compose -f docker-compose.web.yml config | rg -n "chrome-agent-sidecar|127.0.0.1:8787|browser-artifacts|browser-profiles|BROWSER_AGENT_ENABLED"`; `docker compose -f docker-compose.yml config --services`; `docker compose -f docker-compose.telegram.yml config --services`; `docker compose -f docker/compose.full.yml config --services`; `docker compose -f docker/compose.dev.yml config --services`; `docker compose -f docker-compose.web.yml config | rg -n "9222|CHROME_REMOTE_DEBUGGING_PORT|remote-debugging" || true`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `docker compose -f docker-compose.web.yml build chrome-agent-sidecar`; `BROWSER_AGENT_SIDECAR_TOKEN=tok docker compose -f docker-compose.web.yml up -d --force-recreate --no-deps chrome-agent-sidecar`; `curl -fsS http://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}/healthz`; `docker compose -f docker-compose.web.yml exec -T chrome-agent-sidecar /usr/local/bin/chrome-agent-sidecar --self-test`; `docker compose -f docker-compose.web.yml down --remove-orphans`; `cargo fmt --all -- --check`; `git diff --check`; secret-pattern scan.
   - Audit IDs updated: G10 verified, V1 in progress.
   - Next: commit CP-11, then start CP-12 Web UI live browser progress events.
+
+- 2026-06-16: CP-12 Web UI live browser progress events
+  - Changed: added shared Browser Live web event payload contracts; mapped BrowserAction/BrowserVerification/BrowserRecovery progress messages to typed persisted `browser_live` events; extended browser observation payloads with URL/title/loading/network/console metadata; added frontend Browser Live state reduction and panel rendering latest screenshot artifact refs, action/verification/confidence/debug badges, blocked state, final artifact refs, and task lifecycle controls without manual browser control.
+  - Evidence: contract serialization test proves Browser Live screenshot payloads carry artifact refs without `base64`/`data:image`; web transport mapping test proves browser progress messages become typed `browser_live` events; UI reducer tests prove latest screenshot artifact ref rendering data, debug badges, blocked/base64 rejection, and preview-frame coalescing to the latest ref; wasm check/clippy compiles the actual panel path; diff review shows no iframe/VNC/manual browser control surface.
+  - Commands: `cargo test -p oxide-agent-web-contracts browser_live_event_payload_serializes_artifact_refs_without_image_bytes`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local collect_events_maps_browser_reasoning_to_typed_browser_live_events`; `cargo test -p oxide-agent-web-ui browser_live_state_`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-web-ui`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`.
+  - Audit IDs updated: G11 verified, Q2 in progress, N1 in progress, V1 in progress.
+  - Next: commit CP-12, then start CP-13 Telegram milestone reporting.
 
 ## Risks and Blockers
 

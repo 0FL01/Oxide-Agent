@@ -1003,6 +1003,11 @@ fn observation_payload(
         "session_id": session_id,
         "observation_id": frame.observation_id,
         "action_seq": frame.action_seq,
+        "url": frame.url,
+        "title": frame.title,
+        "loading_state": frame.loading_state,
+        "network_summary": frame.network_summary,
+        "console_summary": frame.console_summary,
         "screenshot": {
             "screenshot_id": screenshot.screenshot_id,
             "artifact_uri": frame.artifact.uri,

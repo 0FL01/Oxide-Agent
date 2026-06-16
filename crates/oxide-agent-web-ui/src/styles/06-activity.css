@@ -63,6 +63,119 @@
   text-transform: lowercase;
 }
 
+/* Browser Live panel */
+.browser-live-panel {
+  margin: var(--space-3) var(--space-4) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel-soft);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.browser-live-header,
+.browser-live-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.browser-live-title {
+  color: var(--text-main);
+  font: 700 12px/1.2 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.browser-live-subtitle,
+.browser-live-note,
+.browser-live-shot-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.browser-live-status {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(16, 163, 127, 0.12);
+  color: var(--accent-green);
+  font: 700 10px/1.2 var(--font-mono);
+  text-transform: uppercase;
+}
+
+.browser-live-status.blocked,
+.browser-live-blocked {
+  background: rgba(216, 162, 30, 0.12);
+  color: var(--accent-yellow);
+}
+
+.browser-live-shot {
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.browser-live-shot-ref,
+.browser-live-artifacts {
+  display: grid;
+  gap: 5px;
+}
+
+.browser-live-shot-ref span,
+.browser-live-artifacts span,
+.browser-live-grid span {
+  color: var(--text-faint);
+  font: 700 10px/1.2 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.browser-live-shot code,
+.browser-live-grid code,
+.browser-live-artifacts code {
+  color: var(--text-main);
+  font: 500 11px/1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.browser-live-shot-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.browser-live-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.browser-live-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.browser-live-grid strong {
+  color: var(--text-main);
+  font: 600 12px/1.35 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.browser-live-blocked {
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  font: 600 12px/1.4 var(--font-mono);
+}
+
+.browser-live-controls {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
 .agent-event-card,
 .todos-card {
   border: none;

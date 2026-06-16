@@ -7,7 +7,10 @@
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord, WebUiStore};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
-use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus};
+use oxide_agent_web_contracts::{
+    BrowserLiveEventPayload, BrowserLiveEventType, PersistedTaskEvent, ProgressSnapshot,
+    TaskEventKind, TaskStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -972,6 +975,15 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
             )
         }
         AgentEvent::Reasoning { source, summary } => {
+            if let Some(payload) = browser_live_payload_from_reasoning(summary) {
+                return (
+                    TaskEventKind::BrowserLive,
+                    browser_live_summary(&payload),
+                    serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+                    false,
+                    false,
+                );
+            }
             let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::Reasoning,
@@ -999,6 +1011,89 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
             false,
         ),
         _ => unreachable!("lifecycle_event_parts called with wrong event"),
+    }
+}
+
+fn browser_live_payload_from_reasoning(summary: &str) -> Option<BrowserLiveEventPayload> {
+    let mut parts = summary.split_whitespace();
+    let event_type = match parts.next()? {
+        "BrowserAction" => BrowserLiveEventType::Action,
+        "BrowserVerification" => BrowserLiveEventType::Verification,
+        "BrowserRecovery" => BrowserLiveEventType::Recovery,
+        _ => return None,
+    };
+    let mut session_id = None::<String>;
+    let mut action_seq = None::<u64>;
+    let mut action = None::<String>;
+    let mut status = None::<String>;
+    let mut recovery_kind = None::<String>;
+
+    for token in parts {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        match key {
+            "session_id" => session_id = Some(value.to_string()),
+            "action_seq" => action_seq = value.parse::<u64>().ok(),
+            "kind" => {
+                if event_type == BrowserLiveEventType::Recovery {
+                    recovery_kind = Some(value.to_ascii_lowercase());
+                } else {
+                    action = Some(value.to_string());
+                }
+            }
+            "status" => status = Some(value.to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    let session_id = session_id?;
+    let blocked_reason = match event_type {
+        BrowserLiveEventType::Recovery => recovery_kind
+            .as_ref()
+            .map(|kind| format!("recovery: {kind}")),
+        BrowserLiveEventType::Verification => status.as_ref().and_then(|status| {
+            matches!(status.as_str(), "needsuser" | "blocked" | "timeout").then(|| status.clone())
+        }),
+        _ => None,
+    };
+    if event_type == BrowserLiveEventType::Recovery {
+        action = recovery_kind;
+    }
+
+    Some(BrowserLiveEventPayload {
+        event_type,
+        session_id,
+        action_seq,
+        url: None,
+        title: None,
+        action,
+        confidence: None,
+        status,
+        blocked_reason,
+        screenshot: None,
+        debug: None,
+        artifact_refs: None,
+    })
+}
+
+fn browser_live_summary(payload: &BrowserLiveEventPayload) -> String {
+    match payload.event_type {
+        BrowserLiveEventType::Action => format!(
+            "Browser action {}",
+            payload.action.as_deref().unwrap_or("planned")
+        ),
+        BrowserLiveEventType::Verification => format!(
+            "Browser verification {}",
+            payload.status.as_deref().unwrap_or("updated")
+        ),
+        BrowserLiveEventType::Recovery => format!(
+            "Browser recovery {}",
+            payload.status.as_deref().unwrap_or("updated")
+        ),
+        BrowserLiveEventType::Observation => "Browser observation".to_string(),
+        BrowserLiveEventType::Session => "Browser session".to_string(),
+        BrowserLiveEventType::Debug => "Browser debug".to_string(),
+        BrowserLiveEventType::Closed => "Browser closed".to_string(),
     }
 }
 
@@ -1570,6 +1665,59 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_maps_browser_reasoning_to_typed_browser_live_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserAction session_id=browser-1 action_seq=7 kind=action".to_string(),
+        })
+        .await
+        .expect("send browser action");
+        tx.send(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserVerification session_id=browser-1 action_seq=7 status=ActionVerified"
+                .to_string(),
+        })
+        .await
+        .expect("send browser verification");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 2);
+        assert_eq!(result.persisted_events[0].kind, TaskEventKind::BrowserLive);
+        assert_eq!(result.persisted_events[0].payload["event_type"], "action");
+        assert_eq!(
+            result.persisted_events[0].payload["session_id"],
+            "browser-1"
+        );
+        assert_eq!(result.persisted_events[0].payload["action_seq"], 7);
+        assert_eq!(result.persisted_events[0].payload["action"], "action");
+        assert_eq!(result.persisted_events[1].kind, TaskEventKind::BrowserLive);
+        assert_eq!(
+            result.persisted_events[1].payload["event_type"],
+            "verification"
+        );
+        assert_eq!(
+            result.persisted_events[1].payload["status"],
+            "actionverified"
+        );
     }
 
     #[tokio::test]

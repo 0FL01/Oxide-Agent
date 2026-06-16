@@ -26,8 +26,9 @@ use super::profile::{
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
-    summary_to_detail, upsert_session_summary, upsert_task_summary,
+    BrowserLiveState, browser_live_state_for_task, latest_editable_task_id, latest_task,
+    remove_session_summary, session_detail_to_summary, summary_to_detail, upsert_session_summary,
+    upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -958,7 +959,7 @@ fn SessionWorkspace(
     };
 
     let session_id_for_cancel = session_id.clone();
-    let cancel_active = move |_| {
+    let cancel_active = Callback::new(move |_| {
         let Some(task) = active_task.get() else {
             return;
         };
@@ -992,9 +993,14 @@ fn SessionWorkspace(
             }
             set_loading.set(false);
         });
-    };
+    });
 
     let session_id_for_cards = session_id.clone();
+    let focus_composer = Callback::new(move |_| {
+        if let Some(textarea) = textarea_ref.get() {
+            let _ = textarea.focus();
+        }
+    });
 
     let is_waiting = move || {
         active_task
@@ -1089,6 +1095,31 @@ fn SessionWorkspace(
                             }
                             .into_any()
                         }
+                    }}
+                    {move || {
+                        let Some(task_id) = latest_live_activity_task_id(active_task, tasks) else {
+                            return ().into_any();
+                        };
+                        let Some(browser) = browser_live_state_for_task(&events.get(), &task_id) else {
+                            return ().into_any();
+                        };
+                        view! {
+                            <BrowserLivePanel
+                                state=browser
+                                is_running=Signal::derive(move || {
+                                    active_task.get().is_some_and(|task| {
+                                        matches!(task.status, TaskStatus::Queued | TaskStatus::Running)
+                                    })
+                                })
+                                is_waiting=Signal::derive(move || {
+                                    active_task.get().is_some_and(|task| {
+                                        task.status == TaskStatus::WaitingForUserInput
+                                    })
+                                })
+                                on_stop=cancel_active
+                                on_resume=focus_composer
+                            />
+                        }.into_any()
                     }}
                     <ActivityStatusChip
                         tasks=tasks
@@ -1220,7 +1251,7 @@ fn SessionWorkspace(
                                     class="btn-danger"
                                     type="button"
                                     style=move || if is_running() { "" } else { "display:none" }
-                                    on:click=cancel_active
+                                    on:click=move |ev| cancel_active.run(ev)
                                 >
                                     "Stop"
                                 </button>
@@ -1252,6 +1283,84 @@ fn SessionWorkspace(
                 })
                 load_older_events=load_older_activity
             />
+        </section>
+    }
+}
+
+#[component]
+fn BrowserLivePanel(
+    state: BrowserLiveState,
+    is_running: Signal<bool>,
+    is_waiting: Signal<bool>,
+    on_stop: Callback<leptos::ev::MouseEvent>,
+    on_resume: Callback<leptos::ev::MouseEvent>,
+) -> impl IntoView {
+    let screenshot = state.screenshot.clone();
+    let screenshot_uri = screenshot.as_ref().map(|shot| shot.artifact_uri.clone());
+    let screenshot_meta = screenshot.as_ref().map(|shot| {
+        match (shot.width, shot.height, shot.mime_type.as_deref()) {
+            (Some(width), Some(height), Some(mime)) => format!("{width}×{height} · {mime}"),
+            (Some(width), Some(height), None) => format!("{width}×{height}"),
+            _ => "artifact ref".to_string(),
+        }
+    });
+    let blocked = state.is_blocked();
+    let status = state
+        .verification_status
+        .clone()
+        .or_else(|| state.recovery_status.clone())
+        .unwrap_or_else(|| "live".to_string());
+    let confidence = state
+        .confidence
+        .map(|value| format!("{:.0}%", value * 100.0));
+    let debug_label = format!(
+        "network {} · console {} / warnings {}",
+        state.network_failed_count, state.console_error_count, state.console_warning_count
+    );
+    let artifact_refs = state.artifact_refs.clone();
+
+    view! {
+        <section class="browser-live-panel" data-testid="browser-live-panel">
+            <div class="browser-live-header">
+                <div>
+                    <div class="browser-live-title">"Browser Live"</div>
+                    <div class="browser-live-subtitle">
+                        {state.title.clone().or_else(|| state.url.clone()).unwrap_or_else(|| "Autonomous browser session".to_string())}
+                    </div>
+                </div>
+                <div class=move || if blocked { "browser-live-status blocked" } else { "browser-live-status" }>{status}</div>
+            </div>
+            <div class="browser-live-shot">
+                {move || screenshot_uri.clone().map(|uri| view! {
+                    <div class="browser-live-shot-ref">
+                        <span>"Latest screenshot"</span>
+                        <code>{uri}</code>
+                    </div>
+                }.into_any()).unwrap_or_else(|| view! { <div class="browser-live-shot-empty">"Waiting for screenshot artifact ref…"</div> }.into_any())}
+                {screenshot_meta.map(|meta| view! { <div class="browser-live-shot-meta">{meta}</div> })}
+            </div>
+            <div class="browser-live-grid">
+                {state.url.clone().map(|url| view! { <div><span>"URL"</span><code>{url}</code></div> })}
+                {state.latest_action.clone().map(|action| view! { <div><span>"Action"</span><strong>{action}</strong></div> })}
+                {confidence.map(|confidence| view! { <div><span>"Confidence"</span><strong>{confidence}</strong></div> })}
+                <div><span>"Debug"</span><strong>{debug_label}</strong></div>
+            </div>
+            {state.blocked_reason.clone().map(|reason| view! {
+                <div class="browser-live-blocked">{reason}</div>
+            })}
+            {(!artifact_refs.is_empty()).then(|| view! {
+                <div class="browser-live-artifacts">
+                    <span>"Final artifacts"</span>
+                    {artifact_refs.into_iter().map(|artifact| view! { <code>{artifact}</code> }).collect::<Vec<_>>()}
+                </div>
+            })}
+            <div class="browser-live-controls" aria-label="Browser Live task controls">
+                <button type="button" class="secondary" disabled=move || !is_waiting.get() title="Focus the composer to reply and resume." on:click=move |ev| on_resume.run(ev)>"Resume"</button>
+                <button type="button" class="secondary" disabled=move || !is_running.get() title="Request a safe task stop; browser sessions remain autonomous." on:click=move |ev| on_stop.run(ev)>"Pause"</button>
+                <button type="button" class="btn-danger" disabled=move || !is_running.get() on:click=move |ev| on_stop.run(ev)>"Stop"</button>
+                <button type="button" class="btn-danger" disabled=move || !is_running.get() on:click=move |ev| on_stop.run(ev)>"Kill"</button>
+            </div>
+            <p class="browser-live-note">"Autonomous preview only: no iframe, VNC, click-through, keyboard, or manual browser control is exposed."</p>
         </section>
     }
 }

@@ -3360,35 +3360,39 @@ Expose browser progress and latest screenshot in Web UI without flooding SSE.
 
 **Implementation tasks**
 
-* [ ] Add browser event types or typed progress payloads.
-* [ ] Map core browser events to persisted web events.
-* [ ] Add frontend browser session state.
-* [ ] Add Browser Live panel.
-* [ ] Display latest screenshot via artifact ref.
-* [ ] Display URL/title/action/confidence/debug badges.
-* [ ] Add pause/resume/stop/kill controls.
-* [ ] Add blocked/safe-stop UI state.
-* [ ] Explicitly exclude iframe/VNC/manual browser control from MVP.
-* [ ] Coalesce/throttle preview events.
-* [ ] Avoid base64 in SSE.
+* [x] Add browser event types or typed progress payloads.
+* [x] Map core browser events to persisted web events.
+* [x] Add frontend browser session state.
+* [x] Add Browser Live panel.
+* [x] Display latest screenshot via artifact ref.
+* [x] Display URL/title/action/confidence/debug badges.
+* [x] Add pause/resume/stop/kill controls.
+* [x] Add blocked/safe-stop UI state.
+* [x] Explicitly exclude iframe/VNC/manual browser control from MVP.
+* [x] Coalesce/throttle preview events.
+* [x] Avoid base64 in SSE.
 
 **Acceptance criteria**
 
-* [ ] Web UI shows live latest screenshot.
-* [ ] UI updates current action and verification result.
-* [ ] Network/console badges visible.
-* [ ] Pause/stop/kill controls work.
-* [ ] UI does not expose direct manual browser control.
-* [ ] SSE event log is not flooded by preview frames.
-* [ ] Replayed task shows final browser artifacts.
+* [x] Web UI shows live latest screenshot.
+* [x] UI updates current action and verification result.
+* [x] Network/console badges visible.
+* [x] Pause/stop/kill controls work.
+* [x] UI does not expose direct manual browser control.
+* [x] SSE event log is not flooded by preview frames.
+* [x] Replayed task shows final browser artifacts.
 
 **Tests**
 
-* [ ] Event serialization tests.
-* [ ] Web transport mapping tests.
-* [ ] UI state reducer tests.
-* [ ] Screenshot artifact ref rendering test.
-* [ ] Flood/coalescing test.
+* [x] Event serialization tests.
+* [x] Web transport mapping tests.
+* [x] UI state reducer tests.
+* [x] Screenshot artifact ref rendering test.
+* [x] Flood/coalescing test.
+
+**Status: PASS (2026-06-16)**
+
+Evidence: `BrowserLiveEventPayload`/`BrowserLiveScreenshotRef` serialize artifact refs without image bytes; web transport maps BrowserAction/BrowserVerification/BrowserRecovery progress messages to typed `browser_live` events; Browser Live state reducer consumes typed browser events plus browser tool results, keeps latest screenshot artifact ref, URL/title/action/confidence/debug badges, final retained artifact refs, blocked state, and coalesces repeated preview frames to the latest ref. Web UI renders a Browser Live panel with autonomous-only note, no iframe/VNC/click-through/manual browser surface, and task controls wired to existing resume-focus/cancel paths. Validation passed with focused contract/transport/UI tests, web UI wasm check/clippy, web transport profile check/clippy, core browser-live tests/clippy, `cargo fmt --all -- --check`, and `git diff --check`.
 
 **Rollback**
 Keep browser tools usable via textual tool output; hide Browser Live panel behind feature flag.

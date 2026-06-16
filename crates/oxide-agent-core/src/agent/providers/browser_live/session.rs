@@ -1,7 +1,9 @@
 use super::artifacts::{
     BrowserArtifactPurpose, BrowserArtifactSettings, build_browser_artifact_ref,
 };
-use super::types::{BrowserObservation, ScreenshotArtifact, Viewport};
+use super::types::{
+    BrowserObservation, ConsoleSummary, LoadingState, NetworkSummary, ScreenshotArtifact, Viewport,
+};
 use crate::agent::tool_runtime::artifacts::ArtifactRef;
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
@@ -17,6 +19,16 @@ pub struct BrowserFrame {
     pub action_seq: u64,
     /// Screenshot metadata without image bytes.
     pub screenshot: ScreenshotArtifact,
+    /// Page URL captured with this frame.
+    pub url: String,
+    /// Page title captured with this frame.
+    pub title: String,
+    /// Page loading state captured with this frame.
+    pub loading_state: LoadingState,
+    /// Compact network failure summary for UI badges.
+    pub network_summary: Option<NetworkSummary>,
+    /// Compact console error/warning summary for UI badges.
+    pub console_summary: Option<ConsoleSummary>,
     /// Internal artifact reference resolvable by UI/reporting layers.
     pub artifact: ArtifactRef,
     /// Whether this artifact must survive ring-buffer eviction.
@@ -135,6 +147,11 @@ impl BrowserSessionState {
             observation_id: observation.observation_id.clone(),
             action_seq: observation.action_seq,
             screenshot: observation.screenshot.clone(),
+            url: observation.url.clone(),
+            title: observation.title.clone(),
+            loading_state: observation.loading_state,
+            network_summary: observation.network_summary.clone(),
+            console_summary: observation.console_summary.clone(),
             retained: purpose.is_retained(),
             artifact,
         };
