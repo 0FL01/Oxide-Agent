@@ -6,7 +6,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use super::providers;
 use super::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, ProviderCapabilities,
-    ToolDefinition, capabilities, support,
+    TokenUsage, ToolDefinition, capabilities, support,
 };
 use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
@@ -889,6 +889,25 @@ impl LlmClient {
         let provider = self.get_provider(&model_info.provider)?;
         provider
             .analyze_image(image_bytes, text_prompt, system_prompt, &model_info.id)
+            .await
+    }
+
+    /// Analyze an image with a text prompt and return reported token usage.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the provider.
+    pub async fn analyze_image_with_usage(
+        &self,
+        image_bytes: Vec<u8>,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_name: &str,
+    ) -> Result<(String, Option<TokenUsage>), LlmError> {
+        let model_info = self.get_model_info(model_name)?;
+        let provider = self.get_provider(&model_info.provider)?;
+        provider
+            .analyze_image_with_usage(image_bytes, text_prompt, system_prompt, &model_info.id)
             .await
     }
 

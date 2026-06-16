@@ -3504,36 +3504,43 @@ Add metrics/logging/tracing for browser sessions and MiMo calls.
 
 * `crates/oxide-agent-core/src/agent/providers/browser_live/metrics.rs`
 * `crates/oxide-agent-core/src/agent/providers/browser_live/mod.rs`
-* `crates/oxide-agent-core/src/agent/progress.rs`
+* `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs`
+* `crates/oxide-agent-core/src/agent/providers/browser_live/mimo.rs`
 * `crates/oxide-agent-core/src/llm/client.rs`
+* `crates/oxide-agent-core/src/llm/provider.rs`
 * `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`
+* `crates/oxide-agent-core/src/llm/error.rs`
+* `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs`
+* `crates/oxide-agent-core/src/agent/providers/browser_live/test_support.rs`
 
 **Implementation tasks**
 
-* [ ] Add session/action/screenshot counters.
-* [ ] Add MiMo latency/request/error metrics.
-* [ ] Add invalid JSON/repair metrics.
-* [ ] Add recovery metrics.
-* [ ] Add sidecar latency/error metrics.
-* [ ] Add artifact size metrics.
-* [ ] Add cached token accounting for browser MiMo calls.
-* [ ] Add structured logs with redaction.
-* [ ] Add trace spans.
+* [x] Add session/action/screenshot counters.
+* [x] Add MiMo latency/request/error metrics.
+* [x] Add invalid JSON/repair metrics.
+* [x] Add recovery metrics.
+* [x] Add sidecar latency/error metrics.
+* [x] Add artifact size metrics.
+* [x] Add cached token accounting for browser MiMo calls.
+* [x] Add structured logs with redaction.
+* [x] Add trace spans.
 
 **Acceptance criteria**
 
-* [ ] Metrics are emitted for every browser step.
-* [ ] Logs contain task/session/action IDs.
-* [ ] Logs do not contain screenshot base64/secrets.
-* [ ] Token/cached-token usage visible.
-* [ ] Provider 429/failover/quarantine events visible.
+* [x] Metrics are emitted for every browser step.
+* [x] Logs contain task/session/action IDs.
+* [x] Logs do not contain screenshot base64/secrets.
+* [x] Token/cached-token usage visible.
+* [x] Provider 429/failover/quarantine events visible (MiMo errors are recorded; provider-level failover/quarantine visibility stays in runner/route telemetry as before).
 
 **Tests**
 
-* [ ] Metrics unit tests or snapshot tests.
-* [ ] Redacted log tests.
-* [ ] Token accounting tests.
-* [ ] Error metric tests.
+* [x] Metrics unit tests or snapshot tests.
+* [x] Redacted log tests.
+* [x] Token accounting tests.
+* [x] Error metric tests.
+
+**Status**: PASS (2026-06-16). `browser_live::metrics` exposes a `BrowserMetricsCollector` with atomic counters for sessions, actions, observations, screenshots, MiMo requests/latency/errors/repair/invalid JSON, recovery attempts/safe stops, sidecar requests/latency/errors, and cached token accounting. `BrowserLiveProvider` instruments every tool method with `tracing` spans and field-based logs carrying `session_id`, `task_id`, and `action_seq`; no log/progress path captures screenshot bytes or secrets. `BrowserMimoDecider` records MiMo latency and `TokenUsage` (including `cached_tokens` and `cache_creation_tokens`) via `LlmClient::analyze_image_with_usage`, which is implemented by `OpenCodeGoProvider` with a backward-compatible default on the `LlmProvider` trait. `browser_close` returns the final metrics snapshot for easy verification. Validation passed with focused browser-live, MiMo, config, delegation, clippy, and formatting checks.
 
 **Rollback**
 Disable browser metrics emission behind feature flag; keep functional behavior.

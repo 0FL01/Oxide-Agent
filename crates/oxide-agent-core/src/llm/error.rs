@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Errors that can occur during LLM operations
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum LlmError {
     /// Error returned by the provider's API
     #[error("API error: {0}")]

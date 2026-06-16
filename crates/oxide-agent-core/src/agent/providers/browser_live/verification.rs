@@ -294,6 +294,7 @@ mod tests {
                 sha256: screenshot_id.to_string(),
                 captured_at: Some("2026-06-16T00:00:00Z".to_string()),
                 redacted: false,
+                byte_size: 0,
             },
             a11y_summary: Vec::new(),
             network_summary: None,

@@ -2,6 +2,7 @@ use super::actions::{BrowserActionPlan, plan_browser_action};
 use super::artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
+use super::metrics::BrowserMetricsCollector;
 use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
 use super::policy::{
     BrowserPolicyError, policy_audit_event, validate_decision_policy, validate_navigation_url,
@@ -37,6 +38,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc::Sender};
 use tokio::time::{Duration, timeout};
+use tracing::instrument;
 
 /// `browser_start` tool name.
 pub const TOOL_BROWSER_START: &str = "browser_start";
@@ -59,6 +61,7 @@ pub struct BrowserLiveProvider {
     decision_engine: Option<Arc<dyn BrowserDecisionEngine>>,
     recovery_settings: BrowserRecoverySettings,
     recovery_signatures: Arc<Mutex<BTreeMap<String, BTreeMap<String, u32>>>>,
+    metrics: Arc<BrowserMetricsCollector>,
 }
 
 impl BrowserLiveProvider {
@@ -78,7 +81,7 @@ impl BrowserLiveProvider {
             artifact_settings,
             progress_tx,
         ))
-        .map(|provider| provider.with_decision_engine(BrowserMimoDecider::new(llm_client)))
+        .map(|provider| provider.with_mimo_decision_engine(BrowserMimoDecider::new(llm_client)))
     }
 
     /// Create a provider with an injected sidecar implementation.
@@ -96,6 +99,7 @@ impl BrowserLiveProvider {
             decision_engine: None,
             recovery_settings: BrowserRecoverySettings::default(),
             recovery_signatures: Arc::new(Mutex::new(BTreeMap::new())),
+            metrics: Arc::new(BrowserMetricsCollector::new()),
         }
     }
 
@@ -107,6 +111,19 @@ impl BrowserLiveProvider {
     ) -> Self {
         self.decision_engine = Some(Arc::new(decision_engine));
         self
+    }
+
+    /// Attach the Browser MiMo decider and wire it to the provider's metrics.
+    #[must_use]
+    pub fn with_mimo_decision_engine(mut self, decider: BrowserMimoDecider) -> Self {
+        self.decision_engine = Some(Arc::new(decider.with_metrics(Arc::clone(&self.metrics))));
+        self
+    }
+
+    /// Return a snapshot of current browser metrics.
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> super::metrics::BrowserMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Build typed runtime executors for Browser Live tools.
@@ -140,6 +157,31 @@ impl BrowserLiveProvider {
         }
     }
 
+    async fn measure_sidecar<T>(
+        &self,
+        f: impl std::future::Future<Output = Result<T, BrowserSidecarError>>,
+    ) -> Result<T, BrowserSidecarError> {
+        let start = tokio::time::Instant::now();
+        let result = f.await;
+        let latency = start.elapsed();
+        self.metrics.record_sidecar_request(latency);
+        if result.is_err() {
+            self.metrics.record_sidecar_error();
+        }
+        result
+    }
+
+    fn record_observation_metrics(&self, frame: &super::session::BrowserFrame) {
+        self.metrics.record_observation_fetched();
+        self.metrics
+            .record_screenshot_captured(frame.screenshot.byte_size);
+    }
+
+    #[instrument(
+        name = "browser_start",
+        skip(self, invocation, args),
+        fields(task_id, start_url)
+    )]
     async fn start(
         &self,
         invocation: &ToolInvocation,
@@ -147,10 +189,16 @@ impl BrowserLiveProvider {
     ) -> Result<Value, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
         let viewport = args.viewport.unwrap_or_default();
+        let task_id = args
+            .task_id
+            .clone()
+            .unwrap_or_else(|| invocation.session_id.to_string());
+        tracing::Span::current().record("task_id", tracing::field::display(&task_id));
+        if let Some(start_url) = &args.start_url {
+            tracing::Span::current().record("start_url", tracing::field::display(start_url));
+        }
         let request = CreateSessionRequest {
-            task_id: args
-                .task_id
-                .unwrap_or_else(|| invocation.session_id.to_string()),
+            task_id: task_id.clone(),
             profile: BrowserProfile::Ephemeral,
             viewport,
             timezone: args.timezone,
@@ -172,8 +220,7 @@ impl BrowserLiveProvider {
         .map_err(policy_runtime_error)?;
         let key = idempotency_key(invocation, "start", &request.task_id)?;
         let response = self
-            .sidecar
-            .create_session(&request, &key)
+            .measure_sidecar(self.sidecar.create_session(&request, &key))
             .await
             .map_err(sidecar_runtime_error)?;
         let state = BrowserSessionState::new(
@@ -186,6 +233,12 @@ impl BrowserLiveProvider {
             .lock()
             .await
             .insert(response.session_id.clone(), state);
+        self.metrics.record_session_start();
+        tracing::info!(
+            session_id = %response.session_id,
+            task_id = %task_id,
+            "browser session started"
+        );
         self.emit_progress(format!("Browser session {} started", response.session_id))
             .await;
 
@@ -198,6 +251,11 @@ impl BrowserLiveProvider {
         }))
     }
 
+    #[instrument(
+        name = "browser_observe",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id),
+    )]
     async fn observe(
         &self,
         invocation: &ToolInvocation,
@@ -213,8 +271,7 @@ impl BrowserLiveProvider {
             max_debug_items: args.max_debug_items.unwrap_or(20),
         };
         let response = self
-            .sidecar
-            .observe(&args.session_id, &query)
+            .measure_sidecar(self.sidecar.observe(&args.session_id, &query))
             .await
             .map_err(sidecar_runtime_error)?;
         let frame = {
@@ -227,6 +284,12 @@ impl BrowserLiveProvider {
                 .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
                 .clone()
         };
+        self.record_observation_metrics(&frame);
+        tracing::info!(
+            session_id = %args.session_id,
+            action_seq = frame.action_seq,
+            "browser observation recorded"
+        );
         self.emit_progress(format!(
             "Browser session {} observed at action_seq {}",
             args.session_id, frame.action_seq
@@ -240,6 +303,11 @@ impl BrowserLiveProvider {
         ))
     }
 
+    #[instrument(
+        name = "browser_step",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id, action_seq),
+    )]
     async fn step(
         &self,
         invocation: &ToolInvocation,
@@ -256,8 +324,7 @@ impl BrowserLiveProvider {
             max_debug_items: 20,
         };
         let response = self
-            .sidecar
-            .observe(&args.session_id, &query)
+            .measure_sidecar(self.sidecar.observe(&args.session_id, &query))
             .await
             .map_err(sidecar_runtime_error)?;
         let (frame, history_summary, action_seq) = {
@@ -275,6 +342,8 @@ impl BrowserLiveProvider {
                 state.action_seq().saturating_add(1),
             )
         };
+        tracing::Span::current().record("action_seq", action_seq);
+        self.record_observation_metrics(&frame);
         let observe =
             observation_payload(&args.session_id, &response.observation.screenshot, &frame);
 
@@ -288,15 +357,14 @@ impl BrowserLiveProvider {
         };
 
         let screenshot_bytes = self
-            .sidecar
-            .latest_screenshot_bytes(
+            .measure_sidecar(self.sidecar.latest_screenshot_bytes(
                 &args.session_id,
                 &ScreenshotQuery {
                     format: ScreenshotFormat::Binary,
                     max_width: Some(response.observation.viewport.width),
                     redacted: true,
                 },
-            )
+            ))
             .await
             .map_err(sidecar_runtime_error)?;
         let task = args
@@ -309,6 +377,7 @@ impl BrowserLiveProvider {
             observation: &response.observation,
             history_summary: Some(&history_summary),
         };
+        self.metrics.record_action_planned();
         let decision = decision_engine
             .decide(
                 screenshot_bytes,
@@ -319,6 +388,13 @@ impl BrowserLiveProvider {
             .map_err(mimo_runtime_error)?;
         if let Err(error) = validate_decision_policy(&decision) {
             let audit = policy_audit_event(&decision, false, error.to_string());
+            tracing::info!(
+                session_id = %args.session_id,
+                action_seq,
+                decision = "block",
+                reason = %audit.reason,
+                "browser policy blocked decision"
+            );
             self.emit_progress(format!(
                 "BrowserPolicy session_id={} action_seq={} decision=block reason={}",
                 args.session_id, action_seq, audit.reason
@@ -336,6 +412,12 @@ impl BrowserLiveProvider {
         }
         let plan = plan_browser_action(&decision, action_seq, args.action_timeout_ms())
             .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
+        tracing::info!(
+            session_id = %args.session_id,
+            action_seq,
+            action_kind = %action_plan_kind(&plan),
+            "browser action planned"
+        );
         self.emit_progress(format!(
             "BrowserAction session_id={} action_seq={} kind={}",
             args.session_id,
@@ -407,11 +489,11 @@ impl BrowserLiveProvider {
         ensure_not_cancelled(invocation)?;
         match plan {
             BrowserActionPlan::SidecarAction(request) => {
+                self.metrics.record_action_executed();
                 let key =
                     idempotency_key(invocation, "action", &format!("{session_id}:{action_seq}"))?;
                 let action = self
-                    .sidecar
-                    .execute_action(session_id, &request, &key)
+                    .measure_sidecar(self.sidecar.execute_action(session_id, &request, &key))
                     .await
                     .map_err(sidecar_runtime_error)?;
                 ensure_not_cancelled(invocation)?;
@@ -451,11 +533,11 @@ impl BrowserLiveProvider {
                 ))
             }
             BrowserActionPlan::Navigate(request) => {
+                self.metrics.record_action_executed();
                 let key =
                     idempotency_key(invocation, "goto", &format!("{session_id}:{action_seq}"))?;
                 let navigation = self
-                    .sidecar
-                    .goto(session_id, &request, &key)
+                    .measure_sidecar(self.sidecar.goto(session_id, &request, &key))
                     .await
                     .map_err(sidecar_runtime_error)?;
                 ensure_not_cancelled(invocation)?;
@@ -563,8 +645,7 @@ impl BrowserLiveProvider {
         session_id: &str,
     ) -> Result<BrowserObservation, ToolRuntimeError> {
         Ok(self
-            .sidecar
-            .observe(
+            .measure_sidecar(self.sidecar.observe(
                 session_id,
                 &ObserveQuery {
                     fresh: true,
@@ -574,7 +655,7 @@ impl BrowserLiveProvider {
                     include_console_summary: true,
                     max_debug_items: 20,
                 },
-            )
+            ))
             .await
             .map_err(sidecar_runtime_error)?
             .observation)
@@ -595,6 +676,7 @@ impl BrowserLiveProvider {
                 .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
                 .clone()
         };
+        self.record_observation_metrics(&frame);
         let payload = observation_payload(session_id, &observation.screenshot, &frame);
         Ok((frame, payload))
     }
@@ -604,13 +686,17 @@ impl BrowserLiveProvider {
         session_id: &str,
         observation: &BrowserObservation,
     ) -> Result<(), ToolRuntimeError> {
-        let mut states = self.states.lock().await;
-        let state = states.get_mut(session_id).ok_or_else(|| {
-            ToolRuntimeError::Failure("browser session is not started".to_string())
-        })?;
-        state
-            .record_observation(observation, BrowserArtifactPurpose::Final, 0)
-            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
+        let frame = {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(session_id).ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+            state
+                .record_observation(observation, BrowserArtifactPurpose::Final, 0)
+                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
+                .clone()
+        };
+        self.record_observation_metrics(&frame);
         Ok(())
     }
 
@@ -626,6 +712,7 @@ impl BrowserLiveProvider {
         if verification.status != BrowserVerificationStatus::VerificationFailed {
             return Ok(None);
         }
+        self.metrics.record_recovery_attempt();
         let (network, console) = self.recovery_debug(session_id, action_seq).await?;
         let signature = recovery_loop_signature(decision, {
             let preliminary = build_recovery_report(
@@ -668,8 +755,7 @@ impl BrowserLiveProvider {
                 &format!("{session_id}:{recovery_seq}"),
             )?;
             let recovery_action = self
-                .sidecar
-                .execute_action(session_id, &request, &key)
+                .measure_sidecar(self.sidecar.execute_action(session_id, &request, &key))
                 .await
                 .map_err(sidecar_runtime_error)?;
             let recovery_observation = self.observe_after_action(session_id).await?;
@@ -684,6 +770,17 @@ impl BrowserLiveProvider {
             );
         }
 
+        if report.status == BrowserRecoveryStatus::SafeStopped {
+            self.metrics.record_recovery_safe_stop();
+        }
+
+        tracing::info!(
+            session_id = %session_id,
+            action_seq,
+            recovery_status = ?report.status,
+            recovery_kind = ?report.kind,
+            "browser recovery evaluated"
+        );
         self.emit_progress(format!(
             "BrowserRecovery session_id={} action_seq={} status={:?} kind={:?}",
             session_id, action_seq, report.status, report.kind
@@ -698,8 +795,7 @@ impl BrowserLiveProvider {
         action_seq: u64,
     ) -> Result<(NetworkDebugPayload, ConsoleDebugPayload), ToolRuntimeError> {
         let network = self
-            .sidecar
-            .debug_network(
+            .measure_sidecar(self.sidecar.debug_network(
                 session_id,
                 &NetworkDebugQuery {
                     since_action_seq: action_seq.saturating_sub(1),
@@ -708,13 +804,12 @@ impl BrowserLiveProvider {
                     filter: NetworkFilter::Failed,
                     limit: 20,
                 },
-            )
+            ))
             .await
             .map_err(sidecar_runtime_error)?
             .network;
         let console = self
-            .sidecar
-            .debug_console(
+            .measure_sidecar(self.sidecar.debug_console(
                 session_id,
                 &ConsoleDebugQuery {
                     since_action_seq: action_seq.saturating_sub(1),
@@ -722,7 +817,7 @@ impl BrowserLiveProvider {
                     min_level: ConsoleLevel::Error,
                     limit: 20,
                 },
-            )
+            ))
             .await
             .map_err(sidecar_runtime_error)?
             .console;
@@ -751,6 +846,11 @@ impl BrowserLiveProvider {
         .await;
     }
 
+    #[instrument(
+        name = "browser_debug",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id),
+    )]
     async fn debug(
         &self,
         invocation: &ToolInvocation,
@@ -759,43 +859,42 @@ impl BrowserLiveProvider {
         ensure_not_cancelled(invocation)?;
         let network = if args.include_network {
             Some(
-                self.sidecar
-                    .debug_network(
-                        &args.session_id,
-                        &NetworkDebugQuery {
-                            since_action_seq: args.since_action_seq.unwrap_or_default(),
-                            level: DebugLevel::Summary,
-                            include_bodies: false,
-                            filter: NetworkFilter::Failed,
-                            limit: args.limit.unwrap_or(20),
-                        },
-                    )
-                    .await
-                    .map_err(sidecar_runtime_error)?
-                    .network,
+                self.measure_sidecar(self.sidecar.debug_network(
+                    &args.session_id,
+                    &NetworkDebugQuery {
+                        since_action_seq: args.since_action_seq.unwrap_or_default(),
+                        level: DebugLevel::Summary,
+                        include_bodies: false,
+                        filter: NetworkFilter::Failed,
+                        limit: args.limit.unwrap_or(20),
+                    },
+                ))
+                .await
+                .map_err(sidecar_runtime_error)?
+                .network,
             )
         } else {
             None
         };
         let console = if args.include_console {
             Some(
-                self.sidecar
-                    .debug_console(
-                        &args.session_id,
-                        &ConsoleDebugQuery {
-                            since_action_seq: args.since_action_seq.unwrap_or_default(),
-                            level: DebugLevel::Summary,
-                            min_level: ConsoleLevel::Error,
-                            limit: args.limit.unwrap_or(20),
-                        },
-                    )
-                    .await
-                    .map_err(sidecar_runtime_error)?
-                    .console,
+                self.measure_sidecar(self.sidecar.debug_console(
+                    &args.session_id,
+                    &ConsoleDebugQuery {
+                        since_action_seq: args.since_action_seq.unwrap_or_default(),
+                        level: DebugLevel::Summary,
+                        min_level: ConsoleLevel::Error,
+                        limit: args.limit.unwrap_or(20),
+                    },
+                ))
+                .await
+                .map_err(sidecar_runtime_error)?
+                .console,
             )
         } else {
             None
         };
+        tracing::info!(session_id = %args.session_id, "browser debug fetched");
         self.emit_progress(format!("Browser debug fetched for {}", args.session_id))
             .await;
         Ok(json!({
@@ -806,6 +905,11 @@ impl BrowserLiveProvider {
         }))
     }
 
+    #[instrument(
+        name = "browser_close",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id),
+    )]
     async fn close(
         &self,
         invocation: &ToolInvocation,
@@ -827,8 +931,7 @@ impl BrowserLiveProvider {
             .unwrap_or_default();
         let key = idempotency_key(invocation, "close", &args.session_id)?;
         let response = self
-            .sidecar
-            .close_session(
+            .measure_sidecar(self.sidecar.close_session(
                 &args.session_id,
                 &CloseSessionRequest {
                     purge_profile: true,
@@ -836,12 +939,20 @@ impl BrowserLiveProvider {
                     reason: args.reason.unwrap_or(CloseReason::Done),
                 },
                 &key,
-            )
+            ))
             .await
             .map_err(sidecar_runtime_error)?;
         self.states.lock().await.remove(&args.session_id);
+        self.metrics.record_session_close();
+        tracing::info!(
+            session_id = %args.session_id,
+            closed = response.closed,
+            profile_purged = response.profile_purged,
+            "browser session closed"
+        );
         self.emit_progress(format!("Browser session {} closed", args.session_id))
             .await;
+        let metrics = self.metrics.snapshot();
         Ok(json!({
             "status": "closed",
             "session_id": response.session_id,
@@ -849,6 +960,7 @@ impl BrowserLiveProvider {
             "profile_purged": response.profile_purged,
             "artifacts_kept": response.artifacts_kept,
             "retained_artifact_refs": retained_artifacts,
+            "metrics": metrics,
         }))
     }
 }
@@ -1617,6 +1729,89 @@ mod tests {
                 .expect("json")
                 .contains("base64")
         );
+    }
+
+    #[tokio::test]
+    async fn browser_close_returns_metrics_snapshot() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let close_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let close = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
+        let payload = close.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["status"], "closed");
+        assert_eq!(payload["metrics"]["sessions_started"], 1);
+        assert_eq!(payload["metrics"]["sessions_closed"], 1);
+        assert!(payload["metrics"]["sidecar_requests"].as_u64().unwrap_or(0) >= 2);
+    }
+
+    #[tokio::test]
+    async fn browser_step_populates_provider_metrics() {
+        let provider = test_provider_with_decision(click_decision(), FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["status"], "action_verified");
+        let metrics = provider.metrics_snapshot();
+        assert_eq!(metrics.sessions_started, 1);
+        assert_eq!(metrics.actions_planned, 1);
+        assert_eq!(metrics.actions_executed, 1);
+        assert!(metrics.observations_fetched >= 2);
+        assert!(metrics.screenshots_captured >= 2);
+        assert!(metrics.sidecar_requests >= 2);
+    }
+
+    #[tokio::test]
+    async fn browser_progress_and_outputs_exclude_screenshot_bytes() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(32);
+        let executors = {
+            let provider = Arc::new(BrowserLiveProvider::new(
+                Arc::new(FakeBrowserSidecar::new()),
+                BrowserArtifactSettings::default(),
+                Some(tx),
+            ));
+            provider.tool_runtime_executors()
+        };
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let close_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+        let close = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
+
+        let step_text = step.stdout.text.as_deref().expect("step text");
+        let close_text = close.stdout.text.as_deref().expect("close text");
+        assert!(!step_text.contains("base64"));
+        assert!(!close_text.contains("base64"));
+        assert!(!step_text.contains("data:image"));
+        assert!(!close_text.contains("data:image"));
+
+        drop(executors);
+        let mut progress_texts = Vec::new();
+        while let Some(event) = rx.recv().await {
+            if let AgentEvent::Reasoning { summary, .. } = event {
+                progress_texts.push(summary);
+            }
+        }
+        let combined = progress_texts.join("\n");
+        assert!(!combined.contains("base64"));
+        assert!(!combined.contains("data:image"));
+        assert!(!combined.is_empty());
     }
 
     #[tokio::test]

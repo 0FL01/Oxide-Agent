@@ -528,6 +528,7 @@ impl FakeSession {
             sha256: format!("fake-sha256-{}-{}", self.action_seq, self.observation_seq),
             captured_at: Some(fixed_timestamp()),
             redacted: false,
+            byte_size: 1024,
         }
     }
 

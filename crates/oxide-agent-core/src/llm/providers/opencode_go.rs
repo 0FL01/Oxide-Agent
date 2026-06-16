@@ -538,6 +538,18 @@ impl LlmProvider for OpenCodeGoProvider {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
+        self.analyze_image_with_usage(image_bytes, text_prompt, system_prompt, model_id)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    async fn analyze_image_with_usage(
+        &self,
+        image_bytes: Vec<u8>,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<(String, Option<crate::llm::TokenUsage>), LlmError> {
         if !discovery::supports_image_input_for_model_id(model_id) {
             return Err(LlmError::ApiError(format!(
                 "{} model '{}' is not approved for image input",
@@ -581,16 +593,21 @@ impl LlmProvider for OpenCodeGoProvider {
             let response = self.chat_client.post_json(&body).await?;
             let parsed = parse_chat_response(response)?;
             log_response_summary(self.profile, request_kind, model_id, &parsed);
-
-            parsed.content.ok_or_else(|| {
+            let usage = parsed.usage.clone();
+            let text = parsed.content.ok_or_else(|| {
                 LlmError::ApiError(format!(
                     "{} returned no text content for image analysis",
                     self.profile.display_name
                 ))
-            })
+            })?;
+            Ok::<(String, Option<crate::llm::TokenUsage>), LlmError>((text, usage))
         }
         .await;
-        self.throttle.record_result(&result);
+        let text_result = result
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .map_err(Clone::clone);
+        self.throttle.record_result(&text_result);
         result
     }
 

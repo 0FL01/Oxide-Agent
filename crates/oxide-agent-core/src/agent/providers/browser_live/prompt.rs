@@ -200,6 +200,7 @@ mod tests {
                 sha256: "abc".to_string(),
                 captured_at: Some("2026-06-16T10:00:00Z".to_string()),
                 redacted: true,
+                byte_size: 0,
             },
             a11y_summary: Vec::new(),
             network_summary: None,

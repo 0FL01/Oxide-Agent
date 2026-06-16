@@ -12,6 +12,8 @@ pub mod artifacts;
 pub mod client;
 /// Error types and retry classification for browser sidecar operations.
 pub mod error;
+/// Browser Live MVP metrics and structured logging.
+pub mod metrics;
 /// MiMo screenshot decision caller.
 pub mod mimo;
 /// Strict BrowserDecision parser and validation.
@@ -36,6 +38,7 @@ pub mod verification;
 pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
+pub use metrics::{BrowserMetricsCollector, BrowserMetricsSnapshot};
 pub use mimo::{BrowserDecisionEngine, BrowserMimoDecider};
 pub use policy::{BrowserPolicyAuditEvent, BrowserPolicyError};
 pub use session::{BrowserFrame, BrowserSessionState};

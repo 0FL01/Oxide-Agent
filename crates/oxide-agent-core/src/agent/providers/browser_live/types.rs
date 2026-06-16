@@ -295,6 +295,9 @@ pub struct ScreenshotArtifact {
     pub captured_at: Option<String>,
     #[serde(default)]
     pub redacted: bool,
+    /// Optional raw byte size of the screenshot artifact for metrics only.
+    #[serde(default)]
+    pub byte_size: u64,
 }
 
 /// Network summary embedded in observations.
