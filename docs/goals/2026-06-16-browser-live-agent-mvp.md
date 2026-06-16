@@ -1,0 +1,404 @@
+# Goal: Browser Live Agent MVP
+
+Date started: 2026-06-16
+Status: active
+Codex goal: `/goal Implement docs/goals/2026-06-16-browser-live-agent-mvp.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
+Source spec: `docs/prd/chrome-agent.md`
+Goal doc owner: Codex
+Last updated: 2026-06-16
+
+## Objective
+
+Implement the Browser Live Agent MVP described in `docs/prd/chrome-agent.md`: Oxide starts and orchestrates an autonomous headless browser session through a `chrome-agent` sidecar, uses OpenCode Go `mimo-v2.5` as the only MVP screenshot-vision route, executes bounded browser actions with post-action visual verification, stores screenshots as artifacts/ring-buffer data outside durable LLM history, and exposes safe Web UI/Telegram progress without manual browser control.
+
+Done when every required Completion Audit item below is verified by its listed evidence, CP-1 through CP-17 are either verified or explicitly dropped by user, and all out-of-scope constraints are preserved.
+
+## Scope
+
+In scope:
+- Browser config/model validation under `AgentSettings` and `.env.example`.
+- Feature-gated core provider module, tool registration, capability manifest, and sub-agent denial.
+- Typed sidecar REST/WS client, fake sidecar seam, browser session state, screenshot artifacts, and ring-buffer.
+- MiMo `mimo-v2.5` decision prompt/parser/repair loop through existing OpenCode Go image path.
+- Bounded action execution, post-action verification, recovery, safety policy, metrics/logging, and E2E smoke tests.
+- Docker Compose sidecar deployment, Web UI latest-screenshot/progress panel, Telegram milestone/final/blocked reporting, and user docs.
+
+Out of scope:
+- Full browser cloud/dashboard, multi-browser fleet, iframe/VNC/manual browser control, or Telegram start/control commands.
+- CAPTCHA/anti-bot bypass, automatic purchases/payments, or unsafe access-control circumvention.
+- Real Chrome profile/cookie attach or persistent browser profiles in MVP.
+- Direct Xiaomi fallback, `mimo-v2.5-pro` as a vision route, provider-native JSON schema dependency, or MiMo native tool calling inside the browser loop.
+- Mandatory production domain allowlist for HTTP/HTTPS navigation in MVP.
+- Long-term archive of every screenshot frame or adding screenshot bytes to durable chat history.
+
+## Missing Inputs
+
+- No missing owner decisions remain for MVP.
+  - Evidence: PRD owner decisions fix domain allowlist, Telegram start/control, ephemeral profiles, no direct Xiaomi fallback, raw screenshots plus DOM/a11y/hit-test fallback, and no manual browser control at `docs/prd/chrome-agent.md:3608`.
+- External runtime dependencies will still be needed for later live validation: Docker/Chromium sidecar availability and an OpenCode Go API key for staging MiMo smoke.
+  - Impact: local unit/fake-sidecar work can proceed; CP-11/CP-16 live compose/provider evidence cannot be final without those runtime dependencies.
+  - Low-risk fallback: keep browser feature disabled by default until smoke evidence exists.
+  - User/external action needed: provide runtime credentials/services only when reaching CP-11/CP-16 live checks.
+
+## Repository Context
+
+- Root instructions are in `AGENTS.md`: smallest maintainable change, no new crates/services unless required, explicit modules, feature-gated profiles, and `cargo fmt --all -- --check` plus `cargo clippy --workspace --all-targets -- -D warnings` before finishing.
+- Existing goal docs live in `docs/goals/`; completed docs are archived under `docs/goals/archives/`.
+- Browser PRD source is `docs/prd/chrome-agent.md`; core goals are listed at `docs/prd/chrome-agent.md:218`, non-goals at `docs/prd/chrome-agent.md:235`, implementation checkpoints at `docs/prd/chrome-agent.md:2726`, final acceptance criteria at `docs/prd/chrome-agent.md:3533`, risks at `docs/prd/chrome-agent.md:3570`, owner decisions at `docs/prd/chrome-agent.md:3608`, and MVP cut at `docs/prd/chrome-agent.md:3619`.
+- CP-1 and CP-2 are already passed in the PRD. Live `mimo-v2.5` vision was confirmed by the env-gated smoke test in `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`.
+- Relevant implementation areas: `crates/oxide-agent-core/src/config.rs`, `crates/oxide-agent-core/src/agent/providers/`, `crates/oxide-agent-core/src/agent/tool_runtime/`, `crates/oxide-agent-core/src/capabilities/`, `crates/oxide-agent-web-contracts/`, `crates/oxide-agent-transport-web/`, `crates/oxide-agent-web-ui/`, `crates/oxide-agent-transport-telegram/`, Docker Compose files, profiles, `.env.example`, and docs.
+
+## Completion Audit
+
+- G1: Browser feature gating and config
+  - Source: `docs/prd/chrome-agent.md:2829`, `docs/prd/chrome-agent.md:3537`, `docs/prd/chrome-agent.md:3623`
+  - Requirement: add disabled-by-default browser configuration, `BROWSER_AGENT_*` env parsing, sidecar URL/token validation, browser MiMo provider/model override, and profile wiring.
+  - Acceptance: disabled by default; enabling without required sidecar URL/token fails clearly; existing `MEDIA_MODEL_*` and OpenCode Go routes still work.
+  - Evidence required: config parse/validation tests, `.env.example` diff, profile diff, `cargo test -p oxide-agent-core ...` focused config tests.
+  - Status: pending
+  - Evidence collected:
+
+- G2: MiMo vision route is OpenCode Go `mimo-v2.5` only
+  - Source: `docs/prd/chrome-agent.md:9`, `docs/prd/chrome-agent.md:160`, `docs/prd/chrome-agent.md:2769`
+  - Requirement: browser screenshot perception uses `opencode-go` + `mimo-v2.5` through direct OpenAI chat completions `image_url` data URL path.
+  - Acceptance: live smoke proves image input; `mimo-v2.5-pro` is rejected for browser vision before any call.
+  - Evidence required: CP-2 smoke test command, payload/model capability tests, config validation test for `mimo-v2.5-pro`.
+  - Status: in_progress
+  - Evidence collected: CP-2 live smoke and provider tests were committed before this goal doc; remaining browser-config rejection evidence belongs to CP-3.
+
+- G3: Typed sidecar API client
+  - Source: `docs/prd/chrome-agent.md:2873`
+  - Requirement: introduce feature-gated typed REST/WS client, auth header injection, idempotency keys, timeout config, retryable/non-retryable error mapping, and screenshot/artifact metadata types.
+  - Acceptance: client compiles behind `tool-browser-live`; contract shapes serialize/deserialize; missing token rejected in enabled production config; no sandbox command dependency.
+  - Evidence required: serialization, auth/idempotency header, timeout, and error mapping tests.
+  - Status: pending
+  - Evidence collected:
+
+- G4: Fake sidecar test seam
+  - Source: `docs/prd/chrome-agent.md:2917`
+  - Requirement: implement deterministic fake sidecar for session lifecycle, observations/actions, stale screenshots, no-op/failure, debug endpoints, and crash simulation.
+  - Acceptance: browser loop tests run without Chromium, `chrome-agent`, OpenCode Go, or external services.
+  - Evidence required: fake create/goto/observe/action/close tests and fake error/debug tests.
+  - Status: pending
+  - Evidence collected:
+
+- G5: Browser session state and screenshot artifact model
+  - Source: `docs/prd/chrome-agent.md:2957`, `docs/prd/chrome-agent.md:3546`, `docs/prd/chrome-agent.md:3554`
+  - Requirement: maintain task-local browser session state, latest screenshot, bounded ring-buffer, artifact refs, action sequence, viewport/DSF, retention and size caps outside main LLM history.
+  - Acceptance: ring-buffer evicts old frames; final/milestone artifacts retained; artifact refs can be emitted; unit tests prove screenshot bytes do not enter conversation history.
+  - Evidence required: ring-buffer, artifact naming, metadata validation, retention/size cap, and history hygiene tests.
+  - Status: pending
+  - Evidence collected:
+
+- G6: Core browser tools
+  - Source: `docs/prd/chrome-agent.md:3003`
+  - Requirement: register `browser_start`, `browser_observe`, `browser_step`, `browser_debug`, and `browser_close` as native tools behind feature/config gates.
+  - Acceptance: main agent sees tools only when enabled; tools return compact outputs with artifact refs; timeouts/cancellation work; sub-agents denied by default.
+  - Evidence required: tool registration, feature-disabled, fake start/observe/close, output schema, and sub-agent deny tests.
+  - Status: pending
+  - Evidence collected:
+
+- G7: MiMo decision prompt, schema, parser, and repair loop
+  - Source: `docs/prd/chrome-agent.md:3051`, `docs/prd/chrome-agent.md:3558`
+  - Requirement: build stable system prompt, dynamic compact state prompt, strict `BrowserDecision` schema/parser, one repair retry, action validation, risk/sensitive-action fields, and confidence thresholds.
+  - Acceptance: invalid/malformed/unsafe output never executes an action; stable prompt and volatile screenshot/state are separated; screenshots not appended to main history.
+  - Evidence required: golden valid/invalid parser tests, repair behavior tests, coordinate bounds/sensitive action tests, and prompt cache hygiene test.
+  - Status: pending
+  - Evidence collected:
+
+- G8: Bounded action execution and post-action verification
+  - Source: `docs/prd/chrome-agent.md:3099`, `docs/prd/chrome-agent.md:3546`, `docs/prd/chrome-agent.md:3559`
+  - Requirement: implement decide → execute → wait → observe → verify loop with action sequence IDs, fresh post-action screenshots, before/after artifacts, structured results, and timeout/max-step bounds.
+  - Acceptance: technical action success alone never means task success; verification failure triggers recovery or safe stop.
+  - Evidence required: fake happy path, no-op click verification failure, navigation fresh screenshot, done final evidence, and timeout report tests.
+  - Status: pending
+  - Evidence collected:
+
+- G9: Recovery engine
+  - Source: `docs/prd/chrome-agent.md:3145`
+  - Requirement: classify stale frame/no-op/coordinate mismatch/modal/loading/network/console/invalid-JSON failures, perform bounded recovery, use hit-test/inspect/UID fallback, and integrate browser loop signatures with existing loop detection.
+  - Acceptance: same failed action is not repeated forever; JS click fallback is disabled by default and policy-gated; diagnostics attach to failure reports; low confidence safe-stops.
+  - Evidence required: coordinate drift, stale screenshot, modal overlay, repeated no-op loop, debug artifact, and JS fallback disabled tests.
+  - Status: pending
+  - Evidence collected:
+
+- G10: Docker Compose sidecar deployment
+  - Source: `docs/prd/chrome-agent.md:3192`, `docs/prd/chrome-agent.md:3538`
+  - Requirement: add `chrome-agent-sidecar` service/Dockerfile/wrapper with healthcheck, artifact/profile volumes, app env wiring, internal-only ports, token requirement, and compatible hardening.
+  - Acceptance: compose starts app + sidecar; app can reach sidecar health; CDP is not host-exposed; profiles purge on close; screenshots land in artifact volume.
+  - Evidence required: compose smoke, healthcheck, port exposure, artifact volume, and profile cleanup evidence.
+  - Status: pending
+  - Evidence collected:
+
+- G11: Web UI browser progress panel
+  - Source: `docs/prd/chrome-agent.md:3243`, `docs/prd/chrome-agent.md:3550`
+  - Requirement: expose latest screenshot, URL/title/action/confidence/debug badges, pause/resume/stop/kill, blocked state, and artifact replay without SSE/base64 frame flood.
+  - Acceptance: Web UI shows live latest screenshot and final artifacts; event stream is coalesced/throttled; no iframe/VNC/manual browser control is exposed.
+  - Evidence required: event serialization, web transport mapping, UI state reducer/rendering, artifact ref rendering, and flood/coalescing tests.
+  - Status: pending
+  - Evidence collected:
+
+- G12: Telegram milestone/final/blocked reporting
+  - Source: `docs/prd/chrome-agent.md:3298`, `docs/prd/chrome-agent.md:3552`
+  - Requirement: Telegram receives compact progress, blocked/safe-stop reports, and final screenshot/artifacts through existing delivery paths, without live frame spam or browser start/control commands.
+  - Acceptance: sensitive screenshots are not auto-sent; final screenshot delivery uses existing file delivery; no Telegram start/control command exists for MVP.
+  - Evidence required: progress render, milestone event, final artifact delivery, no-command, and sensitive artifact suppression tests.
+  - Status: pending
+  - Evidence collected:
+
+- Q1: Security and policy gates
+  - Source: `docs/prd/chrome-agent.md:3340`, `docs/prd/chrome-agent.md:3560`
+  - Requirement: browser disabled by default, sub-agents denied, HTTP/HTTPS allow-by-default for MVP, non-web schemes rejected, sensitive actions approved, credentials handled as secret refs, prompt injection safeguards enforced, and audit events generated.
+  - Acceptance: secrets never serialize into MiMo prompt/log/event; CAPTCHA/2FA safe-stops with blocked report; no bypass/manual browser control.
+  - Evidence required: URL scheme, sub-agent deny, secret redaction, sensitive action gate, download/upload disabled, real profile disabled, and prompt injection fixture tests.
+  - Status: pending
+  - Evidence collected:
+
+- Q2: Prompt cache/history hygiene
+  - Source: `docs/prd/chrome-agent.md:229`, `docs/prd/chrome-agent.md:3579`
+  - Requirement: screenshots and volatile browser state must not pollute stable prompt prefix or durable main conversation history.
+  - Acceptance: only selected current frame is sent through the media call; durable history stores compact text/artifact refs only.
+  - Evidence required: prompt cache hygiene test, history hygiene regression, token/cached-token metrics evidence.
+  - Status: pending
+  - Evidence collected:
+
+- Q3: Observability and logging
+  - Source: `docs/prd/chrome-agent.md:3390`, `docs/prd/chrome-agent.md:3565`
+  - Requirement: emit metrics/logs/traces for session/action/screenshot counters, MiMo latency/errors, invalid JSON/repair, recovery, sidecar latency/errors, artifact sizes, token/cached-token usage, and provider 429/failover events.
+  - Acceptance: every browser step has metrics; logs include task/session/action IDs; logs exclude screenshot base64 and secrets.
+  - Evidence required: metrics/snapshot tests, redacted log tests, token accounting tests, and error metric tests.
+  - Status: pending
+  - Evidence collected:
+
+- Q4: Minimal maintainable implementation
+  - Source: `AGENTS.md:11`, `AGENTS.md:17`, `docs/prd/chrome-agent.md:237`
+  - Requirement: keep implementation small, explicit, feature-gated, and consistent with existing runtime/provider architecture; do not rewrite unrelated runtime/tool systems.
+  - Acceptance: no unrelated crates/services/abstractions; code changes stay inside scoped modules and documented integration points.
+  - Evidence required: diff review at each checkpoint, `git status`, and focused validation commands.
+  - Status: pending
+  - Evidence collected:
+
+- V1: Core Rust validation
+  - Source: `AGENTS.md:130`, `AGENTS.md:144`
+  - Requirement: final implementation passes formatting, clippy, and relevant cargo checks/tests.
+  - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
+  - Evidence required: command output summaries in Progress Log and Final Verification.
+  - Status: pending
+  - Evidence collected:
+
+- V2: End-to-end smoke scenarios
+  - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
+  - Requirement: prove local browser flows: open page, click, fill form, verify success, diagnose console/network failure, Web UI preview, Docker Compose deployment, invalid MiMo output, blocked/safe-stop path, and env-gated provider smoke.
+  - Acceptance: required local/compose/Web UI/Telegram/provider smoke evidence exists.
+  - Evidence required: E2E local browser smoke, compose smoke, Web UI smoke, Telegram smoke if profile enabled, provider smoke if API key available.
+  - Status: pending
+  - Evidence collected:
+
+- V3: Documentation and examples
+  - Source: `docs/prd/chrome-agent.md:3485`, `docs/prd/chrome-agent.md:3619`
+  - Requirement: document feature overview, env keys, OpenCode Go + MiMo setup, sidecar compose, Web UI usage, Telegram behavior, security limits, troubleshooting, example prompts, staging checklist, and rollback/disable path.
+  - Acceptance: docs say `mimo-v2.5`, not `mimo-v2.5-pro`, for vision; docs warn no screenshot history accumulation and no CAPTCHA/anti-bot bypass.
+  - Evidence required: doc diff, config-example match check, compose snippet validation/manual evidence, links/paths check.
+  - Status: pending
+  - Evidence collected:
+
+- N1: No manual browser control in MVP
+  - Source: `docs/prd/chrome-agent.md:226`, `docs/prd/chrome-agent.md:3271`, `docs/prd/chrome-agent.md:3615`
+  - Must preserve: no iframe/VNC/manual browser control; autonomous sidecar actions only; CAPTCHA/2FA/anti-bot safe-stops with blocked report.
+  - Evidence required: Web UI tests/review proving no manual control surface; blocked-path smoke.
+  - Status: pending
+  - Evidence collected:
+
+- N2: No direct Xiaomi fallback or `mimo-v2.5-pro` vision fallback
+  - Source: `docs/prd/chrome-agent.md:212`, `docs/prd/chrome-agent.md:251`, `docs/prd/chrome-agent.md:3613`
+  - Must preserve: MVP uses only OpenCode Go + `mimo-v2.5` for vision; `mimo-v2.5-pro` is not a vision route.
+  - Evidence required: config validation tests and docs review.
+  - Status: pending
+  - Evidence collected:
+
+- N3: No real Chrome profile attach
+  - Source: `docs/prd/chrome-agent.md:241`, `docs/prd/chrome-agent.md:3612`
+  - Must preserve: ephemeral profiles only; real profile/cookie copy disabled in MVP.
+  - Evidence required: real-profile-disabled tests and compose/profile cleanup evidence.
+  - Status: pending
+  - Evidence collected:
+
+- N4: No mandatory domain allowlist in MVP
+  - Source: `docs/prd/chrome-agent.md:228`, `docs/prd/chrome-agent.md:3610`
+  - Must preserve: HTTP/HTTPS navigation is allow-by-default; non-web schemes are rejected.
+  - Evidence required: URL policy tests and config docs review showing removed allowlist envs are not required.
+  - Status: pending
+  - Evidence collected:
+
+- N5: No Telegram browser start/control commands
+  - Source: `docs/prd/chrome-agent.md:227`, `docs/prd/chrome-agent.md:3316`, `docs/prd/chrome-agent.md:3611`
+  - Must preserve: browser sessions start from Web UI only; Telegram is milestones/final/blocked reporting only.
+  - Evidence required: Telegram no-command test and progress rendering review.
+  - Status: pending
+  - Evidence collected:
+
+## Implementation Plan
+
+0. Goal contract and checkpoint ledger
+   - Audit IDs: all
+   - Expected changes: add this goal doc, record current CP-1/CP-2 evidence and next checkpoint order.
+   - Validation: Markdown/diff review and secret scan.
+   - Exit condition: goal doc committed and active `/goal` objective available.
+
+1. CP-3 Provider capability/model config additions
+   - Audit IDs: G1, G2, N2, N4, V1
+   - Expected changes: `BrowserAgentSettings`, `BROWSER_AGENT_*` parsing/validation, browser MiMo override, `mimo-v2.5-pro` fail-fast, `.env.example` and profile examples.
+   - Validation: config defaults/override/unsupported-model tests and existing media config regression.
+   - Exit condition: browser config disabled by default and invalid vision model errors clearly.
+
+2. CP-4 Sidecar API contract and typed client
+   - Audit IDs: G3, Q1, V1
+   - Expected changes: feature-gated client/types/error model/auth/idempotency/timeouts/retry classification.
+   - Validation: serialization, auth/idempotency header, error mapping, timeout tests.
+   - Exit condition: client compiles behind `tool-browser-live` with no real action execution.
+
+3. CP-5 Fake sidecar for tests
+   - Audit IDs: G4, V1
+   - Expected changes: fake sidecar/test seam and scripted lifecycle/debug/failure support.
+   - Validation: fake lifecycle, error envelope, debug endpoint tests.
+   - Exit condition: later browser loop tests can run hermetically without Chromium or OpenCode Go.
+
+4. CP-6 Session state, ring-buffer, and artifacts
+   - Audit IDs: G5, Q2, V1
+   - Expected changes: session/observation/screenshot artifact structs, ring-buffer, artifact naming/retention, no-history-image hygiene.
+   - Validation: ring-buffer eviction, artifact naming, metadata, retention/size cap, history hygiene tests.
+   - Exit condition: browser state can hold current task evidence without durable image history.
+
+5. CP-7 Core browser provider tools
+   - Audit IDs: G6, Q1, N5, V1
+   - Expected changes: `tool-browser-live` feature, provider exports, capability manifest, `browser_start/observe/step/debug/close`, progress events, feature/config enforcement.
+   - Validation: tool registration, feature-disabled, fake start/observe/close, output schema, sub-agent deny tests.
+   - Exit condition: main agent has compact browser tools only when enabled; sub-agents do not.
+
+6. CP-8 MiMo prompt/schema/parser
+   - Audit IDs: G7, G2, Q2, N2, V1
+   - Expected changes: decision/action schema, stable system prompt, dynamic state prompt, `LlmClient::analyze_image()` call, JSON parser, repair retry, validation policies.
+   - Validation: golden valid/invalid decisions, repair behavior, coordinate bounds, sensitive action, prompt cache hygiene tests.
+   - Exit condition: malformed/unsafe MiMo output cannot execute actions.
+
+7. CP-9 Action execution and post-action verification loop
+   - Audit IDs: G8, G5, V1
+   - Expected changes: action mapping, sequence IDs, wait/stability, fresh post-action observe, verification prompt/call, before/after artifacts, structured `browser_step` result.
+   - Validation: fake happy path, no-op click failure, navigation fresh screenshot, final evidence, timeout report tests.
+   - Exit condition: every mutating action requires fresh visual verification.
+
+8. CP-10 Recovery engine
+   - Audit IDs: G9, Q1, N1, V1
+   - Expected changes: recovery classifier, scroll/hit-test/inspect/UID fallback, JS fallback disabled-by-default, console/network diagnostics, loop detection integration.
+   - Validation: coordinate drift, stale screenshot, modal overlay, repeated no-op, debug artifact, JS fallback disabled tests.
+   - Exit condition: failed actions do not loop indefinitely and safe-stop when confidence remains low.
+
+9. CP-11 Docker Compose sidecar deployment
+   - Audit IDs: G10, Q1, N3, V2
+   - Expected changes: sidecar Dockerfile/wrapper/service, healthcheck, volumes, app env wiring, internal ports, token requirement, profile cleanup.
+   - Validation: compose smoke, healthcheck, port exposure, artifact volume, profile cleanup evidence.
+   - Exit condition: compose can run app + sidecar safely with browser still disabled unless explicitly enabled.
+
+10. CP-12 Web UI live browser progress events
+    - Audit IDs: G11, N1, Q2, V1
+    - Expected changes: event schema/mapping, frontend state, Browser Live panel, latest screenshot artifact ref, controls, blocked state, coalescing/throttling.
+    - Validation: event serialization, web transport mapping, UI reducer/rendering, artifact ref rendering, flood/coalescing tests.
+    - Exit condition: Web UI shows latest browser state without iframe/VNC/manual control or base64 SSE spam.
+
+11. CP-13 Telegram milestone reporting
+    - Audit IDs: G12, N5, V1
+    - Expected changes: compact progress rendering, blocked/final reports, final artifacts once, sensitive artifact suppression, no start/control commands.
+    - Validation: progress render, milestone event, final delivery, no-command, sensitive suppression tests.
+    - Exit condition: Telegram receives concise reports only.
+
+12. CP-14 Security and policy gates
+    - Audit IDs: Q1, N1, N3, N4, N5, V1
+    - Expected changes: URL scheme policy, sensitive action classifier/approval, credential handles/redaction, download/upload policy, profile policy, sub-agent denial, audit events, prompt-injection safeguards.
+    - Validation: scheme, sub-agent, redaction, sensitive gate, download/upload disabled, real profile disabled, prompt injection tests.
+    - Exit condition: browser capability is safe-by-default and policy-gated.
+
+13. CP-15 Observability, metrics, and logging
+    - Audit IDs: Q3, Q2, G2, V1
+    - Expected changes: browser metrics/logs/traces, token/cached-token accounting for MiMo calls, provider error visibility, redaction.
+    - Validation: metrics/snapshot, redacted log, token accounting, error metric tests.
+    - Exit condition: each browser step is observable without leaking secrets/base64.
+
+14. CP-16 End-to-end smoke scenarios
+    - Audit IDs: V2, G2, G8, G10, G11, G12, Q1
+    - Expected changes: local static/form/modal/console/network test pages, compose/Web UI/Telegram/provider smoke fixtures and captured final artifacts.
+    - Validation: E2E local browser smoke, compose smoke, Web UI smoke, Telegram smoke if profile enabled, env-gated MiMo provider smoke.
+    - Exit condition: MVP behavior is proven against realistic local pages and blocked/error paths.
+
+15. CP-17 Documentation and examples
+    - Audit IDs: V3, N1, N2, N3, N4, N5
+    - Expected changes: README/docs/env examples/troubleshooting/staging checklist/rollback instructions.
+    - Validation: examples match parser, compose snippets validated manually or by CI lint, links/paths checked.
+    - Exit condition: a new user can enable dev compose browser mode without reading implementation code.
+
+16. Final audit
+    - Audit IDs: all
+    - Expected changes: update Completion Audit statuses/evidence, run final validation, fill Final Verification.
+    - Validation: all listed evidence, final `cargo fmt`, clippy, scoped tests, smoke evidence, and `git status` review.
+    - Exit condition: every non-dropped item is `verified`, or remaining item is `blocked` with exact external action needed.
+
+## Validation Contract
+
+- Static checks:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Core/profile checks, chosen per touched checkpoint:
+  - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`
+  - `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go <focused-test>`
+  - `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local <focused-test>`
+- Runtime/manual verification:
+  - env-gated MiMo smoke: `RUN_OPENCODE_GO_MIMO_VISION_SMOKE=1 OPENCODE_API_KEY=... cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go smoke_opencode_go_mimo_v25_accepts_image_input -- --nocapture`
+  - compose sidecar smoke once CP-11 is implemented.
+  - Web UI and Telegram smoke once CP-12/CP-13 are implemented.
+- Artifact verification:
+  - inspect screenshot artifact refs, final reports, ring-buffer eviction evidence, and absence of screenshot bytes in durable history.
+- Done when:
+  - every Completion Audit item is `verified`, or an item is `dropped_by_user` with explicit user instruction, or `blocked` with exact command/output and smallest external action needed.
+
+## Decisions
+
+- 2026-06-16: Use `docs/goals/2026-06-16-browser-live-agent-mvp.md` because the repository already uses `docs/goals/` for durable Codex goal docs.
+- 2026-06-16: Keep CP-1/CP-2 as already-passed evidence but do not mark the full goal complete; remaining implementation starts at CP-3.
+- 2026-06-16: MVP uses only OpenCode Go + `mimo-v2.5` for browser vision. `mimo-v2.5-pro` remains rejected for browser perception because it is text-only for this route.
+- 2026-06-16: Browser sessions are autonomous/headless. Web UI has latest screenshot/status/artifacts and stop controls only; no iframe/VNC/manual browser control.
+- 2026-06-16: HTTP/HTTPS navigation is allow-by-default in MVP; mandatory domain allowlist is post-MVP.
+- 2026-06-16: Telegram cannot start/control browser sessions in MVP; it only reports milestones/final artifacts/blocked state.
+- 2026-06-16: Real Chrome profile attach, direct Xiaomi fallback, and annotated screenshots are not MVP.
+
+## Progress Log
+
+- 2026-06-16: Goal contract created
+  - Changed: added repo-local goal doc with checkpoint plan, Completion Audit ledger, validation contract, owner decisions, and CP-1/CP-2 current evidence.
+  - Evidence: PRD CP-1 and CP-2 are marked passed; live MiMo smoke evidence exists in PRD and prior commit history.
+  - Commands: `git status --short`; `git add -N docs/goals/2026-06-16-browser-live-agent-mvp.md && git diff --stat -- docs/goals/2026-06-16-browser-live-agent-mvp.md && git diff --check -- docs/goals/2026-06-16-browser-live-agent-mvp.md`; secret-pattern scan across the goal doc, PRD, and OpenCode Go provider source.
+  - Audit IDs updated: G2 is `in_progress`; all other non-completed implementation items remain `pending`.
+  - Next: commit this goal doc, then start CP-3 config/model validation.
+
+## Risks and Blockers
+
+- Live validation requires external services later
+  - Impact: CP-11/CP-16 cannot be fully verified without Docker sidecar runtime and, for MiMo staging smoke, an OpenCode Go API key.
+  - Evidence: PRD explicitly requires compose and env-gated provider smoke at `docs/prd/chrome-agent.md:3435` and `docs/prd/chrome-agent.md:3556`.
+  - Mitigation or requested decision: continue with hermetic config/client/fake-sidecar work; block only exact live smoke evidence if dependencies are unavailable at that checkpoint.
+  - Audit IDs affected: G10, V2.
+
+- Existing unrelated active goal doc remains in `docs/goals/2026-06-15-llm-provider-wire-path-unification.md`
+  - Impact: repository has another active goal document, but no active OpenCode goal state was set before creating this one.
+  - Evidence: `get_goal` returned no active OpenCode goal; `docs/goals/` convention allows durable docs.
+  - Mitigation or requested decision: keep this browser goal as the active execution target for this thread; archive/finish unrelated goal separately if needed.
+  - Audit IDs affected: none.
+
+## Final Verification
+
+Filled only when complete.
+
+- Completion Audit result:
+- Commands run:
+- Artifacts inspected:
+- Remaining gaps:
+- User-accepted exceptions:
+- Final status:
