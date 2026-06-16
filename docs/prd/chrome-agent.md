@@ -2892,6 +2892,25 @@ Remove browser config section and env docs. Existing provider/media routes remai
 
 ### CP-4: Sidecar API contract and typed client
 
+**Status: PASS — typed sidecar REST contract/client added on current branch.**
+
+**Confirmed evidence**
+
+* Added feature-gated `browser_live` provider module behind `tool-browser-live`.
+* Added typed sidecar REST client in `crates/oxide-agent-core/src/agent/providers/browser_live/client.rs` with bearer auth, idempotency key support, per-endpoint timeout config, response envelope parsing, stable error mapping, and retry classification.
+* Added wire types in `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` for REST endpoints and stream event contracts, including screenshot/artifact metadata without base64 image bytes.
+* Added error type in `crates/oxide-agent-core/src/agent/providers/browser_live/error.rs` with stable kind/agent-message/retryability helpers.
+* CP-4 does not execute real browser actions and has no dependency on sandbox command execution.
+
+**Validated commands**
+
+```bash
+cargo fmt --all -- --check
+cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live
+cargo check -p oxide-agent-core --no-default-features --features tool-browser-live
+cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings
+```
+
 **Purpose**
 Introduce a typed Rust client for the sidecar API with no browser loop logic yet.
 
@@ -2904,30 +2923,30 @@ Introduce a typed Rust client for the sidecar API with no browser loop logic yet
 
 **Implementation tasks**
 
-* [ ] Add feature-gated `browser_live` module.
-* [ ] Define request/response structs for all REST endpoints.
-* [ ] Define `SidecarError` mapping to stable error codes.
-* [ ] Add auth header injection.
-* [ ] Add idempotency key support.
-* [ ] Add per-endpoint timeout config.
-* [ ] Add retry classification helpers.
-* [ ] Add screenshot/artifact metadata types.
-* [ ] Do not execute real actions yet.
+* [x] Add feature-gated `browser_live` module.
+* [x] Define request/response structs for all REST endpoints.
+* [x] Define `SidecarError` mapping to stable error codes.
+* [x] Add auth header injection.
+* [x] Add idempotency key support.
+* [x] Add per-endpoint timeout config.
+* [x] Add retry classification helpers.
+* [x] Add screenshot/artifact metadata types.
+* [x] Do not execute real actions yet.
 
 **Acceptance criteria**
 
-* [ ] Client compiles behind `tool-browser-live`.
-* [ ] Client serializes/deserializes API contract shapes.
-* [ ] Missing token is rejected in enabled production config.
-* [ ] Errors map to retryable/non-retryable categories.
-* [ ] No direct dependency on sandbox command execution.
+* [x] Client compiles behind `tool-browser-live`.
+* [x] Client serializes/deserializes API contract shapes.
+* [x] Missing token is rejected in enabled production config.
+* [x] Errors map to retryable/non-retryable categories.
+* [x] No direct dependency on sandbox command execution.
 
 **Tests**
 
-* [ ] Serialization tests.
-* [ ] Error mapping tests.
-* [ ] Auth/idempotency header tests with mock HTTP server.
-* [ ] Timeout config tests.
+* [x] Serialization tests.
+* [x] Error mapping tests.
+* [x] Auth/idempotency header tests with mock HTTP server.
+* [x] Timeout config tests.
 
 **Rollback**
 Disable `tool-browser-live` feature and remove module export. No runtime behavior changes.

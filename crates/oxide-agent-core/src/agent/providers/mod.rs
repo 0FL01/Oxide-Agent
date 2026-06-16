@@ -45,6 +45,9 @@ pub mod tavily;
 #[cfg(feature = "tool-brave-search")]
 pub mod brave_search;
 
+#[cfg(feature = "tool-browser-live")]
+pub mod browser_live;
+
 #[cfg(feature = "tool-crw")]
 pub mod crw;
 
@@ -106,6 +109,13 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "tool-brave-search")]
 pub use brave_search::BraveSearchProvider;
+
+#[cfg(feature = "tool-browser-live")]
+pub use browser_live::{
+    BrowserAction, BrowserObservation, BrowserSidecarClient, BrowserSidecarError,
+    BrowserSidecarTimeouts, CreateSessionRequest, IdempotencyKey, ScreenshotArtifact,
+    SidecarErrorBody, Viewport,
+};
 
 #[cfg(feature = "tool-crw")]
 pub use crw::CrwProvider;

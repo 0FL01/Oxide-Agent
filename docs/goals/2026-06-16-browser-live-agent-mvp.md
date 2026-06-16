@@ -71,8 +71,8 @@ Out of scope:
   - Requirement: introduce feature-gated typed REST/WS client, auth header injection, idempotency keys, timeout config, retryable/non-retryable error mapping, and screenshot/artifact metadata types.
   - Acceptance: client compiles behind `tool-browser-live`; contract shapes serialize/deserialize; missing token rejected in enabled production config; no sandbox command dependency.
   - Evidence required: serialization, auth/idempotency header, timeout, and error mapping tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-4 added `tool-browser-live`, `browser_live::{client,error,types}` module, typed REST methods for sidecar endpoints, stream contract types, bearer auth/idempotency headers, endpoint timeouts, stable error kind/retry mapping, and screenshot artifact metadata. Tests `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live` passed 10 focused tests covering serialization, error mapping, auth/idempotency headers with a mock HTTP server, missing token/idempotency key rejection, timeout config, and no base64 screenshot bytes in observation metadata. `rg` over `crates/oxide-agent-core/src/agent/providers/browser_live` found no sandbox/process command dependency.
 
 - G4: Fake sidecar test seam
   - Source: `docs/prd/chrome-agent.md:2917`
@@ -184,7 +184,7 @@ Out of scope:
   - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
   - Evidence required: command output summaries in Progress Log and Final Verification.
   - Status: in_progress
-  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`.
+  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
 
 - V2: End-to-end smoke scenarios
   - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
@@ -384,6 +384,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`.
   - Audit IDs updated: G1 verified, G2 verified, N2 verified, N4 verified, V1 in progress.
   - Next: commit CP-3, then start CP-4 sidecar API contract and typed client.
+
+- 2026-06-16: CP-4 sidecar API contract and typed client
+  - Changed: added `tool-browser-live` feature, feature-gated `browser_live` module export, typed sidecar REST client, sidecar error mapping, REST/stream contract types, screenshot artifact metadata, idempotency key type, and per-endpoint timeout config.
+  - Evidence: client constructor rejects missing sidecar token; mutating calls require a non-empty idempotency key; mock HTTP server test verifies bearer auth and `Idempotency-Key` headers; error envelope test maps retryable sidecar errors to stable kinds; serialization tests cover session/action/observation/stream shapes and prove observation metadata has artifact refs, not base64 image bytes; grep found no sandbox/process command dependency in the module.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `rg -n "sandbox|Sandbox|std::process|Command::" crates/oxide-agent-core/src/agent/providers/browser_live || true`.
+  - Audit IDs updated: G3 verified, V1 in progress.
+  - Next: commit CP-4, then start CP-5 fake sidecar for tests.
 
 ## Risks and Blockers
 
