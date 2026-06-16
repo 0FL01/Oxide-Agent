@@ -119,7 +119,7 @@
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `crates/oxide-agent-transport-telegram/src/bot/agent_transport.rs`            | Telegram transport, progress/file delivery. Browser milestones/final screenshot должны использовать этот существующий путь. |
 | `crates/oxide-agent-transport-telegram/src/bot/progress_render.rs`            | Renders progress message. Browser progress должен быть компактным.                                                          |
-| `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/controls.rs`    | Stop/cancel/control flow. Browser manual intervention and stop must integrate here.                                         |
+| `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/controls.rs`    | Stop/cancel/control flow. Browser blocked/safe-stop states and stop must integrate here.                                    |
 | `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` | Task lifecycle.                                                                                                             |
 | `crates/oxide-agent-transport-telegram/src/bot/handlers.rs`                   | Upload/photo/document handling already exists. Useful for manual artifacts, but browser screenshots should not spam chat.   |
 
@@ -223,8 +223,8 @@ Direct Xiaomi endpoint `https://api.xiaomimimo.com/v1/chat/completions` суще
 4. **MiMo v2.5 through OpenCode Go**: screenshot perception идёт через provider `opencode-go`, model `mimo-v2.5`, direct image input payload.
 5. **Post-action verification**: каждое действие получает fresh screenshot и expected-result verification до следующего действия.
 6. **Robust recovery**: при failed click/input/navigation агент пробует re-observe, scroll, hit-test/inspect, UID action, controlled JS fallback, console/network diagnostics.
-7. **Web UI live progress**: пользователь видит latest screenshot, URL/title, current step/action, confidence, debug badges, pause/resume/stop и artifacts.
-8. **Telegram milestone reporting**: Telegram получает только milestone/final artifacts и manual intervention prompts, без frame spam.
+7. **Web UI live progress**: пользователь видит latest screenshot, URL/title, current step/action, confidence, debug badges, pause/resume/stop/kill и artifacts; прямого iframe/VNC/manual browser control в MVP нет.
+8. **Telegram milestone reporting**: Telegram получает только milestone/final artifacts и blocked/safe-stop reports, без frame spam.
 9. **Safe defaults**: no real user profile/cookies by default, domain allowlist option, sidecar token auth, per-session isolation, sub-agent deny-by-default.
 10. **Prompt cache hygiene**: screenshots не попадают в stable prompt prefix и не накапливаются в main conversation history.
 11. **Observability**: есть metrics/logging для action success, screenshot count, MiMo latency, invalid JSON, recovery rate, artifact size, cached token impact.
@@ -263,7 +263,7 @@ Direct Xiaomi endpoint `https://api.xiaomimimo.com/v1/chat/completions` суще
 7. **Network/API failure diagnosis**: как backend developer, я хочу, чтобы агент при UI failure собрал network errors, console errors и final screenshot.
 8. **Web UI live watch**: как пользователь Web UI, я хочу видеть latest browser screenshot и текущий шаг агента без перегрузки SSE.
 9. **Telegram milestone reporting**: как Telegram user, я хочу получать milestone сообщения и final screenshot/artifacts, но не поток каждого кадра.
-10. **Manual intervention for CAPTCHA/2FA**: как пользователь, я хочу, чтобы агент остановился и попросил меня выполнить CAPTCHA/2FA вручную, а затем продолжил после подтверждения.
+10. **Autonomous blocked state for CAPTCHA/2FA**: как пользователь, я хочу, чтобы агент сам контролировал headless browser; если CAPTCHA/2FA нельзя безопасно пройти агентом, он останавливается с blocked report, а не просит меня вручную кликать внутри браузера.
 11. **Modal handling**: как QA, я хочу, чтобы агент мог заметить cookie/banner/modal overlay и корректно закрыть или обработать его по policy.
 12. **Debug artifact capture**: как инженер, я хочу получить `observe.json`, screenshots, console/network summaries и final report для воспроизведения.
 
@@ -303,9 +303,9 @@ User
 | State/ring-buffer            | Keeps compact browser state outside LLM history.                                                                             |
 | Action executor              | Translates validated action schema to sidecar action API.                                                                    |
 | Verification engine          | Verifies expected result after action via fresh screenshot and optional debug state.                                         |
-| Recovery engine              | Handles failed/stale/no-op actions and escalates to debug/manual/abort.                                                      |
+| Recovery engine              | Handles failed/stale/no-op actions and escalates to debug/blocked/abort.                                                     |
 | Web UI integration           | SSE events + live browser panel, latest screenshot ref, debug badges.                                                        |
-| Telegram integration         | Milestones, final artifacts, manual intervention prompts.                                                                    |
+| Telegram integration         | Milestones, final artifacts, blocked/safe-stop reports.                                                                      |
 
 ### 7.3 Main loop
 
@@ -341,7 +341,7 @@ User
 10. Capture fresh screenshot.
 11. Verify expected result visually.
 12. Emit progress/artifact events.
-13. Continue until done, blocked, error, timeout, loop detection, or user intervention.
+13. Continue until done, blocked, error, timeout, loop detection, or explicit stop/kill.
 14. Close or retain session according to policy.
 ```
 
@@ -1048,7 +1048,7 @@ Final URL/title/screenshot reflect target page or known redirect.
 Timeout, blocked domain, redirect loop, auth wall, anti-bot, network error.
 
 **Fallback**
-Re-observe, fetch network summary, retry once if retryable, ask user if login/2FA required.
+Re-observe, fetch network summary, retry once if retryable, stop with blocked report if login/2FA cannot be completed by the agent using allowed credential/code handles.
 
 ### 9.2 `click_xy`
 
@@ -1147,7 +1147,7 @@ Input value changed; for password/token fields only verify presence/masked lengt
 Target not input, stale ID, value rejected, frontend validation.
 
 **Fallback**
-Re-inspect, use selector fallback if allowed, manual intervention if secret cannot be safely supplied.
+Re-inspect, use selector fallback if allowed, stop with blocked report if secret cannot be safely supplied through an approved secret handle.
 
 ### 9.6 `press`
 
@@ -1377,17 +1377,17 @@ Require final verification call if confidence below threshold or task has explic
 ```json
 {
   "kind": "ask_user",
-  "question": "Please complete 2FA in the browser preview and click Continue.",
+  "question": "Provide the one-time code, or stop the task.",
   "reason": "2FA required",
-  "allowed_user_actions": ["manual_browser_intervention", "provide_code", "stop"]
+  "allowed_user_actions": ["provide_code", "approve", "stop"]
 }
 ```
 
 **Side effects**
-Pauses browser loop and asks user.
+Pauses browser loop and asks user for external input or approval. The user does not manually control the headless browser.
 
 **Verification expectation**
-User response or manual browser state change.
+User response, then the agent continues controlling the browser itself or stops safely.
 
 **Common failure modes**
 User unavailable, timeout, task abandoned.
@@ -1742,8 +1742,8 @@ Web UI must show a Browser Live panel when a browser session is active:
 6. Last expected result.
 7. Last verification status.
 8. MiMo confidence.
-9. Pause/resume/stop controls.
-10. Manual intervention prompt when needed.
+9. Pause/resume/stop/kill controls.
+10. Blocked/safe-stop state and final failure report when the agent cannot proceed autonomously.
 11. Network error badge.
 12. Console error badge.
 13. Artifact list.
@@ -1762,7 +1762,7 @@ BrowserDecision
 BrowserVerification
 BrowserRecovery
 BrowserDebugSummary
-BrowserInterventionRequired
+BrowserBlocked
 BrowserArtifact
 BrowserSessionClosed
 ```
@@ -1810,8 +1810,8 @@ Do not:
 
 1. Browser panel visible only to users allowed to view task artifacts.
 2. Screenshot artifact download requires existing task auth.
-3. Manual intervention controls require task owner or admin.
-4. Stop/pause/resume must map to existing cancellation/control flow.
+3. Stop/pause/resume/kill controls require task owner or admin.
+4. Stop/pause/resume/kill must map to existing cancellation/control flow.
 5. Sensitive screenshots should be marked and not auto-previewed in shared contexts unless policy allows.
 
 ---
@@ -1829,11 +1829,11 @@ Telegram UX is intentionally smaller than Web UI.
    * navigation completed;
    * major form submitted;
    * recovery/debug started;
-   * manual intervention required;
+   * browser blocked/safe-stopped;
    * final done/error.
 3. Send final screenshot/artifacts when task completes.
 4. Send console/network summaries only when relevant.
-5. Ask user for CAPTCHA/2FA/manual step with clear instructions.
+5. Report CAPTCHA/2FA/manual-control blockers clearly; do not ask the user to operate the headless browser manually.
 6. Support stop/cancel control through existing Telegram controls.
 7. Do not send sensitive screenshots unless policy marks them safe or user explicitly requests.
 
@@ -1847,11 +1847,11 @@ Step 3: filled login form.
 Verification: login button visible, waiting for submit.
 ```
 
-Manual intervention:
+Blocked state:
 
 ```text
-⚠️ Manual browser step required: 2FA challenge is visible.
-Open the Web UI browser preview, complete 2FA, then reply /continue or press Continue.
+⚠️ Browser blocked: CAPTCHA/2FA challenge is visible.
+The agent stopped safely. It will not bypass the challenge or ask you to control the headless browser manually.
 ```
 
 Final:
@@ -2154,7 +2154,7 @@ Recommended sidecar hardening:
 | Downloads/uploads               | Disabled by default; session dir; size/type allowlist; audit event.                                                  |
 | Destructive actions             | Sensitive action classifier + confirmation gates.                                                                    |
 | Payments/purchases              | Require explicit user confirmation before final purchase/payment action.                                             |
-| CAPTCHA/2FA                     | Do not solve automatically; ask user for manual intervention.                                                        |
+| CAPTCHA/2FA                     | Do not bypass or ask for manual browser control; stop with blocked report unless an allowed external code/approval is sufficient for the agent to continue autonomously. |
 | Prompt injection from webpages  | Treat page text as untrusted observation; policy prevents secret reveal and external exfiltration.                   |
 | Screenshots containing secrets  | Mark artifacts sensitive; redact known input fields; avoid Telegram auto-send.                                       |
 | Logs containing secrets         | Structured redaction; no base64; no headers/cookies.                                                                 |
@@ -2208,7 +2208,7 @@ Record audit entries for:
 6. Policy override.
 7. Real profile/persistent profile usage.
 8. Sidecar crash/restart.
-9. Manual intervention.
+9. Blocked/safe-stop decisions.
 
 Audit entries should include `task_id`, `session_id`, `action_seq`, `actor`, `policy`, `decision`, `reason`, timestamp, and artifact refs.
 
@@ -2355,9 +2355,9 @@ If enabled:
 If anti-bot/CAPTCHA detected:
 
 1. Do not bypass.
-2. Emit `BrowserInterventionRequired`.
-3. Ask user to complete manual step if allowed.
-4. Timeout safely if user unavailable.
+2. Emit `BrowserBlocked`.
+3. Stop the autonomous browser loop with a clear blocked report.
+4. Do not ask the user to operate the headless browser manually.
 5. Include screenshot in final report only if safe.
 
 ### 17.11 Browser or sidecar crash
@@ -2390,7 +2390,7 @@ Controls:
 3. Post-action verification.
 4. Debug fallback.
 5. Loop detection.
-6. Manual intervention/abort path.
+6. Blocked/safe-stop path.
 
 ---
 
@@ -2424,7 +2424,7 @@ browser_sidecar_requests_total{endpoint,status}
 browser_sidecar_latency_seconds{endpoint}
 browser_sidecar_ws_reconnects_total
 browser_policy_denials_total{reason}
-browser_manual_interventions_total{reason}
+browser_blocked_total{reason}
 browser_loop_detected_total
 browser_open_code_rate_limits_total
 browser_prompt_tokens_total
@@ -2665,7 +2665,7 @@ Scripted fake screenshots/states:
 **Scope**
 
 1. Browser milestones render compactly.
-2. Manual intervention prompt sent.
+2. Blocked/safe-stop report sent.
 3. Final screenshot artifact sent once.
 4. Sensitive artifact not auto-sent.
 
@@ -2724,7 +2724,7 @@ Run against:
 4. Dashboard with console error.
 5. Page with failed API request.
 6. Page with modal/cookie banner.
-7. CAPTCHA/2FA page requiring manual intervention.
+7. CAPTCHA/2FA page requiring blocked/safe-stop report.
 8. Browser crash/restart simulation.
 9. OpenCode Go 429 simulation or forced retry.
 10. Web UI live watch.
@@ -3148,7 +3148,7 @@ Implement bounded visual action cycle: decide → execute → wait → observe �
 * [ ] Timeout produces report.
 
 **Rollback**
-Disable execution inside `browser_step`; keep observe/debug/manual tooling.
+Disable execution inside `browser_step`; keep observe/debug tooling.
 
 ---
 
@@ -3276,8 +3276,9 @@ Expose browser progress and latest screenshot in Web UI without flooding SSE.
 * [ ] Add Browser Live panel.
 * [ ] Display latest screenshot via artifact ref.
 * [ ] Display URL/title/action/confidence/debug badges.
-* [ ] Add pause/resume/stop controls.
-* [ ] Add manual intervention UI state.
+* [ ] Add pause/resume/stop/kill controls.
+* [ ] Add blocked/safe-stop UI state.
+* [ ] Explicitly exclude iframe/VNC/manual browser control from MVP.
 * [ ] Coalesce/throttle preview events.
 * [ ] Avoid base64 in SSE.
 
@@ -3286,7 +3287,8 @@ Expose browser progress and latest screenshot in Web UI without flooding SSE.
 * [ ] Web UI shows live latest screenshot.
 * [ ] UI updates current action and verification result.
 * [ ] Network/console badges visible.
-* [ ] Pause/stop controls work.
+* [ ] Pause/stop/kill controls work.
+* [ ] UI does not expose direct manual browser control.
 * [ ] SSE event log is not flooded by preview frames.
 * [ ] Replayed task shows final browser artifacts.
 
@@ -3318,7 +3320,7 @@ Add compact Telegram integration without live frame spam.
 **Implementation tasks**
 
 * [ ] Render browser milestones in progress message.
-* [ ] Send manual intervention prompts.
+* [ ] Send blocked/safe-stop reports.
 * [ ] Send final screenshot/artifacts only once.
 * [ ] Suppress live frame events by default.
 * [ ] Integrate stop/cancel with browser loop.
@@ -3328,7 +3330,7 @@ Add compact Telegram integration without live frame spam.
 
 * [ ] Telegram receives concise browser progress.
 * [ ] Telegram does not receive every screenshot.
-* [ ] Manual intervention prompt is actionable.
+* [ ] Blocked report clearly explains why the agent stopped.
 * [ ] Final screenshot delivery uses existing file delivery path.
 * [ ] Sensitive screenshots are not auto-sent.
 
@@ -3378,7 +3380,7 @@ Make browser capability safe by default and integrated with existing hooks/sub-a
 * [ ] Private/internal URLs blocked by default.
 * [ ] Secrets are never serialized into MiMo prompt/log/event.
 * [ ] Sensitive actions require approval.
-* [ ] CAPTCHA/2FA triggers manual intervention, not bypass.
+* [ ] CAPTCHA/2FA triggers blocked/safe-stop report, not bypass or manual browser control.
 
 **Tests**
 
@@ -3475,7 +3477,7 @@ Prove MVP works against realistic pages.
 * [ ] Web UI shows live preview.
 * [ ] Docker Compose deployment works.
 * [ ] Invalid MiMo output path is tested.
-* [ ] Manual intervention path is tested.
+* [ ] Blocked/safe-stop path is tested.
 
 **Tests**
 
@@ -3556,9 +3558,9 @@ Release is Done only if all criteria pass:
 12. Oxide can diagnose a console error.
 13. Oxide can diagnose a network/API failure.
 14. Web UI shows latest screenshot, URL/title, current action, expected result, confidence and debug badges.
-15. Web UI supports pause/stop and manual intervention state.
+15. Web UI supports pause/stop/kill and blocked/safe-stop state, with no direct iframe/VNC/manual browser control.
 16. Telegram sends milestones/final artifacts without frame spam.
-17. CAPTCHA/2FA path asks user for manual intervention and does not bypass.
+17. CAPTCHA/2FA path stops with blocked report and does not bypass or ask for manual browser control.
 18. Screenshots are stored as artifacts/ring-buffer, not appended to main LLM history.
 19. Prompt cache stable prefix is not polluted by volatile frames.
 20. `mimo-v2.5` image smoke test passes in staging.
@@ -3592,13 +3594,13 @@ Release is Done only if all criteria pass:
 | Sidecar unauthenticated port exposed                            | Anyone on network could drive browser/CDP                        | Port scan/compose test; auth tests                           | Bearer token, internal network only, no public port, CDP isolated                                  | CP-11, CP-14              |
 | Screenshots leak secrets                                        | UI/Telegram/artifacts may expose passwords/tokens/user data      | Redaction tests; sensitive artifact flags                    | Redact fields, avoid Telegram auto-send, auth-gated artifact access                                | CP-6, CP-12, CP-13, CP-14 |
 | Web pages exfiltrate credentials through prompt injection       | Page asks model to paste secrets elsewhere                       | Secret handle tests; policy audit                            | Credentials as handles; domain-bound fill; no secret values in MiMo prompt                         | CP-14                     |
-| CAPTCHA/2FA impossible to automate safely                       | Unsafe/forbidden bypass behavior or endless loop                 | CAPTCHA fixture/manual staging                               | Ask user for manual intervention; no bypass                                                        | CP-10, CP-14, CP-16       |
+| CAPTCHA/2FA impossible to automate safely                       | Unsafe/forbidden bypass behavior or endless loop                 | CAPTCHA fixture/manual staging                               | Stop with blocked report; no bypass and no manual headless-browser control                         | CP-10, CP-14, CP-16       |
 | Browser profile persists sensitive cookies                      | Later tasks/users inherit session                                | Profile cleanup tests                                        | Ephemeral profiles default; purge on close; real profile disabled                                  | CP-11, CP-14              |
 | Downloads write unexpected files                                | Disk fill, malware risk, data leakage                            | Download fixture; artifact monitor                           | Downloads disabled by default; session dir; size/type caps                                         | CP-14                     |
 | Large artifact volume fills disk                                | Screenshots/debug traces can exhaust storage                     | Artifact byte metrics; retention tests                       | Ring-buffer, retention hours, size cap cleanup                                                     | CP-6, CP-15               |
 | WebSocket floods UI/backend                                     | SSE/task event log can drop important events                     | Flood/coalescing test; WS metrics                            | Stream refs only; throttle/coalesce to latest frame                                                | CP-12                     |
 | Model loops on same failed action                               | Wastes tokens and may damage state                               | Browser loop signatures; repeated action tests               | Loop detection + max recovery steps + safe stop                                                    | CP-10                     |
-| Anti-bot blocks                                                 | Browser task stalls or attempts unsafe bypass                    | Visual detection/manual staging                              | Report block; ask user; do not bypass                                                              | CP-10, CP-16              |
+| Anti-bot blocks                                                 | Browser task stalls or attempts unsafe bypass                    | Visual detection/manual staging                              | Report blocked state; do not bypass                                                                | CP-10, CP-16              |
 | Chrome crashes in container                                     | Session lost, actions fail mid-task                              | Crash simulation; sidecar health metrics                     | Preserve artifacts, reconnect once, do not replay mutation blindly                                 | CP-5, CP-11               |
 | Sandbox/network mode exposes host services                      | Browser can access host/internal network                         | SSRF tests; compose review                                   | Deny private networks, avoid host network, egress controls                                         | CP-11, CP-14              |
 | Sub-agent gets browser capability accidentally                  | Delegated agent may browse/exfiltrate beyond policy              | Sub-agent tool visibility tests                              | Deny by default via tool access/sub-agent safety hooks                                             | CP-7, CP-14               |
@@ -3608,7 +3610,7 @@ Release is Done only if all criteria pass:
 | JS click fallback causes hidden/destructive actions             | JS can bypass normal UI constraints                              | JS fallback tests; audit                                     | Disabled by default; only policy-approved debug fallback                                           | CP-10, CP-14              |
 | Network/console artifacts contain secrets                       | Headers/query/body/logs may leak tokens                          | Redaction tests                                              | Redact headers/query/body; bodies off by default                                                   | CP-14                     |
 | Sidecar wrapper diverges from `chrome-agent` behavior           | Contract tests pass but real sidecar fails                       | Compose smoke with real Chromium/chrome-agent                | Contract tests plus real E2E smoke                                                                 | CP-11, CP-16              |
-| Manual intervention leaves session open too long                | User disappears; sensitive browser remains alive                 | Timeout test; session duration metrics                       | Session timeout, pause timeout, safe close                                                         | CP-9, CP-14               |
+| Paused/blocked session remains open too long                    | User disappears; sensitive browser remains alive                 | Timeout test; session duration metrics                       | Session timeout, pause timeout, safe close                                                         | CP-9, CP-14               |
 | OpenCode `/models` metadata lacks modalities                    | Capability discovery may be ambiguous                            | Discovery tests; live catalog check                          | Keep explicit fallback for MiMo routes; fail closed for unknown browser model                      | CP-1, CP-3                |
 
 ---
@@ -3620,7 +3622,7 @@ Release is Done only if all criteria pass:
 3. Should real user Chrome profile attach ever be supported? Recommendation: not in MVP; later only with explicit owner approval, local-only mode, warning banner and audit trail.
 4. Should direct Xiaomi endpoint be supported as fallback if OpenCode Go image routing fails? Recommendation: not MVP; consider only after CP-2 results and separate provider/security review.
 5. Should annotated screenshots be implemented in MVP? Recommendation: not required for MVP if hit-test/a11y fallback works; add CP+1 for annotated screenshots if coordinate recovery remains weak.
-6. Should browser session be manually controllable inside Web UI iframe/VNC-like panel, or only through sidecar actions? Recommendation: MVP supports manual intervention prompt and latest screenshot; direct manual remote control is CP+1 unless already cheap in sidecar.
+6. Should browser session be manually controllable inside Web UI iframe/VNC-like panel, or only through sidecar actions? **Decision: only autonomous sidecar actions in MVP.** Web UI shows latest screenshot/status/artifacts and stop controls, but no iframe/VNC/manual browser control. If CAPTCHA/2FA/anti-bot blocks autonomous progress, the agent safe-stops with a blocked report instead of asking the user to operate the headless browser manually.
 
 ---
 
