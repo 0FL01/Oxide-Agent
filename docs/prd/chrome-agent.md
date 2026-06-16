@@ -3011,6 +3011,23 @@ Remove fake sidecar/test seam if client contract changes before loop implementat
 
 ### CP-6: Browser session state, ring-buffer, and artifact model
 
+**Status: PASS — task-local session state and artifact ring-buffer added on current branch.**
+
+**Evidence added**
+
+* `BrowserSessionState` tracks task id, session id, latest frame, action sequence, viewport/DSF, bounded ring-buffer, retained artifacts, and live artifact bytes outside LLM history.
+* `BrowserArtifactSettings` derives root/retention/soft cap from existing `ToolRuntimeConfig` and builds stable `artifact://browser/<task>/<session>/step-....` refs under the tool artifact root.
+* Final/milestone/debug artifacts are retained independently of live-frame ring-buffer eviction; live frames get retention expiry and byte-cap eviction.
+* Screenshot metadata validation rejects data URLs/base64 markers, viewport mismatch, and missing hash.
+* Focused validation passed:
+
+```bash
+cargo fmt --all -- --check
+cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live
+cargo check -p oxide-agent-core --no-default-features --features tool-browser-live
+cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings
+```
+
 **Purpose**
 Add internal state model for browser sessions and screenshots outside LLM history.
 
@@ -3024,31 +3041,31 @@ Add internal state model for browser sessions and screenshots outside LLM histor
 
 **Implementation tasks**
 
-* [ ] Define `BrowserSessionState`.
-* [ ] Define `BrowserObservation`.
-* [ ] Define `ScreenshotArtifact`.
-* [ ] Implement ring-buffer with max frames.
-* [ ] Implement artifact naming.
-* [ ] Integrate with existing tool artifact directory/config.
-* [ ] Track action sequence, screenshot hash, viewport, DSF.
-* [ ] Add retention/size cap hooks.
-* [ ] Ensure no image bytes are added to main message history.
+* [x] Define `BrowserSessionState`.
+* [x] Define `BrowserObservation`.
+* [x] Define `ScreenshotArtifact`.
+* [x] Implement ring-buffer with max frames.
+* [x] Implement artifact naming.
+* [x] Integrate with existing tool artifact directory/config.
+* [x] Track action sequence, screenshot hash, viewport, DSF.
+* [x] Add retention/size cap hooks.
+* [x] Ensure no image bytes are added to main message history.
 
 **Acceptance criteria**
 
-* [ ] Session state persists enough for recovery within a task.
-* [ ] Ring-buffer evicts old live frames.
-* [ ] Final/milestone artifacts are retained.
-* [ ] Artifact refs can be emitted to Web UI/Telegram.
-* [ ] Unit tests prove no screenshot bytes enter conversation history.
+* [x] Session state persists enough for recovery within a task.
+* [x] Ring-buffer evicts old live frames.
+* [x] Final/milestone artifacts are retained.
+* [x] Artifact refs can be emitted to Web UI/Telegram.
+* [x] Unit tests prove no screenshot bytes enter conversation history.
 
 **Tests**
 
-* [ ] Ring-buffer eviction.
-* [ ] Artifact naming.
-* [ ] Screenshot metadata validation.
-* [ ] Retention/size cap behavior.
-* [ ] History hygiene regression.
+* [x] Ring-buffer eviction.
+* [x] Artifact naming.
+* [x] Screenshot metadata validation.
+* [x] Retention/size cap behavior.
+* [x] History hygiene regression.
 
 **Rollback**
 Disable browser provider registration; artifact model remains unused.

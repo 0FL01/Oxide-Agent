@@ -87,8 +87,8 @@ Out of scope:
   - Requirement: maintain task-local browser session state, latest screenshot, bounded ring-buffer, artifact refs, action sequence, viewport/DSF, retention and size caps outside main LLM history.
   - Acceptance: ring-buffer evicts old frames; final/milestone artifacts retained; artifact refs can be emitted; unit tests prove screenshot bytes do not enter conversation history.
   - Evidence required: ring-buffer, artifact naming, metadata validation, retention/size cap, and history hygiene tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-6 added `artifacts.rs` and `session.rs` with `BrowserArtifactSettings`, stable artifact URI/path naming under the existing tool runtime artifact root, `BrowserSessionState`, `BrowserFrame`, ring-buffer eviction, retained final/milestone/debug artifact refs, live-byte soft-cap eviction, viewport/hash/image-byte metadata validation, and compact history summaries containing artifact refs only. Focused tests prove ring-buffer eviction, final artifact retention, artifact naming/sanitization, retention expiry for live frames, size-cap behavior, metadata validation, and history hygiene with no `base64`/`data:image` content.
 
 - G6: Core browser tools
   - Source: `docs/prd/chrome-agent.md:3003`
@@ -184,7 +184,7 @@ Out of scope:
   - Acceptance: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and checkpoint-specific `cargo test`/`cargo check` commands pass or exact blockers are documented.
   - Evidence required: command output summaries in Progress Log and Final Verification.
   - Status: in_progress
-  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-5 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
+  - Evidence collected: CP-3 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go browser_agent_config_`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go settings_bootstraps_opencode_go_route_from_api_key_only`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --all-targets -- -D warnings`. CP-4 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-5 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`. CP-6 focused validation passed: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
 
 - V2: End-to-end smoke scenarios
   - Source: `docs/prd/chrome-agent.md:3435`, `docs/prd/chrome-agent.md:3566`
@@ -398,6 +398,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
   - Audit IDs updated: G4 verified, V1 in progress.
   - Next: commit CP-5, then start CP-6 session state, ring-buffer, and artifacts.
+
+- 2026-06-16: CP-6 session state, ring-buffer, and artifacts
+  - Changed: added `BrowserArtifactSettings`, stable browser artifact refs/paths integrated with `ToolRuntimeConfig`, and `BrowserSessionState` with latest frame, action sequence, bounded ring-buffer, retained artifacts, live-byte soft cap, metadata validation, and compact history summary.
+  - Evidence: tests cover ring-buffer eviction without losing retained final artifacts, artifact naming/sanitization under the tool artifact root, retention expiry for live frames, live artifact byte-cap eviction, screenshot metadata validation for no image bytes/hash/viewport, and history hygiene summaries containing artifact refs rather than `base64` or `data:image` payloads.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`.
+  - Audit IDs updated: G5 verified, V1 in progress.
+  - Next: commit CP-6, then start CP-7 core browser provider tools.
 
 ## Risks and Blockers
 
