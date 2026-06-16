@@ -151,6 +151,12 @@ fn validate_action(
                 return invalid_action("wait timeout_ms must be between 100 and 10000");
             }
         }
+        BrowserDecisionAction::Navigate { url } => {
+            non_empty("url", url)?;
+            if !is_http_url(url) {
+                return invalid_action("navigate url must use http or https");
+            }
+        }
         BrowserDecisionAction::Debug { reason } => non_empty("reason", reason)?,
         BrowserDecisionAction::AskUser { question } => non_empty("question", question)?,
         BrowserDecisionAction::Done {
@@ -188,6 +194,7 @@ fn is_executable_action(action: &BrowserDecisionAction) -> bool {
             | BrowserDecisionAction::Press { .. }
             | BrowserDecisionAction::Scroll { .. }
             | BrowserDecisionAction::Wait { .. }
+            | BrowserDecisionAction::Navigate { .. }
     )
 }
 
@@ -200,6 +207,11 @@ fn non_empty(field: &str, value: &str) -> Result<(), BrowserDecisionParseError> 
 
 fn invalid_action<T>(message: impl Into<String>) -> Result<T, BrowserDecisionParseError> {
     Err(BrowserDecisionParseError::InvalidAction(message.into()))
+}
+
+fn is_http_url(value: &str) -> bool {
+    let trimmed = value.trim().to_ascii_lowercase();
+    trimmed.starts_with("http://") || trimmed.starts_with("https://")
 }
 
 fn extract_single_json_object(output: &str) -> Result<&str, BrowserDecisionParseError> {

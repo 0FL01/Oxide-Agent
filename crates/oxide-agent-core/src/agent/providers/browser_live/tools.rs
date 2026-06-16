@@ -1,13 +1,19 @@
+use super::actions::{BrowserActionPlan, plan_browser_action};
 use super::artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
-use super::mimo::{BrowserMimoDecider, BrowserMimoError};
+use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
 use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
-use super::session::BrowserSessionState;
+use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    BrowserProfile, CloseReason, CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel,
-    CreateSessionRequest, DebugLevel, NetworkDebugQuery, NetworkFilter, ObserveQuery,
-    ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
+    ActionResponse, BrowserDecision, BrowserObservation, BrowserProfile, CloseReason,
+    CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
+    GotoResponse, NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact,
+    ScreenshotFormat, ScreenshotQuery, Viewport,
+};
+use super::verification::{
+    BrowserActionVerification, BrowserVerificationStatus, terminal_debug, terminal_done,
+    terminal_needs_user, timeout_report, verify_navigation, verify_sidecar_action,
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
@@ -22,6 +28,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc::Sender};
+use tokio::time::{Duration, timeout};
 
 /// `browser_start` tool name.
 pub const TOOL_BROWSER_START: &str = "browser_start";
@@ -41,7 +48,7 @@ pub struct BrowserLiveProvider {
     states: Arc<Mutex<BTreeMap<String, BrowserSessionState>>>,
     artifact_settings: BrowserArtifactSettings,
     progress_tx: Option<Sender<AgentEvent>>,
-    decision_engine: Option<BrowserMimoDecider>,
+    decision_engine: Option<Arc<dyn BrowserDecisionEngine>>,
 }
 
 impl BrowserLiveProvider {
@@ -82,8 +89,11 @@ impl BrowserLiveProvider {
 
     /// Attach the Browser MiMo decision engine used by `browser_step`.
     #[must_use]
-    pub fn with_decision_engine(mut self, decision_engine: BrowserMimoDecider) -> Self {
-        self.decision_engine = Some(decision_engine);
+    pub fn with_decision_engine(
+        mut self,
+        decision_engine: impl BrowserDecisionEngine + 'static,
+    ) -> Self {
+        self.decision_engine = Some(Arc::new(decision_engine));
         self
     }
 
@@ -215,6 +225,7 @@ impl BrowserLiveProvider {
         args: StepArgs,
     ) -> Result<Value, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
+        let max_actions = args.max_actions();
         let query = ObserveQuery {
             fresh: true,
             include_dom: false,
@@ -228,16 +239,20 @@ impl BrowserLiveProvider {
             .observe(&args.session_id, &query)
             .await
             .map_err(sidecar_runtime_error)?;
-        let (frame, history_summary) = {
+        let (frame, history_summary, action_seq) = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(&args.session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
             })?;
             let frame = state
-                .record_observation(&response.observation, BrowserArtifactPurpose::LiveFrame, 0)
+                .record_observation(&response.observation, BrowserArtifactPurpose::Milestone, 0)
                 .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
                 .clone();
-            (frame, state.compact_history_summary())
+            (
+                frame,
+                state.compact_history_summary(),
+                state.action_seq().saturating_add(1),
+            )
         };
         let observe =
             observation_payload(&args.session_id, &response.observation.screenshot, &frame);
@@ -246,6 +261,7 @@ impl BrowserLiveProvider {
             return Ok(json!({
                 "status": "decision_pending",
                 "message": "browser_step MiMo decision engine is not configured; current checkpoint returns a fresh observation shell",
+                "max_actions": max_actions,
                 "observation": observe,
             }));
         };
@@ -280,18 +296,275 @@ impl BrowserLiveProvider {
             )
             .await
             .map_err(mimo_runtime_error)?;
+        let plan = plan_browser_action(&decision, action_seq, args.action_timeout_ms())
+            .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
         self.emit_progress(format!(
-            "Browser session {} produced validated MiMo decision",
-            args.session_id
+            "BrowserAction session_id={} action_seq={} kind={}",
+            args.session_id,
+            action_seq,
+            action_plan_kind(&plan)
         ))
         .await;
 
-        Ok(json!({
-            "status": "decision_ready",
-            "message": "validated MiMo decision returned; action execution is added by CP-9",
-            "decision": decision,
-            "observation": observe,
-        }))
+        let action_timeout = Duration::from_millis(args.action_timeout_ms());
+        let timeout_decision = decision.clone();
+        let timeout_observation = response.observation.clone();
+        let timeout_before_payload = observe.clone();
+        let result = timeout(
+            action_timeout,
+            self.execute_action_plan(
+                invocation,
+                &args.session_id,
+                action_seq,
+                response.observation,
+                frame,
+                decision,
+                observe,
+                plan,
+            ),
+        )
+        .await;
+
+        match result {
+            Ok(result) => result,
+            Err(_) => {
+                let verification = timeout_report(
+                    &timeout_decision,
+                    &timeout_observation,
+                    format!(
+                        "browser_step action exceeded timeout of {}ms",
+                        args.action_timeout_ms()
+                    ),
+                );
+                self.emit_progress(format!(
+                    "BrowserVerification session_id={} action_seq={} status=timeout",
+                    args.session_id, action_seq
+                ))
+                .await;
+                Ok(json!({
+                    "status": "timeout",
+                    "session_id": args.session_id,
+                    "action_seq": action_seq,
+                    "message": verification.reason.clone(),
+                    "decision": timeout_decision,
+                    "observation": timeout_before_payload,
+                    "verification": verification,
+                }))
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_action_plan(
+        &self,
+        invocation: &ToolInvocation,
+        session_id: &str,
+        action_seq: u64,
+        before_observation: BrowserObservation,
+        before_frame: BrowserFrame,
+        decision: BrowserDecision,
+        before_payload: Value,
+        plan: BrowserActionPlan,
+    ) -> Result<Value, ToolRuntimeError> {
+        ensure_not_cancelled(invocation)?;
+        match plan {
+            BrowserActionPlan::SidecarAction(request) => {
+                let key =
+                    idempotency_key(invocation, "action", &format!("{session_id}:{action_seq}"))?;
+                let action = self
+                    .sidecar
+                    .execute_action(session_id, &request, &key)
+                    .await
+                    .map_err(sidecar_runtime_error)?;
+                ensure_not_cancelled(invocation)?;
+                let after = self.observe_after_action(session_id).await?;
+                let (after_frame, after_payload) =
+                    self.record_after_observation(session_id, &after).await?;
+                let verification = verify_sidecar_action(
+                    &decision,
+                    &before_observation,
+                    &action.action_result,
+                    &after,
+                );
+                self.emit_verification(session_id, action_seq, &verification)
+                    .await;
+                Ok(action_step_payload(
+                    session_id,
+                    action_seq,
+                    decision,
+                    before_payload,
+                    &before_frame,
+                    after_payload,
+                    &after_frame,
+                    verification,
+                    Some(action),
+                    None,
+                ))
+            }
+            BrowserActionPlan::Navigate(request) => {
+                let key =
+                    idempotency_key(invocation, "goto", &format!("{session_id}:{action_seq}"))?;
+                let navigation = self
+                    .sidecar
+                    .goto(session_id, &request, &key)
+                    .await
+                    .map_err(sidecar_runtime_error)?;
+                ensure_not_cancelled(invocation)?;
+                let after = self.observe_after_action(session_id).await?;
+                let (after_frame, after_payload) =
+                    self.record_after_observation(session_id, &after).await?;
+                let verification = verify_navigation(
+                    &decision,
+                    &before_observation,
+                    &navigation.navigation,
+                    &after,
+                );
+                self.emit_verification(session_id, action_seq, &verification)
+                    .await;
+                Ok(action_step_payload(
+                    session_id,
+                    action_seq,
+                    decision,
+                    before_payload,
+                    &before_frame,
+                    after_payload,
+                    &after_frame,
+                    verification,
+                    None,
+                    Some(navigation),
+                ))
+            }
+            BrowserActionPlan::Done {
+                final_answer,
+                evidence,
+            } => {
+                let verification = terminal_done(
+                    &decision,
+                    &before_observation,
+                    "done decision includes final visual evidence".to_string(),
+                );
+                self.record_final_observation(session_id, &before_observation)
+                    .await?;
+                self.emit_verification(session_id, action_seq, &verification)
+                    .await;
+                Ok(json!({
+                    "status": "done",
+                    "session_id": session_id,
+                    "action_seq": action_seq,
+                    "task_success": true,
+                    "final_answer": final_answer,
+                    "evidence": evidence,
+                    "decision": decision,
+                    "observation": before_payload,
+                    "verification": verification,
+                }))
+            }
+            BrowserActionPlan::AskUser { question } => {
+                let verification = terminal_needs_user(
+                    &decision,
+                    &before_observation,
+                    "browser decision requires user input or approval".to_string(),
+                );
+                self.emit_verification(session_id, action_seq, &verification)
+                    .await;
+                Ok(json!({
+                    "status": "blocked",
+                    "session_id": session_id,
+                    "action_seq": action_seq,
+                    "question": question,
+                    "decision": decision,
+                    "observation": before_payload,
+                    "verification": verification,
+                }))
+            }
+            BrowserActionPlan::Debug { reason } => {
+                let verification = terminal_debug(
+                    &decision,
+                    &before_observation,
+                    "browser decision requested debug diagnostics before action".to_string(),
+                );
+                self.emit_verification(session_id, action_seq, &verification)
+                    .await;
+                Ok(json!({
+                    "status": "debug_requested",
+                    "session_id": session_id,
+                    "action_seq": action_seq,
+                    "reason": reason,
+                    "decision": decision,
+                    "observation": before_payload,
+                    "verification": verification,
+                }))
+            }
+        }
+    }
+
+    async fn observe_after_action(
+        &self,
+        session_id: &str,
+    ) -> Result<BrowserObservation, ToolRuntimeError> {
+        Ok(self
+            .sidecar
+            .observe(
+                session_id,
+                &ObserveQuery {
+                    fresh: true,
+                    include_dom: false,
+                    include_a11y: false,
+                    include_network_summary: true,
+                    include_console_summary: true,
+                    max_debug_items: 20,
+                },
+            )
+            .await
+            .map_err(sidecar_runtime_error)?
+            .observation)
+    }
+
+    async fn record_after_observation(
+        &self,
+        session_id: &str,
+        observation: &BrowserObservation,
+    ) -> Result<(BrowserFrame, Value), ToolRuntimeError> {
+        let frame = {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(session_id).ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+            state
+                .record_observation(observation, BrowserArtifactPurpose::Milestone, 0)
+                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
+                .clone()
+        };
+        let payload = observation_payload(session_id, &observation.screenshot, &frame);
+        Ok((frame, payload))
+    }
+
+    async fn record_final_observation(
+        &self,
+        session_id: &str,
+        observation: &BrowserObservation,
+    ) -> Result<(), ToolRuntimeError> {
+        let mut states = self.states.lock().await;
+        let state = states.get_mut(session_id).ok_or_else(|| {
+            ToolRuntimeError::Failure("browser session is not started".to_string())
+        })?;
+        state
+            .record_observation(observation, BrowserArtifactPurpose::Final, 0)
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn emit_verification(
+        &self,
+        session_id: &str,
+        action_seq: u64,
+        verification: &BrowserActionVerification,
+    ) {
+        self.emit_progress(format!(
+            "BrowserVerification session_id={} action_seq={} status={:?}",
+            session_id, action_seq, verification.status
+        ))
+        .await;
     }
 
     async fn debug(
@@ -481,6 +754,20 @@ struct StepArgs {
     session_id: String,
     #[serde(default)]
     task: Option<String>,
+    #[serde(default)]
+    action_timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_actions: Option<u32>,
+}
+
+impl StepArgs {
+    fn action_timeout_ms(&self) -> u64 {
+        self.action_timeout_ms.unwrap_or(30_000).clamp(1, 60_000)
+    }
+
+    fn max_actions(&self) -> u32 {
+        self.max_actions.unwrap_or(1).clamp(1, 1)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -574,6 +861,57 @@ fn observation_payload(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn action_step_payload(
+    session_id: &str,
+    action_seq: u64,
+    decision: BrowserDecision,
+    before_payload: Value,
+    before_frame: &BrowserFrame,
+    after_payload: Value,
+    after_frame: &BrowserFrame,
+    verification: BrowserActionVerification,
+    action: Option<ActionResponse>,
+    navigation: Option<GotoResponse>,
+) -> Value {
+    json!({
+        "status": step_status(&verification),
+        "session_id": session_id,
+        "action_seq": action_seq,
+        "max_actions": 1,
+        "task_success": verification.task_success,
+        "decision": decision,
+        "before": before_payload,
+        "after": after_payload,
+        "before_artifact_ref": before_frame.artifact.uri.clone(),
+        "after_artifact_ref": after_frame.artifact.uri.clone(),
+        "action_result": action.map(|response| response.action_result),
+        "navigation": navigation.map(|response| response.navigation),
+        "verification": verification,
+    })
+}
+
+fn step_status(verification: &BrowserActionVerification) -> &'static str {
+    match verification.status {
+        BrowserVerificationStatus::ActionVerified => "action_verified",
+        BrowserVerificationStatus::VerificationFailed => "verification_failed",
+        BrowserVerificationStatus::Done => "done",
+        BrowserVerificationStatus::NeedsUser => "blocked",
+        BrowserVerificationStatus::DebugRequested => "debug_requested",
+        BrowserVerificationStatus::Timeout => "timeout",
+    }
+}
+
+fn action_plan_kind(plan: &BrowserActionPlan) -> &'static str {
+    match plan {
+        BrowserActionPlan::SidecarAction(_) => "action",
+        BrowserActionPlan::Navigate(_) => "goto",
+        BrowserActionPlan::Debug { .. } => "debug",
+        BrowserActionPlan::AskUser { .. } => "ask_user",
+        BrowserActionPlan::Done { .. } => "done",
+    }
+}
+
 fn browser_tool_definition(name: &str) -> ToolDefinition {
     let (description, parameters) = match name {
         TOOL_BROWSER_START => (
@@ -604,13 +942,15 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
             }),
         ),
         TOOL_BROWSER_STEP => (
-            "Run one Browser Live MiMo decision step and return a validated decision without executing it.",
+            "Run one bounded Browser Live cycle: decide, execute one action, observe, and verify.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
                 "properties": {
                     "session_id": {"type": "string"},
-                    "task": {"type": "string"}
+                    "task": {"type": "string"},
+                    "action_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+                    "max_actions": {"type": "integer", "const": 1, "default": 1}
                 },
                 "additionalProperties": false
             }),
@@ -661,13 +1001,20 @@ const fn default_true() -> bool {
 mod tests {
     use super::*;
     use crate::agent::identity::SessionId;
-    use crate::agent::providers::browser_live::test_support::FakeBrowserSidecar;
+    use crate::agent::providers::browser_live::test_support::{
+        FakeActionOutcome, FakeBrowserSidecar,
+    };
+    use crate::agent::providers::browser_live::types::{
+        BrowserDecisionAction, BrowserDecisionRisk, BrowserSensitiveAction,
+    };
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolTimeoutConfig, TurnId,
     };
     use crate::llm::InvocationId;
+    use async_trait::async_trait;
     use chrono::Utc;
+    use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
@@ -749,6 +1096,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_step_executes_click_and_verifies_fresh_after_screenshot() {
+        let provider = test_provider_with_decision(click_decision(), FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}","task":"click login"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "action_verified");
+        assert_eq!(payload["task_success"], false);
+        assert_eq!(payload["action_result"]["status"], "executed");
+        assert_ne!(
+            payload["verification"]["before_screenshot_id"],
+            payload["verification"]["after_screenshot_id"]
+        );
+        assert!(
+            payload["after_artifact_ref"]
+                .as_str()
+                .expect("after artifact")
+                .contains("milestone")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_step_noop_click_returns_verification_failure() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::NoOp]);
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "verification_failed");
+        assert_eq!(payload["verification"]["status"], "verification_failed");
+        assert!(
+            payload["verification"]["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("not verified visual success")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_step_navigation_captures_fresh_screenshot() {
+        let provider = test_provider_with_decision(navigate_decision(), FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "action_verified");
+        assert_eq!(
+            payload["navigation"]["final_url"],
+            "https://example.test/dashboard"
+        );
+        assert_ne!(
+            payload["verification"]["before_screenshot_id"],
+            payload["verification"]["after_screenshot_id"]
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_step_done_requires_final_evidence() {
+        let provider = test_provider_with_decision(done_decision(), FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "done");
+        assert_eq!(payload["task_success"], true);
+        assert_eq!(payload["verification"]["status"], "done");
+        assert_eq!(
+            payload["evidence"],
+            "The dashboard success banner is visible."
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_step_timeout_produces_structured_report() {
+        let fake =
+            FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::DelaySuccess(
+                Duration::from_millis(50),
+            )]);
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}","action_timeout_ms":5}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "timeout");
+        assert_eq!(payload["verification"]["status"], "timeout");
+        assert!(
+            payload["message"]
+                .as_str()
+                .expect("message")
+                .contains("exceeded timeout")
+        );
+    }
+
+    #[tokio::test]
     async fn browser_tool_observes_cancelled_invocation_before_sidecar_call() {
         let provider = test_provider();
         let executors = provider.tool_runtime_executors();
@@ -774,6 +1251,71 @@ mod tests {
             BrowserArtifactSettings::default(),
             None,
         ))
+    }
+
+    fn test_provider_with_decision(
+        decision: BrowserDecision,
+        fake: FakeBrowserSidecar,
+    ) -> Arc<BrowserLiveProvider> {
+        Arc::new(
+            BrowserLiveProvider::new(Arc::new(fake), BrowserArtifactSettings::default(), None)
+                .with_decision_engine(StaticDecisionEngine { decision }),
+        )
+    }
+
+    #[derive(Clone)]
+    struct StaticDecisionEngine {
+        decision: BrowserDecision,
+    }
+
+    #[async_trait]
+    impl BrowserDecisionEngine for StaticDecisionEngine {
+        async fn decide(
+            &self,
+            _image_bytes: Vec<u8>,
+            _context: &BrowserDecisionPromptContext<'_>,
+            _viewport: Viewport,
+        ) -> Result<BrowserDecision, BrowserMimoError> {
+            Ok(self.decision.clone())
+        }
+    }
+
+    fn click_decision() -> BrowserDecision {
+        decision(BrowserDecisionAction::ClickXy {
+            x: 10,
+            y: 20,
+            target_description: Some("login button".to_string()),
+        })
+    }
+
+    fn navigate_decision() -> BrowserDecision {
+        decision(BrowserDecisionAction::Navigate {
+            url: "https://example.test/dashboard".to_string(),
+        })
+    }
+
+    fn done_decision() -> BrowserDecision {
+        decision(BrowserDecisionAction::Done {
+            final_answer: "Dashboard opened.".to_string(),
+            evidence: "The dashboard success banner is visible.".to_string(),
+        })
+    }
+
+    fn decision(action: BrowserDecisionAction) -> BrowserDecision {
+        BrowserDecision {
+            schema_version: 1,
+            rationale: "test decision".to_string(),
+            action,
+            expected_result: "The visible browser state changes as expected.".to_string(),
+            confidence: 0.9,
+            risk: BrowserDecisionRisk::Low,
+            sensitive_action: BrowserSensitiveAction {
+                required: false,
+                category: None,
+                reason: None,
+            },
+            needs_debug: false,
+        }
     }
 
     async fn execute(executors: &[Arc<dyn ToolExecutor>], name: &str, args: &str) -> ToolOutput {

@@ -408,6 +408,9 @@ pub enum BrowserDecisionAction {
     Wait {
         timeout_ms: u64,
     },
+    Navigate {
+        url: String,
+    },
     Debug {
         reason: String,
     },

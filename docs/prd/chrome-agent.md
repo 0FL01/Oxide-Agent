@@ -3192,6 +3192,8 @@ Keep browser tools start/observe/debug/close; disable `browser_step` decision ex
 
 ### CP-9: Action execution and post-action verification loop
 
+**Status: PASS — `browser_step` executes one bounded action through the sidecar and verifies fresh post-action visual evidence on current branch.**
+
 **Purpose**
 Implement bounded visual action cycle: decide → execute → wait → observe → verify.
 
@@ -3205,31 +3207,31 @@ Implement bounded visual action cycle: decide → execute → wait → observe �
 
 **Implementation tasks**
 
-* [ ] Map validated actions to sidecar `/action` or `/goto`.
-* [ ] Implement action sequence IDs.
-* [ ] Implement wait-for-stability call/heuristic.
-* [ ] Capture post-action observation.
-* [ ] Implement verification prompt/call.
-* [ ] Store before/after screenshots.
-* [ ] Return structured `browser_step` result.
-* [ ] Emit BrowserAction and BrowserVerification events.
-* [ ] Stop on done/error/user intervention.
+* [x] Map validated actions to sidecar `/action` or `/goto`.
+* [x] Implement action sequence IDs.
+* [x] Implement wait-for-stability call/heuristic.
+* [x] Capture post-action observation.
+* [x] Implement verification prompt/call.
+* [x] Store before/after screenshots.
+* [x] Return structured `browser_step` result.
+* [x] Emit BrowserAction and BrowserVerification events.
+* [x] Stop on done/error/user intervention.
 
 **Acceptance criteria**
 
-* [ ] Every mutating action has a fresh post-action screenshot.
-* [ ] Technical success alone is not treated as task success.
-* [ ] Verification failure triggers recovery path or safe stop.
-* [ ] `browser_step` is bounded by max action/timeout config.
-* [ ] Artifacts are created for before/after states.
+* [x] Every mutating action has a fresh post-action screenshot.
+* [x] Technical success alone is not treated as task success.
+* [x] Verification failure triggers recovery path or safe stop.
+* [x] `browser_step` is bounded by max action/timeout config.
+* [x] Artifacts are created for before/after states.
 
 **Tests**
 
-* [ ] Fake sidecar happy path.
-* [ ] Click no-op triggers verification failure.
-* [ ] Navigation captures fresh screenshot.
-* [ ] Done requires final evidence.
-* [ ] Timeout produces report.
+* [x] Fake sidecar happy path.
+* [x] Click no-op triggers verification failure.
+* [x] Navigation captures fresh screenshot.
+* [x] Done requires final evidence.
+* [x] Timeout produces report.
 
 **Rollback**
 Disable execution inside `browser_step`; keep observe/debug tooling.

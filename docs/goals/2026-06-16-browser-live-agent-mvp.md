@@ -111,8 +111,8 @@ Out of scope:
   - Requirement: implement decide → execute → wait → observe → verify loop with action sequence IDs, fresh post-action screenshots, before/after artifacts, structured results, and timeout/max-step bounds.
   - Acceptance: technical action success alone never means task success; verification failure triggers recovery or safe stop.
   - Evidence required: fake happy path, no-op click verification failure, navigation fresh screenshot, done final evidence, and timeout report tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-9 added `browser_live::actions` and `verification`, mapped validated decisions to `/action` and HTTP/HTTPS `/goto`, added action sequence IDs, capture-after/wait-for-stability sidecar requests, fresh post-action observe calls, retained before/after milestone artifacts, structured `browser_step` action/verification payloads, BrowserAction/BrowserVerification progress events, done/ask_user/debug terminal safe stops, and bounded action timeouts. Focused tests cover fake click happy path, no-op verification failure, navigation with fresh screenshot, done requiring final evidence, and timeout report output; `verification` tests prove technical sidecar success alone is not task success.
 
 - G9: Recovery engine
   - Source: `docs/prd/chrome-agent.md:3145`
@@ -419,6 +419,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`.
   - Audit IDs updated: G7 verified, Q2 in progress.
   - Next: commit CP-8, then start CP-9 action execution and post-action verification loop.
+
+- 2026-06-16: CP-9 action execution and post-action verification loop
+  - Changed: added `browser_live::actions` and `browser_live::verification`; extended `BrowserDecisionAction` with HTTP/HTTPS `navigate`; changed `browser_step` from decision-only to one bounded decide → execute/goto → fresh observe → verify cycle while preserving non-mutating done/debug/ask-user safe stops.
+  - Evidence: fake-sidecar tests cover click happy path with fresh after screenshot, no-op click verification failure, navigation fresh screenshot, done final evidence, and timeout report; helper tests cover action planning, non-web navigation rejection, and verification semantics where action verification is not task success.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`.
+  - Audit IDs updated: G8 verified, V1 in progress.
+  - Next: commit CP-9, then start CP-10 recovery engine.
 
 ## Risks and Blockers
 

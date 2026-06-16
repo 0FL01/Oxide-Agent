@@ -10,7 +10,7 @@ Return exactly one JSON object matching the BrowserDecision schema. Do not use m
 Use the attached screenshot as the visual source. The text prompt contains compact state only.
 Never reveal or request raw secrets. If a step may submit credentials, payment data, 2FA, CAPTCHA, irreversible purchase, deletion, external message, or other sensitive action, set sensitive_action.required=true and choose ask_user or debug instead of an executable action.
 Prefer low-risk, observable actions. If confidence is low, choose wait, debug, or ask_user. Do not claim done unless visible evidence supports completion.
-Valid executable visual actions are click_xy, click_selector, fill, type_text, press, scroll, and wait. Debug, ask_user, and done are terminal/non-mutating decisions for the next layer.
+Valid executable visual actions are click_xy, click_selector, fill, type_text, press, scroll, wait, and navigate. Use navigate only for http/https URLs. Debug, ask_user, and done are terminal/non-mutating decisions for the next layer.
 "#;
 
 pub struct BrowserDecisionPromptContext<'a> {
@@ -43,6 +43,7 @@ pub fn browser_decision_json_schema() -> Value {
                     {"type": "object", "required": ["kind", "key"], "additionalProperties": false, "properties": {"kind": {"const": "press"}, "key": {"type": "string", "minLength": 1}}},
                     {"type": "object", "required": ["kind", "delta_x", "delta_y"], "additionalProperties": false, "properties": {"kind": {"const": "scroll"}, "delta_x": {"type": "integer"}, "delta_y": {"type": "integer"}}},
                     {"type": "object", "required": ["kind", "timeout_ms"], "additionalProperties": false, "properties": {"kind": {"const": "wait"}, "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 10000}}},
+                    {"type": "object", "required": ["kind", "url"], "additionalProperties": false, "properties": {"kind": {"const": "navigate"}, "url": {"type": "string", "minLength": 1}}},
                     {"type": "object", "required": ["kind", "reason"], "additionalProperties": false, "properties": {"kind": {"const": "debug"}, "reason": {"type": "string", "minLength": 1}}},
                     {"type": "object", "required": ["kind", "question"], "additionalProperties": false, "properties": {"kind": {"const": "ask_user"}, "question": {"type": "string", "minLength": 1}}},
                     {"type": "object", "required": ["kind", "final_answer", "evidence"], "additionalProperties": false, "properties": {"kind": {"const": "done"}, "final_answer": {"type": "string", "minLength": 1}, "evidence": {"type": "string", "minLength": 1}}}

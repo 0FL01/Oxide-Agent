@@ -4,6 +4,8 @@
 //! checkpoints. CP-5 adds a test-only fake sidecar behind `cfg(test)` so unit
 //! tests can cover browser lifecycle code without Chromium or external services.
 
+/// Action execution planning from validated browser decisions.
+pub mod actions;
 /// Typed HTTP client for the browser sidecar REST API.
 pub mod artifacts;
 /// Task-local browser session state and screenshot ring-buffer.
@@ -24,11 +26,13 @@ pub(crate) mod test_support;
 pub mod tools;
 /// Request, response, artifact, and event contract types.
 pub mod types;
+/// Post-action visual verification helpers.
+pub mod verification;
 
 pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
-pub use mimo::BrowserMimoDecider;
+pub use mimo::{BrowserDecisionEngine, BrowserMimoDecider};
 pub use session::{BrowserFrame, BrowserSessionState};
 pub use tools::BrowserLiveProvider;
 pub use types::{

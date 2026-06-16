@@ -7,6 +7,7 @@ use super::prompt::{
 };
 use super::types::{BrowserDecision, Viewport};
 use crate::llm::{LlmClient, LlmError};
+use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -25,13 +26,23 @@ pub enum BrowserMimoError {
     Parse(#[from] BrowserDecisionParseError),
 }
 
+#[async_trait]
+pub trait BrowserDecisionEngine: Send + Sync {
+    async fn decide(
+        &self,
+        image_bytes: Vec<u8>,
+        context: &BrowserDecisionPromptContext<'_>,
+        viewport: Viewport,
+    ) -> Result<BrowserDecision, BrowserMimoError>;
+}
+
 impl BrowserMimoDecider {
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>) -> Self {
         Self { llm_client }
     }
 
-    pub async fn decide(
+    async fn decide_inner(
         &self,
         image_bytes: Vec<u8>,
         context: &BrowserDecisionPromptContext<'_>,
@@ -66,6 +77,18 @@ impl BrowserMimoDecider {
             .analyze_image(image_bytes, text_prompt, stable_system_prompt(), model_name)
             .await
             .map_err(llm_error)
+    }
+}
+
+#[async_trait]
+impl BrowserDecisionEngine for BrowserMimoDecider {
+    async fn decide(
+        &self,
+        image_bytes: Vec<u8>,
+        context: &BrowserDecisionPromptContext<'_>,
+        viewport: Viewport,
+    ) -> Result<BrowserDecision, BrowserMimoError> {
+        self.decide_inner(image_bytes, context, viewport).await
     }
 }
 

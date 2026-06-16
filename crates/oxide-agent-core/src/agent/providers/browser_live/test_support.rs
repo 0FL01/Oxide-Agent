@@ -16,10 +16,12 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum FakeActionOutcome {
     Success,
+    DelaySuccess(Duration),
     NoOp,
     Failure,
     StaleFrame,
@@ -239,11 +241,17 @@ impl BrowserSidecar for FakeBrowserSidecar {
         _key: &IdempotencyKey,
     ) -> Result<ActionResponse, BrowserSidecarError> {
         self.maybe_crash()?;
-        let mut state = self.state();
-        let outcome = state
-            .action_outcomes
-            .pop_front()
-            .unwrap_or(FakeActionOutcome::Success);
+        let mut outcome = {
+            let mut state = self.state();
+            state
+                .action_outcomes
+                .pop_front()
+                .unwrap_or(FakeActionOutcome::Success)
+        };
+        if let FakeActionOutcome::DelaySuccess(duration) = outcome {
+            tokio::time::sleep(duration).await;
+            outcome = FakeActionOutcome::Success;
+        }
         if outcome == FakeActionOutcome::Failure {
             return Err(api_failure(
                 "invalid_action",
@@ -253,6 +261,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
             ));
         }
 
+        let mut state = self.state();
         let summary = {
             let session = state.session_mut(session_id)?;
             session.action_seq = request.action_seq;
@@ -266,7 +275,9 @@ impl BrowserSidecar for FakeBrowserSidecar {
             session.summary(session_id)
         };
         let status = match outcome {
-            FakeActionOutcome::Success | FakeActionOutcome::StaleFrame => ActionStatus::Executed,
+            FakeActionOutcome::Success
+            | FakeActionOutcome::DelaySuccess(_)
+            | FakeActionOutcome::StaleFrame => ActionStatus::Executed,
             FakeActionOutcome::NoOp => ActionStatus::NoOp,
             FakeActionOutcome::Failure => unreachable!("failure returned above"),
         };
