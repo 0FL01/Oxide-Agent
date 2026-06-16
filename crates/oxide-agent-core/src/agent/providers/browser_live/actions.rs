@@ -65,6 +65,18 @@ pub fn plan_browser_action(
                 wait_for_stability: true,
             }))
         }
+        BrowserDecisionAction::ClickTargetId { target_id } => {
+            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
+                action_seq,
+                action: BrowserAction::ClickTargetId {
+                    target_id: target_id.clone(),
+                },
+                expected_result: decision.expected_result.clone(),
+                timeout_ms,
+                capture_after: true,
+                wait_for_stability: true,
+            }))
+        }
         BrowserDecisionAction::Fill { selector, value } => {
             Ok(BrowserActionPlan::SidecarAction(ActionRequest {
                 action_seq,

@@ -123,6 +123,9 @@ fn validate_action(
             }
         }
         BrowserDecisionAction::ClickSelector { selector } => non_empty("selector", selector)?,
+        BrowserDecisionAction::ClickTargetId { target_id } => {
+            non_empty("target_id", target_id)?;
+        }
         BrowserDecisionAction::Fill { selector, value } => {
             non_empty("selector", selector)?;
             if value.chars().count() > MAX_TEXT_INPUT_CHARS {
@@ -189,6 +192,7 @@ fn is_executable_action(action: &BrowserDecisionAction) -> bool {
         action,
         BrowserDecisionAction::ClickXy { .. }
             | BrowserDecisionAction::ClickSelector { .. }
+            | BrowserDecisionAction::ClickTargetId { .. }
             | BrowserDecisionAction::Fill { .. }
             | BrowserDecisionAction::TypeText { .. }
             | BrowserDecisionAction::Press { .. }

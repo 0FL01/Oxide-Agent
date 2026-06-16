@@ -18,6 +18,8 @@ pub mod mimo;
 pub mod parser;
 /// Prompt construction for Browser Live MiMo decisions.
 pub mod prompt;
+/// Deterministic recovery classification and bounded fallback planning.
+pub mod recovery;
 /// Browser session state model.
 pub mod session;
 #[cfg(test)]

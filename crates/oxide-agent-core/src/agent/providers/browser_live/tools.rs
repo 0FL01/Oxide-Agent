@@ -4,12 +4,16 @@ use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
 use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
 use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
+use super::recovery::{
+    BrowserRecoveryPlan, BrowserRecoveryReport, BrowserRecoverySettings, BrowserRecoveryStatus,
+    attach_recovery_result, build_recovery_report, recovery_loop_signature,
+};
 use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    ActionResponse, BrowserDecision, BrowserObservation, BrowserProfile, CloseReason,
-    CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
-    GotoResponse, NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact,
-    ScreenshotFormat, ScreenshotQuery, Viewport,
+    ActionRequest, ActionResponse, BrowserDecision, BrowserObservation, BrowserProfile,
+    CloseReason, CloseSessionRequest, ConsoleDebugPayload, ConsoleDebugQuery, ConsoleLevel,
+    CreateSessionRequest, DebugLevel, GotoResponse, NetworkDebugPayload, NetworkDebugQuery,
+    NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, terminal_debug, terminal_done,
@@ -49,6 +53,8 @@ pub struct BrowserLiveProvider {
     artifact_settings: BrowserArtifactSettings,
     progress_tx: Option<Sender<AgentEvent>>,
     decision_engine: Option<Arc<dyn BrowserDecisionEngine>>,
+    recovery_settings: BrowserRecoverySettings,
+    recovery_signatures: Arc<Mutex<BTreeMap<String, BTreeMap<String, u32>>>>,
 }
 
 impl BrowserLiveProvider {
@@ -84,6 +90,8 @@ impl BrowserLiveProvider {
             artifact_settings,
             progress_tx,
             decision_engine: None,
+            recovery_settings: BrowserRecoverySettings::default(),
+            recovery_signatures: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -386,6 +394,16 @@ impl BrowserLiveProvider {
                     &action.action_result,
                     &after,
                 );
+                let recovery = self
+                    .recover_after_verification_failure(
+                        invocation,
+                        session_id,
+                        action_seq,
+                        &decision,
+                        &verification,
+                        Some(&action.action_result),
+                    )
+                    .await?;
                 self.emit_verification(session_id, action_seq, &verification)
                     .await;
                 Ok(action_step_payload(
@@ -399,6 +417,7 @@ impl BrowserLiveProvider {
                     verification,
                     Some(action),
                     None,
+                    recovery,
                 ))
             }
             BrowserActionPlan::Navigate(request) => {
@@ -419,6 +438,16 @@ impl BrowserLiveProvider {
                     &navigation.navigation,
                     &after,
                 );
+                let recovery = self
+                    .recover_after_verification_failure(
+                        invocation,
+                        session_id,
+                        action_seq,
+                        &decision,
+                        &verification,
+                        None,
+                    )
+                    .await?;
                 self.emit_verification(session_id, action_seq, &verification)
                     .await;
                 Ok(action_step_payload(
@@ -432,6 +461,7 @@ impl BrowserLiveProvider {
                     verification,
                     None,
                     Some(navigation),
+                    recovery,
                 ))
             }
             BrowserActionPlan::Done {
@@ -552,6 +582,130 @@ impl BrowserLiveProvider {
             .record_observation(observation, BrowserArtifactPurpose::Final, 0)
             .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
         Ok(())
+    }
+
+    async fn recover_after_verification_failure(
+        &self,
+        invocation: &ToolInvocation,
+        session_id: &str,
+        action_seq: u64,
+        decision: &BrowserDecision,
+        verification: &BrowserActionVerification,
+        action_result: Option<&super::types::ActionResult>,
+    ) -> Result<Option<BrowserRecoveryReport>, ToolRuntimeError> {
+        if verification.status != BrowserVerificationStatus::VerificationFailed {
+            return Ok(None);
+        }
+        let (network, console) = self.recovery_debug(session_id, action_seq).await?;
+        let signature = recovery_loop_signature(decision, {
+            let preliminary = build_recovery_report(
+                decision,
+                verification,
+                action_result,
+                &network,
+                &console,
+                self.recovery_settings,
+                false,
+            );
+            preliminary.kind
+        });
+        let repeated = self.mark_recovery_signature(session_id, &signature).await;
+        let mut report = build_recovery_report(
+            decision,
+            verification,
+            action_result,
+            &network,
+            &console,
+            self.recovery_settings,
+            repeated,
+        );
+
+        if report.status == BrowserRecoveryStatus::Attempted
+            && let BrowserRecoveryPlan::SidecarAction { action } = report.plan.clone()
+        {
+            let recovery_seq = action_seq.saturating_add(1);
+            let request = ActionRequest {
+                action_seq: recovery_seq,
+                action,
+                expected_result: format!("bounded recovery for {:?}", report.kind),
+                timeout_ms: 5_000,
+                capture_after: true,
+                wait_for_stability: true,
+            };
+            let key = idempotency_key(
+                invocation,
+                "recovery",
+                &format!("{session_id}:{recovery_seq}"),
+            )?;
+            let recovery_action = self
+                .sidecar
+                .execute_action(session_id, &request, &key)
+                .await
+                .map_err(sidecar_runtime_error)?;
+            let recovery_observation = self.observe_after_action(session_id).await?;
+            let (recovery_frame, _) = self
+                .record_after_observation(session_id, &recovery_observation)
+                .await?;
+            attach_recovery_result(
+                &mut report,
+                &recovery_action.action_result,
+                recovery_frame.observation_id,
+                recovery_frame.screenshot.screenshot_id,
+            );
+        }
+
+        self.emit_progress(format!(
+            "BrowserRecovery session_id={} action_seq={} status={:?} kind={:?}",
+            session_id, action_seq, report.status, report.kind
+        ))
+        .await;
+        Ok(Some(report))
+    }
+
+    async fn recovery_debug(
+        &self,
+        session_id: &str,
+        action_seq: u64,
+    ) -> Result<(NetworkDebugPayload, ConsoleDebugPayload), ToolRuntimeError> {
+        let network = self
+            .sidecar
+            .debug_network(
+                session_id,
+                &NetworkDebugQuery {
+                    since_action_seq: action_seq.saturating_sub(1),
+                    level: DebugLevel::Summary,
+                    include_bodies: false,
+                    filter: NetworkFilter::Failed,
+                    limit: 20,
+                },
+            )
+            .await
+            .map_err(sidecar_runtime_error)?
+            .network;
+        let console = self
+            .sidecar
+            .debug_console(
+                session_id,
+                &ConsoleDebugQuery {
+                    since_action_seq: action_seq.saturating_sub(1),
+                    level: DebugLevel::Summary,
+                    min_level: ConsoleLevel::Error,
+                    limit: 20,
+                },
+            )
+            .await
+            .map_err(sidecar_runtime_error)?
+            .console;
+        Ok((network, console))
+    }
+
+    async fn mark_recovery_signature(&self, session_id: &str, signature: &str) -> bool {
+        let mut signatures = self.recovery_signatures.lock().await;
+        let session = signatures.entry(session_id.to_string()).or_default();
+        let count = session.entry(signature.to_string()).or_default();
+        let repeated = *count > 0;
+        *count += 1;
+        repeated
     }
 
     async fn emit_verification(
@@ -873,6 +1027,7 @@ fn action_step_payload(
     verification: BrowserActionVerification,
     action: Option<ActionResponse>,
     navigation: Option<GotoResponse>,
+    recovery: Option<BrowserRecoveryReport>,
 ) -> Value {
     json!({
         "status": step_status(&verification),
@@ -888,6 +1043,7 @@ fn action_step_payload(
         "action_result": action.map(|response| response.action_result),
         "navigation": navigation.map(|response| response.navigation),
         "verification": verification,
+        "recovery": recovery,
     })
 }
 
@@ -1222,6 +1378,136 @@ mod tests {
                 .as_str()
                 .expect("message")
                 .contains("exceeded timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_step_recovery_classifies_coordinate_drift() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![
+            FakeActionOutcome::CoordinateDrift,
+            FakeActionOutcome::Success,
+        ]);
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["status"], "verification_failed");
+        assert_eq!(payload["recovery"]["kind"], "coordinate_mismatch");
+        assert_eq!(payload["recovery"]["status"], "attempted");
+        assert_eq!(payload["recovery"]["attempted_steps"], 1);
+        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "scroll");
+    }
+
+    #[tokio::test]
+    async fn browser_step_recovery_handles_stale_screenshot() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![
+            FakeActionOutcome::StaleFrame,
+            FakeActionOutcome::Success,
+        ]);
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["recovery"]["kind"], "stale_frame");
+        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "wait");
+        assert_eq!(payload["recovery"]["attempted_steps"], 1);
+    }
+
+    #[tokio::test]
+    async fn browser_step_recovery_handles_modal_overlay() {
+        let fake = FakeBrowserSidecar::new()
+            .with_action_script(vec![FakeActionOutcome::NoOp, FakeActionOutcome::Success]);
+        fake.add_console_error("modal overlay intercepted click");
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["recovery"]["kind"], "modal_overlay");
+        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "press");
+        assert_eq!(payload["recovery"]["plan"]["action"]["key"], "Escape");
+    }
+
+    #[tokio::test]
+    async fn browser_step_recovery_stops_repeated_noop_loop() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![
+            FakeActionOutcome::NoOp,
+            FakeActionOutcome::Success,
+            FakeActionOutcome::NoOp,
+            FakeActionOutcome::Success,
+        ]);
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let first = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let second = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let first_payload = first.structured_payload.as_ref().expect("first payload");
+        let second_payload = second.structured_payload.as_ref().expect("second payload");
+
+        assert_eq!(first_payload["recovery"]["status"], "attempted");
+        assert_eq!(
+            second_payload["recovery"]["status"],
+            "repeated_loop_stopped"
+        );
+        assert_eq!(second_payload["recovery"]["repeated"], true);
+        assert_eq!(second_payload["recovery"]["attempted_steps"], 0);
+    }
+
+    #[tokio::test]
+    async fn browser_step_recovery_attaches_debug_artifacts_and_disables_js_fallback() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::NoOp]);
+        fake.add_network_failure("https://example.test/api", "connection reset");
+        fake.add_console_error("Uncaught fake error");
+        let provider = test_provider_with_decision(click_decision(), fake);
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert_eq!(payload["recovery"]["kind"], "network_failure");
+        assert_eq!(payload["recovery"]["status"], "safe_stopped");
+        assert_eq!(payload["recovery"]["js_click_allowed"], false);
+        assert!(
+            payload["recovery"]["diagnostics"]["network_artifact_uri"]
+                .as_str()
+                .expect("network artifact")
+                .contains("network.json")
+        );
+        assert!(
+            payload["recovery"]["diagnostics"]["console_artifact_uri"]
+                .as_str()
+                .expect("console artifact")
+                .contains("console.json")
         );
     }
 

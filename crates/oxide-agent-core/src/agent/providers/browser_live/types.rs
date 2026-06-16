@@ -391,6 +391,9 @@ pub enum BrowserDecisionAction {
     ClickSelector {
         selector: String,
     },
+    ClickTargetId {
+        target_id: String,
+    },
     Fill {
         selector: String,
         value: String,

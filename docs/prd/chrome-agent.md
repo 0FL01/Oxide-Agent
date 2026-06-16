@@ -3240,6 +3240,8 @@ Disable execution inside `browser_step`; keep observe/debug tooling.
 
 ### CP-10: Recovery engine
 
+**Status: PASS — deterministic recovery classification, bounded fallback attempts, debug diagnostics, and repeated-action loop stops are implemented on current branch.**
+
 **Purpose**
 Add deterministic fallback for failed browser actions and low-confidence visual decisions.
 
@@ -3253,32 +3255,32 @@ Add deterministic fallback for failed browser actions and low-confidence visual 
 
 **Implementation tasks**
 
-* [ ] Implement recovery classification: stale frame, no-op click, coordinate mismatch, modal, loading timeout, network failure, console failure, invalid JSON.
-* [ ] Implement click recovery sequence.
-* [ ] Implement scroll recovery.
-* [ ] Implement hit-test/inspect fallback.
-* [ ] Implement `click_target_id` fallback.
-* [ ] Add controlled JS click fallback behind disabled-by-default config.
-* [ ] Fetch console/network debug when needed.
-* [ ] Integrate browser loop signatures with existing loop detection.
-* [ ] Enforce max recovery steps.
+* [x] Implement recovery classification: stale frame, no-op click, coordinate mismatch, modal, loading timeout, network failure, console failure, invalid JSON.
+* [x] Implement click recovery sequence.
+* [x] Implement scroll recovery.
+* [x] Implement hit-test/inspect fallback.
+* [x] Implement `click_target_id` fallback.
+* [x] Add controlled JS click fallback behind disabled-by-default config.
+* [x] Fetch console/network debug when needed.
+* [x] Integrate browser loop signatures with existing loop detection.
+* [x] Enforce max recovery steps.
 
 **Acceptance criteria**
 
-* [ ] Same failed action is not repeated forever.
-* [ ] Recovery emits structured events and artifacts.
-* [ ] JS click fallback cannot run unless explicitly enabled and policy allows.
-* [ ] Console/network diagnostics are attached to failure reports.
-* [ ] Recovery stops safely when confidence remains low.
+* [x] Same failed action is not repeated forever.
+* [x] Recovery emits structured events and artifacts.
+* [x] JS click fallback cannot run unless explicitly enabled and policy allows.
+* [x] Console/network diagnostics are attached to failure reports.
+* [x] Recovery stops safely when confidence remains low.
 
 **Tests**
 
-* [ ] Coordinate drift scenario.
-* [ ] Stale screenshot scenario.
-* [ ] Modal overlay scenario.
-* [ ] Repeated no-op loop detection.
-* [ ] Debug artifact creation.
-* [ ] JS fallback disabled test.
+* [x] Coordinate drift scenario.
+* [x] Stale screenshot scenario.
+* [x] Modal overlay scenario.
+* [x] Repeated no-op loop detection.
+* [x] Debug artifact creation.
+* [x] JS fallback disabled test.
 
 **Rollback**
 Disable recovery engine and fail safely on verification failure.

@@ -119,8 +119,8 @@ Out of scope:
   - Requirement: classify stale frame/no-op/coordinate mismatch/modal/loading/network/console/invalid-JSON failures, perform bounded recovery, use hit-test/inspect/UID fallback, and integrate browser loop signatures with existing loop detection.
   - Acceptance: same failed action is not repeated forever; JS click fallback is disabled by default and policy-gated; diagnostics attach to failure reports; low confidence safe-stops.
   - Evidence required: coordinate drift, stale screenshot, modal overlay, repeated no-op loop, debug artifact, and JS fallback disabled tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP-10 added `browser_live::recovery` with deterministic classification for stale frames, no-op clicks, coordinate mismatch, modal overlays, loading timeout, network failure, console failure, invalid JSON, low confidence, and generic verification failure. `browser_step` now fetches console/network debug on verification failure, attaches artifact-backed diagnostics, emits BrowserRecovery progress, executes at most one non-repeating deterministic fallback (`wait`, `scroll`, `press Escape`, or `click_target_id` when available), records recovery observations, stops repeated loop signatures, and keeps JS click fallback disabled through `BrowserRecoverySettings`. Focused tests cover coordinate drift, stale screenshot, modal overlay, repeated no-op loop stop, debug artifact attachment, and JS fallback disabled evidence.
 
 - G10: Docker Compose sidecar deployment
   - Source: `docs/prd/chrome-agent.md:3192`, `docs/prd/chrome-agent.md:3538`
@@ -426,6 +426,13 @@ Out of scope:
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`.
   - Audit IDs updated: G8 verified, V1 in progress.
   - Next: commit CP-9, then start CP-10 recovery engine.
+
+- 2026-06-16: CP-10 recovery engine
+  - Changed: added `browser_live::recovery`; added `click_target_id` decisions; extended fake sidecar outcomes; connected `browser_step` verification failures to bounded recovery classification, debug artifact retrieval, recovery action attempts, loop signatures, and safe-stop reports.
+  - Evidence: tests cover coordinate drift recovery classification, stale screenshot wait recovery, modal overlay Escape recovery, repeated no-op loop stop, console/network debug artifact attachment, JS fallback disabled reports, recovery planner unit behavior, and existing CP-9 browser step paths.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features tool-browser-live browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live::mimo`; `cargo check -p oxide-agent-core --no-default-features`; `cargo check -p oxide-agent-core --no-default-features --features tool-browser-live`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo clippy -p oxide-agent-core --no-default-features --features tool-browser-live --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`.
+  - Audit IDs updated: G9 verified, V1 in progress.
+  - Next: commit CP-10, then start CP-11 Docker Compose sidecar deployment.
 
 ## Risks and Blockers
 
