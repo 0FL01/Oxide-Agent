@@ -1253,7 +1253,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "session_id": {"type": "string"},
                     "source": {"type": "string", "enum": ["dom", "network"]},
                     "selector": {"type": "string", "description": "CSS selector for dom source"},
-                    "attribute": {"type": "string", "description": "preferred dom attribute: value, innerText, innerHTML, textContent, href, or any data-* attribute (all are returned if omitted)"},
+                    "attribute": {"type": "string", "description": "DOM property or attribute to return as matches[].value: value, innerText, innerHTML, textContent, href, data-*, aria-*, class, etc. Defaults to innerText; all raw properties and attributes are also included for diagnostics."},
                     "url_pattern": {"type": "string", "description": "glob/ substring pattern for network source, e.g. */api/create"},
                     "method": {"type": "string", "description": "HTTP method filter for network source"},
                     "status_code": {"type": "integer", "description": "HTTP status filter for network source"},
@@ -1402,22 +1402,66 @@ async fn extract_from_dom(
     let array = parsed.as_array().ok_or_else(|| {
         ToolRuntimeError::Failure("DOM extraction result is not a JSON array".to_string())
     })?;
-    let attribute = args.attribute.as_deref().unwrap_or("innerText");
+    let attribute = args
+        .attribute
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("innerText");
     Ok(array
         .iter()
-        .map(|element| {
-            json!({
-                "selector": selector,
-                "attribute": attribute,
-                "value": element.get("value"),
-                "innerText": element.get("innerText"),
-                "innerHTML": element.get("innerHTML"),
-                "textContent": element.get("textContent"),
-                "href": element.get("href"),
-                "attributes": element.get("attributes"),
-            })
-        })
+        .enumerate()
+        .map(|(index, element)| dom_extract_match(selector, attribute, index, element))
         .collect())
+}
+
+fn dom_extract_match(selector: &str, attribute: &str, index: usize, element: &Value) -> Value {
+    let properties = element.get("properties").cloned().unwrap_or_else(|| {
+        json!({
+            "value": element.get("value").cloned().unwrap_or(Value::Null),
+            "innerText": element.get("innerText").cloned().unwrap_or(Value::Null),
+            "innerHTML": element.get("innerHTML").cloned().unwrap_or(Value::Null),
+            "textContent": element.get("textContent").cloned().unwrap_or(Value::Null),
+            "href": element.get("href").cloned().unwrap_or(Value::Null),
+        })
+    });
+    let attributes = element
+        .get("attributes")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let (selected_value, attribute_source, found) =
+        select_dom_attribute(&properties, &attributes, attribute);
+    json!({
+        "selector": selector,
+        "index": index,
+        "tag": element.get("tag").cloned().unwrap_or(Value::Null),
+        "attribute": attribute,
+        "attribute_source": attribute_source,
+        "found": found,
+        "value": selected_value,
+        "properties": properties,
+        "attributes": attributes,
+    })
+}
+
+fn select_dom_attribute(
+    properties: &Value,
+    attributes: &Value,
+    attribute: &str,
+) -> (Value, &'static str, bool) {
+    if let Some(value) = properties.get(attribute) {
+        return (value.clone(), "property", !value.is_null());
+    }
+    if let Some(value) = attributes.get(attribute) {
+        return (value.clone(), "attribute", true);
+    }
+    let lower_attribute = attribute.to_ascii_lowercase();
+    if lower_attribute != attribute
+        && let Some(value) = attributes.get(&lower_attribute)
+    {
+        return (value.clone(), "attribute", true);
+    }
+    (Value::Null, "missing", false)
 }
 
 fn url_matches_pattern(url: &str, pattern: &str) -> bool {
@@ -1457,13 +1501,16 @@ fn url_matches_pattern(url: &str, pattern: &str) -> bool {
 fn dom_extract_expression(selector: &str) -> String {
     let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
     format!(
-        "JSON.stringify(Array.from(document.querySelectorAll(JSON.parse({selector_json}))).map(el => ({{ \
-            value: el.value !== undefined ? el.value : null, \
-            innerText: el.innerText, \
-            innerHTML: el.innerHTML, \
-            textContent: el.textContent, \
-            href: el.tagName === 'A' ? new URL(el.href, location.href).href : null, \
-            attributes: Object.fromEntries(Array.from(el.attributes).filter(a => a.name.startsWith('data-')).map(a => [a.name, a.value])) \
+        "JSON.stringify(Array.from(document.querySelectorAll({selector_json})).map(el => ({{ \
+            tag: el.tagName ? el.tagName.toLowerCase() : null, \
+            properties: {{ \
+                value: el.value !== undefined ? el.value : null, \
+                innerText: el.innerText !== undefined ? el.innerText : null, \
+                innerHTML: el.innerHTML !== undefined ? el.innerHTML : null, \
+                textContent: el.textContent !== undefined ? el.textContent : null, \
+                href: typeof el.href === 'string' && el.href.length > 0 ? new URL(el.href, location.href).href : null \
+            }}, \
+            attributes: Object.fromEntries(Array.from(el.attributes || []).map(a => [a.name, a.value])) \
         }})))"
     )
 }
@@ -1612,9 +1659,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_extract_dom_returns_js_result_elements() {
+    async fn browser_extract_dom_returns_selected_property_value() {
         let js_result = serde_json::json!([
-            {"value": "hello", "innerText": "hello", "innerHTML": "<b>hello</b>", "textContent": "hello"}
+            {
+                "tag": "input",
+                "properties": {
+                    "value": "https://ots.example/#secret|key",
+                    "innerText": "",
+                    "innerHTML": "",
+                    "textContent": "",
+                    "href": null
+                },
+                "attributes": {
+                    "class": "form-control",
+                    "data-state": "ready"
+                }
+            }
         ]);
         let fake = FakeBrowserSidecar::new()
             .with_action_script(vec![FakeActionOutcome::JsResult(js_result.to_string())]);
@@ -1638,8 +1698,98 @@ mod tests {
         assert_eq!(payload["source"], "dom");
         let matches = payload["matches"].as_array().expect("matches array");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0]["value"], "hello");
-        assert_eq!(matches[0]["innerText"], "hello");
+        assert_eq!(matches[0]["selector"], "input[readonly]");
+        assert_eq!(matches[0]["index"], 0);
+        assert_eq!(matches[0]["tag"], "input");
+        assert_eq!(matches[0]["attribute"], "value");
+        assert_eq!(matches[0]["attribute_source"], "property");
+        assert_eq!(matches[0]["found"], true);
+        assert_eq!(matches[0]["value"], "https://ots.example/#secret|key");
+        assert_eq!(
+            matches[0]["properties"]["value"],
+            "https://ots.example/#secret|key"
+        );
+        assert_eq!(matches[0]["attributes"]["data-state"], "ready");
+    }
+
+    #[tokio::test]
+    async fn browser_extract_dom_returns_selected_dom_attribute() {
+        let js_result = serde_json::json!([
+            {
+                "tag": "button",
+                "properties": {
+                    "value": null,
+                    "innerText": "Reveal",
+                    "innerHTML": "Reveal",
+                    "textContent": "Reveal",
+                    "href": null
+                },
+                "attributes": {
+                    "class": "btn btn-success",
+                    "data-secret-state": "created"
+                }
+            }
+        ]);
+        let fake = FakeBrowserSidecar::new()
+            .with_action_script(vec![FakeActionOutcome::JsResult(js_result.to_string())]);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+        let extract_args = format!(
+            r#"{{"session_id":"{session_id}","source":"dom","selector":"button","attribute":"data-secret-state"}}"#
+        );
+        let result = execute(&executors, TOOL_BROWSER_EXTRACT, &extract_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+        let matches = payload["matches"].as_array().expect("matches array");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["attribute"], "data-secret-state");
+        assert_eq!(matches[0]["attribute_source"], "attribute");
+        assert_eq!(matches[0]["found"], true);
+        assert_eq!(matches[0]["value"], "created");
+    }
+
+    #[test]
+    fn dom_extract_expression_collects_properties_and_all_attributes() {
+        let expression = dom_extract_expression("input.form-control");
+        assert!(expression.contains("document.querySelectorAll(\"input.form-control\")"));
+        assert!(!expression.contains("JSON.parse"));
+        assert!(expression.contains("properties"));
+        assert!(expression.contains("value: el.value"));
+        assert!(expression.contains("innerText"));
+        assert!(expression.contains("href"));
+        assert!(expression.contains("Array.from(el.attributes || [])"));
+        assert!(!expression.contains("startsWith('data-')"));
+    }
+
+    #[test]
+    fn select_dom_attribute_prefers_properties_then_attributes() {
+        let properties = json!({"value": "current", "innerText": "visible"});
+        let attributes = json!({"value": "initial", "data-state": "ready", "aria-label": "Reveal"});
+
+        assert_eq!(
+            select_dom_attribute(&properties, &attributes, "value"),
+            (json!("current"), "property", true)
+        );
+        assert_eq!(
+            select_dom_attribute(&properties, &attributes, "data-state"),
+            (json!("ready"), "attribute", true)
+        );
+        assert_eq!(
+            select_dom_attribute(&properties, &attributes, "ARIA-LABEL"),
+            (json!("Reveal"), "attribute", true)
+        );
+        assert_eq!(
+            select_dom_attribute(&properties, &attributes, "missing"),
+            (Value::Null, "missing", false)
+        );
     }
 
     #[test]
@@ -2067,6 +2217,101 @@ mod tests {
             .expect_err("cancelled invocation should fail before sidecar call");
 
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live chrome-agent-sidecar and public https://ots.bash.md/"]
+    async fn live_ots_browser_extract_returns_share_url_value_attribute() {
+        if std::env::var("OXIDE_BROWSER_LIVE_E2E").ok().as_deref() != Some("1") {
+            eprintln!("set OXIDE_BROWSER_LIVE_E2E=1 to run the live Browser Live OTS test");
+            return;
+        }
+        let base_url = std::env::var("BROWSER_AGENT_SIDECAR_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+        let token = std::env::var("BROWSER_AGENT_SIDECAR_TOKEN")
+            .expect("BROWSER_AGENT_SIDECAR_TOKEN must be set");
+        let provider = Arc::new(
+            BrowserLiveProvider::from_sidecar_config(
+                &base_url,
+                &token,
+                BrowserArtifactSettings::default(),
+                None,
+            )
+            .expect("live sidecar client"),
+        );
+        let executors = provider.tool_runtime_executors();
+        let suffix = Utc::now().timestamp_millis();
+        let task_id = format!("cp4-live-extract-{suffix}");
+        let secret = format!("cp4 browser_extract value contract {suffix}");
+
+        let start_args = json!({
+            "task_id": task_id,
+            "start_url": "https://ots.bash.md/"
+        })
+        .to_string();
+        let start = execute(&executors, TOOL_BROWSER_START, &start_args).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+
+        let type_args = json!({
+            "session_id": session_id,
+            "action": {"kind": "type_text", "selector": "#createSecretData", "value": secret},
+            "expected_result": "secret textarea is filled"
+        })
+        .to_string();
+        let type_result = execute(&executors, TOOL_BROWSER_EXECUTE, &type_args).await;
+        assert_eq!(
+            type_result.structured_payload.as_ref().expect("payload")["status"],
+            "executed"
+        );
+
+        let submit_args = json!({
+            "session_id": session_id,
+            "action": {"kind": "click_selector", "selector": "button[type=submit]"},
+            "expected_result": "share URL is created"
+        })
+        .to_string();
+        let submit_result = execute(&executors, TOOL_BROWSER_EXECUTE, &submit_args).await;
+        assert_eq!(
+            submit_result.structured_payload.as_ref().expect("payload")["status"],
+            "executed"
+        );
+
+        let wait_args = json!({
+            "session_id": session_id,
+            "action": {"kind": "wait_for_selector", "selector": "input.form-control", "timeout_ms": 10000},
+            "expected_result": "share URL input is visible"
+        })
+        .to_string();
+        let wait_result = execute(&executors, TOOL_BROWSER_EXECUTE, &wait_args).await;
+        assert_eq!(
+            wait_result.structured_payload.as_ref().expect("payload")["status"],
+            "executed"
+        );
+
+        let extract_args = json!({
+            "session_id": session_id,
+            "source": "dom",
+            "selector": "input.form-control:not(#createSecretFiles)",
+            "attribute": "value"
+        })
+        .to_string();
+        let extract = execute(&executors, TOOL_BROWSER_EXTRACT, &extract_args).await;
+        let payload = extract.structured_payload.as_ref().expect("payload");
+        let matches = payload["matches"].as_array().expect("matches array");
+        let share_url = matches
+            .iter()
+            .find_map(|item| item["value"].as_str())
+            .expect("share URL value");
+        assert!(share_url.starts_with("https://ots.bash.md/#"));
+        assert_eq!(matches[0]["attribute"], "value");
+        assert_eq!(matches[0]["attribute_source"], "property");
+        assert_eq!(matches[0]["found"], true);
+
+        let close_args = json!({"session_id": session_id, "keep_artifacts": false}).to_string();
+        let _ = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
     }
 
     fn test_provider() -> Arc<BrowserLiveProvider> {
