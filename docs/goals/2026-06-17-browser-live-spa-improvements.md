@@ -63,7 +63,7 @@ None. All required evidence can be produced from the existing repo and the publi
 - Acceptance: navigating to a same-origin hash-only URL takes the sidecar fast path and returns within 5 seconds.
 - Evidence required: live REST test timing the share-link navigation, `NavigationStatus` must be `Loaded`.
 - Status: verified
-- Evidence collected: CP-1 added the defensive location refresh so the SPA hash fast-path is reliably detected. Live REST test navigated to `https://ots.bash.md/#test-hash|abc` and returned immediately with `status: loaded`, `url: https://ots.bash.md/#test-hash|abc`, and `title: OTS - One Time Secrets`. No timeout occurred.
+- Evidence collected: CP-1 added the defensive location refresh so the SPA hash fast-path is reliably detected. CP-2 replaced the fixed `time.sleep(0.5)` after the hash fast path with `listener.wait_for_network_idle(timeout=2.0)` and a `chrome-agent wait selector body` fallback. Live REST test performed the full OTS create-secret flow and navigated to the generated share link `https://ots.bash.md/#00d30b19-...`; the response returned in 385ms with `status: loaded`, `url: https://ots.bash.md/#00d30b19-...`, and `title: OTS - One Time Secrets`.
 
 ### G3: DOM wait actions available to the model and sidecar
 - Source: test report problem #3 — no `wait_for_selector` or `wait_for_text` mechanism.
@@ -213,6 +213,13 @@ None. All required evidence can be produced from the existing repo and the publi
   - Audit IDs updated: G1 pending → verified, G2 pending → verified, Q1 pending → verified, N1 pending → verified.
   - Next: CP-2 — harden SPA hash navigation.
 
+- 2026-06-17: CP-2 — SPA hash navigation hardened.
+  - Changed: `docker/chrome-agent-sidecar.py` hash fast path now calls `listener.wait_for_network_idle(timeout=2.0)` and falls back to `chrome-agent wait selector body` before inspecting; full `goto` branch reads `wait_until` from the request and calls `wait_for_network_idle` when `"networkidle"`; the hash branch also refreshes the session URL from the browser location before building the observation.
+  - Evidence: `python3 -m py_compile`, `cargo fmt`, `cargo clippy`, `cargo test` (82/11/10), sidecar self-test all pass. Live REST test created a secret on `https://ots.bash.md/` and navigated to the generated share link; the hash navigation returned in 385ms with `status: loaded` and correct URL.
+  - Commands: same static checks plus `curl` to `/sessions/{id}/action` and `/sessions/{id}/goto`.
+  - Audit IDs updated: G2 verified (evidence strengthened), Q1 verified (extended).
+  - Next: CP-3 — add `wait_for_selector` and `wait_for_text` actions.
+
 ## Risks and Blockers
 
 - CDP `Page.frameNavigated` may fire frequently or with `about:blank` frames.
@@ -223,7 +230,7 @@ None. All required evidence can be produced from the existing repo and the publi
   - Mitigation: only attempt for XHR/fetch/failed; ignore failures silently.
 - `chrome-agent wait` command syntax may not match the pipe JSON assumptions.
   - Impact: wait actions fail.
-  - Mitigation: verified with `docker exec ... timeout 15 bash -c 'echo ... | chrome-agent --json pipe'`.
+  - Mitigation: verified with `docker exec ... timeout 15 bash -c 'echo ... | chrome-agent --json pipe'`; CP-2 also verified the fallback `wait selector body` in the hash navigation path.
 - Adding `body` to `NetworkItem` may break consumers that expect a fixed schema.
   - Impact: compile/runtime errors in web UI or Telegram transport.
   - Mitigation: use `#[serde(default, skip_serializing_if = "Option::is_none")]` and add the field to shared contracts.
@@ -241,9 +248,9 @@ Filled only when complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-1 complete; starting CP-2.
-* What changed: sidecar now updates the session URL from the navigation result, from CDP `Page.frameNavigated`, and from a defensive `window.location.href` refresh before hash navigation.
-* What was verified: observation URL is correct after full navigation to `example.com` and `ots.bash.md`, and hash navigation to `ots.bash.md/#test-hash|abc` returned `Loaded` immediately.
-* Which audit IDs moved: G1 → verified, G2 → verified, Q1 → verified, N1 → verified.
-* What remains: CP-2 through CP-6.
+* Current checkpoint: CP-2 complete; starting CP-3.
+* What changed: sidecar hash navigation now waits for network idle and a rendered `body` element instead of a blind 0.5s sleep; full navigation can optionally wait for network idle.
+* What was verified: full OTS create-secret flow, then navigation to the generated share link completed in 385ms with `status: loaded` and correct URL.
+* Which audit IDs moved: G2 verified (stronger evidence), Q1 verified (extended).
+* What remains: CP-3 through CP-6.
 * Whether anything is blocked: not blocked.

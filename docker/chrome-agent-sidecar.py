@@ -1378,11 +1378,23 @@ class Handler(BaseHTTPRequestHandler):
             hash_value = parsed_target.fragment
             script = f"window.location.hash = {json.dumps('#' + hash_value)}; true"
             pipe.send({"cmd": "eval", "expression": script}, timeout=15)
-            # Give the SPA a moment to render, then inspect.
-            time.sleep(0.5)
+            # Wait for the SPA to finish its async work. Network idle means XHRs
+            # triggered by the hash change have completed; the selector fallback
+            # ensures the DOM is actually rendered before we inspect.
+            listener = pipe._cdp_listener if pipe is not None else None
+            if listener is not None and listener._connected.is_set():
+                listener.wait_for_network_idle(timeout=2.0)
+            else:
+                time.sleep(0.5)
+            try:
+                pipe.send({"cmd": "wait", "what": "selector", "pattern": "body", "timeout": 5}, timeout=10)
+            except Exception:
+                pass
             inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
             chrome_output = inspect_result if inspect_result.get("ok") else {"url": url, "title": session.get("title", "")}
-            session["url"] = url
+            # Prefer the real location from the browser over the requested URL.
+            final_url = self._refresh_session_url_from_location(session_id, session) or url
+            session["url"] = final_url
             observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -1390,7 +1402,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "navigation": {
                     "url": url,
-                    "final_url": chrome_output.get("url", url),
+                    "final_url": final_url,
                     "status": "loaded",
                     "http_status": None,
                     "redirect_count": 0,
@@ -1400,6 +1412,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        wait_until = str(body.get("wait_until", "load")).lower()
         result = pipe.send({"cmd": "goto", "url": url}, timeout=60)
         if not result.get("ok"):
             self.write_json(HTTPStatus.OK, {
@@ -1411,6 +1424,11 @@ class Handler(BaseHTTPRequestHandler):
                 "error": result.get("error"),
             })
             return
+
+        if wait_until == "networkidle":
+            listener = pipe._cdp_listener if pipe is not None else None
+            if listener is not None and listener._connected.is_set():
+                listener.wait_for_network_idle(timeout=2.0)
 
         inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
         chrome_output = inspect_result if inspect_result.get("ok") else result
