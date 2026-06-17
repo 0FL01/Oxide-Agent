@@ -5,7 +5,7 @@ Status: active
 Codex goal: Iterate on Browser Live according to the RECON plan: verify live contracts, fix SPA input, fresh navigation, strict action schema, DOM extraction, docs, validate every checkpoint, and create a separate git commit after each completed checkpoint.
 Source spec: user-provided v6 OTS evidence report and RECON review request
 Goal doc owner: Codex
-Last updated: 2026-06-18 00:03
+Last updated: 2026-06-18 01:05
 
 ## Objective
 
@@ -76,8 +76,8 @@ Out of scope:
 - Source: v6 problem: `type_text` returns technical success but does not reliably trigger SPA state updates.
 - Acceptance: `fill` and `type_text` share one sidecar-owned semantic value-setting primitive that uses native value setters where required, dispatches framework-visible events, returns final value diagnostics, and works on OTS without extra JS hacks.
 - Evidence required: sidecar/unit tests plus live OTS run where `type_text` alone enables submit and creates a secret.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-1 replaced the split chrome-agent `fill` + sidecar dispatch sequence with one sidecar-owned semantic input eval for both `fill` and `type_text`. The primitive uses native value setters for `HTMLInputElement`, `HTMLTextAreaElement`, and `HTMLSelectElement`, dispatches `focus`/`focusin`/`beforeinput`/`input`/`change`/`keyup`, fails on final value mismatch, and returns non-value JSON diagnostics through `action_result.result`. Contract checks confirmed both public actions translate to exactly one eval command with native setter/event markers and do not echo `final_value`. Live OTS probe on the refreshed `oxide_chrome_agent_sidecar` returned `ok:true`: `type_text` diagnostic `{action:"type_text", tag:"textarea", value_matches:true, value_length:42, expected_length:42}`, JS state after input `{value_matches:true, disabled:false}`, submit succeeded, share URL present with hash length 59 and post DOM length 12; `fill` returned the same diagnostic shape with value length 37, submit succeeded, share URL present with hash length 59 and post DOM length 12.
 
 ### G3: Fresh navigation contract for hash SPAs
 - Source: v6 problem: same-hash SPA navigation caches state; `location.reload()`/`about:blank` break DOM.
@@ -119,14 +119,14 @@ Out of scope:
 - Acceptance: relevant targeted checks pass before each checkpoint commit; final gate includes broad static/test commands listed in Validation Contract.
 - Evidence required: command outputs per checkpoint.
 - Status: in_progress
-- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed).
+- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed). CP-1 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/contract check for `action_to_pipe_cmd` (pass after documenting the local `/var/lib/oxide-browser` permission issue), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), and the live OTS semantic input probe (pass).
 
 ### Q2: One commit per completed checkpoint
 - Source: user instruction.
 - Acceptance: every completed checkpoint has a separate git commit after validation and goal doc update.
 - Evidence required: commit hashes recorded in Progress Log.
 - Status: in_progress
-- Evidence collected: CP-0 is ready for diff review and commit after this evidence update.
+- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `35724bf0 fix(browser-live): unify semantic input actions`.
 
 ### N1: Browser Live direct-control architecture preserved
 - Source: existing completed direct-control goal and current repo invariants.
@@ -256,6 +256,20 @@ Out of scope:
   - Commands: `docker ps --format '{{.Names}}' | sort`; `docker exec oxide_chrome_agent_sidecar sh -lc 'curl -fsS -H "Authorization: Bearer $BROWSER_AGENT_SIDECAR_TOKEN" http://127.0.0.1:8787/healthz && printf "\n" && chrome-agent-sidecar --self-test'`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...`; `python3 -m py_compile docker/chrome-agent-sidecar.py`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`.
   - Audit IDs updated: G1 verified; Q1/Q2 in progress.
   - Next: review diff, commit CP-0, then start CP-1 input primitive hardening.
+
+- 2026-06-18 00:05: CP-0 committed.
+  - Changed: committed the goal doc and CP-0 baseline evidence.
+  - Evidence: git commit `62ba7a7d docs(browser-live): add recon hardening goal`.
+  - Commands: `git status --short`; `git diff -- docs/goals/2026-06-18-browser-live-recon-hardening.md`; `git add docs/goals/2026-06-18-browser-live-recon-hardening.md`; `git commit -m ...`.
+  - Audit IDs updated: Q2 in progress.
+  - Next: CP-1 semantic input hardening.
+
+- 2026-06-18 01:05: CP-1 semantic input primitive completed.
+  - Changed: `docker/chrome-agent-sidecar.py` now maps both `fill` and `type_text` to one sidecar semantic input eval using native element setters and framework-visible events; action results now include input diagnostics and fail on final value mismatch; sidecar self-test asserts the shared input contract.
+  - Evidence: git commit `35724bf0 fix(browser-live): unify semantic input actions`. Live OTS probe on refreshed sidecar showed `type_text` alone set `#createSecretData`, enabled submit, created a share URL (`share_hash_len:59`), and returned diagnostic `value_matches:true` without `final_value`; `fill` showed the same behavior and diagnostic shape. The live refresh initially exposed a deployment-mode issue: `docker cp` wrote the script without executable permission and `tini` logged `exec /usr/local/bin/chrome-agent-sidecar failed: Permission denied`; this was repaired by copying a `0755` temp executable and confirmed by healthcheck/hash match before live validation.
+  - Commands: `python3 -m py_compile docker/chrome-agent-sidecar.py`; `BROWSER_AGENT_ARTIFACT_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-artifacts-test BROWSER_AGENT_PROFILE_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-profiles-test python3 - <<'PY' ...`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `install -m 0755 docker/chrome-agent-sidecar.py target/chrome-agent-sidecar-live`; `docker cp target/chrome-agent-sidecar-live oxide_chrome_agent_sidecar:/usr/local/bin/chrome-agent-sidecar`; `docker restart oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar sh -lc 'ls -l /usr/local/bin/chrome-agent-sidecar && sha256sum /usr/local/bin/chrome-agent-sidecar && curl -fsS -H "Authorization: Bearer $BROWSER_AGENT_SIDECAR_TOKEN" http://127.0.0.1:8787/healthz'`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...`.
+  - Audit IDs updated: G2 verified; Q1/Q2 in progress.
+  - Next: review CP-1 diff, commit, then start CP-2 sidecar-owned fresh navigation.
 
 ## Risks and Blockers
 

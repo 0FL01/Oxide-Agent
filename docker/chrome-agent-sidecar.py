@@ -1262,29 +1262,61 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> list[dict[str, Any]]:
     return [{"cmd": "eval", "expression": script}]
 
 
-def _input_dispatch_script(selector: str | None, value: str, fill: bool) -> str:
-    """Build a JS snippet that sets a value and dispatches SPA input events."""
+def _semantic_input_script(selector: str | None, value: str, fill: bool) -> str:
+    """Build the single sidecar-owned semantic input primitive."""
     selector_json = json.dumps(selector)
     value_json = json.dumps(value)
-    action = "fill" if fill else "type"
+    action_json = json.dumps("fill" if fill else "type_text")
+    target_expr = (
+        f"document.querySelector({selector_json})"
+        if selector is not None
+        else "document.activeElement"
+    )
     return (
         "(() => { "
-        "const el = " + (f"document.querySelector({selector_json})" if selector is not None else "document.activeElement") + "; "
-        "if (!el) return 'Error: no element found'; "
-        "if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') { "
-        "el.value = " + value_json + "; "
-        "} else if (el.isContentEditable) { "
-        "el.textContent = " + value_json + "; "
-        "} else { "
+        "const selector = " + selector_json + "; "
+        "const desired = " + value_json + "; "
+        "const action = " + action_json + "; "
+        "const el = " + target_expr + "; "
+        "if (!el) return 'Error: no element found for semantic input'; "
+        "const tag = (el.tagName || '').toLowerCase(); "
+        "const common = { bubbles: true, cancelable: true, composed: true }; "
+        "const dispatch = (type, init = {}) => { "
+        "if (type === 'input' && typeof InputEvent === 'function') { "
+        "el.dispatchEvent(new InputEvent(type, { ...common, data: desired, inputType: action === 'fill' ? 'insertReplacementText' : 'insertText', ...init })); "
+        "} else { el.dispatchEvent(new Event(type, { ...common, ...init })); } "
+        "}; "
+        "const setterFrom = proto => proto && Object.getOwnPropertyDescriptor(proto, 'value') && Object.getOwnPropertyDescriptor(proto, 'value').set; "
+        "const setNativeValue = next => { "
+        "const ownSetter = Object.getOwnPropertyDescriptor(el, 'value') && Object.getOwnPropertyDescriptor(el, 'value').set; "
+        "let nativeSetter = null; "
+        "if (el instanceof HTMLInputElement) nativeSetter = setterFrom(HTMLInputElement.prototype); "
+        "else if (el instanceof HTMLTextAreaElement) nativeSetter = setterFrom(HTMLTextAreaElement.prototype); "
+        "else if (el instanceof HTMLSelectElement) nativeSetter = setterFrom(HTMLSelectElement.prototype); "
+        "else nativeSetter = setterFrom(Object.getPrototypeOf(el)); "
+        "const setter = nativeSetter && nativeSetter !== ownSetter ? nativeSetter : (ownSetter || nativeSetter); "
+        "if (setter) setter.call(el, next); else el.value = next; "
+        "}; "
+        "if (!(tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable)) { "
         "return 'Error: element not fillable'; "
         "} "
-        "el.focus(); "
-        "const common = { bubbles: true, cancelable: true }; "
-        "el.dispatchEvent(new Event('focus', common)); "
-        "el.dispatchEvent(new Event('input', common)); "
-        "el.dispatchEvent(new Event('change', common)); "
+        "if (typeof el.focus === 'function') el.focus({ preventScroll: true }); "
+        "el.dispatchEvent(new FocusEvent('focus', common)); "
+        "el.dispatchEvent(new FocusEvent('focusin', common)); "
+        "if (el.isContentEditable) { "
+        "dispatch('beforeinput'); "
+        "el.textContent = desired; "
+        "dispatch('input'); "
+        "} else { "
+        "dispatch('beforeinput'); "
+        "setNativeValue(desired); "
+        "dispatch('input'); "
+        "} "
+        "dispatch('change'); "
         "el.dispatchEvent(new KeyboardEvent('keyup', { ...common, key: 'End' })); "
-        "return " + json.dumps(action + " dispatched for " + (selector if selector is not None else "activeElement")) + "; "
+        "const finalValue = el.isContentEditable ? el.textContent : el.value; "
+        "if (finalValue !== desired) return 'Error: semantic input value mismatch; final length ' + String(finalValue ?? '').length + ', expected length ' + desired.length; "
+        "return { ok: true, action, selector, tag, type: el.getAttribute('type'), value_length: String(finalValue ?? '').length, expected_length: desired.length, value_matches: true }; "
         "})()"
     )
 
@@ -1298,8 +1330,8 @@ def action_to_pipe_cmd(
     chrome-agent `--inspect` flag. This is used by script execution so the
     sidecar can perform a single post-script inspect instead of one per step.
 
-    Input actions (fill, type_text) are split into a value-setting command and
-    a SPA event-dispatch command so React/Vue/Angular observe the change.
+    Input actions (fill, type_text) use one sidecar-owned semantic value setter
+    so React/Vue/Angular observe the same native-setter event sequence.
     """
     kind = action.get("kind")
     if kind == "click_xy":
@@ -1320,17 +1352,11 @@ def action_to_pipe_cmd(
     if kind == "fill":
         selector = action["selector"]
         value = action["value"]
-        return [
-            {"cmd": "fill", "selector": selector, "value": value},
-            {"cmd": "eval", "expression": _input_dispatch_script(selector, value, fill=True)},
-        ]
+        return [{"cmd": "eval", "expression": _semantic_input_script(selector, value, fill=True)}]
     if kind == "type_text":
         selector = action.get("selector")
         value = action.get("value", action.get("text", ""))
-        return [
-            {"cmd": "fill", "selector": selector, "value": value},
-            {"cmd": "eval", "expression": _input_dispatch_script(selector, value, fill=False)},
-        ]
+        return [{"cmd": "eval", "expression": _semantic_input_script(selector, value, fill=False)}]
     if kind == "press":
         return _press_to_pipe_cmd(action["key"], inspect_after=inspect_after)
     if kind == "scroll":
@@ -1967,7 +1993,7 @@ class Handler(BaseHTTPRequestHandler):
 
         result_value = None
         if success:
-            if kind in ("get_element_value", "execute_javascript"):
+            if kind in ("fill", "type_text", "get_element_value", "execute_javascript"):
                 result_value = _extract_eval_result(result)
             elif kind == "script" and step_results:
                 steps = action.get("steps", [])
@@ -2229,6 +2255,16 @@ def self_test() -> int:
     assert _with["items"][2].get("body") == "error-body", "missing failed body"
     _without = build_network_debug_payload(_history, 0, "all", "summary", False, 10)
     assert not any("body" in item for item in _without["items"]), "body present when disabled"
+
+    fill_cmds = action_to_pipe_cmd({"kind": "fill", "selector": "#secret", "value": "hello"})
+    type_cmds = action_to_pipe_cmd({"kind": "type_text", "selector": "#secret", "value": "hello"})
+    assert len(fill_cmds) == 1 and fill_cmds[0]["cmd"] == "eval", "fill must use one semantic eval"
+    assert len(type_cmds) == 1 and type_cmds[0]["cmd"] == "eval", "type_text must use one semantic eval"
+    assert "HTMLInputElement.prototype" in fill_cmds[0]["expression"], "input native setter missing"
+    assert "HTMLTextAreaElement.prototype" in fill_cmds[0]["expression"], "textarea native setter missing"
+    assert "HTMLSelectElement.prototype" in fill_cmds[0]["expression"], "select native setter missing"
+    assert "insertReplacementText" in fill_cmds[0]["expression"], "fill event intent missing"
+    assert "insertText" in type_cmds[0]["expression"], "type_text event intent missing"
 
     print("chrome-agent-sidecar self-test ok")
     return 0
