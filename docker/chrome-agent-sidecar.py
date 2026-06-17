@@ -472,6 +472,7 @@ class CDPListener:
                 await self._send(ws, "Network.enable", {})
                 await self._send(ws, "Log.enable", {})
                 await self._send(ws, "Runtime.enable", {})
+                await self._send(ws, "Page.enable", {})
                 self._connected.set()
                 async for message in ws:
                     try:
@@ -500,6 +501,29 @@ class CDPListener:
             self._on_log_entry(params)
         elif method == "Runtime.consoleAPICalled":
             self._on_console_api_called(params)
+        elif method == "Page.frameNavigated":
+            self._on_frame_navigated(params)
+
+    def _on_frame_navigated(self, params: dict[str, Any]) -> None:
+        frame = params.get("frame", {})
+        if not frame:
+            return
+        # Only update the main frame's URL; ignore subframes.
+        if frame.get("parentId"):
+            return
+        url = frame.get("url", "")
+        if not url:
+            return
+        session = STATE.sessions.get(self.session_id)
+        if session is None:
+            return
+        # Avoid storing internal/blank pages as the session URL.
+        if url.startswith("chrome-") or url == "about:blank":
+            return
+        session["url"] = url
+        title = frame.get("name") or frame.get("title") or session.get("title", "")
+        if title:
+            session["title"] = title
 
     def _on_request_will_be_sent(self, params: dict[str, Any]) -> None:
         rid = params.get("requestId")
@@ -1289,6 +1313,23 @@ class Handler(BaseHTTPRequestHandler):
             "artifact_root": f"artifact://browser/{safe(task_id)}/{safe(session_id)}/",
         })
 
+    def _refresh_session_url_from_location(self, session_id: str, session: dict[str, Any]) -> str:
+        """Refresh session URL from the browser's current window.location.href.
+
+        This is a defensive check: CDP Page.frameNavigated updates the URL as
+        events arrive, but for SPA hash navigation the stored value can still be
+        stale by the time a new `goto` is issued. We fall back to the existing
+        session URL if the eval fails.
+        """
+        pipe = get_pipe(session_id)
+        result = pipe.send({"cmd": "eval", "expression": "window.location.href || document.URL || ''"}, timeout=10)
+        if result.get("ok"):
+            href = result.get("result", "")
+            if isinstance(href, str) and href and href.startswith("http"):
+                session["url"] = href
+                return href
+        return session.get("url", "")
+
     def _handle_goto(self, session_id: str) -> None:
         session = STATE.sessions.get(session_id)
         if session is None:
@@ -1323,7 +1364,7 @@ class Handler(BaseHTTPRequestHandler):
 
         pipe = get_pipe(session_id)
         action_seq = session.get("action_seq", 0)
-        current_url = session.get("url", "")
+        current_url = self._refresh_session_url_from_location(session_id, session)
 
         # SPA hash navigation: same origin and path, only the hash changed.
         parsed_current = urlparse(current_url)
@@ -1373,6 +1414,11 @@ class Handler(BaseHTTPRequestHandler):
 
         inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
         chrome_output = inspect_result if inspect_result.get("ok") else result
+        # Update session URL/title before building the observation so the next
+        # navigation decision sees the real page location.
+        final_url = chrome_output.get("url") or result.get("url") or url
+        session["url"] = final_url
+        session["title"] = chrome_output.get("title") or result.get("title") or session.get("title", "")
         observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),
@@ -1380,7 +1426,7 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "navigation": {
                 "url": url,
-                "final_url": result.get("url", url),
+                "final_url": final_url,
                 "status": "loaded",
                 "http_status": None,
                 "redirect_count": 0,
