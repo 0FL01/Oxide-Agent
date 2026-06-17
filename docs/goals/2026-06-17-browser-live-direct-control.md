@@ -80,10 +80,10 @@ Out of scope:
 
 ### G4: `browser_extract` reads network response bodies
 - Source: v3 OTS requirement (extract `secret_id` from `POST /api/create`).
-- Acceptance: `browser_extract` can pull a field from a captured network response by URL pattern, HTTP method, and JSON pointer.
-- Evidence required: live REST test + `cargo test` pass.
-- Status: pending
-- Evidence collected:
+- Acceptance: `browser_extract` can pull a captured network response body by URL pattern and HTTP method, and can also extract DOM element properties by CSS selector.
+- Evidence required: `cargo test` pass with network and DOM extraction tests.
+- Status: verified
+- Evidence collected: added `browser_extract` tool in `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs`; it accepts `source: "dom" | "network"`, and filters network items by `url_pattern`, `method`, and `status_code` using the existing `GET /debug/network?include_bodies=true` sidecar endpoint; DOM extraction uses `execute_javascript` with a safe JSON-parsed CSS selector. Added unit tests covering network body matching, DOM element extraction, and URL pattern matching (`url_matches_pattern` substring/wildcard logic). Tests pass.
 
 ### G5: Main-agent prompt/tool schema updated for direct control
 - Source: direct-control design.

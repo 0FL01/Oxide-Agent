@@ -26,6 +26,7 @@ pub(crate) enum FakeActionOutcome {
     Failure,
     StaleFrame,
     JsError(String),
+    JsResult(String),
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,24 @@ impl FakeBrowserSidecar {
             resource_type: "xhr".to_string(),
             error_text: Some(error_text.to_string()),
             body: None,
+        });
+    }
+
+    pub(crate) fn add_network_request(
+        &self,
+        url_redacted: &str,
+        method: &str,
+        status: u16,
+        body: Option<&str>,
+    ) {
+        self.state().network_items.push(NetworkItem {
+            timestamp: fixed_timestamp(),
+            method: method.to_string(),
+            url_redacted: url_redacted.to_string(),
+            status: Some(status),
+            resource_type: "xhr".to_string(),
+            error_text: None,
+            body: body.map(str::to_string),
         });
     }
 
@@ -334,7 +353,8 @@ impl BrowserSidecar for FakeBrowserSidecar {
         let status = match outcome {
             FakeActionOutcome::Success
             | FakeActionOutcome::DelaySuccess(_)
-            | FakeActionOutcome::StaleFrame => ActionStatus::Executed,
+            | FakeActionOutcome::StaleFrame
+            | FakeActionOutcome::JsResult(_) => ActionStatus::Executed,
             FakeActionOutcome::NoOp => ActionStatus::NoOp,
             FakeActionOutcome::Failure => unreachable!("failure returned above"),
             FakeActionOutcome::JsError(_) => ActionStatus::Failed,
@@ -344,6 +364,10 @@ impl BrowserSidecar for FakeBrowserSidecar {
             FakeActionOutcome::JsError(ref message) => Some(message.clone()),
             _ => (status == ActionStatus::NoOp)
                 .then(|| "action produced no visible change".to_string()),
+        };
+        let result = match outcome {
+            FakeActionOutcome::JsResult(ref value) => Some(value.clone()),
+            _ => None,
         };
 
         Ok(ActionResponse {
@@ -357,7 +381,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
                 duration_ms: 25,
                 technical_success,
                 hint,
-                result: None,
+                result,
             },
             post_observation,
             error: None,

@@ -5,9 +5,10 @@ use super::error::BrowserSidecarError;
 use super::metrics::BrowserMetricsCollector;
 use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    BrowserAction, BrowserObservation, BrowserProfile, CloseReason, CloseSessionRequest,
-    ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel, NetworkDebugQuery,
-    NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
+    ActionRequest, BrowserAction, BrowserObservation, BrowserProfile, CloseReason,
+    CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
+    NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat,
+    ScreenshotQuery, Viewport,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -34,6 +35,8 @@ pub const TOOL_BROWSER_START: &str = "browser_start";
 pub const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
 /// `browser_execute` tool name.
 pub const TOOL_BROWSER_EXECUTE: &str = "browser_execute";
+/// `browser_extract` tool name.
+pub const TOOL_BROWSER_EXTRACT: &str = "browser_extract";
 /// `browser_debug` tool name.
 pub const TOOL_BROWSER_DEBUG: &str = "browser_debug";
 /// `browser_close` tool name.
@@ -134,6 +137,7 @@ impl BrowserLiveProvider {
             TOOL_BROWSER_START,
             TOOL_BROWSER_OBSERVE,
             TOOL_BROWSER_EXECUTE,
+            TOOL_BROWSER_EXTRACT,
             TOOL_BROWSER_DEBUG,
             TOOL_BROWSER_CLOSE,
         ]
@@ -494,6 +498,54 @@ impl BrowserLiveProvider {
         }
     }
 
+    #[instrument(
+        name = "browser_extract",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id, source = ?args.source),
+    )]
+    async fn extract(
+        &self,
+        invocation: &ToolInvocation,
+        args: ExtractArgs,
+    ) -> Result<Value, ToolRuntimeError> {
+        ensure_not_cancelled(invocation)?;
+        let _ = self
+            .states
+            .lock()
+            .await
+            .get(&args.session_id)
+            .ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+        self.emit_progress(format!(
+            "BrowserExtract session_id={} source={:?}",
+            args.session_id, args.source
+        ))
+        .await;
+
+        let max_results = args.max_results.unwrap_or(10).clamp(1, 100);
+        let matches = match args.source {
+            ExtractSource::Dom => extract_from_dom(&args, self, invocation).await?,
+            ExtractSource::Network => extract_from_network(&args, self, max_results).await?,
+        };
+
+        tracing::info!(
+            session_id = %args.session_id,
+            source = ?args.source,
+            matches = matches.len(),
+            "browser extract completed"
+        );
+        Ok(json!({
+            "status": "extracted",
+            "source": match args.source {
+                ExtractSource::Dom => "dom",
+                ExtractSource::Network => "network",
+            },
+            "session_id": args.session_id,
+            "matches": matches,
+        }))
+    }
+
     async fn observe_for_timeout(
         &self,
         session_id: &str,
@@ -753,6 +805,10 @@ impl ToolExecutor for BrowserLiveToolExecutor {
                 let result = self.provider.execute(&invocation, args).await?;
                 (result.payload, result.image_attachment)
             }
+            TOOL_BROWSER_EXTRACT => {
+                let args = parse_args::<ExtractArgs>(&invocation)?;
+                (self.provider.extract(&invocation, args).await?, None)
+            }
             TOOL_BROWSER_DEBUG => {
                 let args = parse_args::<DebugArgs>(&invocation)?;
                 (self.provider.debug(&invocation, args).await?, None)
@@ -811,6 +867,33 @@ struct ExecuteArgs {
     timeout_ms: Option<u64>,
     #[serde(default)]
     expected_result: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExtractSource {
+    Dom,
+    Network,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExtractArgs {
+    session_id: String,
+    source: ExtractSource,
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    attribute: Option<String>,
+    #[serde(default)]
+    url_pattern: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    status_code: Option<u16>,
+    #[serde(default)]
+    max_results: Option<u32>,
+    #[serde(default)]
+    include_bodies: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -980,6 +1063,25 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                 "additionalProperties": false
             }),
         ),
+        TOOL_BROWSER_EXTRACT => (
+            "Extract structured data from the current page: network response bodies or DOM element properties.",
+            json!({
+                "type": "object",
+                "required": ["session_id", "source"],
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "source": {"type": "string", "enum": ["dom", "network"]},
+                    "selector": {"type": "string", "description": "CSS selector for dom source"},
+                    "attribute": {"type": "string", "description": "preferred dom attribute: value, innerText, innerHTML, textContent (all are returned if omitted)"},
+                    "url_pattern": {"type": "string", "description": "glob/ substring pattern for network source, e.g. */api/create"},
+                    "method": {"type": "string", "description": "HTTP method filter for network source"},
+                    "status_code": {"type": "integer", "description": "HTTP status filter for network source"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "include_bodies": {"type": "boolean", "default": true, "description": "include response bodies for network source"}
+                },
+                "additionalProperties": false
+            }),
+        ),
         TOOL_BROWSER_DEBUG => (
             "Fetch browser console/network debug summaries as compact artifact-backed diagnostics.",
             json!({
@@ -1022,6 +1124,160 @@ const fn default_true() -> bool {
     true
 }
 
+async fn extract_from_network(
+    args: &ExtractArgs,
+    provider: &BrowserLiveProvider,
+    max_results: u32,
+) -> Result<Vec<Value>, ToolRuntimeError> {
+    let query = NetworkDebugQuery {
+        since_action_seq: 0,
+        level: DebugLevel::Summary,
+        include_bodies: args.include_bodies.unwrap_or(true),
+        filter: NetworkFilter::All,
+        limit: max_results,
+    };
+    let response = provider
+        .measure_sidecar(provider.sidecar.debug_network(&args.session_id, &query))
+        .await
+        .map_err(sidecar_runtime_error)?;
+    let mut matches = Vec::new();
+    for item in response.network.items {
+        let method = item.method.to_ascii_uppercase();
+        if let Some(ref expected) = args.method
+            && method != expected.to_ascii_uppercase()
+        {
+            continue;
+        }
+        if let Some(expected_status) = args.status_code
+            && item.status != Some(expected_status)
+        {
+            continue;
+        }
+        if let Some(ref pattern) = args.url_pattern
+            && !url_matches_pattern(&item.url_redacted, pattern)
+        {
+            continue;
+        }
+        matches.push(json!({
+            "timestamp": item.timestamp,
+            "method": method,
+            "url": item.url_redacted,
+            "status": item.status,
+            "resource_type": item.resource_type,
+            "error_text": item.error_text,
+            "body": item.body,
+        }));
+        if matches.len() >= max_results as usize {
+            break;
+        }
+    }
+    Ok(matches)
+}
+
+async fn extract_from_dom(
+    args: &ExtractArgs,
+    provider: &BrowserLiveProvider,
+    invocation: &ToolInvocation,
+) -> Result<Vec<Value>, ToolRuntimeError> {
+    let selector = args.selector.as_deref().ok_or_else(|| {
+        ToolRuntimeError::InvalidArguments("dom source requires selector".to_string())
+    })?;
+    let expression = dom_extract_expression(selector);
+    let action_seq = {
+        let states = provider.states.lock().await;
+        let state = states.get(&args.session_id).ok_or_else(|| {
+            ToolRuntimeError::Failure("browser session is not started".to_string())
+        })?;
+        state.action_seq().saturating_add(1)
+    };
+    let key = idempotency_key(
+        invocation,
+        "extract",
+        &format!("{}:{}", args.session_id, action_seq),
+    )?;
+    let request = ActionRequest {
+        action_seq,
+        action: BrowserAction::ExecuteJavaScript { expression },
+        expected_result: "extract DOM data".to_string(),
+        timeout_ms: 10_000,
+        capture_after: false,
+        wait_for_stability: false,
+    };
+    let response = provider
+        .measure_sidecar(
+            provider
+                .sidecar
+                .execute_action(&args.session_id, &request, &key),
+        )
+        .await
+        .map_err(sidecar_runtime_error)?;
+    let raw = response.action_result.result.unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed: Value = serde_json::from_str(&raw).map_err(|error| {
+        ToolRuntimeError::Failure(format!("failed to parse DOM extraction result: {error}"))
+    })?;
+    let array = parsed.as_array().ok_or_else(|| {
+        ToolRuntimeError::Failure("DOM extraction result is not a JSON array".to_string())
+    })?;
+    let attribute = args.attribute.as_deref().unwrap_or("innerText");
+    Ok(array
+        .iter()
+        .map(|element| {
+            json!({
+                "selector": selector,
+                "attribute": attribute,
+                "value": element.get("value"),
+                "innerText": element.get("innerText"),
+                "innerHTML": element.get("innerHTML"),
+                "textContent": element.get("textContent"),
+            })
+        })
+        .collect())
+}
+
+fn url_matches_pattern(url: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    if pattern.is_empty() || pattern == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return url.contains(parts[0]);
+    }
+    let mut position = 0_usize;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let found = url[position..].find(part);
+        match found {
+            Some(offset) => {
+                if index == 0 && offset != 0 {
+                    return false;
+                }
+                position += offset + part.len();
+            }
+            None => return false,
+        }
+    }
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+        && !url.ends_with(last)
+    {
+        return false;
+    }
+    true
+}
+
+fn dom_extract_expression(selector: &str) -> String {
+    let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "JSON.stringify(Array.from(document.querySelectorAll(JSON.parse({selector_json}))).map(el => ({{ value: el.value !== undefined ? el.value : null, innerText: el.innerText, innerHTML: el.innerHTML, textContent: el.textContent }})))"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,6 +1309,7 @@ mod tests {
                 TOOL_BROWSER_START,
                 TOOL_BROWSER_OBSERVE,
                 TOOL_BROWSER_EXECUTE,
+                TOOL_BROWSER_EXTRACT,
                 TOOL_BROWSER_DEBUG,
                 TOOL_BROWSER_CLOSE
             ]
@@ -1068,10 +1325,110 @@ mod tests {
     async fn browser_execute_spec_has_action_parameter() {
         let spec = browser_tool_definition(TOOL_BROWSER_EXECUTE);
         let params = spec.parameters;
-        assert_eq!(params["required"], json!(["session_id", "action"]));
+        assert_eq!(params["required"], json![["session_id", "action"]]);
         assert!(params["properties"].get("action").is_some());
         assert!(params["properties"].get("timeout_ms").is_some());
         assert!(params["properties"].get("expected_result").is_some());
+    }
+
+    #[tokio::test]
+    async fn browser_extract_spec_has_source_and_filters() {
+        let spec = browser_tool_definition(TOOL_BROWSER_EXTRACT);
+        let params = spec.parameters;
+        assert_eq!(params["required"], json![["session_id", "source"]]);
+        assert!(params["properties"].get("source").is_some());
+        assert!(params["properties"].get("selector").is_some());
+        assert!(params["properties"].get("url_pattern").is_some());
+        assert!(params["properties"].get("method").is_some());
+        assert!(params["properties"].get("status_code").is_some());
+    }
+
+    #[tokio::test]
+    async fn browser_extract_network_returns_matching_request_bodies() {
+        let fake = FakeBrowserSidecar::new();
+        fake.add_network_request(
+            "https://example.test/api/create",
+            "POST",
+            201,
+            Some(r#"{"secret_id":"abc"}"#),
+        );
+        fake.add_network_request("https://example.test/api/other", "GET", 200, None);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+        let extract_args = format!(
+            r#"{{"session_id":"{session_id}","source":"network","url_pattern":"*/api/create","method":"POST","status_code":201}}"#
+        );
+        let result = execute(&executors, TOOL_BROWSER_EXTRACT, &extract_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+        assert_eq!(payload["status"], "extracted");
+        assert_eq!(payload["source"], "network");
+        let matches = payload["matches"].as_array().expect("matches array");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["method"], "POST");
+        assert_eq!(matches[0]["status"], 201);
+        assert_eq!(matches[0]["body"], r#"{"secret_id":"abc"}"#);
+    }
+
+    #[tokio::test]
+    async fn browser_extract_dom_returns_js_result_elements() {
+        let js_result = serde_json::json!([
+            {"value": "hello", "innerText": "hello", "innerHTML": "<b>hello</b>", "textContent": "hello"}
+        ]);
+        let fake = FakeBrowserSidecar::new()
+            .with_action_script(vec![FakeActionOutcome::JsResult(js_result.to_string())]);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+        let extract_args = format!(
+            r#"{{"session_id":"{session_id}","source":"dom","selector":"input[readonly]","attribute":"value"}}"#
+        );
+        let result = execute(&executors, TOOL_BROWSER_EXTRACT, &extract_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+        assert_eq!(payload["status"], "extracted");
+        assert_eq!(payload["source"], "dom");
+        let matches = payload["matches"].as_array().expect("matches array");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["value"], "hello");
+        assert_eq!(matches[0]["innerText"], "hello");
+    }
+
+    #[test]
+    fn url_matches_pattern_substring_and_wildcards() {
+        assert!(url_matches_pattern(
+            "https://example.test/api/create",
+            "*/api/create"
+        ));
+        assert!(url_matches_pattern(
+            "https://example.test/api/create",
+            "*api*"
+        ));
+        assert!(url_matches_pattern(
+            "https://example.test/api/create",
+            "https://example.test/*"
+        ));
+        assert!(!url_matches_pattern(
+            "https://example.test/api/list",
+            "*/api/create"
+        ));
+        assert!(url_matches_pattern("https://example.test/api/create", ""));
+        assert!(url_matches_pattern("https://example.test/api/create", "*"));
     }
 
     #[tokio::test]
