@@ -1,288 +1,98 @@
 #![allow(missing_docs)]
 
-use super::types::{
-    ActionRequest, BrowserAction, BrowserDecision, BrowserDecisionAction, GotoRequest, WaitUntil,
-};
-use thiserror::Error;
+use super::types::{ActionRequest, BrowserAction, GotoRequest, WaitUntil};
 
 const MIN_ACTION_TIMEOUT_MS: u64 = 100;
 const MAX_ACTION_TIMEOUT_MS: u64 = 60_000;
 
+/// Result of planning a direct `browser_execute` action.
 #[derive(Debug, Clone, PartialEq)]
-pub enum BrowserActionPlan {
+pub enum BrowserExecutePlan {
+    /// Send the action to the sidecar `/action` endpoint.
     SidecarAction(ActionRequest),
+    /// Send the action to the sidecar `/goto` endpoint.
     Navigate(GotoRequest),
-    Debug {
-        reason: String,
-    },
-    AskUser {
-        question: String,
-    },
-    Done {
-        final_answer: String,
-        evidence: String,
-    },
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
-pub enum BrowserActionPlanError {}
-
-/// Maps a decision action (already validated by the parser) to the sidecar action
-/// shape used inside a script or a single action request.
-fn decision_action_to_sidecar(action: &BrowserDecisionAction) -> Option<BrowserAction> {
+/// Maps a direct `BrowserAction` from the main agent into the sidecar request shape.
+///
+/// The `request_timeout_ms` is the overall timeout for the sidecar call; per-action
+/// wait timeouts inside scripts are clamped to this value so they never exceed the
+/// enclosing request timeout.
+pub fn plan_browser_action(
+    action: BrowserAction,
+    action_seq: u64,
+    request_timeout_ms: u64,
+    expected_result: String,
+) -> BrowserExecutePlan {
+    let request_timeout_ms = bounded_timeout_ms(request_timeout_ms);
     match action {
-        BrowserDecisionAction::ClickXy {
-            x,
-            y,
-            target_description,
-        } => Some(BrowserAction::ClickXy {
-            x: *x,
-            y: *y,
-            target_description: target_description.clone(),
+        BrowserAction::Navigate { url } => BrowserExecutePlan::Navigate(GotoRequest {
+            url,
+            wait_until: WaitUntil::DomContentLoaded,
+            timeout_ms: request_timeout_ms,
+            capture_after: true,
         }),
-        BrowserDecisionAction::ClickSelector { selector } => Some(BrowserAction::ClickSelector {
-            selector: selector.clone(),
-        }),
-        BrowserDecisionAction::ClickTargetId { target_id } => Some(BrowserAction::ClickTargetId {
-            target_id: target_id.clone(),
-        }),
-        BrowserDecisionAction::Fill { selector, value } => Some(BrowserAction::Fill {
-            selector: selector.clone(),
-            value: value.clone(),
-        }),
-        BrowserDecisionAction::TypeText { text } => {
-            Some(BrowserAction::TypeText { text: text.clone() })
-        }
-        BrowserDecisionAction::Press { key } => Some(BrowserAction::Press { key: key.clone() }),
-        BrowserDecisionAction::Scroll { delta_x, delta_y } => Some(BrowserAction::Scroll {
-            delta_x: *delta_x,
-            delta_y: *delta_y,
-        }),
-        BrowserDecisionAction::GetElementValue { selector } => {
-            Some(BrowserAction::GetElementValue {
-                selector: selector.clone(),
-            })
-        }
-        BrowserDecisionAction::ExecuteJavaScript { expression } => {
-            Some(BrowserAction::ExecuteJavaScript {
-                expression: expression.clone(),
-            })
-        }
-        BrowserDecisionAction::Wait { timeout_ms } => Some(BrowserAction::Wait {
-            timeout_ms: bounded_timeout_ms(*timeout_ms),
-        }),
-        BrowserDecisionAction::WaitForSelector {
-            selector,
-            timeout_ms,
-        } => Some(BrowserAction::WaitForSelector {
-            selector: selector.clone(),
-            timeout_ms: bounded_timeout_ms(*timeout_ms),
-        }),
-        BrowserDecisionAction::WaitForText { text, timeout_ms } => {
-            Some(BrowserAction::WaitForText {
-                text: text.clone(),
-                timeout_ms: bounded_timeout_ms(*timeout_ms),
-            })
-        }
-        _ => None,
+        action => BrowserExecutePlan::SidecarAction(build_action_request(
+            action,
+            action_seq,
+            request_timeout_ms,
+            expected_result,
+        )),
     }
 }
 
-pub fn plan_browser_action(
-    decision: &BrowserDecision,
+fn build_action_request(
+    action: BrowserAction,
     action_seq: u64,
-    action_timeout_ms: u64,
-) -> Result<BrowserActionPlan, BrowserActionPlanError> {
-    let timeout_ms = bounded_timeout_ms(action_timeout_ms);
-    match &decision.action {
-        BrowserDecisionAction::Script { steps } => {
-            let sidecar_steps: Vec<BrowserAction> = steps
-                .iter()
-                .map(|step| {
-                    decision_action_to_sidecar(step)
-                        .expect("script step validated as executable sidecar action")
-                })
-                .collect();
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::Script {
-                    steps: sidecar_steps,
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::ClickXy {
-            x,
-            y,
-            target_description,
-        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-            action_seq,
-            action: BrowserAction::ClickXy {
-                x: *x,
-                y: *y,
-                target_description: target_description.clone(),
-            },
-            expected_result: decision.expected_result.clone(),
-            timeout_ms,
-            capture_after: true,
-            wait_for_stability: true,
-        })),
-        BrowserDecisionAction::ClickSelector { selector } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::ClickSelector {
-                    selector: selector.clone(),
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::ClickTargetId { target_id } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::ClickTargetId {
-                    target_id: target_id.clone(),
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::Fill { selector, value } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::Fill {
-                    selector: selector.clone(),
-                    value: value.clone(),
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::TypeText { text } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::TypeText { text: text.clone() },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::Press { key } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::Press { key: key.clone() },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::Scroll { delta_x, delta_y } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::Scroll {
-                    delta_x: *delta_x,
-                    delta_y: *delta_y,
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: true,
-                wait_for_stability: true,
-            }))
-        }
-        BrowserDecisionAction::GetElementValue { selector } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::GetElementValue {
-                    selector: selector.clone(),
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: false,
-                wait_for_stability: false,
-            }))
-        }
-        BrowserDecisionAction::ExecuteJavaScript { expression } => {
-            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-                action_seq,
-                action: BrowserAction::ExecuteJavaScript {
-                    expression: expression.clone(),
-                },
-                expected_result: decision.expected_result.clone(),
-                timeout_ms,
-                capture_after: false,
-                wait_for_stability: false,
-            }))
-        }
-        BrowserDecisionAction::Wait {
-            timeout_ms: wait_ms,
-        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-            action_seq,
-            action: BrowserAction::Wait {
-                timeout_ms: (*wait_ms).min(timeout_ms),
-            },
-            expected_result: decision.expected_result.clone(),
-            timeout_ms: (*wait_ms).min(timeout_ms),
-            capture_after: false,
-            wait_for_stability: false,
-        })),
-        BrowserDecisionAction::WaitForSelector {
+    request_timeout_ms: u64,
+    expected_result: String,
+) -> ActionRequest {
+    let (capture_after, wait_for_stability) = action_metadata(&action);
+    let action = clamp_action_timeouts(action, request_timeout_ms);
+    ActionRequest {
+        action_seq,
+        action,
+        expected_result,
+        timeout_ms: request_timeout_ms,
+        capture_after,
+        wait_for_stability,
+    }
+}
+
+fn action_metadata(action: &BrowserAction) -> (bool, bool) {
+    match action {
+        // Wait action: do not capture a fresh screenshot; no stability wait needed.
+        BrowserAction::Wait { .. } => (false, false),
+        // All other direct actions (including reads, waits, and mutating actions)
+        // capture a fresh screenshot so the main agent can see the result.
+        _ => (true, false),
+    }
+}
+
+fn clamp_action_timeouts(action: BrowserAction, request_timeout_ms: u64) -> BrowserAction {
+    match action {
+        BrowserAction::Script { steps } => BrowserAction::Script {
+            steps: steps
+                .into_iter()
+                .map(|step| clamp_action_timeouts(step, request_timeout_ms))
+                .collect(),
+        },
+        BrowserAction::Wait { timeout_ms } => BrowserAction::Wait {
+            timeout_ms: timeout_ms.min(request_timeout_ms),
+        },
+        BrowserAction::WaitForSelector {
             selector,
-            timeout_ms: wait_ms,
-        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-            action_seq,
-            action: BrowserAction::WaitForSelector {
-                selector: selector.clone(),
-                timeout_ms: (*wait_ms).min(timeout_ms),
-            },
-            expected_result: decision.expected_result.clone(),
-            timeout_ms: (*wait_ms).min(timeout_ms),
-            capture_after: false,
-            wait_for_stability: false,
-        })),
-        BrowserDecisionAction::WaitForText {
-            text,
-            timeout_ms: wait_ms,
-        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
-            action_seq,
-            action: BrowserAction::WaitForText {
-                text: text.clone(),
-                timeout_ms: (*wait_ms).min(timeout_ms),
-            },
-            expected_result: decision.expected_result.clone(),
-            timeout_ms: (*wait_ms).min(timeout_ms),
-            capture_after: false,
-            wait_for_stability: false,
-        })),
-        BrowserDecisionAction::Navigate { url } => Ok(BrowserActionPlan::Navigate(GotoRequest {
-            url: url.clone(),
-            wait_until: WaitUntil::DomContentLoaded,
             timeout_ms,
-            capture_after: true,
-        })),
-        BrowserDecisionAction::Debug { reason } => Ok(BrowserActionPlan::Debug {
-            reason: reason.clone(),
-        }),
-        BrowserDecisionAction::AskUser { question } => Ok(BrowserActionPlan::AskUser {
-            question: question.clone(),
-        }),
-        BrowserDecisionAction::Done {
-            final_answer,
-            evidence,
-        } => Ok(BrowserActionPlan::Done {
-            final_answer: final_answer.clone(),
-            evidence: evidence.clone(),
-        }),
+        } => BrowserAction::WaitForSelector {
+            selector,
+            timeout_ms: timeout_ms.min(request_timeout_ms),
+        },
+        BrowserAction::WaitForText { text, timeout_ms } => BrowserAction::WaitForText {
+            text,
+            timeout_ms: timeout_ms.min(request_timeout_ms),
+        },
+        other => other,
     }
 }
 
@@ -293,37 +103,38 @@ fn bounded_timeout_ms(value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::providers::browser_live::types::{
-        BrowserDecisionRisk, BrowserSensitiveAction,
-    };
 
-    #[test]
-    fn maps_click_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::ClickXy {
+    fn click_action() -> BrowserAction {
+        BrowserAction::ClickXy {
             x: 10,
             y: 20,
             target_description: Some("login".to_string()),
-        });
+        }
+    }
 
-        let plan = plan_browser_action(&decision, 7, 30_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    #[test]
+    fn maps_click_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(click_action(), 7, 30_000, "button clicked".to_string());
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 7);
         assert!(request.capture_after);
-        assert!(request.wait_for_stability);
+        assert!(!request.wait_for_stability);
+        assert_eq!(request.expected_result, "button clicked");
     }
 
     #[test]
-    fn maps_get_element_value_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::GetElementValue {
-            selector: "input[name=secret]".to_string(),
-        });
-
-        let plan = plan_browser_action(&decision, 3, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_get_element_value_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::GetElementValue {
+                selector: "input[name=secret]".to_string(),
+            },
+            3,
+            10_000,
+            "value read".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 3);
@@ -331,19 +142,21 @@ mod tests {
             request.action,
             BrowserAction::GetElementValue { ref selector } if selector == "input[name=secret]"
         ));
-        assert!(!request.capture_after);
+        assert!(request.capture_after);
         assert!(!request.wait_for_stability);
     }
 
     #[test]
-    fn maps_execute_javascript_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::ExecuteJavaScript {
-            expression: "document.querySelector('input').value".to_string(),
-        });
-
-        let plan = plan_browser_action(&decision, 4, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_execute_javascript_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::ExecuteJavaScript {
+                expression: "document.querySelector('input').value".to_string(),
+            },
+            4,
+            10_000,
+            "value extracted".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 4);
@@ -351,17 +164,19 @@ mod tests {
             request.action,
             BrowserAction::ExecuteJavaScript { ref expression } if expression == "document.querySelector('input').value"
         ));
-        assert!(!request.capture_after);
+        assert!(request.capture_after);
         assert!(!request.wait_for_stability);
     }
 
     #[test]
-    fn maps_wait_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::Wait { timeout_ms: 1_500 });
-
-        let plan = plan_browser_action(&decision, 6, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_wait_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::Wait { timeout_ms: 1_500 },
+            6,
+            10_000,
+            "waited".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 6);
@@ -374,15 +189,34 @@ mod tests {
     }
 
     #[test]
-    fn maps_wait_for_selector_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::WaitForSelector {
-            selector: "#success".to_string(),
-            timeout_ms: 5_000,
-        });
+    fn clamps_wait_timeout_to_request_timeout() {
+        let plan = plan_browser_action(
+            BrowserAction::Wait { timeout_ms: 20_000 },
+            6,
+            10_000,
+            "waited".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert!(matches!(
+            request.action,
+            BrowserAction::Wait { timeout_ms: 10_000 }
+        ));
+    }
 
-        let plan = plan_browser_action(&decision, 6, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    #[test]
+    fn maps_wait_for_selector_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::WaitForSelector {
+                selector: "#success".to_string(),
+                timeout_ms: 5_000,
+            },
+            6,
+            10_000,
+            "selector appeared".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 6);
@@ -393,20 +227,22 @@ mod tests {
                 timeout_ms: 5_000,
             } if s == "#success"
         ));
-        assert!(!request.capture_after);
+        assert!(request.capture_after);
         assert!(!request.wait_for_stability);
     }
 
     #[test]
-    fn maps_wait_for_text_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::WaitForText {
-            text: "Secret created".to_string(),
-            timeout_ms: 7_000,
-        });
-
-        let plan = plan_browser_action(&decision, 6, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_wait_for_text_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::WaitForText {
+                text: "Secret created".to_string(),
+                timeout_ms: 7_000,
+            },
+            6,
+            10_000,
+            "text appeared".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 6);
@@ -417,32 +253,34 @@ mod tests {
                 timeout_ms: 7_000,
             } if t == "Secret created"
         ));
-        assert!(!request.capture_after);
+        assert!(request.capture_after);
         assert!(!request.wait_for_stability);
     }
 
     #[test]
-    fn maps_script_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::Script {
-            steps: vec![
-                BrowserDecisionAction::Fill {
-                    selector: "#secret".to_string(),
-                    value: "hello".to_string(),
-                },
-                BrowserDecisionAction::ClickSelector {
-                    selector: "button[type=submit]".to_string(),
-                },
-            ],
-        });
-
-        let plan = plan_browser_action(&decision, 9, 20_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_script_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::Script {
+                steps: vec![
+                    BrowserAction::Fill {
+                        selector: "#secret".to_string(),
+                        value: "hello".to_string(),
+                    },
+                    BrowserAction::ClickSelector {
+                        selector: "button[type=submit]".to_string(),
+                    },
+                ],
+            },
+            9,
+            20_000,
+            "form submitted".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 9);
         assert!(request.capture_after);
-        assert!(request.wait_for_stability);
+        assert!(!request.wait_for_stability);
         let BrowserAction::Script { ref steps } = request.action else {
             panic!("expected script action");
         };
@@ -461,34 +299,35 @@ mod tests {
     }
 
     #[test]
-    fn maps_press_combo_decision_to_sidecar_action_request() {
-        let decision = decision(BrowserDecisionAction::Press {
-            key: "ctrl+a".to_string(),
-        });
-
-        let plan = plan_browser_action(&decision, 5, 10_000).expect("plan");
-
-        let BrowserActionPlan::SidecarAction(request) = plan else {
+    fn maps_press_combo_action_to_sidecar_action_request() {
+        let plan = plan_browser_action(
+            BrowserAction::Press {
+                key: "ctrl+a".to_string(),
+            },
+            5,
+            10_000,
+            "pressed".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 5);
-        assert!(matches!(
-            request.action,
-            BrowserAction::Press { ref key } if key == "ctrl+a"
-        ));
+        assert!(matches!(request.action, BrowserAction::Press { ref key } if key == "ctrl+a"));
         assert!(request.capture_after);
-        assert!(request.wait_for_stability);
+        assert!(!request.wait_for_stability);
     }
 
     #[test]
     fn maps_http_navigation_to_goto_request() {
-        let decision = decision(BrowserDecisionAction::Navigate {
-            url: "https://example.test/dashboard".to_string(),
-        });
-
-        let plan = plan_browser_action(&decision, 1, 10_000).expect("plan");
-
-        let BrowserActionPlan::Navigate(request) = plan else {
+        let plan = plan_browser_action(
+            BrowserAction::Navigate {
+                url: "https://example.test/dashboard".to_string(),
+            },
+            1,
+            10_000,
+            "navigated".to_string(),
+        );
+        let BrowserExecutePlan::Navigate(request) = plan else {
             panic!("expected navigation");
         };
         assert_eq!(request.url, "https://example.test/dashboard");
@@ -497,28 +336,14 @@ mod tests {
 
     #[test]
     fn yolo_allows_non_web_navigation_url() {
-        let decision = decision(BrowserDecisionAction::Navigate {
-            url: "file:///etc/passwd".to_string(),
-        });
-
-        let plan = plan_browser_action(&decision, 1, 10_000).expect("yolo allows any url");
-        assert!(matches!(plan, BrowserActionPlan::Navigate(_)));
-    }
-
-    fn decision(action: BrowserDecisionAction) -> BrowserDecision {
-        BrowserDecision {
-            schema_version: 1,
-            rationale: "test".to_string(),
-            action,
-            expected_result: "expected".to_string(),
-            confidence: 0.9,
-            risk: BrowserDecisionRisk::Low,
-            sensitive_action: BrowserSensitiveAction {
-                required: false,
-                category: None,
-                reason: None,
+        let plan = plan_browser_action(
+            BrowserAction::Navigate {
+                url: "file:///etc/passwd".to_string(),
             },
-            needs_debug: false,
-        }
+            1,
+            10_000,
+            "navigated".to_string(),
+        );
+        assert!(matches!(plan, BrowserExecutePlan::Navigate(_)));
     }
 }

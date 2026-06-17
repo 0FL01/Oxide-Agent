@@ -6,7 +6,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use super::providers;
 use super::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, ProviderCapabilities,
-    TokenUsage, ToolDefinition, capabilities, support,
+    ToolDefinition, capabilities, support,
 };
 use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
@@ -29,10 +29,6 @@ pub struct LlmClient {
     pub media_model_id: Option<String>,
     /// Optional media model provider for audio/image/video requests.
     pub media_model_provider: Option<String>,
-    /// Optional browser vision model ID for Browser Live Agent screenshot analysis.
-    pub browser_vision_model_id: Option<String>,
-    /// Optional browser vision provider for Browser Live Agent screenshot analysis.
-    pub browser_vision_model_provider: Option<String>,
 }
 
 /// Provider-discovered model metadata exposed without leaking provider-specific internals.
@@ -197,51 +193,6 @@ impl LlmClient {
             .map(|(name, _)| name)
     }
 
-    /// Resolve the configured Browser Live Agent screenshot vision route.
-    ///
-    /// Browser vision uses `BROWSER_AGENT_MIMO_*` when configured and falls back to
-    /// `MEDIA_MODEL_*` in `AgentSettings`. The resolved route must support image
-    /// understanding.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` when Browser Live Agent vision is not configured,
-    /// the provider is unavailable, or the route is not approved for image input.
-    pub fn resolve_browser_vision_model_for_image(
-        &self,
-    ) -> Result<crate::config::ModelInfo, LlmError> {
-        let Some(model_id) = self
-            .browser_vision_model_id
-            .as_deref()
-            .filter(|name| !name.is_empty())
-        else {
-            return Err(LlmError::MissingConfig(
-                "BROWSER_AGENT_MIMO_MODEL is not configured for browser screenshot vision"
-                    .to_string(),
-            ));
-        };
-
-        let model_info = self.get_model_info(model_id)?;
-
-        if !self.is_provider_available(&model_info.provider) {
-            return Err(LlmError::MissingConfig(format!(
-                "BROWSER_AGENT_MIMO provider '{}' is not available; check the API key and compiled profile",
-                model_info.provider
-            )));
-        }
-
-        if capabilities::provider_media_capabilities_for_model(&model_info)
-            .supports(capabilities::MediaModality::ImageUnderstanding)
-        {
-            return Ok(model_info);
-        }
-
-        Err(LlmError::MissingConfig(format!(
-            "BROWSER_AGENT_MIMO {}/{} is not allowed for browser screenshot image understanding by media policy",
-            model_info.provider, model_info.id
-        )))
-    }
-
     /// Returns true when at least one configured route supports audio transcription.
     #[must_use]
     pub fn is_audio_transcription_available(&self) -> bool {
@@ -268,11 +219,6 @@ impl LlmClient {
             _ => (None, None),
         };
         let media_model_name = media_model_id.clone();
-        let (browser_vision_model_id, browser_vision_model_provider) = settings
-            .get_browser_mimo_model()
-            .map(|model| (Some(model.id), Some(model.provider)))
-            .unwrap_or((None, None));
-
         let providers = providers::build_configured_providers(settings);
         #[cfg(feature = "llm-opencode-go")]
         let opencode_go_model_catalog = providers::opencode_go::module::build_model_catalog(
@@ -302,8 +248,6 @@ impl LlmClient {
             media_model_name,
             media_model_id,
             media_model_provider,
-            browser_vision_model_id,
-            browser_vision_model_provider,
         }
     }
 
@@ -889,25 +833,6 @@ impl LlmClient {
         let provider = self.get_provider(&model_info.provider)?;
         provider
             .analyze_image(image_bytes, text_prompt, system_prompt, &model_info.id)
-            .await
-    }
-
-    /// Analyze an image with a text prompt and return reported token usage.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error from the provider.
-    pub async fn analyze_image_with_usage(
-        &self,
-        image_bytes: Vec<u8>,
-        text_prompt: &str,
-        system_prompt: &str,
-        model_name: &str,
-    ) -> Result<(String, Option<TokenUsage>), LlmError> {
-        let model_info = self.get_model_info(model_name)?;
-        let provider = self.get_provider(&model_info.provider)?;
-        provider
-            .analyze_image_with_usage(image_bytes, text_prompt, system_prompt, &model_info.id)
             .await
     }
 

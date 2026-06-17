@@ -1,34 +1,23 @@
-use super::actions::{BrowserActionPlan, plan_browser_action};
+use super::actions::{BrowserExecutePlan, plan_browser_action};
 use super::artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
 use super::metrics::BrowserMetricsCollector;
-use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
-
-use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
-use super::recovery::{
-    BrowserRecoveryPlan, BrowserRecoveryReport, BrowserRecoverySettings, BrowserRecoveryStatus,
-    attach_recovery_result, build_recovery_report, recovery_loop_signature,
-};
 use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    ActionRequest, ActionResponse, BrowserDecision, BrowserObservation, BrowserProfile,
-    CloseReason, CloseSessionRequest, ConsoleDebugPayload, ConsoleDebugQuery, ConsoleLevel,
-    CreateSessionRequest, DebugLevel, GotoResponse, NetworkDebugPayload, NetworkDebugQuery,
+    BrowserAction, BrowserObservation, BrowserProfile, CloseReason, CloseSessionRequest,
+    ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel, NetworkDebugQuery,
     NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
 };
 use super::verification::{
-    BrowserActionVerification, BrowserVerificationStatus, terminal_debug, terminal_done,
-    terminal_needs_user, timeout_report, verify_by_result, verify_navigation,
-    verify_sidecar_action,
+    BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
+    verify_navigation, verify_sidecar_action,
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
     ToolOutputImageAttachment, ToolRuntimeConfig, ToolRuntimeError,
 };
-use crate::llm::LlmClient;
-use crate::llm::ToolDefinition;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -43,8 +32,8 @@ use tracing::instrument;
 pub const TOOL_BROWSER_START: &str = "browser_start";
 /// `browser_observe` tool name.
 pub const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
-/// `browser_step` tool name.
-pub const TOOL_BROWSER_STEP: &str = "browser_step";
+/// `browser_execute` tool name.
+pub const TOOL_BROWSER_EXECUTE: &str = "browser_execute";
 /// `browser_debug` tool name.
 pub const TOOL_BROWSER_DEBUG: &str = "browser_debug";
 /// `browser_close` tool name.
@@ -57,9 +46,6 @@ pub struct BrowserLiveProvider {
     states: Arc<Mutex<BTreeMap<String, BrowserSessionState>>>,
     artifact_settings: BrowserArtifactSettings,
     progress_tx: Option<Sender<AgentEvent>>,
-    decision_engine: Option<Arc<dyn BrowserDecisionEngine>>,
-    recovery_settings: BrowserRecoverySettings,
-    recovery_signatures: Arc<Mutex<BTreeMap<String, BTreeMap<String, u32>>>>,
     metrics: Arc<BrowserMetricsCollector>,
 }
 
@@ -69,6 +55,16 @@ pub struct BrowserLiveProvider {
 /// attachment for vision-capable main-agent routes.
 #[derive(Debug, Clone)]
 struct ObserveToolResult {
+    payload: Value,
+    image_attachment: Option<ToolOutputImageAttachment>,
+}
+
+/// Result returned by the `browser_execute` tool executor.
+///
+/// Contains the compact model-facing JSON payload plus an optional post-action
+/// screenshot image attachment.
+#[derive(Debug, Clone)]
+struct ExecuteToolResult {
     payload: Value,
     image_attachment: Option<ToolOutputImageAttachment>,
 }
@@ -101,14 +97,12 @@ impl BrowserLiveProvider {
         token: &str,
         artifact_settings: BrowserArtifactSettings,
         progress_tx: Option<Sender<AgentEvent>>,
-        llm_client: Arc<LlmClient>,
     ) -> Result<Self, BrowserSidecarError> {
         Ok(Self::new(
             Arc::new(BrowserSidecarClient::new(base_url, token)?),
             artifact_settings,
             progress_tx,
         ))
-        .map(|provider| provider.with_mimo_decision_engine(BrowserMimoDecider::new(llm_client)))
     }
 
     /// Create a provider with an injected sidecar implementation.
@@ -123,28 +117,8 @@ impl BrowserLiveProvider {
             states: Arc::new(Mutex::new(BTreeMap::new())),
             artifact_settings,
             progress_tx,
-            decision_engine: None,
-            recovery_settings: BrowserRecoverySettings::default(),
-            recovery_signatures: Arc::new(Mutex::new(BTreeMap::new())),
             metrics: Arc::new(BrowserMetricsCollector::new()),
         }
-    }
-
-    /// Attach the Browser MiMo decision engine used by `browser_step`.
-    #[must_use]
-    pub fn with_decision_engine(
-        mut self,
-        decision_engine: impl BrowserDecisionEngine + 'static,
-    ) -> Self {
-        self.decision_engine = Some(Arc::new(decision_engine));
-        self
-    }
-
-    /// Attach the Browser MiMo decider and wire it to the provider's metrics.
-    #[must_use]
-    pub fn with_mimo_decision_engine(mut self, decider: BrowserMimoDecider) -> Self {
-        self.decision_engine = Some(Arc::new(decider.with_metrics(Arc::clone(&self.metrics))));
-        self
     }
 
     /// Return a snapshot of current browser metrics.
@@ -159,7 +133,7 @@ impl BrowserLiveProvider {
         [
             TOOL_BROWSER_START,
             TOOL_BROWSER_OBSERVE,
-            TOOL_BROWSER_STEP,
+            TOOL_BROWSER_EXECUTE,
             TOOL_BROWSER_DEBUG,
             TOOL_BROWSER_CLOSE,
         ]
@@ -324,343 +298,203 @@ impl BrowserLiveProvider {
     }
 
     #[instrument(
-        name = "browser_step",
+        name = "browser_execute",
         skip(self, invocation, args),
         fields(session_id = %args.session_id, action_seq),
     )]
-    async fn step(
+    async fn execute(
         &self,
         invocation: &ToolInvocation,
-        args: StepArgs,
-    ) -> Result<Value, ToolRuntimeError> {
+        args: ExecuteArgs,
+    ) -> Result<ExecuteToolResult, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
-        let query = ObserveQuery {
-            fresh: true,
-            include_dom: false,
-            include_a11y: false,
-            include_network_summary: true,
-            include_console_summary: true,
-            max_debug_items: 20,
-        };
-        let response = self
-            .measure_sidecar(self.sidecar.observe(&args.session_id, &query))
-            .await
-            .map_err(sidecar_runtime_error)?;
-        let (mut frame, history_summary, action_seq) = {
-            let mut states = self.states.lock().await;
-            let state = states.get_mut(&args.session_id).ok_or_else(|| {
+        let action_seq = {
+            let states = self.states.lock().await;
+            let state = states.get(&args.session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
             })?;
-            let frame = state
-                .record_observation(&response.observation, BrowserArtifactPurpose::Milestone, 0)
-                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
-                .clone();
-            (
-                frame,
-                state.compact_history_summary(),
-                state.action_seq().saturating_add(1),
-            )
+            state.action_seq().saturating_add(1)
         };
         tracing::Span::current().record("action_seq", action_seq);
-        self.record_observation_metrics(&frame);
-        let screenshot_bytes = self
-            .persist_latest_screenshot(&args.session_id, &mut frame)
-            .await?;
-        let observe = observation_payload(&args.session_id, &frame.screenshot, &frame);
 
-        let Some(decision_engine) = &self.decision_engine else {
-            return Ok(json!({
-                "status": "decision_pending",
-                "message": "browser_step MiMo decision engine is not configured; current checkpoint returns a fresh observation shell",
-                "observation": observe,
-            }));
-        };
-
-        let task = args
-            .task
+        let expected_result = args
+            .expected_result
             .as_deref()
-            .unwrap_or("Continue the user's browser task safely.");
-        let prompt_context = BrowserDecisionPromptContext {
-            task,
-            session_id: &args.session_id,
-            observation: &response.observation,
-            history_summary: Some(&history_summary),
-        };
-        self.metrics.record_action_planned();
-        let decision = decision_engine
-            .decide(
-                screenshot_bytes,
-                &prompt_context,
-                viewport_from_observation(&response.observation),
-            )
-            .await
-            .map_err(mimo_runtime_error)?;
-        let plan = plan_browser_action(&decision, action_seq, args.action_timeout_ms())
-            .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
-        tracing::info!(
-            session_id = %args.session_id,
+            .unwrap_or("browser action executed");
+        let timeout_ms = args.timeout_ms.unwrap_or(30_000).clamp(1, 60_000);
+        let plan = plan_browser_action(
+            args.action,
             action_seq,
-            action_kind = %action_plan_kind(&plan),
-            "browser action planned"
+            timeout_ms,
+            expected_result.to_string(),
         );
+
+        let action_kind = match &plan {
+            BrowserExecutePlan::Navigate(_) => "navigate".to_string(),
+            BrowserExecutePlan::SidecarAction(request) => serde_json::to_value(&request.action)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "action".to_string()),
+        };
         self.emit_progress(format!(
             "BrowserAction session_id={} action_seq={} kind={}",
-            args.session_id,
-            action_seq,
-            action_plan_kind(&plan)
+            args.session_id, action_seq, action_kind
         ))
         .await;
 
-        let action_timeout = Duration::from_millis(args.action_timeout_ms());
-        let timeout_decision = decision.clone();
-        let timeout_observation = response.observation.clone();
-        let timeout_before_payload = observe.clone();
-        let result = timeout(
-            action_timeout,
-            self.execute_action_plan(
-                invocation,
-                &args.session_id,
-                action_seq,
-                response.observation,
-                frame,
-                decision,
-                observe,
-                plan,
-            ),
-        )
-        .await;
+        let before = self.observe_for_timeout(&args.session_id).await?;
+        let _before_frame = self
+            .record_after_observation(&args.session_id, &before)
+            .await?;
 
-        match result {
-            Ok(result) => result,
-            Err(_) => {
-                let verification = timeout_report(
-                    &timeout_decision,
-                    &timeout_observation,
-                    format!(
-                        "browser_step action exceeded timeout of {}ms",
-                        args.action_timeout_ms()
-                    ),
-                );
-                self.emit_progress(format!(
-                    "BrowserVerification session_id={} action_seq={} status=timeout",
-                    args.session_id, action_seq
-                ))
-                .await;
-                Ok(json!({
-                    "status": "timeout",
-                    "session_id": args.session_id,
-                    "action_seq": action_seq,
-                    "message": verification.reason.clone(),
-                    "decision": timeout_decision,
-                    "observation": timeout_before_payload,
-                    "verification": verification,
-                }))
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_action_plan(
-        &self,
-        invocation: &ToolInvocation,
-        session_id: &str,
-        action_seq: u64,
-        before_observation: BrowserObservation,
-        before_frame: BrowserFrame,
-        decision: BrowserDecision,
-        before_payload: Value,
-        plan: BrowserActionPlan,
-    ) -> Result<Value, ToolRuntimeError> {
-        ensure_not_cancelled(invocation)?;
         match plan {
-            BrowserActionPlan::SidecarAction(request) => {
-                self.metrics.record_action_executed();
-                let key =
-                    idempotency_key(invocation, "action", &format!("{session_id}:{action_seq}"))?;
-                let action = self
-                    .measure_sidecar(self.sidecar.execute_action(session_id, &request, &key))
-                    .await
-                    .map_err(sidecar_runtime_error)?;
+            BrowserExecutePlan::Navigate(request) => {
+                let key = idempotency_key(
+                    invocation,
+                    "goto",
+                    &format!("{}:{}", args.session_id, action_seq),
+                )?;
+                let result = timeout(
+                    Duration::from_millis(timeout_ms),
+                    self.measure_sidecar(self.sidecar.goto(&args.session_id, &request, &key)),
+                )
+                .await;
+                let response = match result {
+                    Ok(response) => response.map_err(sidecar_runtime_error)?,
+                    Err(_) => {
+                        let verification = timeout_report(
+                            expected_result,
+                            &before,
+                            format!(
+                                "browser_execute navigation exceeded timeout of {}ms",
+                                timeout_ms
+                            ),
+                        );
+                        self.emit_verification(&args.session_id, action_seq, &verification)
+                            .await;
+                        return Ok(execute_payload(
+                            &args.session_id,
+                            action_seq,
+                            None,
+                            None,
+                            verification,
+                            None,
+                        ));
+                    }
+                };
+                ensure_not_cancelled(invocation)?;
+                let after = response
+                    .observation
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(self.observe_for_timeout(&args.session_id).await?);
+                let (after_frame, after_payload) = self
+                    .record_after_observation(&args.session_id, &after)
+                    .await?;
+                let image_attachment = screenshot_image_attachment(&after_frame);
+                let verification =
+                    verify_navigation(expected_result, &before, &response.navigation, &after);
+                self.emit_verification(&args.session_id, action_seq, &verification)
+                    .await;
+                let action_result = serde_json::to_value(response.navigation).ok();
+                Ok(execute_payload(
+                    &args.session_id,
+                    action_seq,
+                    action_result,
+                    Some(after_payload),
+                    verification,
+                    image_attachment,
+                ))
+            }
+            BrowserExecutePlan::SidecarAction(request) => {
+                let key = idempotency_key(
+                    invocation,
+                    "action",
+                    &format!("{}:{}", args.session_id, action_seq),
+                )?;
+                let result = timeout(
+                    Duration::from_millis(timeout_ms),
+                    self.measure_sidecar(self.sidecar.execute_action(
+                        &args.session_id,
+                        &request,
+                        &key,
+                    )),
+                )
+                .await;
+                let response = match result {
+                    Ok(response) => response.map_err(sidecar_runtime_error)?,
+                    Err(_) => {
+                        let verification = timeout_report(
+                            expected_result,
+                            &before,
+                            format!(
+                                "browser_execute action exceeded timeout of {}ms",
+                                timeout_ms
+                            ),
+                        );
+                        self.emit_verification(&args.session_id, action_seq, &verification)
+                            .await;
+                        return Ok(execute_payload(
+                            &args.session_id,
+                            action_seq,
+                            None,
+                            None,
+                            verification,
+                            None,
+                        ));
+                    }
+                };
                 ensure_not_cancelled(invocation)?;
                 if request.capture_after {
-                    let after = match action.post_observation {
-                        Some(ref observation) => observation.clone(),
-                        None => self.observe_after_action(session_id).await?,
-                    };
-                    let (after_frame, after_payload) =
-                        self.record_after_observation(session_id, &after).await?;
+                    let after = response
+                        .post_observation
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or(self.observe_for_timeout(&args.session_id).await?);
+                    let (after_frame, after_payload) = self
+                        .record_after_observation(&args.session_id, &after)
+                        .await?;
+                    let image_attachment = screenshot_image_attachment(&after_frame);
                     let verification = verify_sidecar_action(
-                        &decision,
-                        &before_observation,
-                        &action.action_result,
+                        expected_result,
+                        &before,
+                        &response.action_result,
                         &after,
                     );
-                    let recovery = self
-                        .recover_after_verification_failure(
-                            invocation,
-                            session_id,
-                            action_seq,
-                            &decision,
-                            &verification,
-                            Some(&action.action_result),
-                        )
-                        .await?;
-                    self.emit_verification(session_id, action_seq, &verification)
+                    self.emit_verification(&args.session_id, action_seq, &verification)
                         .await;
-                    return Ok(action_step_payload(
-                        session_id,
+                    Ok(execute_payload(
+                        &args.session_id,
                         action_seq,
-                        decision,
-                        before_payload,
-                        &before_frame,
-                        after_payload,
-                        &after_frame,
+                        serde_json::to_value(response.action_result).ok(),
+                        Some(after_payload),
                         verification,
-                        Some(action),
+                        image_attachment,
+                    ))
+                } else {
+                    let verification =
+                        verify_by_result(expected_result, &before, &response.action_result);
+                    self.emit_verification(&args.session_id, action_seq, &verification)
+                        .await;
+                    Ok(execute_payload(
+                        &args.session_id,
+                        action_seq,
+                        serde_json::to_value(response.action_result).ok(),
                         None,
-                        recovery,
-                    ));
+                        verification,
+                        None,
+                    ))
                 }
-                let verification =
-                    verify_by_result(&decision, &before_observation, &action.action_result);
-                let recovery = self
-                    .recover_after_verification_failure(
-                        invocation,
-                        session_id,
-                        action_seq,
-                        &decision,
-                        &verification,
-                        Some(&action.action_result),
-                    )
-                    .await?;
-                self.emit_verification(session_id, action_seq, &verification)
-                    .await;
-                Ok(action_step_payload(
-                    session_id,
-                    action_seq,
-                    decision,
-                    before_payload.clone(),
-                    &before_frame,
-                    before_payload,
-                    &before_frame,
-                    verification,
-                    Some(action),
-                    None,
-                    recovery,
-                ))
-            }
-            BrowserActionPlan::Navigate(request) => {
-                self.metrics.record_action_executed();
-                let key =
-                    idempotency_key(invocation, "goto", &format!("{session_id}:{action_seq}"))?;
-                let navigation = self
-                    .measure_sidecar(self.sidecar.goto(session_id, &request, &key))
-                    .await
-                    .map_err(sidecar_runtime_error)?;
-                ensure_not_cancelled(invocation)?;
-                let after = match navigation.observation {
-                    Some(ref observation) => observation.clone(),
-                    None => self.observe_after_action(session_id).await?,
-                };
-                let (after_frame, after_payload) =
-                    self.record_after_observation(session_id, &after).await?;
-                let verification = verify_navigation(
-                    &decision,
-                    &before_observation,
-                    &navigation.navigation,
-                    &after,
-                );
-                let recovery = self
-                    .recover_after_verification_failure(
-                        invocation,
-                        session_id,
-                        action_seq,
-                        &decision,
-                        &verification,
-                        None,
-                    )
-                    .await?;
-                self.emit_verification(session_id, action_seq, &verification)
-                    .await;
-                Ok(action_step_payload(
-                    session_id,
-                    action_seq,
-                    decision,
-                    before_payload,
-                    &before_frame,
-                    after_payload,
-                    &after_frame,
-                    verification,
-                    None,
-                    Some(navigation),
-                    recovery,
-                ))
-            }
-            BrowserActionPlan::Done {
-                final_answer,
-                evidence,
-            } => {
-                let verification = terminal_done(
-                    &decision,
-                    &before_observation,
-                    "done decision includes final visual evidence".to_string(),
-                );
-                self.record_final_observation(session_id, &before_observation)
-                    .await?;
-                self.emit_verification(session_id, action_seq, &verification)
-                    .await;
-                Ok(json!({
-                    "status": "done",
-                    "session_id": session_id,
-                    "action_seq": action_seq,
-                    "task_success": true,
-                    "final_answer": final_answer,
-                    "evidence": evidence,
-                    "decision": decision,
-                    "observation": before_payload,
-                    "verification": verification,
-                }))
-            }
-            BrowserActionPlan::AskUser { question } => {
-                let verification = terminal_needs_user(
-                    &decision,
-                    &before_observation,
-                    "browser decision requires user input or approval".to_string(),
-                );
-                self.emit_verification(session_id, action_seq, &verification)
-                    .await;
-                Ok(json!({
-                    "status": "blocked",
-                    "session_id": session_id,
-                    "action_seq": action_seq,
-                    "question": question,
-                    "decision": decision,
-                    "observation": before_payload,
-                    "verification": verification,
-                }))
-            }
-            BrowserActionPlan::Debug { reason } => {
-                let verification = terminal_debug(
-                    &decision,
-                    &before_observation,
-                    "browser decision requested debug diagnostics before action".to_string(),
-                );
-                self.emit_verification(session_id, action_seq, &verification)
-                    .await;
-                Ok(json!({
-                    "status": "debug_requested",
-                    "session_id": session_id,
-                    "action_seq": action_seq,
-                    "reason": reason,
-                    "decision": decision,
-                    "observation": before_payload,
-                    "verification": verification,
-                }))
             }
         }
     }
 
-    async fn observe_after_action(
+    async fn observe_for_timeout(
         &self,
         session_id: &str,
     ) -> Result<BrowserObservation, ToolRuntimeError> {
@@ -701,27 +535,6 @@ impl BrowserLiveProvider {
             .await?;
         let payload = observation_payload(session_id, &frame.screenshot, &frame);
         Ok((frame, payload))
-    }
-
-    async fn record_final_observation(
-        &self,
-        session_id: &str,
-        observation: &BrowserObservation,
-    ) -> Result<(), ToolRuntimeError> {
-        let mut frame = {
-            let mut states = self.states.lock().await;
-            let state = states.get_mut(session_id).ok_or_else(|| {
-                ToolRuntimeError::Failure("browser session is not started".to_string())
-            })?;
-            state
-                .record_observation(observation, BrowserArtifactPurpose::Final, 0)
-                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?
-                .clone()
-        };
-        self.record_observation_metrics(&frame);
-        self.persist_latest_screenshot(session_id, &mut frame)
-            .await?;
-        Ok(())
     }
 
     async fn persist_latest_screenshot(
@@ -771,139 +584,6 @@ impl BrowserLiveProvider {
         frame.artifact.bytes = byte_size;
         frame.artifact.sha256 = Some(sha256);
         Ok(bytes)
-    }
-
-    async fn recover_after_verification_failure(
-        &self,
-        invocation: &ToolInvocation,
-        session_id: &str,
-        action_seq: u64,
-        decision: &BrowserDecision,
-        verification: &BrowserActionVerification,
-        action_result: Option<&super::types::ActionResult>,
-    ) -> Result<Option<BrowserRecoveryReport>, ToolRuntimeError> {
-        if verification.status != BrowserVerificationStatus::VerificationFailed {
-            return Ok(None);
-        }
-        self.metrics.record_recovery_attempt();
-        let (network, console) = self.recovery_debug(session_id, action_seq).await?;
-        let signature = recovery_loop_signature(decision, {
-            let preliminary = build_recovery_report(
-                decision,
-                verification,
-                action_result,
-                &network,
-                &console,
-                self.recovery_settings,
-                false,
-            );
-            preliminary.kind
-        });
-        let repeated = self.mark_recovery_signature(session_id, &signature).await;
-        let mut report = build_recovery_report(
-            decision,
-            verification,
-            action_result,
-            &network,
-            &console,
-            self.recovery_settings,
-            repeated,
-        );
-
-        if report.status == BrowserRecoveryStatus::Attempted
-            && let BrowserRecoveryPlan::SidecarAction { action } = report.plan.clone()
-        {
-            let recovery_seq = action_seq.saturating_add(1);
-            let request = ActionRequest {
-                action_seq: recovery_seq,
-                action,
-                expected_result: format!("bounded recovery for {:?}", report.kind),
-                timeout_ms: 5_000,
-                capture_after: true,
-                wait_for_stability: true,
-            };
-            let key = idempotency_key(
-                invocation,
-                "recovery",
-                &format!("{session_id}:{recovery_seq}"),
-            )?;
-            let recovery_action = self
-                .measure_sidecar(self.sidecar.execute_action(session_id, &request, &key))
-                .await
-                .map_err(sidecar_runtime_error)?;
-            let recovery_observation = self.observe_after_action(session_id).await?;
-            let (recovery_frame, _) = self
-                .record_after_observation(session_id, &recovery_observation)
-                .await?;
-            attach_recovery_result(
-                &mut report,
-                &recovery_action.action_result,
-                recovery_frame.observation_id,
-                recovery_frame.screenshot.screenshot_id,
-            );
-        }
-
-        if report.status == BrowserRecoveryStatus::SafeStopped {
-            self.metrics.record_recovery_safe_stop();
-        }
-
-        tracing::info!(
-            session_id = %session_id,
-            action_seq,
-            recovery_status = ?report.status,
-            recovery_kind = ?report.kind,
-            "browser recovery evaluated"
-        );
-        self.emit_progress(format!(
-            "BrowserRecovery session_id={} action_seq={} status={:?} kind={:?}",
-            session_id, action_seq, report.status, report.kind
-        ))
-        .await;
-        Ok(Some(report))
-    }
-
-    async fn recovery_debug(
-        &self,
-        session_id: &str,
-        action_seq: u64,
-    ) -> Result<(NetworkDebugPayload, ConsoleDebugPayload), ToolRuntimeError> {
-        let network = self
-            .measure_sidecar(self.sidecar.debug_network(
-                session_id,
-                &NetworkDebugQuery {
-                    since_action_seq: action_seq.saturating_sub(1),
-                    level: DebugLevel::Summary,
-                    include_bodies: false,
-                    filter: NetworkFilter::Failed,
-                    limit: 20,
-                },
-            ))
-            .await
-            .map_err(sidecar_runtime_error)?
-            .network;
-        let console = self
-            .measure_sidecar(self.sidecar.debug_console(
-                session_id,
-                &ConsoleDebugQuery {
-                    since_action_seq: action_seq.saturating_sub(1),
-                    level: DebugLevel::Summary,
-                    min_level: ConsoleLevel::Error,
-                    limit: 20,
-                },
-            ))
-            .await
-            .map_err(sidecar_runtime_error)?
-            .console;
-        Ok((network, console))
-    }
-
-    async fn mark_recovery_signature(&self, session_id: &str, signature: &str) -> bool {
-        let mut signatures = self.recovery_signatures.lock().await;
-        let session = signatures.entry(session_id.to_string()).or_default();
-        let count = session.entry(signature.to_string()).or_default();
-        let repeated = *count > 0;
-        *count += 1;
-        repeated
     }
 
     async fn emit_verification(
@@ -1049,7 +729,7 @@ impl ToolExecutor for BrowserLiveToolExecutor {
         ToolName::new(self.tool_name)
     }
 
-    fn spec(&self) -> ToolDefinition {
+    fn spec(&self) -> crate::llm::ToolDefinition {
         browser_tool_definition(self.tool_name)
     }
 
@@ -1068,9 +748,10 @@ impl ToolExecutor for BrowserLiveToolExecutor {
                 let result = self.provider.observe(&invocation, args).await?;
                 (result.payload, result.image_attachment)
             }
-            TOOL_BROWSER_STEP => {
-                let args = parse_args::<StepArgs>(&invocation)?;
-                (self.provider.step(&invocation, args).await?, None)
+            TOOL_BROWSER_EXECUTE => {
+                let args = parse_args::<ExecuteArgs>(&invocation)?;
+                let result = self.provider.execute(&invocation, args).await?;
+                (result.payload, result.image_attachment)
             }
             TOOL_BROWSER_DEBUG => {
                 let args = parse_args::<DebugArgs>(&invocation)?;
@@ -1123,18 +804,13 @@ struct ObserveArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct StepArgs {
+struct ExecuteArgs {
     session_id: String,
+    action: BrowserAction,
     #[serde(default)]
-    task: Option<String>,
+    timeout_ms: Option<u64>,
     #[serde(default)]
-    action_timeout_ms: Option<u64>,
-}
-
-impl StepArgs {
-    fn action_timeout_ms(&self) -> u64 {
-        self.action_timeout_ms.unwrap_or(30_000).clamp(1, 60_000)
-    }
+    expected_result: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1203,10 +879,6 @@ fn sidecar_runtime_error(error: BrowserSidecarError) -> ToolRuntimeError {
     }
 }
 
-fn mimo_runtime_error(error: BrowserMimoError) -> ToolRuntimeError {
-    ToolRuntimeError::Failure(error.to_string())
-}
-
 fn observation_payload(
     session_id: &str,
     screenshot: &ScreenshotArtifact,
@@ -1234,59 +906,35 @@ fn observation_payload(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn action_step_payload(
+fn execute_payload(
     session_id: &str,
     action_seq: u64,
-    decision: BrowserDecision,
-    before_payload: Value,
-    before_frame: &BrowserFrame,
-    after_payload: Value,
-    after_frame: &BrowserFrame,
+    action_result: Option<Value>,
+    post_observation: Option<Value>,
     verification: BrowserActionVerification,
-    action: Option<ActionResponse>,
-    navigation: Option<GotoResponse>,
-    recovery: Option<BrowserRecoveryReport>,
-) -> Value {
-    json!({
-        "status": step_status(&verification),
-        "session_id": session_id,
-        "action_seq": action_seq,
-        "task_success": verification.task_success,
-        "decision": decision,
-        "before": before_payload,
-        "after": after_payload,
-        "before_artifact_ref": before_frame.artifact.uri.clone(),
-        "after_artifact_ref": after_frame.artifact.uri.clone(),
-        "action_result": action.map(|response| response.action_result),
-        "navigation": navigation.map(|response| response.navigation),
-        "verification": verification,
-        "recovery": recovery,
-    })
-}
-
-fn step_status(verification: &BrowserActionVerification) -> &'static str {
-    match verification.status {
-        BrowserVerificationStatus::ActionVerified => "action_verified",
+    image_attachment: Option<ToolOutputImageAttachment>,
+) -> ExecuteToolResult {
+    let status = match verification.status {
+        BrowserVerificationStatus::ActionVerified => "executed",
         BrowserVerificationStatus::VerificationFailed => "verification_failed",
         BrowserVerificationStatus::Done => "done",
-        BrowserVerificationStatus::NeedsUser => "blocked",
-        BrowserVerificationStatus::DebugRequested => "debug_requested",
         BrowserVerificationStatus::Timeout => "timeout",
+    };
+    let payload = json!({
+        "status": status,
+        "session_id": session_id,
+        "action_seq": action_seq,
+        "action_result": action_result,
+        "post_observation": post_observation,
+        "verification": verification,
+    });
+    ExecuteToolResult {
+        payload,
+        image_attachment,
     }
 }
 
-fn action_plan_kind(plan: &BrowserActionPlan) -> &'static str {
-    match plan {
-        BrowserActionPlan::SidecarAction(_) => "action",
-        BrowserActionPlan::Navigate(_) => "goto",
-        BrowserActionPlan::Debug { .. } => "debug",
-        BrowserActionPlan::AskUser { .. } => "ask_user",
-        BrowserActionPlan::Done { .. } => "done",
-    }
-}
-
-fn browser_tool_definition(name: &str) -> ToolDefinition {
+fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
     let (description, parameters) = match name {
         TOOL_BROWSER_START => (
             "Start a task-local autonomous headless browser session.",
@@ -1315,15 +963,19 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
                 "additionalProperties": false
             }),
         ),
-        TOOL_BROWSER_STEP => (
-            "Run one bounded Browser Live cycle: decide, execute one action, observe, and verify.",
+        TOOL_BROWSER_EXECUTE => (
+            "Execute a single concrete BrowserAction in the session and return the action result plus a post-action screenshot when available.",
             json!({
                 "type": "object",
-                "required": ["session_id"],
+                "required": ["session_id", "action"],
                 "properties": {
                     "session_id": {"type": "string"},
-                    "task": {"type": "string"},
-                    "action_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000}
+                    "action": {
+                        "type": "object",
+                        "description": "BrowserAction schema: one of click_xy, click_selector, click_target_id, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate"
+                    },
+                    "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+                    "expected_result": {"type": "string"}
                 },
                 "additionalProperties": false
             }),
@@ -1359,7 +1011,7 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
         ),
         _ => ("Unknown browser tool.", json!({"type": "object"})),
     };
-    ToolDefinition {
+    crate::llm::ToolDefinition {
         name: name.to_string(),
         description: description.to_string(),
         parameters,
@@ -1377,15 +1029,11 @@ mod tests {
     use crate::agent::providers::browser_live::test_support::{
         FakeActionOutcome, FakeBrowserSidecar,
     };
-    use crate::agent::providers::browser_live::types::{
-        BrowserDecisionAction, BrowserDecisionRisk, BrowserSensitiveAction,
-    };
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolTimeoutConfig, TurnId,
     };
     use crate::llm::InvocationId;
-    use async_trait::async_trait;
     use chrono::Utc;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
@@ -1404,7 +1052,7 @@ mod tests {
             [
                 TOOL_BROWSER_START,
                 TOOL_BROWSER_OBSERVE,
-                TOOL_BROWSER_STEP,
+                TOOL_BROWSER_EXECUTE,
                 TOOL_BROWSER_DEBUG,
                 TOOL_BROWSER_CLOSE
             ]
@@ -1417,9 +1065,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_step_spec_has_no_max_actions() {
-        let spec = browser_tool_definition(TOOL_BROWSER_STEP);
-        assert!(spec.parameters.get("max_actions").is_none());
+    async fn browser_execute_spec_has_action_parameter() {
+        let spec = browser_tool_definition(TOOL_BROWSER_EXECUTE);
+        let params = spec.parameters;
+        assert_eq!(params["required"], json!(["session_id", "action"]));
+        assert!(params["properties"].get("action").is_some());
+        assert!(params["properties"].get("timeout_ms").is_some());
+        assert!(params["properties"].get("expected_result").is_some());
     }
 
     #[tokio::test]
@@ -1552,328 +1204,115 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_step_is_placeholder_observation_shell() {
+    async fn browser_execute_direct_click_returns_executed_and_screenshot_attachment() {
         let provider = test_provider();
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
         let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
             .as_str()
             .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-
-        assert!(step.success);
-        assert_eq!(
-            step.structured_payload.as_ref().expect("payload")["status"],
-            "decision_pending"
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20,"target_description":"login"}},"expected_result":"button clicked"}}"#
         );
-    }
 
-    #[tokio::test]
-    async fn browser_step_executes_click_and_verifies_fresh_after_screenshot() {
-        let provider = test_provider_with_decision(click_decision(), FakeBrowserSidecar::new());
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}","task":"click login"}}"#);
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
 
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert!(step.success);
-        assert_eq!(payload["status"], "action_verified");
-        assert_eq!(payload["task_success"], false);
+        assert!(result.success);
+        assert_eq!(payload["status"], "executed");
         assert_eq!(payload["action_result"]["status"], "executed");
-        assert_ne!(
-            payload["verification"]["before_screenshot_id"],
-            payload["verification"]["after_screenshot_id"]
-        );
+        assert_eq!(payload["action_result"]["kind"], "click_xy");
+        assert!(payload["post_observation"].is_object());
+        let image = result
+            .image_attachment
+            .as_ref()
+            .expect("post-action screenshot image attachment");
         assert!(
-            payload["after_artifact_ref"]
-                .as_str()
-                .expect("after artifact")
-                .contains("milestone")
+            image
+                .mime_type
+                .as_deref()
+                .expect("mime")
+                .starts_with("image/")
         );
+        assert!(image.size_bytes > 0);
     }
 
     #[tokio::test]
-    async fn browser_step_executes_script_and_verifies_single_post_observation() {
-        let provider = test_provider_with_decision(script_decision(), FakeBrowserSidecar::new());
+    async fn browser_execute_direct_navigate_returns_executed_and_final_url() {
+        let provider = test_provider();
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
         let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
             .as_str()
             .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"navigate","url":"https://example.test/dashboard"}},"expected_result":"navigated"}}"#
+        );
 
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
 
-        assert!(step.success);
-        assert_eq!(payload["status"], "action_verified");
-        assert_eq!(payload["action_result"]["status"], "executed");
+        assert!(result.success);
+        assert_eq!(payload["status"], "executed");
+        let action_result = payload["action_result"].as_object().expect("action_result");
+        assert_eq!(
+            action_result.get("final_url").and_then(|v| v.as_str()),
+            Some("https://example.test/dashboard")
+        );
+        assert!(payload["post_observation"].is_object());
+    }
+
+    #[tokio::test]
+    async fn browser_execute_direct_script_returns_executed() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r##"{{"session_id":"{session_id}","action":{{"kind":"script","steps":[{{"kind":"fill","selector":"#secret","value":"hello"}},{{"kind":"click_selector","selector":"button[type=submit]"}}]}},"expected_result":"form submitted"}}"##
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        assert_eq!(payload["status"], "executed");
         assert_eq!(payload["action_result"]["kind"], "script");
-        assert_ne!(
-            payload["verification"]["before_screenshot_id"],
-            payload["verification"]["after_screenshot_id"]
-        );
+        assert_eq!(payload["action_result"]["status"], "executed");
     }
 
     #[tokio::test]
-    async fn browser_step_noop_click_returns_verification_failure() {
-        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::NoOp]);
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert!(step.success);
-        assert_eq!(payload["status"], "verification_failed");
-        assert_eq!(payload["verification"]["status"], "verification_failed");
-        assert!(
-            payload["verification"]["reason"]
-                .as_str()
-                .expect("reason")
-                .contains("not verified visual success")
-        );
-    }
-
-    #[tokio::test]
-    async fn browser_step_navigation_captures_fresh_screenshot() {
-        let provider = test_provider_with_decision(navigate_decision(), FakeBrowserSidecar::new());
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert!(step.success);
-        assert_eq!(payload["status"], "action_verified");
-        assert_eq!(
-            payload["navigation"]["final_url"],
-            "https://example.test/dashboard"
-        );
-        assert_ne!(
-            payload["verification"]["before_screenshot_id"],
-            payload["verification"]["after_screenshot_id"]
-        );
-    }
-
-    #[tokio::test]
-    async fn browser_step_done_requires_final_evidence() {
-        let provider = test_provider_with_decision(done_decision(), FakeBrowserSidecar::new());
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert!(step.success);
-        assert_eq!(payload["status"], "done");
-        assert_eq!(payload["task_success"], true);
-        assert_eq!(payload["verification"]["status"], "done");
-        assert_eq!(
-            payload["evidence"],
-            "The dashboard success banner is visible."
-        );
-    }
-
-    #[tokio::test]
-    async fn browser_step_timeout_produces_structured_report() {
+    async fn browser_execute_short_timeout_returns_timeout() {
         let fake =
             FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::DelaySuccess(
                 Duration::from_millis(50),
             )]);
-        let provider = test_provider_with_decision(click_decision(), fake);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
         let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
             .as_str()
             .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}","action_timeout_ms":5}}"#);
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20}},"timeout_ms":5,"expected_result":"click"}}"#
+        );
 
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
 
-        assert!(step.success);
+        assert!(result.success);
         assert_eq!(payload["status"], "timeout");
-        assert_eq!(payload["verification"]["status"], "timeout");
         assert!(
-            payload["message"]
+            payload["verification"]["reason"]
                 .as_str()
-                .expect("message")
+                .expect("reason")
                 .contains("exceeded timeout")
-        );
-    }
-
-    #[tokio::test]
-    async fn browser_step_recovery_classifies_coordinate_drift() {
-        let fake = FakeBrowserSidecar::new().with_action_script(vec![
-            FakeActionOutcome::CoordinateDrift,
-            FakeActionOutcome::Success,
-        ]);
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert_eq!(payload["status"], "verification_failed");
-        assert_eq!(payload["recovery"]["kind"], "coordinate_mismatch");
-        assert_eq!(payload["recovery"]["status"], "attempted");
-        assert_eq!(payload["recovery"]["attempted_steps"], 1);
-        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "scroll");
-    }
-
-    #[tokio::test]
-    async fn browser_step_recovery_handles_stale_screenshot() {
-        let fake = FakeBrowserSidecar::new().with_action_script(vec![
-            FakeActionOutcome::StaleFrame,
-            FakeActionOutcome::Success,
-        ]);
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert_eq!(payload["recovery"]["kind"], "stale_frame");
-        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "wait");
-        assert_eq!(payload["recovery"]["attempted_steps"], 1);
-    }
-
-    #[tokio::test]
-    async fn browser_step_recovery_handles_modal_overlay() {
-        let fake = FakeBrowserSidecar::new()
-            .with_action_script(vec![FakeActionOutcome::NoOp, FakeActionOutcome::Success]);
-        fake.add_console_error("modal overlay intercepted click");
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert_eq!(payload["recovery"]["kind"], "modal_overlay");
-        assert_eq!(payload["recovery"]["plan"]["action"]["kind"], "press");
-        assert_eq!(payload["recovery"]["plan"]["action"]["key"], "Escape");
-    }
-
-    #[tokio::test]
-    async fn browser_step_recovery_stops_repeated_noop_loop() {
-        let fake = FakeBrowserSidecar::new().with_action_script(vec![
-            FakeActionOutcome::NoOp,
-            FakeActionOutcome::Success,
-            FakeActionOutcome::NoOp,
-            FakeActionOutcome::Success,
-        ]);
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let first = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let second = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let first_payload = first.structured_payload.as_ref().expect("first payload");
-        let second_payload = second.structured_payload.as_ref().expect("second payload");
-
-        assert_eq!(first_payload["recovery"]["status"], "attempted");
-        assert_eq!(
-            second_payload["recovery"]["status"],
-            "repeated_loop_stopped"
-        );
-        assert_eq!(second_payload["recovery"]["repeated"], true);
-        assert_eq!(second_payload["recovery"]["attempted_steps"], 0);
-    }
-
-    #[tokio::test]
-    async fn browser_step_recovery_attaches_debug_artifacts_and_disables_js_fallback() {
-        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::NoOp]);
-        fake.add_network_failure("https://example.test/api", "connection reset");
-        fake.add_console_error("Uncaught fake error");
-        let provider = test_provider_with_decision(click_decision(), fake);
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert_eq!(payload["recovery"]["kind"], "network_failure");
-        assert_eq!(payload["recovery"]["status"], "safe_stopped");
-        assert_eq!(payload["recovery"]["js_click_allowed"], false);
-        assert!(
-            payload["recovery"]["diagnostics"]["network_artifact_uri"]
-                .as_str()
-                .expect("network artifact")
-                .contains("network.json")
-        );
-        assert!(
-            payload["recovery"]["diagnostics"]["console_artifact_uri"]
-                .as_str()
-                .expect("console artifact")
-                .contains("console.json")
-        );
-    }
-
-    #[tokio::test]
-    async fn browser_step_yolo_allows_sensitive_action() {
-        let mut decision = click_decision();
-        decision.expected_result = "CAPTCHA solved".to_string();
-        let provider = test_provider_with_decision(decision, FakeBrowserSidecar::new());
-        let executors = provider.tool_runtime_executors();
-        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
-        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
-            .as_str()
-            .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
-
-        assert!(step.success);
-        assert_eq!(payload["action_result"]["status"], "executed");
-        assert!(
-            !serde_json::to_string(payload)
-                .expect("json")
-                .contains("base64")
         );
     }
 
@@ -1897,24 +1336,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_step_populates_provider_metrics() {
-        let provider = test_provider_with_decision(click_decision(), FakeBrowserSidecar::new());
+    async fn browser_execute_populates_provider_metrics() {
+        let provider = test_provider();
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
         let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
             .as_str()
             .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20}},"expected_result":"click"}}"#
+        );
 
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
-        let payload = step.structured_payload.as_ref().expect("payload");
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
 
-        assert_eq!(payload["status"], "action_verified");
+        assert_eq!(payload["status"], "executed");
         let metrics = provider.metrics_snapshot();
         assert_eq!(metrics.sessions_started, 1);
-        assert_eq!(metrics.actions_planned, 1);
-        assert_eq!(metrics.actions_executed, 1);
-        assert!(metrics.observations_fetched >= 2);
+        assert!(metrics.observations_fetched >= 1);
         assert!(metrics.screenshots_captured >= 2);
         assert!(metrics.sidecar_requests >= 2);
     }
@@ -1934,18 +1373,24 @@ mod tests {
         let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
             .as_str()
             .expect("session id");
-        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
-
-        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let observe_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+        let observe = execute(&executors, TOOL_BROWSER_OBSERVE, &observe_args).await;
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20}},"expected_result":"click"}}"#
+        );
+        let execute_result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
         let close_args = format!(r#"{{"session_id":"{session_id}"}}"#);
         let close = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
 
-        let step_text = step.stdout.text.as_deref().expect("step text");
-        let close_text = close.stdout.text.as_deref().expect("close text");
-        assert!(!step_text.contains("base64"));
-        assert!(!close_text.contains("base64"));
-        assert!(!step_text.contains("data:image"));
-        assert!(!close_text.contains("data:image"));
+        let texts = [
+            observe.stdout.text.as_deref().expect("observe text"),
+            execute_result.stdout.text.as_deref().expect("execute text"),
+            close.stdout.text.as_deref().expect("close text"),
+        ];
+        for text in &texts {
+            assert!(!text.contains("base64"));
+            assert!(!text.contains("data:image"));
+        }
 
         drop(executors);
         let mut progress_texts = Vec::new();
@@ -1986,85 +1431,6 @@ mod tests {
             BrowserArtifactSettings::default(),
             None,
         ))
-    }
-
-    fn test_provider_with_decision(
-        decision: BrowserDecision,
-        fake: FakeBrowserSidecar,
-    ) -> Arc<BrowserLiveProvider> {
-        Arc::new(
-            BrowserLiveProvider::new(Arc::new(fake), BrowserArtifactSettings::default(), None)
-                .with_decision_engine(StaticDecisionEngine { decision }),
-        )
-    }
-
-    #[derive(Clone)]
-    struct StaticDecisionEngine {
-        decision: BrowserDecision,
-    }
-
-    #[async_trait]
-    impl BrowserDecisionEngine for StaticDecisionEngine {
-        async fn decide(
-            &self,
-            _image_bytes: Vec<u8>,
-            _context: &BrowserDecisionPromptContext<'_>,
-            _viewport: Viewport,
-        ) -> Result<BrowserDecision, BrowserMimoError> {
-            Ok(self.decision.clone())
-        }
-    }
-
-    fn click_decision() -> BrowserDecision {
-        decision(BrowserDecisionAction::ClickXy {
-            x: 10,
-            y: 20,
-            target_description: Some("login button".to_string()),
-        })
-    }
-
-    fn script_decision() -> BrowserDecision {
-        decision(BrowserDecisionAction::Script {
-            steps: vec![
-                BrowserDecisionAction::Fill {
-                    selector: "#secret".to_string(),
-                    value: "hello".to_string(),
-                },
-                BrowserDecisionAction::ClickSelector {
-                    selector: "button[type=submit]".to_string(),
-                },
-            ],
-        })
-    }
-
-    fn navigate_decision() -> BrowserDecision {
-        decision(BrowserDecisionAction::Navigate {
-            url: "https://example.test/dashboard".to_string(),
-        })
-    }
-
-    fn done_decision() -> BrowserDecision {
-        decision(BrowserDecisionAction::Done {
-            final_answer: "Dashboard opened.".to_string(),
-            evidence: "The dashboard success banner is visible.".to_string(),
-        })
-    }
-
-    fn decision(action: BrowserDecisionAction) -> BrowserDecision {
-        BrowserDecision {
-            schema_version: 1,
-            rationale: "test decision".to_string(),
-            action,
-            expected_result: "The visible browser state changes as expected.".to_string(),
-            confidence: 0.9,
-            risk: BrowserDecisionRisk::Low,
-            sensitive_action: BrowserSensitiveAction {
-                required: false,
-                category: None,
-                reason: None,
-            },
-            needs_debug: false,
-        }
     }
 
     async fn execute(executors: &[Arc<dyn ToolExecutor>], name: &str, args: &str) -> ToolOutput {

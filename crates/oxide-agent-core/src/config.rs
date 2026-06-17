@@ -138,15 +138,6 @@ pub struct AgentSettings {
     pub browser_agent_sidecar_ws_url: Option<String>,
     /// Browser Live Agent sidecar bearer token.
     pub browser_agent_sidecar_token: Option<String>,
-    /// Browser-specific MiMo provider override.
-    pub browser_agent_mimo_provider: Option<String>,
-    /// Browser-specific MiMo model override.
-    pub browser_agent_mimo_model: Option<String>,
-    /// Browser-specific MiMo max output tokens override.
-    pub browser_agent_mimo_max_output_tokens: Option<u32>,
-    /// Browser-specific MiMo context window tokens override.
-    pub browser_agent_mimo_context_window_tokens: Option<u32>,
-
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
     /// Sub-agent timeout in seconds
@@ -164,8 +155,6 @@ pub struct BrowserAgentSettings {
     pub sidecar_ws_url: Option<String>,
     /// Sidecar bearer token.
     pub sidecar_token: Option<String>,
-    /// Resolved MiMo vision model route, falling back to `MEDIA_MODEL_*` when unset.
-    pub mimo_model: Option<ModelInfo>,
 }
 
 /// Runtime config for a single capability module.
@@ -439,12 +428,6 @@ impl AgentSettings {
             "MEDIA_MODEL_PROVIDER",
             self.media_model_provider.as_deref(),
         )?;
-        if self.is_browser_agent_enabled() {
-            self.validate_optional_route_provider(
-                "BROWSER_AGENT_MIMO_PROVIDER",
-                self.browser_agent_mimo_provider.as_deref(),
-            )?;
-        }
         self.validate_optional_route_provider(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             self.wiki_memory_writer_model_provider.as_deref(),
@@ -537,26 +520,6 @@ impl AgentSettings {
             }
         }
 
-        if self.is_browser_agent_enabled() {
-            let route = self.browser_mimo_model_spec()?.ok_or_else(|| {
-                ConfigError::Message(
-                    "Critical: BROWSER_AGENT_ENABLED=true requires BROWSER_AGENT_MIMO_MODEL/BROWSER_AGENT_MIMO_PROVIDER or MEDIA_MODEL_ID/MEDIA_MODEL_PROVIDER for screenshot vision".to_string(),
-                )
-            })?;
-            if is_mimo_v25_pro_model(&route.id) {
-                return Err(ConfigError::Message(
-                    "Critical: BROWSER_AGENT_MIMO_MODEL=mimo-v2.5-pro is text-only for the OpenCode Go route and cannot be used for browser screenshot vision; use mimo-v2.5".to_string(),
-                ));
-            }
-            let capabilities = provider_media_capabilities_for_model(&route);
-            if !capabilities.supports_image_understanding {
-                return Err(ConfigError::Message(format!(
-                    "Critical: BROWSER_AGENT_MIMO route {}/{} is not approved for browser screenshot image understanding",
-                    route.provider, route.id
-                )));
-            }
-        }
-
         Ok(())
     }
 
@@ -588,14 +551,6 @@ impl AgentSettings {
             return Err(ConfigError::Message(
                 "Critical: BROWSER_AGENT_ENABLED=true requires BROWSER_AGENT_SIDECAR_TOKEN"
                     .to_string(),
-            ));
-        }
-
-        if let Some(route) = self.browser_mimo_model_spec()?
-            && is_mimo_v25_pro_model(&route.id)
-        {
-            return Err(ConfigError::Message(
-                "Critical: BROWSER_AGENT_MIMO_MODEL=mimo-v2.5-pro is text-only for the OpenCode Go route and cannot be used for browser screenshot vision; use mimo-v2.5".to_string(),
             ));
         }
 
@@ -656,12 +611,6 @@ impl AgentSettings {
             "MEDIA_MODEL_PROVIDER",
             &mut self.media_model_provider,
         )?;
-        if self.is_browser_agent_enabled() {
-            Self::canonicalize_optional_provider_field(
-                "BROWSER_AGENT_MIMO_PROVIDER",
-                &mut self.browser_agent_mimo_provider,
-            )?;
-        }
         Self::canonicalize_optional_provider_field(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             &mut self.wiki_memory_writer_model_provider,
@@ -732,19 +681,12 @@ impl AgentSettings {
     }
 
     fn configured_route_provider_values(&self) -> impl Iterator<Item = &str> {
-        let mut direct_providers = vec![
+        let direct_providers = vec![
             self.agent_model_provider.as_deref(),
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
             self.wiki_memory_writer_model_provider.as_deref(),
         ];
-        if self.is_browser_agent_enabled() {
-            direct_providers.push(
-                self.browser_agent_mimo_provider
-                    .as_deref()
-                    .or(self.media_model_provider.as_deref()),
-            );
-        }
         let agent_route_providers = self
             .agent_model_routes
             .iter()
@@ -1035,54 +977,6 @@ impl AgentSettings {
         ))
     }
 
-    fn browser_mimo_model_spec(&self) -> Result<Option<ModelInfo>, ConfigError> {
-        let id = self
-            .browser_agent_mimo_model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                self.media_model_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-            });
-        let provider = self
-            .browser_agent_mimo_provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                self.media_model_provider
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-            });
-
-        match (id, provider) {
-            (Some(id), Some(provider)) => {
-                let max_output_tokens = self
-                    .browser_agent_mimo_max_output_tokens
-                    .or(self.media_model_max_output_tokens)
-                    .unwrap_or(DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS);
-                let context_window_tokens = self
-                    .browser_agent_mimo_context_window_tokens
-                    .or(self.media_model_context_window_tokens)
-                    .unwrap_or(DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS);
-                Ok(Some(Self::build_model_info(
-                    id,
-                    provider,
-                    max_output_tokens,
-                    context_window_tokens,
-                )))
-            }
-            (None, None) => Ok(None),
-            _ => Err(ConfigError::Message(
-                "Critical: Browser MiMo route requires both model and provider: set BROWSER_AGENT_MIMO_MODEL with BROWSER_AGENT_MIMO_PROVIDER, or MEDIA_MODEL_ID with MEDIA_MODEL_PROVIDER".to_string(),
-            )),
-        }
-    }
-
     /// Returns a list of available models configured from environment variables
     pub fn get_available_models(&self) -> Vec<(String, ModelInfo)> {
         let mut models = Vec::new();
@@ -1101,12 +995,6 @@ impl AgentSettings {
 
         if let Some((name, info)) = self.media_model_spec() {
             Self::upsert_model(&mut models, name, info);
-        }
-
-        if self.is_browser_agent_enabled()
-            && let Ok(Some(info)) = self.browser_mimo_model_spec()
-        {
-            Self::upsert_model(&mut models, info.id.clone(), info);
         }
 
         models
@@ -1291,17 +1179,6 @@ impl AgentSettings {
             sidecar_base_url: non_empty_string(&self.browser_agent_sidecar_base_url),
             sidecar_ws_url: non_empty_string(&self.browser_agent_sidecar_ws_url),
             sidecar_token: non_empty_string(&self.browser_agent_sidecar_token),
-            mimo_model: self.browser_mimo_model_spec().ok().flatten(),
-        }
-    }
-
-    /// Returns the configured browser vision model route when Browser Live Agent is enabled.
-    #[must_use]
-    pub fn get_browser_mimo_model(&self) -> Option<ModelInfo> {
-        if self.is_browser_agent_enabled() {
-            self.browser_mimo_model_spec().ok().flatten()
-        } else {
-            None
         }
     }
 
@@ -1331,14 +1208,6 @@ fn non_empty_string(value: &Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-}
-
-fn is_mimo_v25_pro_model(model_id: &str) -> bool {
-    let lower = model_id
-        .trim()
-        .trim_start_matches("opencode-go/")
-        .to_ascii_lowercase();
-    lower == "mimo-v2.5-pro" || lower.starts_with("mimo-v2.5-pro-")
 }
 
 #[cfg(test)]
@@ -1396,10 +1265,6 @@ mod tests {
             "BROWSER_AGENT_SIDECAR_BASE_URL",
             "BROWSER_AGENT_SIDECAR_WS_URL",
             "BROWSER_AGENT_SIDECAR_TOKEN",
-            "BROWSER_AGENT_MIMO_PROVIDER",
-            "BROWSER_AGENT_MIMO_MODEL",
-            "BROWSER_AGENT_MIMO_MAX_OUTPUT_TOKENS",
-            "BROWSER_AGENT_MIMO_CONTEXT_WINDOW_TOKENS",
             "MEDIA_MODEL_ID",
             "MEDIA_MODEL_PROVIDER",
             "MEDIA_MODEL_MAX_OUTPUT_TOKENS",
@@ -1835,7 +1700,6 @@ mod tests {
         assert!(!browser.enabled);
         assert!(browser.sidecar_base_url.is_none());
         assert!(browser.sidecar_token.is_none());
-        assert!(browser.mimo_model.is_none());
 
         clear_browser_agent_env();
         clear_minimal_opencode_go_agent_env();
@@ -1860,7 +1724,6 @@ mod tests {
         assert!(!settings.is_browser_agent_enabled());
         assert_eq!(media_id, "mimo-v2.5");
         assert_eq!(media_provider, "llm-provider/opencode-go");
-        assert!(settings.get_browser_mimo_model().is_none());
 
         clear_browser_agent_env();
         clear_minimal_opencode_go_agent_env();
@@ -1869,7 +1732,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn browser_agent_config_parses_mimo_override() -> Result<(), Box<dyn std::error::Error>> {
+    fn browser_agent_config_parses_enabled() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1881,54 +1744,16 @@ mod tests {
             "http://chrome-agent-sidecar:8787",
         );
         test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
-        test_set_env("BROWSER_AGENT_MIMO_PROVIDER", "opencode-go");
-        test_set_env("BROWSER_AGENT_MIMO_MODEL", "mimo-v2.5");
-        test_set_env("BROWSER_AGENT_MIMO_MAX_OUTPUT_TOKENS", "4096");
 
         let settings = AgentSettings::new()?;
         let browser = settings.get_browser_agent_settings();
-        let model = browser
-            .mimo_model
-            .expect("browser MiMo model should resolve");
 
         assert!(browser.enabled);
         assert_eq!(
             browser.sidecar_base_url.as_deref(),
             Some("http://chrome-agent-sidecar:8787")
         );
-        assert_eq!(model.id, "mimo-v2.5");
-        assert_eq!(model.provider, "llm-provider/opencode-go");
-        assert_eq!(model.max_output_tokens, 4096);
-
-        clear_browser_agent_env();
-        clear_minimal_opencode_go_agent_env();
-        Ok(())
-    }
-
-    #[cfg(feature = "llm-opencode-go")]
-    #[test]
-    fn browser_agent_config_falls_back_to_media_model() -> Result<(), Box<dyn std::error::Error>> {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_minimal_opencode_go_agent_env();
-        clear_browser_agent_env();
-        test_set_env("BROWSER_AGENT_ENABLED", "true");
-        test_set_env("BROWSER_AGENT_SIDECAR_BASE_URL", "http://sidecar:8787");
-        test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
-        test_set_env("MEDIA_MODEL_ID", "mimo-v2.5");
-        test_set_env("MEDIA_MODEL_PROVIDER", "opencode-go");
-
-        let settings = AgentSettings::new()?;
-        let browser_model = settings
-            .get_browser_mimo_model()
-            .expect("browser model should inherit media route");
-        let (media_id, media_provider) = settings.get_media_model();
-
-        assert_eq!(browser_model.id, "mimo-v2.5");
-        assert_eq!(browser_model.provider, "llm-provider/opencode-go");
-        assert_eq!(media_id, "mimo-v2.5");
-        assert_eq!(media_provider, "llm-provider/opencode-go");
+        assert_eq!(browser.sidecar_token.as_deref(), Some("test-browser-token"));
 
         clear_browser_agent_env();
         clear_minimal_opencode_go_agent_env();
@@ -1945,58 +1770,10 @@ mod tests {
         clear_browser_agent_env();
         test_set_env("BROWSER_AGENT_ENABLED", "true");
         test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
-        test_set_env("BROWSER_AGENT_MIMO_PROVIDER", "opencode-go");
-        test_set_env("BROWSER_AGENT_MIMO_MODEL", "mimo-v2.5");
 
         let error = AgentSettings::new().expect_err("missing sidecar URL should fail");
 
         assert!(error.to_string().contains("BROWSER_AGENT_SIDECAR_BASE_URL"));
-        clear_browser_agent_env();
-        clear_minimal_opencode_go_agent_env();
-    }
-
-    #[cfg(feature = "llm-opencode-go")]
-    #[test]
-    fn browser_agent_config_rejects_mimo_v25_pro_for_vision() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_minimal_opencode_go_agent_env();
-        clear_browser_agent_env();
-        test_set_env("BROWSER_AGENT_ENABLED", "true");
-        test_set_env("BROWSER_AGENT_SIDECAR_BASE_URL", "http://sidecar:8787");
-        test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
-        test_set_env("BROWSER_AGENT_MIMO_PROVIDER", "opencode-go");
-        test_set_env("BROWSER_AGENT_MIMO_MODEL", "mimo-v2.5-pro");
-
-        let error = AgentSettings::new().expect_err("text-only Pro route should fail");
-
-        assert!(error.to_string().contains("mimo-v2.5-pro is text-only"));
-        clear_browser_agent_env();
-        clear_minimal_opencode_go_agent_env();
-    }
-
-    #[cfg(feature = "llm-opencode-go")]
-    #[test]
-    fn browser_agent_config_rejects_non_image_model() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_minimal_opencode_go_agent_env();
-        clear_browser_agent_env();
-        test_set_env("BROWSER_AGENT_ENABLED", "true");
-        test_set_env("BROWSER_AGENT_SIDECAR_BASE_URL", "http://sidecar:8787");
-        test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
-        test_set_env("BROWSER_AGENT_MIMO_PROVIDER", "opencode-go");
-        test_set_env("BROWSER_AGENT_MIMO_MODEL", "deepseek-v4-flash");
-
-        let error = AgentSettings::new().expect_err("non-image browser route should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("not approved for browser screenshot image understanding")
-        );
         clear_browser_agent_env();
         clear_minimal_opencode_go_agent_env();
     }

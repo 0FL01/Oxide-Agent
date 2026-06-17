@@ -1,7 +1,7 @@
 //! Browser Live security policy helpers (disabled in Yolo mode).
 //! All policy gates are no-ops; the agent has full access to the browser.
 
-use super::types::{BrowserDecision, BrowserProfile};
+use super::types::BrowserProfile;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -36,11 +36,6 @@ pub fn validate_session_policy(
     Ok(())
 }
 
-/// Decision policy is disabled in Yolo mode.
-pub fn validate_decision_policy(_decision: &BrowserDecision) -> Result<(), BrowserPolicyError> {
-    Ok(())
-}
-
 /// Navigation URL policy is disabled in Yolo mode.
 pub fn validate_navigation_url(_url: &str) -> Result<(), BrowserPolicyError> {
     Ok(())
@@ -49,7 +44,7 @@ pub fn validate_navigation_url(_url: &str) -> Result<(), BrowserPolicyError> {
 /// Always returns an allow audit event in Yolo mode.
 #[must_use]
 pub fn policy_audit_event(
-    decision: &BrowserDecision,
+    action: &super::types::BrowserAction,
     _allowed: bool,
     reason: impl Into<String>,
 ) -> BrowserPolicyAuditEvent {
@@ -57,36 +52,33 @@ pub fn policy_audit_event(
         event: "browser_policy",
         decision: "allow",
         reason: reason.into(),
-        action_kind: action_kind(&decision.action).to_string(),
-        url_scheme: url_scheme(&decision.action),
+        action_kind: action_kind(action).to_string(),
+        url_scheme: url_scheme(action),
         sensitive: false,
     }
 }
 
-fn action_kind(action: &super::types::BrowserDecisionAction) -> &'static str {
+fn action_kind(action: &super::types::BrowserAction) -> &'static str {
     match action {
-        super::types::BrowserDecisionAction::ClickXy { .. } => "click_xy",
-        super::types::BrowserDecisionAction::ClickSelector { .. } => "click_selector",
-        super::types::BrowserDecisionAction::ClickTargetId { .. } => "click_target_id",
-        super::types::BrowserDecisionAction::Fill { .. } => "fill",
-        super::types::BrowserDecisionAction::TypeText { .. } => "type_text",
-        super::types::BrowserDecisionAction::Press { .. } => "press",
-        super::types::BrowserDecisionAction::Scroll { .. } => "scroll",
-        super::types::BrowserDecisionAction::GetElementValue { .. } => "get_element_value",
-        super::types::BrowserDecisionAction::ExecuteJavaScript { .. } => "execute_javascript",
-        super::types::BrowserDecisionAction::Wait { .. } => "wait",
-        super::types::BrowserDecisionAction::WaitForSelector { .. } => "wait_for_selector",
-        super::types::BrowserDecisionAction::WaitForText { .. } => "wait_for_text",
-        super::types::BrowserDecisionAction::Navigate { .. } => "navigate",
-        super::types::BrowserDecisionAction::Debug { .. } => "debug",
-        super::types::BrowserDecisionAction::AskUser { .. } => "ask_user",
-        super::types::BrowserDecisionAction::Done { .. } => "done",
-        super::types::BrowserDecisionAction::Script { .. } => "script",
+        super::types::BrowserAction::ClickXy { .. } => "click_xy",
+        super::types::BrowserAction::ClickSelector { .. } => "click_selector",
+        super::types::BrowserAction::ClickTargetId { .. } => "click_target_id",
+        super::types::BrowserAction::Fill { .. } => "fill",
+        super::types::BrowserAction::TypeText { .. } => "type_text",
+        super::types::BrowserAction::Press { .. } => "press",
+        super::types::BrowserAction::Scroll { .. } => "scroll",
+        super::types::BrowserAction::GetElementValue { .. } => "get_element_value",
+        super::types::BrowserAction::ExecuteJavaScript { .. } => "execute_javascript",
+        super::types::BrowserAction::Wait { .. } => "wait",
+        super::types::BrowserAction::WaitForSelector { .. } => "wait_for_selector",
+        super::types::BrowserAction::WaitForText { .. } => "wait_for_text",
+        super::types::BrowserAction::Script { .. } => "script",
+        super::types::BrowserAction::Navigate { .. } => "navigate",
     }
 }
 
-fn url_scheme(action: &super::types::BrowserDecisionAction) -> Option<String> {
-    let super::types::BrowserDecisionAction::Navigate { url } = action else {
+fn url_scheme(action: &super::types::BrowserAction) -> Option<String> {
+    let super::types::BrowserAction::Navigate { url } = action else {
         return None;
     };
     url.trim()
@@ -97,35 +89,18 @@ fn url_scheme(action: &super::types::BrowserDecisionAction) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::providers::browser_live::types::{
-        BrowserDecision, BrowserDecisionAction, BrowserDecisionRisk, BrowserProfile,
-        BrowserSensitiveAction,
-    };
+    use crate::agent::providers::browser_live::types::{BrowserAction, BrowserProfile};
 
     #[test]
     fn policy_is_no_op_in_yolo_mode() {
         validate_navigation_url("file:///etc/passwd").expect("yolo allows any url");
         validate_session_policy(BrowserProfile::Ephemeral, true, true)
             .expect("yolo allows downloads/uploads");
-        let decision = BrowserDecision {
-            schema_version: 1,
-            rationale: "yolo".to_string(),
-            action: BrowserDecisionAction::Fill {
-                selector: "#password".to_string(),
-                value: "password=hunter2".to_string(),
-            },
-            expected_result: "filled".to_string(),
-            confidence: 0.9,
-            risk: BrowserDecisionRisk::High,
-            sensitive_action: BrowserSensitiveAction {
-                required: true,
-                category: Some("credential".to_string()),
-                reason: Some("password".to_string()),
-            },
-            needs_debug: false,
+        let action = BrowserAction::Fill {
+            selector: "#password".to_string(),
+            value: "password=hunter2".to_string(),
         };
-        validate_decision_policy(&decision).expect("yolo allows sensitive action");
-        let audit = policy_audit_event(&decision, true, "yolo");
+        let audit = policy_audit_event(&action, true, "yolo");
         assert_eq!(audit.decision, "allow");
         assert!(!audit.sensitive);
     }

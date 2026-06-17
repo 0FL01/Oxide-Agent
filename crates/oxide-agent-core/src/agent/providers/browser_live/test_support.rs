@@ -23,7 +23,6 @@ pub(crate) enum FakeActionOutcome {
     Success,
     DelaySuccess(Duration),
     NoOp,
-    CoordinateDrift,
     Failure,
     StaleFrame,
     JsError(String),
@@ -336,13 +335,12 @@ impl BrowserSidecar for FakeBrowserSidecar {
             FakeActionOutcome::Success
             | FakeActionOutcome::DelaySuccess(_)
             | FakeActionOutcome::StaleFrame => ActionStatus::Executed,
-            FakeActionOutcome::NoOp | FakeActionOutcome::CoordinateDrift => ActionStatus::NoOp,
+            FakeActionOutcome::NoOp => ActionStatus::NoOp,
             FakeActionOutcome::Failure => unreachable!("failure returned above"),
             FakeActionOutcome::JsError(_) => ActionStatus::Failed,
         };
         let technical_success = status == ActionStatus::Executed;
         let hint = match outcome {
-            FakeActionOutcome::CoordinateDrift => Some("coordinate mismatch detected".to_string()),
             FakeActionOutcome::JsError(ref message) => Some(message.clone()),
             _ => (status == ActionStatus::NoOp)
                 .then(|| "action produced no visible change".to_string()),

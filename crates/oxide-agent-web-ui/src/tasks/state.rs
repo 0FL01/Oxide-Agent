@@ -234,10 +234,17 @@ fn apply_browser_structured_payload(state: &mut BrowserLiveState, payload: &Valu
         .or(state.action_seq);
     update_string(&mut state.verification_status, payload.get("status"));
     update_string(&mut state.blocked_reason, payload.get("question"));
-    update_decision(state, payload.get("decision"));
+    if let Some(verification) = payload
+        .get("verification")
+        .filter(|value| value.is_object())
+    {
+        update_string(&mut state.verification_status, verification.get("status"));
+    }
+    update_action(state, payload.get("action_result"));
 
     let observation = payload
-        .get("after")
+        .get("post_observation")
+        .or_else(|| payload.get("after"))
         .or_else(|| payload.get("observation"))
         .or_else(|| payload.get("before"))
         .unwrap_or(payload);
@@ -325,6 +332,13 @@ fn update_decision(state: &mut BrowserLiveState, decision: Option<&Value>) {
         update_string(&mut state.latest_action, action.get("kind"));
         update_string(&mut state.blocked_reason, action.get("question"));
     }
+}
+
+fn update_action(state: &mut BrowserLiveState, action_result: Option<&Value>) {
+    let Some(action_result) = action_result else {
+        return;
+    };
+    update_string(&mut state.latest_action, action_result.get("kind"));
 }
 
 fn update_string(target: &mut Option<String>, value: Option<&Value>) {
@@ -437,16 +451,19 @@ mod tests {
             browser_tool_result(
                 "task-1",
                 2,
-                "browser_step",
+                "browser_execute",
                 serde_json::json!({
-                    "status": "action_verified",
+                    "status": "executed",
                     "session_id": "browser-1",
                     "action_seq": 2,
-                    "decision": {
-                        "confidence": 0.84,
-                        "action": { "kind": "click_xy" }
+                    "action_result": {
+                        "action_seq": 2,
+                        "kind": "click_xy",
+                        "status": "executed",
+                        "duration_ms": 25,
+                        "technical_success": true
                     },
-                    "after": {
+                    "post_observation": {
                         "url": "https://new.test",
                         "title": "New",
                         "action_seq": 2,
@@ -460,6 +477,16 @@ mod tests {
                             "height": 768,
                             "redacted": false
                         }
+                    },
+                    "verification": {
+                        "status": "action_verified",
+                        "task_success": false,
+                        "reason": "fresh post-action screenshot captured",
+                        "expected_result": "button clicked",
+                        "before_observation_id": "obs-1",
+                        "after_observation_id": "obs-2",
+                        "before_screenshot_id": "shot-1",
+                        "after_screenshot_id": "shot-2"
                     }
                 }),
             ),

@@ -5,7 +5,7 @@ Status: active
 Codex goal: not set
 Source spec: user request to rewrite the v3 OTS browser-live plan to give the vision-enabled main agent direct control over browser tools instead of routing through the MiMo decision layer
 Goal doc owner: Codex
-Last updated: 2026-06-17 23:59
+Last updated: 2026-06-18 00:12
 
 ## Objective
 
@@ -75,8 +75,8 @@ Out of scope:
 - Source: direct-control design.
 - Acceptance: `browser_execute` accepts a single `BrowserAction` and returns a concrete result/observation; `browser_step` is removed; no MiMo decision layer remains.
 - Evidence required: unit tests + `cargo test` pass.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `browser_step` removed from `tools.rs`; `browser_execute` added with `ExecuteArgs` (`session_id`, `action`, `timeout_ms`, `expected_result`); `BrowserLiveToolExecutor` dispatches `TOOL_BROWSER_EXECUTE` and returns `ExecuteToolResult` with an optional post-action screenshot image attachment; `MiMo`/`Decision`/`Recovery`/`Prompt` modules (`mimo.rs`, `parser.rs`, `prompt.rs`, `recovery.rs`) deleted and removed from `mod.rs`; `BrowserDecision*` types no longer exported; `BrowserLiveProvider` no longer carries a decision engine or recovery settings; `actions.rs` plans direct `BrowserAction` into `ActionRequest`/`GotoRequest`; `verification.rs` stripped of `BrowserDecision` parameters and terminal debug/needs-user variants; `policy.rs` no longer references `BrowserDecision`; `test_support.rs` simplified; `browser_execute` tests cover direct click, navigate, script, and timeout.
 
 ### G4: `browser_extract` reads network response bodies
 - Source: v3 OTS requirement (extract `secret_id` from `POST /api/create`).
@@ -96,8 +96,8 @@ Out of scope:
 - Source: architectural invariants in `AGENTS.md`.
 - Acceptance: `BrowserAction` is validated before execution; sensitive actions are gated; recovery is still possible (thin verification layer) without the MiMo loop.
 - Evidence required: unit tests + `cargo test` pass.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `policy.rs` retains `BrowserPolicyError` and session/navigation no-op validators; `actions.rs` validates action schema and clamps timeouts; `verification.rs` returns `ActionVerified`/`VerificationFailed`/`Done`/`Timeout` without the MiMo recovery loop; the main agent (a vision model) is responsible for deciding the next action based on the post-action screenshot.
 
 ### G7: Full OTS E2E via the main agent succeeds
 - Source: user request and v3 test report.
@@ -124,15 +124,15 @@ Out of scope:
 - Source: direct-control design.
 - Must preserve: the code may fail gracefully or require a vision model; no fallback MiMo logic is retained.
 - Evidence required: code review.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `LlmClient` no longer has `browser_vision_model` or `resolve_browser_vision_model_for_image`; no MiMo decision engine remains; `browser_execute` requires the main agent to supply a concrete `BrowserAction` and does not fall back to an internal vision model.
 
 ### N2: No changes to other providers
 - Source: scope.
 - Must preserve: LLM, SSH, sandbox, reminders, etc. remain untouched.
 - Evidence required: `git diff` shows only browser_live/tool_runtime/runner changes.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `git diff` is limited to `crates/oxide-agent-core/src/agent/providers/browser_live/`, `crates/oxide-agent-core/src/agent/tool_runtime/modules.rs`, `crates/oxide-agent-core/src/llm/client.rs`, `crates/oxide-agent-core/src/config.rs`, and `crates/oxide-agent-web-ui/src/tasks/state.rs`; no LLM provider implementations, SSH, sandbox, reminder, or storage logic were modified. The `LlmClient` only lost the browser-vision-specific helper and the `analyze_image_with_usage` client wrapper; the `LlmProvider` trait method remains for providers that use it internally.
 
 ## Implementation Plan
 
@@ -259,6 +259,13 @@ Out of scope:
   - Audit IDs updated: G2 pending → verified, Q1 verified (extended), Q2 verified (extended).
   - Next: CP-3 — `browser_execute` replaces `browser_step`.
 
+- 2026-06-17: CP-3 — `browser_execute` replaces `browser_step`.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` replaced `browser_step` with `browser_execute` and `ExecuteToolResult`; removed MiMo decision engine, recovery loop, and prompt/parser wiring; deleted `mimo.rs`, `parser.rs`, `prompt.rs`, `recovery.rs`; updated `mod.rs` exports; rewrote `actions.rs` defaults for direct `BrowserAction`; rewrote `verification.rs` without `BrowserDecision`; simplified `policy.rs`; removed MiMo/recovery metrics from `metrics.rs`; simplified `test_support.rs`; removed `browser_agent_mimo_*` fields and `browser_mimo_model_spec`/`get_browser_mimo_model` from `config.rs`; removed `browser_vision_model` and `resolve_browser_vision_model_for_image`/`analyze_image_with_usage` from `LlmClient`; updated `tool_runtime/modules.rs` sidecar construction; updated `crates/oxide-agent-web-ui/src/tasks/state.rs` fixture and reducer for `browser_execute` payload.
+  - Evidence: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 58 pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` 1295 pass, 8 ignored, 0 failed; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes.
+  - Commands: `cargo fmt --all`, `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, `python3 -m py_compile docker/chrome-agent-sidecar.py`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`.
+  - Audit IDs updated: G3 pending → verified, G6 pending → verified, N1 pending → verified, N2 pending → verified, Q1 verified (extended), Q2 verified (extended).
+  - Next: CP-4 — `browser_extract` for network bodies.
+
 ## Risks and Blockers
 
 - Main agent must be a vision model.
@@ -290,11 +297,11 @@ Filled only when complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-2 complete.
-* What changed: `browser_observe` now returns a compact state payload plus a screenshot image attachment. The provider attaches the latest persisted screenshot to the `ToolOutput` so the vision-enabled main agent sees the page without an extra `browser_screenshot` call.
-* What was verified: 90 browser_live tests pass, full core 1330 pass, web-ui 11 pass, web-contracts 10 pass, sidecar self-test passes, and a live REST observe on a real page returned a 14,846-byte PNG screenshot.
-* Which audit IDs moved: G2 pending → verified, Q1 verified (extended), Q2 verified (extended).
-* What remains: CP-3 through CP-7.
+* Current checkpoint: CP-3 complete.
+* What changed: `browser_step` and the MiMo decision engine are gone. The new `browser_execute` tool lets the vision-enabled main agent send a single concrete `BrowserAction` (click, fill, navigate, script, etc.) directly to the browser sidecar and receive the action result plus a post-action screenshot attachment. The thin verification layer only reports success/failure/timeout; the main agent decides the next step.
+* What was verified: 58 browser_live tests pass, full core 1295 pass, web-ui 11 pass, web-contracts 10 pass, sidecar self-test passes, and Python sidecar self-check passes. `cargo fmt` and `cargo clippy` are clean.
+* Which audit IDs moved: G3 pending → verified, G6 pending → verified, N1 pending → verified, N2 pending → verified, Q1 verified (extended), Q2 verified (extended).
+* What remains: CP-4 through CP-7.
 * Whether anything is blocked: not blocked.
 
 ## Quality Bar

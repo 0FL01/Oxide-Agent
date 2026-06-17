@@ -378,104 +378,9 @@ pub enum BrowserAction {
     Script {
         steps: Vec<BrowserAction>,
     },
-}
-
-/// Strict MiMo browser decision returned by the Browser Live visual planner.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BrowserDecision {
-    pub schema_version: u8,
-    pub rationale: String,
-    pub action: BrowserDecisionAction,
-    pub expected_result: String,
-    pub confidence: f32,
-    pub risk: BrowserDecisionRisk,
-    pub sensitive_action: BrowserSensitiveAction,
-    pub needs_debug: bool,
-}
-
-/// Browser action selected by MiMo after local validation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BrowserDecisionAction {
-    ClickXy {
-        x: u32,
-        y: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        target_description: Option<String>,
-    },
-    ClickSelector {
-        selector: String,
-    },
-    ClickTargetId {
-        target_id: String,
-    },
-    Fill {
-        selector: String,
-        value: String,
-    },
-    TypeText {
-        text: String,
-    },
-    Press {
-        key: String,
-    },
-    Scroll {
-        delta_x: i32,
-        delta_y: i32,
-    },
-    GetElementValue {
-        selector: String,
-    },
-    #[serde(rename = "execute_javascript")]
-    ExecuteJavaScript {
-        expression: String,
-    },
-    Wait {
-        timeout_ms: u64,
-    },
-    WaitForSelector {
-        selector: String,
-        timeout_ms: u64,
-    },
-    WaitForText {
-        text: String,
-        timeout_ms: u64,
-    },
-    Script {
-        steps: Vec<BrowserDecisionAction>,
-    },
     Navigate {
         url: String,
     },
-    Debug {
-        reason: String,
-    },
-    AskUser {
-        question: String,
-    },
-    Done {
-        final_answer: String,
-        evidence: String,
-    },
-}
-
-/// Risk classification assigned by MiMo and enforced locally.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserDecisionRisk {
-    Low,
-    Medium,
-    High,
-}
-
-/// Sensitive-action annotation assigned by MiMo.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub struct BrowserSensitiveAction {
-    pub required: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
 }
 
 /// Response from `POST /sessions/{id}/action`.
@@ -824,6 +729,13 @@ mod tests {
         assert_eq!(value["kind"], "wait_for_text");
         assert_eq!(value["text"], "Loaded");
         assert_eq!(value["timeout_ms"], 5_000);
+
+        let navigate = BrowserAction::Navigate {
+            url: "https://example.com/login".to_string(),
+        };
+        let value = serde_json::to_value(navigate).expect("serialize navigate");
+        assert_eq!(value["kind"], "navigate");
+        assert_eq!(value["url"], "https://example.com/login");
 
         let event = BrowserStreamEvent::Heartbeat {
             session_id: "br_1".to_string(),

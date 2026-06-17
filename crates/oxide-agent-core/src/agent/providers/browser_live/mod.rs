@@ -4,7 +4,7 @@
 //! checkpoints. CP-5 adds a test-only fake sidecar behind `cfg(test)` so unit
 //! tests can cover browser lifecycle code without Chromium or external services.
 
-/// Action execution planning from validated browser decisions.
+/// Action execution planning from direct `BrowserAction` inputs.
 pub mod actions;
 /// Typed HTTP client for the browser sidecar REST API.
 pub mod artifacts;
@@ -14,16 +14,8 @@ pub mod client;
 pub mod error;
 /// Browser Live MVP metrics and structured logging.
 pub mod metrics;
-/// MiMo screenshot decision caller.
-pub mod mimo;
-/// Strict BrowserDecision parser and validation.
-pub mod parser;
-/// Browser Live MVP security policy gates.
+/// Browser Live MVP security policy helpers.
 pub mod policy;
-/// Prompt construction for Browser Live MiMo decisions.
-pub mod prompt;
-/// Deterministic recovery classification and bounded fallback planning.
-pub mod recovery;
 /// Browser session state model.
 pub mod session;
 #[cfg(test)]
@@ -39,11 +31,10 @@ pub use artifacts::{BrowserArtifactPurpose, BrowserArtifactSettings};
 pub use client::{BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, IdempotencyKey};
 pub use error::BrowserSidecarError;
 pub use metrics::{BrowserMetricsCollector, BrowserMetricsSnapshot};
-pub use mimo::{BrowserDecisionEngine, BrowserMimoDecider};
 pub use policy::{BrowserPolicyAuditEvent, BrowserPolicyError};
 pub use session::{BrowserFrame, BrowserSessionState};
 pub use tools::BrowserLiveProvider;
 pub use types::{
-    BrowserAction, BrowserDecision, BrowserDecisionAction, BrowserDecisionRisk, BrowserObservation,
-    BrowserSensitiveAction, CreateSessionRequest, ScreenshotArtifact, SidecarErrorBody, Viewport,
+    BrowserAction, BrowserObservation, BrowserProfile, CreateSessionRequest, ScreenshotArtifact,
+    SidecarErrorBody, Viewport,
 };

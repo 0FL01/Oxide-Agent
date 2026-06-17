@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
 use super::types::{
-    ActionResult, ActionStatus, BrowserDecision, BrowserObservation, NavigationResult,
-    NavigationStatus,
+    ActionResult, ActionStatus, BrowserObservation, NavigationResult, NavigationStatus,
 };
 use serde::Serialize;
 
@@ -12,8 +11,6 @@ pub enum BrowserVerificationStatus {
     ActionVerified,
     VerificationFailed,
     Done,
-    NeedsUser,
-    DebugRequested,
     Timeout,
 }
 
@@ -30,14 +27,14 @@ pub struct BrowserActionVerification {
 }
 
 pub fn verify_sidecar_action(
-    decision: &BrowserDecision,
+    expected_result: &str,
     before: &BrowserObservation,
     action_result: &ActionResult,
     after: &BrowserObservation,
 ) -> BrowserActionVerification {
     if !action_result.technical_success || action_result.status != ActionStatus::Executed {
         return failed(
-            decision,
+            expected_result,
             before,
             Some(after),
             format!(
@@ -48,48 +45,25 @@ pub fn verify_sidecar_action(
     }
     if action_result.action_seq > after.action_seq {
         return failed(
-            decision,
+            expected_result,
             before,
             Some(after),
             "post-action observation action_seq is stale".to_string(),
         );
     }
-    verify_fresh_visual_evidence(decision, before, after)
-}
-
-pub fn verify_navigation(
-    decision: &BrowserDecision,
-    before: &BrowserObservation,
-    navigation: &NavigationResult,
-    after: &BrowserObservation,
-) -> BrowserActionVerification {
-    if !matches!(
-        navigation.status,
-        NavigationStatus::Loaded | NavigationStatus::Partial
-    ) {
-        return failed(
-            decision,
-            before,
-            Some(after),
-            format!(
-                "navigation status {:?} is not visually verified",
-                navigation.status
-            ),
-        );
-    }
-    verify_fresh_visual_evidence(decision, before, after)
+    verify_fresh_visual_evidence(expected_result, before, after)
 }
 
 /// Verifies a pure sidecar action (e.g. `get_element_value`, `execute_javascript`,
 /// `wait`) that intentionally does not produce a post-action screenshot.
 pub fn verify_by_result(
-    decision: &BrowserDecision,
+    expected_result: &str,
     before: &BrowserObservation,
     action_result: &ActionResult,
 ) -> BrowserActionVerification {
     if !action_result.technical_success || action_result.status != ActionStatus::Executed {
         return failed(
-            decision,
+            expected_result,
             before,
             None,
             format!(
@@ -102,7 +76,7 @@ pub fn verify_by_result(
         status: BrowserVerificationStatus::ActionVerified,
         task_success: false,
         reason: "pure action result returned without post-action screenshot".to_string(),
-        expected_result: decision.expected_result.clone(),
+        expected_result: expected_result.to_string(),
         before_observation_id: before.observation_id.clone(),
         after_observation_id: None,
         before_screenshot_id: before.screenshot.screenshot_id.clone(),
@@ -110,8 +84,31 @@ pub fn verify_by_result(
     }
 }
 
+pub fn verify_navigation(
+    expected_result: &str,
+    before: &BrowserObservation,
+    navigation: &NavigationResult,
+    after: &BrowserObservation,
+) -> BrowserActionVerification {
+    if !matches!(
+        navigation.status,
+        NavigationStatus::Loaded | NavigationStatus::Partial
+    ) {
+        return failed(
+            expected_result,
+            before,
+            Some(after),
+            format!(
+                "navigation status {:?} is not visually verified",
+                navigation.status
+            ),
+        );
+    }
+    verify_fresh_visual_evidence(expected_result, before, after)
+}
+
 pub fn terminal_done(
-    decision: &BrowserDecision,
+    expected_result: &str,
     observation: &BrowserObservation,
     reason: String,
 ) -> BrowserActionVerification {
@@ -119,7 +116,7 @@ pub fn terminal_done(
         status: BrowserVerificationStatus::Done,
         task_success: true,
         reason,
-        expected_result: decision.expected_result.clone(),
+        expected_result: expected_result.to_string(),
         before_observation_id: observation.observation_id.clone(),
         after_observation_id: Some(observation.observation_id.clone()),
         before_screenshot_id: observation.screenshot.screenshot_id.clone(),
@@ -127,39 +124,13 @@ pub fn terminal_done(
     }
 }
 
-pub fn terminal_needs_user(
-    decision: &BrowserDecision,
-    observation: &BrowserObservation,
-    reason: String,
-) -> BrowserActionVerification {
-    terminal(
-        decision,
-        observation,
-        BrowserVerificationStatus::NeedsUser,
-        reason,
-    )
-}
-
-pub fn terminal_debug(
-    decision: &BrowserDecision,
-    observation: &BrowserObservation,
-    reason: String,
-) -> BrowserActionVerification {
-    terminal(
-        decision,
-        observation,
-        BrowserVerificationStatus::DebugRequested,
-        reason,
-    )
-}
-
 pub fn timeout_report(
-    decision: &BrowserDecision,
+    expected_result: &str,
     observation: &BrowserObservation,
     reason: String,
 ) -> BrowserActionVerification {
     terminal(
-        decision,
+        expected_result,
         observation,
         BrowserVerificationStatus::Timeout,
         reason,
@@ -167,7 +138,7 @@ pub fn timeout_report(
 }
 
 fn verify_fresh_visual_evidence(
-    decision: &BrowserDecision,
+    expected_result: &str,
     before: &BrowserObservation,
     after: &BrowserObservation,
 ) -> BrowserActionVerification {
@@ -175,7 +146,7 @@ fn verify_fresh_visual_evidence(
         || before.screenshot.screenshot_id == after.screenshot.screenshot_id
     {
         return failed(
-            decision,
+            expected_result,
             before,
             Some(after),
             "post-action screenshot is not fresh".to_string(),
@@ -186,7 +157,7 @@ fn verify_fresh_visual_evidence(
         task_success: false,
         reason: "fresh post-action screenshot captured; task success still requires a later done decision"
             .to_string(),
-        expected_result: decision.expected_result.clone(),
+        expected_result: expected_result.to_string(),
         before_observation_id: before.observation_id.clone(),
         after_observation_id: Some(after.observation_id.clone()),
         before_screenshot_id: before.screenshot.screenshot_id.clone(),
@@ -195,7 +166,7 @@ fn verify_fresh_visual_evidence(
 }
 
 fn terminal(
-    decision: &BrowserDecision,
+    expected_result: &str,
     observation: &BrowserObservation,
     status: BrowserVerificationStatus,
     reason: String,
@@ -204,7 +175,7 @@ fn terminal(
         status,
         task_success: false,
         reason,
-        expected_result: decision.expected_result.clone(),
+        expected_result: expected_result.to_string(),
         before_observation_id: observation.observation_id.clone(),
         after_observation_id: None,
         before_screenshot_id: observation.screenshot.screenshot_id.clone(),
@@ -213,7 +184,7 @@ fn terminal(
 }
 
 fn failed(
-    decision: &BrowserDecision,
+    expected_result: &str,
     before: &BrowserObservation,
     after: Option<&BrowserObservation>,
     reason: String,
@@ -222,7 +193,7 @@ fn failed(
         status: BrowserVerificationStatus::VerificationFailed,
         task_success: false,
         reason,
-        expected_result: decision.expected_result.clone(),
+        expected_result: expected_result.to_string(),
         before_observation_id: before.observation_id.clone(),
         after_observation_id: after.map(|observation| observation.observation_id.clone()),
         before_screenshot_id: before.screenshot.screenshot_id.clone(),
@@ -234,8 +205,7 @@ fn failed(
 mod tests {
     use super::*;
     use crate::agent::providers::browser_live::types::{
-        BrowserDecisionAction, BrowserDecisionRisk, BrowserSensitiveAction, LoadingState,
-        ScreenshotArtifact, Viewport,
+        LoadingState, ScreenshotArtifact, Viewport,
     };
 
     #[test]
@@ -252,7 +222,7 @@ mod tests {
             result: None,
         };
 
-        let verification = verify_sidecar_action(&decision(), &before, &result, &after);
+        let verification = verify_sidecar_action("expected", &before, &result, &after);
 
         assert_eq!(
             verification.status,
@@ -275,7 +245,7 @@ mod tests {
             result: None,
         };
 
-        let verification = verify_sidecar_action(&decision(), &before, &result, &after);
+        let verification = verify_sidecar_action("expected", &before, &result, &after);
 
         assert_eq!(
             verification.status,
@@ -296,13 +266,7 @@ mod tests {
             result: Some("secret-value".to_string()),
         };
 
-        let verification = verify_by_result(
-            &decision_with_action(BrowserDecisionAction::GetElementValue {
-                selector: "input[name=secret]".to_string(),
-            }),
-            &before,
-            &result,
-        );
+        let verification = verify_by_result("expected", &before, &result);
 
         assert_eq!(
             verification.status,
@@ -314,55 +278,11 @@ mod tests {
     }
 
     #[test]
-    fn pure_action_failure_returns_verification_failed() {
-        let before = observation("obs-1", "shot-1", 0);
-        let result = ActionResult {
-            action_seq: 1,
-            kind: "execute_javascript".to_string(),
-            status: ActionStatus::Failed,
-            duration_ms: 10,
-            technical_success: false,
-            hint: Some("error".to_string()),
-            result: None,
-        };
-
-        let verification = verify_by_result(
-            &decision_with_action(BrowserDecisionAction::ExecuteJavaScript {
-                expression: "1+1".to_string(),
-            }),
-            &before,
-            &result,
-        );
-
-        assert_eq!(
-            verification.status,
-            BrowserVerificationStatus::VerificationFailed
-        );
-    }
-
-    fn decision() -> BrowserDecision {
-        decision_with_action(BrowserDecisionAction::ClickXy {
-            x: 10,
-            y: 20,
-            target_description: None,
-        })
-    }
-
-    fn decision_with_action(action: BrowserDecisionAction) -> BrowserDecision {
-        BrowserDecision {
-            schema_version: 1,
-            rationale: "test".to_string(),
-            action,
-            expected_result: "expected".to_string(),
-            confidence: 0.9,
-            risk: BrowserDecisionRisk::Low,
-            sensitive_action: BrowserSensitiveAction {
-                required: false,
-                category: None,
-                reason: None,
-            },
-            needs_debug: false,
-        }
+    fn terminal_done_reports_success() {
+        let observation = observation("obs-1", "shot-1", 0);
+        let verification = terminal_done("expected", &observation, "done".to_string());
+        assert_eq!(verification.status, BrowserVerificationStatus::Done);
+        assert!(verification.task_success);
     }
 
     fn observation(
