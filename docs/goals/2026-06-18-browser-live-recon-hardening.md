@@ -5,7 +5,7 @@ Status: active
 Codex goal: Iterate on Browser Live according to the RECON plan: verify live contracts, fix SPA input, fresh navigation, strict action schema, DOM extraction, docs, validate every checkpoint, and create a separate git commit after each completed checkpoint.
 Source spec: user-provided v6 OTS evidence report and RECON review request
 Goal doc owner: Codex
-Last updated: 2026-06-18 01:05
+Last updated: 2026-06-18 01:35
 
 ## Objective
 
@@ -83,8 +83,8 @@ Out of scope:
 - Source: v6 problem: same-hash SPA navigation caches state; `location.reload()`/`about:blank` break DOM.
 - Acceptance: `navigate { force_reload: true }` means sidecar-owned fresh document navigation preserving the full target URL/hash; it must not rely on page JS `window.location.reload(true)` as the correctness mechanism and must fail structurally if freshness cannot be guaranteed.
 - Evidence required: code review of sidecar fresh navigation path, unit/fake tests for `force_reload`, and live OTS reveal in a fresh browser context after previous SPA state.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-2 replaced the `force_reload` hash-SPA path in `docker/chrome-agent-sidecar.py` with sidecar-owned browser-process restart: `chrome-agent close` without `--purge` drops the page JS heap/in-memory SPA state while preserving profile data, the old pipe/listener is closed, a new pipe is installed for the same sidecar session, and the normal `goto` command opens the exact target URL including the hash. Code search/import contract check confirmed no `window.location.reload` / `location.reload(` remains in the sidecar source. Live chrome-agent contract probe with a temporary browser showed initial URL `https://ots.bash.md/#cp2-fragment-check`, marker `"stale"`, then `chrome-agent close` returned `ok:true`, reopening the same browser name and navigating to the same URL preserved the hash while marker became `null`. Live OTS sidecar probe on refreshed `oxide_chrome_agent_sidecar` set a marker before creating a secret, then `POST /sessions/{id}/goto` with `force_reload:true` to the share URL returned `ok:true`, `navigation.status:"loaded"`, final hash length 59, DOM snapshot length 9, marker `null`, reveal button present, and browser reveal recovered the original secret (`recovered_matches:true`).
 
 ### G4: Strict `BrowserAction` tool schema
 - Source: v6 problem: `wait` requires `timeout_ms`, but loose schema permits/encourages wrong `ms` field.
@@ -112,14 +112,14 @@ Out of scope:
 - Acceptance: final validation proves first browser reveal returns the secret and a second browser fresh-context attempt reports consumed/missing state; direct API verification may be corroborating but not the only browser-live evidence.
 - Evidence required: live OTS transcript with share URL redacted only if necessary, first reveal value match, second attempt consumed/error state, and network/console summaries.
 - Status: pending
-- Evidence collected:
+- Evidence collected: CP-2 provided partial browser evidence for the first fresh reveal: after create/extract via the sidecar, same-session `force_reload:true` reopened a fresh browser process at the share URL with no stale JS marker and the reveal action recovered the original secret. The final second-consumption browser attempt and network/console summaries remain for CP-6.
 
 ### Q1: Static checks and tests pass at each code checkpoint
 - Source: repo development practices.
 - Acceptance: relevant targeted checks pass before each checkpoint commit; final gate includes broad static/test commands listed in Validation Contract.
 - Evidence required: command outputs per checkpoint.
 - Status: in_progress
-- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed). CP-1 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/contract check for `action_to_pipe_cmd` (pass after documenting the local `/var/lib/oxide-browser` permission issue), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), and the live OTS semantic input probe (pass).
+- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed). CP-1 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/contract check for `action_to_pipe_cmd` (pass after documenting the local `/var/lib/oxide-browser` permission issue), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), and the live OTS semantic input probe (pass). CP-2 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/source contract check asserting no reload JS remains and hash-navigation classification works (pass), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), refreshed the live sidecar with an executable script, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), a raw chrome-agent close/reopen contract probe (pass), and a live OTS force-reload reveal probe (pass).
 
 ### Q2: One commit per completed checkpoint
 - Source: user instruction.
@@ -240,6 +240,7 @@ Out of scope:
 - 2026-06-18: Do not add compatibility aliases like `wait.ms`; wrong nested action fields are a schema-contract bug and should be rejected by strict schema.
 - 2026-06-18: Treat `force_reload` as an intent for fresh document state owned by sidecar, not permission for the LLM or page JS to choose `reload()`/`about:blank` workarounds.
 - 2026-06-18: Keep `fill` and `type_text` public, but make them share the same semantic value-setting primitive so SPA correctness cannot diverge by action name.
+- 2026-06-18: Implement `force_reload` as browser-process replacement without profile purge. This is stronger than same-document reload for SPA memory freshness, preserves cookies/local storage better than purge/new session, and keeps the target URL/hash owned by the sidecar rather than by page JavaScript.
 
 ## Progress Log
 
@@ -270,6 +271,13 @@ Out of scope:
   - Commands: `python3 -m py_compile docker/chrome-agent-sidecar.py`; `BROWSER_AGENT_ARTIFACT_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-artifacts-test BROWSER_AGENT_PROFILE_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-profiles-test python3 - <<'PY' ...`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `install -m 0755 docker/chrome-agent-sidecar.py target/chrome-agent-sidecar-live`; `docker cp target/chrome-agent-sidecar-live oxide_chrome_agent_sidecar:/usr/local/bin/chrome-agent-sidecar`; `docker restart oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar sh -lc 'ls -l /usr/local/bin/chrome-agent-sidecar && sha256sum /usr/local/bin/chrome-agent-sidecar && curl -fsS -H "Authorization: Bearer $BROWSER_AGENT_SIDECAR_TOKEN" http://127.0.0.1:8787/healthz'`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...`.
   - Audit IDs updated: G2 verified; Q1/Q2 in progress.
   - Next: review CP-1 diff, commit, then start CP-2 sidecar-owned fresh navigation.
+
+- 2026-06-18 01:35: CP-2 sidecar-owned fresh navigation completed.
+  - Changed: `docker/chrome-agent-sidecar.py` now handles `force_reload:true` by closing the managed browser without profile purge, closing the stale pipe/listener, creating a fresh pipe for the same sidecar session, and using normal `goto` for the exact target URL. Same-origin hash navigation without `force_reload` remains a lightweight hash update; the old `window.location.reload(true)` path was removed. Sidecar self-test now verifies close/reopen freshness by proving a page JS marker is gone while a hash URL is preserved.
+  - Evidence: raw chrome-agent contract probe returned `close_stdout:{"ok":true,...}`, second `goto` preserved `https://ots.bash.md/#cp2-fragment-check`, and marker changed from `"stale"` to `null`. Live sidecar script SHA256 was `ed801dc26b3432bdd1b44ca602226d2cc831ac04da29d2afaccb33f3bf51570a`; live OTS probe set marker `"stale"`, created a share URL (`share_hash_len:59`), navigated to it with `force_reload:true`, got `status:"loaded"`, DOM snapshot length 9, marker `null`, reveal button present, and recovered the original secret (`recovered_matches:true`).
+  - Commands: `docker exec oxide_chrome_agent_sidecar sh -lc 'chrome-agent --help | sed -n "1,160p"'`; `docker exec oxide_chrome_agent_sidecar sh -lc 'chrome-agent close --help | sed -n "1,120p"'`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...` (raw close/reopen contract); `python3 -m py_compile docker/chrome-agent-sidecar.py`; `BROWSER_AGENT_ARTIFACT_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-artifacts-test BROWSER_AGENT_PROFILE_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-profiles-test python3 - <<'PY' ...`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `install -m 0755 docker/chrome-agent-sidecar.py target/chrome-agent-sidecar-live`; `docker cp target/chrome-agent-sidecar-live oxide_chrome_agent_sidecar:/usr/local/bin/chrome-agent-sidecar`; `docker restart oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...` (live OTS force-reload reveal).
+  - Audit IDs updated: G3 verified; G7 partial evidence; Q1/Q2 in progress.
+  - Next: review CP-2 diff/status, commit checkpoint, then start CP-3 strict public action schema.
 
 ## Risks and Blockers
 

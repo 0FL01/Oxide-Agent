@@ -328,6 +328,59 @@ def run_chrome_agent(browser: str, args: list[str], timeout: int = 60) -> dict[s
     return data
 
 
+def restart_pipe_with_fresh_browser(
+    session_id: str,
+    task_id: str,
+    old_pipe: ChromeAgentPipe,
+) -> tuple[ChromeAgentPipe | None, dict[str, Any] | None]:
+    """Replace a pipe with a new browser process while preserving profile data.
+
+    `force_reload` is a sidecar-owned freshness contract.  Closing the managed
+    browser (without `--purge`) drops the page's JS heap and in-memory SPA state
+    while preserving cookies/local storage, then a new pipe can navigate to the
+    exact target URL including its hash.
+    """
+    close_result = run_chrome_agent(session_id, ["close"], timeout=15)
+    try:
+        old_pipe.close(purge=False)
+    except Exception:
+        pass
+
+    if not close_result.get("ok"):
+        error = close_result.get("error")
+        if not isinstance(error, dict):
+            error = {
+                "code": "fresh_navigation_failed",
+                "message": "failed to close browser for fresh navigation",
+                "retryable": True,
+                "hint": "start a new browser session",
+            }
+        return None, error
+
+    try:
+        return ChromeAgentPipe(session_id, task_id), None
+    except Exception as exc:
+        return None, {
+            "code": "sidecar_not_ready",
+            "message": f"failed to start fresh chrome-agent pipe: {exc}",
+            "retryable": True,
+            "hint": "start a new browser session",
+        }
+
+
+def _is_same_origin_path_hash_navigation(current_url: str, target_url: str) -> bool:
+    """Return true for same-document hash navigation handled without reload."""
+    parsed_current = urlparse(current_url)
+    parsed_target = urlparse(target_url)
+    return (
+        bool(parsed_current.scheme)
+        and parsed_current.scheme == parsed_target.scheme
+        and parsed_current.netloc == parsed_target.netloc
+        and parsed_current.path == parsed_target.path
+        and (parsed_current.fragment != parsed_target.fragment or bool(parsed_target.fragment))
+    )
+
+
 def chrome_agent_available() -> bool:
     return shutil.which("chrome-agent") is not None
 
@@ -1654,30 +1707,38 @@ class Handler(BaseHTTPRequestHandler):
 
         pipe = get_pipe(session_id)
         action_seq = session.get("action_seq", 0)
-        current_url = self._refresh_session_url_from_location(session_id, session)
+        if force_reload:
+            task_id = session.get("task_id", "browser-task")
+            fresh_pipe, fresh_error = restart_pipe_with_fresh_browser(session_id, task_id, pipe)
+            STATE.pipes.pop(session_id, None)
+            if fresh_pipe is None:
+                self.write_json(HTTPStatus.OK, {
+                    "request_id": request_id(),
+                    "session_id": session_id,
+                    "ok": False,
+                    "navigation": {
+                        "url": url,
+                        "final_url": session.get("url", ""),
+                        "status": "blocked",
+                        "http_status": None,
+                        "redirect_count": 0,
+                        "force_reload": force_reload,
+                    },
+                    "observation": None,
+                    "error": fresh_error,
+                })
+                return
+            pipe = fresh_pipe
+            STATE.pipes[session_id] = pipe
+            session["last_screenshot"] = None
+            session["last_observation"] = None
+            current_url = ""
+        else:
+            current_url = self._refresh_session_url_from_location(session_id, session)
 
         # SPA hash navigation: same origin and path, only the hash changed.
-        parsed_current = urlparse(current_url)
-        parsed_target = urlparse(url)
-        if (
-            parsed_current.scheme and parsed_current.scheme == parsed_target.scheme
-            and parsed_current.netloc == parsed_target.netloc
-            and parsed_current.path == parsed_target.path
-            and (parsed_current.fragment != parsed_target.fragment or parsed_target.fragment)
-        ):
-            if force_reload:
-                # Some SPAs cache state in memory and only a real reload guarantees a
-                # clean slate (e.g. one-time secret pages). Reload before changing the hash.
-                pipe.send({"cmd": "eval", "expression": "window.location.reload(true); true"}, timeout=15)
-                listener = pipe._cdp_listener if pipe is not None else None
-                if listener is not None and listener._connected.is_set():
-                    listener.wait_for_network_idle(timeout=2.0)
-                else:
-                    time.sleep(0.5)
-                try:
-                    pipe.send({"cmd": "wait", "what": "selector", "pattern": "body", "timeout": 5}, timeout=10)
-                except Exception:
-                    pass
+        if _is_same_origin_path_hash_navigation(current_url, url):
+            parsed_target = urlparse(url)
             hash_value = parsed_target.fragment
             script = f"window.location.hash = {json.dumps('#' + hash_value)}; true"
             pipe.send({"cmd": "eval", "expression": script}, timeout=15)
@@ -2238,6 +2299,35 @@ def self_test() -> int:
             print(f"chrome-agent-sidecar self-test: pipe goto failed: {result}", file=sys.stderr)
             pipe.close(purge=True)
             return 1
+        marker_result = pipe.send({
+            "cmd": "eval",
+            "expression": "window.__oxide_fresh_navigation_marker = 'stale'; window.location.href",
+        }, timeout=10)
+        if not marker_result.get("ok"):
+            print(f"chrome-agent-sidecar self-test: marker eval failed: {marker_result}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
+        fresh_pipe, fresh_error = restart_pipe_with_fresh_browser("self-test-pipe", "self-test", pipe)
+        if fresh_pipe is None:
+            print(f"chrome-agent-sidecar self-test: fresh restart failed: {fresh_error}", file=sys.stderr)
+            run_chrome_agent("self-test-pipe", ["close", "--purge"], timeout=15)
+            return 1
+        pipe = fresh_pipe
+        fresh_url = "https://example.com/#fresh-navigation"
+        fresh_result = pipe.send({"cmd": "goto", "url": fresh_url}, timeout=30)
+        if not fresh_result.get("ok"):
+            print(f"chrome-agent-sidecar self-test: fresh goto failed: {fresh_result}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
+        fresh_marker = pipe.send({
+            "cmd": "eval",
+            "expression": "({ href: window.location.href, marker: window.__oxide_fresh_navigation_marker || null })",
+        }, timeout=10)
+        fresh_value = fresh_marker.get("result") if fresh_marker.get("ok") else None
+        if not isinstance(fresh_value, dict) or fresh_value.get("href") != fresh_url or fresh_value.get("marker") is not None:
+            print(f"chrome-agent-sidecar self-test: fresh navigation contract failed: {fresh_marker}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
         pipe.close(purge=True)
     except Exception as exc:
         print(f"chrome-agent-sidecar self-test: pipe smoke failed: {exc}", file=sys.stderr)
@@ -2265,6 +2355,14 @@ def self_test() -> int:
     assert "HTMLSelectElement.prototype" in fill_cmds[0]["expression"], "select native setter missing"
     assert "insertReplacementText" in fill_cmds[0]["expression"], "fill event intent missing"
     assert "insertText" in type_cmds[0]["expression"], "type_text event intent missing"
+    assert _is_same_origin_path_hash_navigation(
+        "https://example.test/app#old",
+        "https://example.test/app#new",
+    ), "same-origin hash navigation not detected"
+    assert not _is_same_origin_path_hash_navigation(
+        "https://example.test/app#old",
+        "https://example.test/other#new",
+    ), "different path misclassified as same-document hash navigation"
 
     print("chrome-agent-sidecar self-test ok")
     return 0
