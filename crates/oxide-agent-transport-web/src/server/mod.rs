@@ -58,8 +58,9 @@ pub(crate) use session_routes::{
 };
 pub(crate) use settings_routes::{api_get_settings, api_update_settings, load_current_user_record};
 pub(crate) use task_routes::{
-    api_cancel_task, api_create_task, api_create_task_version, api_download_task_file,
-    api_get_task, api_get_task_events, api_get_task_progress, api_list_tasks, api_resume_task,
+    api_cancel_task, api_create_task, api_create_task_version, api_download_artifact,
+    api_download_task_file, api_get_task, api_get_task_events, api_get_task_progress,
+    api_list_tasks, api_resume_task,
 };
 #[cfg(test)]
 pub(crate) use task_routes::{

@@ -5,6 +5,21 @@ use oxide_agent_web_contracts::{
 };
 use serde_json::Value;
 
+pub(super) fn artifact_image_url(session_id: &str, task_id: &str, artifact_uri: &str) -> String {
+    let path = artifact_uri
+        .strip_prefix("artifact://")
+        .unwrap_or(artifact_uri);
+    format!("/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/{path}")
+}
+
+pub(super) fn artifact_filename(artifact_uri: &str) -> String {
+    artifact_uri
+        .rsplit('/')
+        .next()
+        .unwrap_or(artifact_uri)
+        .to_string()
+}
+
 pub(super) fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
     TaskDetail {
         task_id: task.task_id.clone(),
@@ -513,5 +528,33 @@ mod tests {
         let state = browser_live_state_for_task(&events, "task-1").expect("browser state");
 
         assert!(state.screenshot.is_none());
+    }
+
+    #[test]
+    fn artifact_image_url_strips_artifact_scheme() {
+        assert_eq!(
+            artifact_image_url(
+                "sess-1",
+                "task-1",
+                "artifact://browser/owner/br/step-0001-milestone.jpg"
+            ),
+            "/api/v1/sessions/sess-1/tasks/task-1/artifacts/browser/owner/br/step-0001-milestone.jpg"
+        );
+    }
+
+    #[test]
+    fn artifact_image_url_leaves_non_artifact_uris_unchanged() {
+        assert_eq!(
+            artifact_image_url("sess-1", "task-1", "browser/owner/br/step-0001.jpg"),
+            "/api/v1/sessions/sess-1/tasks/task-1/artifacts/browser/owner/br/step-0001.jpg"
+        );
+    }
+
+    #[test]
+    fn artifact_filename_extracts_last_segment() {
+        assert_eq!(
+            artifact_filename("artifact://browser/owner/br/step-0001-milestone.jpg"),
+            "step-0001-milestone.jpg"
+        );
     }
 }

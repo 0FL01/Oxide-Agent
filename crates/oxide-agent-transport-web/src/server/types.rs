@@ -204,6 +204,8 @@ pub struct AppState {
     /// When `false`, the async auto-title worker is skipped (for tests with scripted LLM).
     pub auto_title_enabled: bool,
     large_input_attachments_supported: bool,
+    /// Local directory where agent tool artifacts (e.g., browser-live screenshots) are stored.
+    pub artifact_dir: PathBuf,
 }
 
 impl AppState {
@@ -237,6 +239,7 @@ impl AppState {
             sandbox_control: default_web_sandbox_control(),
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
+            artifact_dir: Self::artifact_dir_from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
             auth_cache: Cache::builder()
                 .max_capacity(AUTH_CACHE_MAX_CAPACITY)
@@ -277,6 +280,16 @@ impl AppState {
     #[must_use]
     pub const fn web_store_kind(&self) -> WebStoreKind {
         self.web_store_kind
+    }
+
+    fn artifact_dir_from_env() -> PathBuf {
+        std::env::var("OXIDE_WEB_ARTIFACT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(".oxide/tool-artifacts")
+            })
     }
 
     pub fn validate_web_store_for_startup(&self) -> Result<(), WebStartupError> {

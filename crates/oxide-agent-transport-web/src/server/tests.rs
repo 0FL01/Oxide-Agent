@@ -1846,6 +1846,263 @@ async fn api_download_task_file_hides_foreign_or_missing_files() {
 }
 
 #[tokio::test]
+async fn api_download_artifact_serves_owned_image_with_mime_type() {
+    use tower::Service as _;
+
+    let mut state = test_app_state();
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+    let task_id = "task-artifact".to_string();
+    state
+        .web_store
+        .save_task(task_record(
+            user.user_id,
+            &session_id,
+            &task_id,
+            ApiTaskStatus::Completed,
+            "Browser task",
+            now,
+        ))
+        .await
+        .expect("save task");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time after Unix epoch")
+        .as_nanos();
+    let artifact_dir = std::env::temp_dir().join(format!("oxide-artifact-test-{nonce}"));
+    state.artifact_dir = artifact_dir.clone();
+    let inner = artifact_dir.join("browser/task-1/session-1");
+    tokio::fs::create_dir_all(&inner)
+        .await
+        .expect("create artifact dirs");
+    let artifact_path = inner.join("step-0001-milestone.jpg");
+    tokio::fs::write(&artifact_path, b"fake-jpeg-bytes")
+        .await
+        .expect("write artifact file");
+
+    let mut app = super::build_router(state);
+    let response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("artifact request"),
+        )
+        .await
+        .expect("artifact response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::CONTENT_TYPE],
+        axum::http::HeaderValue::from_static("image/jpeg")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read artifact body");
+    assert_eq!(body.as_ref(), b"fake-jpeg-bytes");
+
+    let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+}
+
+#[tokio::test]
+async fn api_download_artifact_rejects_foreign_and_traversal() {
+    use tower::Service as _;
+
+    let mut state = test_app_state();
+    let now = chrono::Utc::now();
+    let owner = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register owner");
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register second user");
+    let (_, owner_session, owner_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login owner");
+    let (_, _, foreign_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login foreign user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&owner_token, Some(&owner_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+    let task_id = "task-artifact".to_string();
+    state
+        .web_store
+        .save_task(task_record(
+            owner.user_id,
+            &session_id,
+            &task_id,
+            ApiTaskStatus::Completed,
+            "Browser task",
+            now,
+        ))
+        .await
+        .expect("save task");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time after Unix epoch")
+        .as_nanos();
+    let artifact_dir = std::env::temp_dir().join(format!("oxide-artifact-test-{nonce}"));
+    state.artifact_dir = artifact_dir.clone();
+    let inner = artifact_dir.join("browser/task-1/session-1");
+    tokio::fs::create_dir_all(&inner)
+        .await
+        .expect("create artifact dirs");
+    let artifact_path = inner.join("step-0001-milestone.jpg");
+    tokio::fs::write(&artifact_path, b"fake")
+        .await
+        .expect("write artifact file");
+
+    let mut app = super::build_router(state.clone());
+    let foreign_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={foreign_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("foreign artifact request"),
+        )
+        .await
+        .expect("foreign artifact response");
+    assert_eq!(foreign_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let traversal_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/../etc/passwd"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("traversal artifact request"),
+        )
+        .await
+        .expect("traversal artifact response");
+    assert_eq!(
+        traversal_response.status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+
+    let missing_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/missing.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("missing artifact request"),
+        )
+        .await
+        .expect("missing artifact response");
+    assert_eq!(missing_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let unauthenticated_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .body(axum::body::Body::empty())
+                .expect("unauthenticated artifact request"),
+        )
+        .await
+        .expect("unauthenticated artifact response");
+    assert_eq!(
+        unauthenticated_response.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+
+    let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+}
+
+#[tokio::test]
 async fn api_create_session_prunes_orphan_web_sandboxes() {
     let (mut state, _) =
         test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);

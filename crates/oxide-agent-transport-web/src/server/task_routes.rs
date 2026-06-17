@@ -22,6 +22,8 @@ use oxide_agent_web_contracts::{
     UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
 use serde::Deserialize;
+use std::path::Path as StdPath;
+use std::path::PathBuf as StdPathBuf;
 use std::time::Instant;
 
 use crate::session::{RunningTask, WebSessionRuntimeOptions};
@@ -978,6 +980,77 @@ fn content_disposition_header(file_name: &str, inline: bool) -> HeaderValue {
     let disposition = if inline { "inline" } else { "attachment" };
     HeaderValue::from_str(&format!("{disposition}; filename=\"{sanitized}\""))
         .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+}
+
+pub(crate) async fn api_download_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id, path)): Path<(String, String, String)>,
+) -> Result<Response, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let _task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+
+    let relative_path = StdPath::new(&path);
+    let cleaned = sanitize_artifact_path(relative_path).map_err(|_| {
+        api_error(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Forbidden,
+            "artifact path contains disallowed components",
+            false,
+        )
+    })?;
+    let artifact_path = state.artifact_dir.join(&cleaned);
+    let canonical_dir = match std::fs::canonicalize(&state.artifact_dir) {
+        Ok(dir) => dir,
+        Err(_) => return Err(not_found_response()),
+    };
+    let canonical_path = match std::fs::canonicalize(&artifact_path) {
+        Ok(path) => path,
+        Err(_) => return Err(not_found_response()),
+    };
+    if !canonical_path.starts_with(&canonical_dir) {
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Forbidden,
+            "artifact path is outside the artifact directory",
+            false,
+        ));
+    }
+
+    let bytes = match tokio::fs::read(&canonical_path).await {
+        Ok(bytes) => bytes,
+        Err(_) => return Err(not_found_response()),
+    };
+
+    let content_type = mime_type_from_path(&canonical_path);
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    Ok(response)
+}
+
+fn sanitize_artifact_path(path: &StdPath) -> Result<StdPathBuf, ()> {
+    let mut result = StdPathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => result.push(name),
+            _ => return Err(()),
+        }
+    }
+    Ok(result)
+}
+
+fn mime_type_from_path(path: &StdPath) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("json") => "application/json",
+        Some("txt") => "text/plain",
+        _ => "application/octet-stream",
+    }
 }
 
 pub(crate) async fn api_create_task_version(

@@ -26,9 +26,9 @@ use super::profile::{
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    BrowserLiveState, browser_live_state_for_task, latest_editable_task_id, latest_task,
-    remove_session_summary, session_detail_to_summary, summary_to_detail, upsert_session_summary,
-    upsert_task_summary,
+    BrowserLiveState, artifact_filename, artifact_image_url, browser_live_state_for_task,
+    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
+    summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -1106,6 +1106,8 @@ fn SessionWorkspace(
                         view! {
                             <BrowserLivePanel
                                 state=browser
+                                session_id=session_id.clone()
+                                task_id=task_id.clone()
                                 is_running=Signal::derive(move || {
                                     active_task.get().is_some_and(|task| {
                                         matches!(task.status, TaskStatus::Queued | TaskStatus::Running)
@@ -1290,6 +1292,8 @@ fn SessionWorkspace(
 #[component]
 fn BrowserLivePanel(
     state: BrowserLiveState,
+    session_id: String,
+    task_id: String,
     is_running: Signal<bool>,
     is_waiting: Signal<bool>,
     on_stop: Callback<leptos::ev::MouseEvent>,
@@ -1318,6 +1322,10 @@ fn BrowserLivePanel(
         state.network_failed_count, state.console_error_count, state.console_warning_count
     );
     let artifact_refs = state.artifact_refs.clone();
+    let session_id_for_shot = session_id.clone();
+    let task_id_for_shot = task_id.clone();
+    let session_id_for_artifacts = session_id.clone();
+    let task_id_for_artifacts = task_id.clone();
 
     view! {
         <section class="browser-live-panel" data-testid="browser-live-panel">
@@ -1331,12 +1339,17 @@ fn BrowserLivePanel(
                 <div class=move || if blocked { "browser-live-status blocked" } else { "browser-live-status" }>{status}</div>
             </div>
             <div class="browser-live-shot">
-                {move || screenshot_uri.clone().map(|uri| view! {
-                    <div class="browser-live-shot-ref">
-                        <span>"Latest screenshot"</span>
-                        <code>{uri}</code>
-                    </div>
-                }.into_any()).unwrap_or_else(|| view! { <div class="browser-live-shot-empty">"Waiting for screenshot artifact ref…"</div> }.into_any())}
+                {move || {
+                    screenshot_uri.clone().map(|uri| {
+                        let image_url = artifact_image_url(&session_id_for_shot, &task_id_for_shot, &uri);
+                        let filename = artifact_filename(&uri);
+                        view! {
+                            <a class="browser-live-shot-link" href=image_url.clone() target="_blank">
+                                <img class="browser-live-shot-image" src=image_url.clone() alt=format!("Screenshot {filename}") />
+                            </a>
+                        }.into_any()
+                    }).unwrap_or_else(|| view! { <div class="browser-live-shot-empty">"Waiting for screenshot artifact ref…"</div> }.into_any())
+                }}
                 {screenshot_meta.map(|meta| view! { <div class="browser-live-shot-meta">{meta}</div> })}
             </div>
             <div class="browser-live-grid">
@@ -1348,11 +1361,23 @@ fn BrowserLivePanel(
             {state.blocked_reason.clone().map(|reason| view! {
                 <div class="browser-live-blocked">{reason}</div>
             })}
-            {(!artifact_refs.is_empty()).then(|| view! {
-                <div class="browser-live-artifacts">
-                    <span>"Final artifacts"</span>
-                    {artifact_refs.into_iter().map(|artifact| view! { <code>{artifact}</code> }).collect::<Vec<_>>()}
-                </div>
+            {(!artifact_refs.is_empty()).then(|| {
+                view! {
+                    <div class="browser-live-artifacts">
+                        <span>"Final artifacts"</span>
+                        <div class="browser-live-artifacts-grid">
+                            {artifact_refs.into_iter().map(|artifact| {
+                                let image_url = artifact_image_url(&session_id_for_artifacts, &task_id_for_artifacts, &artifact);
+                                let filename = artifact_filename(&artifact);
+                                view! {
+                                    <a class="browser-live-artifact" href=image_url.clone() target="_blank" title=filename.clone()>
+                                        <img src=image_url.clone() alt=filename.clone() />
+                                    </a>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    </div>
+                }
             })}
             <div class="browser-live-controls" aria-label="Browser Live task controls">
                 <button type="button" class="secondary" disabled=move || !is_waiting.get() title="Focus the composer to reply and resume." on:click=move |ev| on_resume.run(ev)>"Resume"</button>
