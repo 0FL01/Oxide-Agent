@@ -83,8 +83,8 @@ None. All required evidence can be produced from the existing repo and the publi
 - Source: test report low priority — "Дескрипторы скриншотов дублируются".
 - Acceptance: `BrowserSessionState.retained_artifacts()` contains no two artifacts with the same URI.
 - Evidence required: unit test for `record_observation` with repeated same-purpose records.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-5 changed `crates/oxide-agent-core/src/agent/providers/browser_live/session.rs` so that `record_observation` checks for an existing retained artifact with the same URI and replaces it instead of appending a duplicate; `update_latest_artifact_bytes` now also updates the matching retained artifact's `bytes` and `sha256`. Added two unit tests: `retained_artifacts_deduplicate_by_uri` records the same action_seq/purpose twice and verifies `retained_artifacts().len() == 1` with the latest hash and bytes; `update_latest_artifact_bytes_also_updates_retained_artifact` verifies the retained descriptor is updated after the file is written.
 
 ### Q1: Static checks and tests pass
 - Source: AGENTS.md and repo conventions.
@@ -233,6 +233,13 @@ None. All required evidence can be produced from the existing repo and the publi
   - Commands: static checks + `curl` to `/debug/network`.
   - Audit IDs updated: G4 pending → verified, Q1 verified (extended).
   - Next: CP-5 — deduplicate retained screenshot artifact descriptors.
+
+- 2026-06-17: CP-5 — Retained artifact descriptors deduplicated.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/session.rs` `record_observation` now checks for an existing retained artifact with the same URI and replaces it instead of appending a duplicate; `update_latest_artifact_bytes` also updates the matching retained artifact's `bytes` and `sha256`.
+  - Evidence: `cargo fmt`, `cargo clippy`, `cargo test` (89/11/10), sidecar self-test pass. Added unit tests `retained_artifacts_deduplicate_by_uri` and `update_latest_artifact_bytes_also_updates_retained_artifact`.
+  - Commands: static checks + `cargo test -p oxide-agent-core ...`.
+  - Audit IDs updated: G5 pending → verified, Q1 verified (extended).
+  - Next: CP-6 — final end-to-end OTS verification.
 
 ## Risks and Blockers
 

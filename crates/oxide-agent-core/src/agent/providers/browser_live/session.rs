@@ -157,7 +157,15 @@ impl BrowserSessionState {
         };
 
         if frame.retained {
-            self.retained_artifacts.push(frame.artifact.clone());
+            if let Some(pos) = self
+                .retained_artifacts
+                .iter()
+                .position(|artifact| artifact.uri == frame.artifact.uri)
+            {
+                self.retained_artifacts[pos] = frame.artifact.clone();
+            } else {
+                self.retained_artifacts.push(frame.artifact.clone());
+            }
         } else {
             self.live_bytes = self.live_bytes.saturating_add(frame.artifact.bytes);
         }
@@ -188,7 +196,16 @@ impl BrowserSessionState {
             frame.screenshot.byte_size = byte_size;
             frame.screenshot.sha256 = sha256.clone();
             frame.artifact.bytes = byte_size;
-            frame.artifact.sha256 = Some(sha256);
+            frame.artifact.sha256 = Some(sha256.clone());
+        }
+        if let Some(pos) = self
+            .retained_artifacts
+            .iter()
+            .position(|artifact| artifact.uri == latest.artifact.uri)
+        {
+            let retained = &mut self.retained_artifacts[pos];
+            retained.bytes = byte_size;
+            retained.sha256 = Some(sha256);
         }
         Ok(())
     }
@@ -381,6 +398,52 @@ mod tests {
         assert!(summary.contains("latest_screenshot_id=shot-1"));
         assert!(!summary.contains("base64"));
         assert!(!summary.contains("data:image"));
+    }
+
+    #[test]
+    fn retained_artifacts_deduplicate_by_uri() {
+        let mut state = test_state(3, 10_000);
+        let mut first = observation(1);
+        first.screenshot.sha256 = "sha-first".to_string();
+        state
+            .record_observation(&first, BrowserArtifactPurpose::Milestone, 100)
+            .expect("record first milestone");
+
+        let mut second = observation(1);
+        second.screenshot.sha256 = "sha-second".to_string();
+        state
+            .record_observation(&second, BrowserArtifactPurpose::Milestone, 150)
+            .expect("record second milestone with same URI");
+
+        assert_eq!(state.retained_artifacts().len(), 1);
+        assert_eq!(
+            state.retained_artifacts()[0].uri,
+            "artifact://browser/task-1/session-1/step-0001-milestone.png"
+        );
+        assert_eq!(
+            state.retained_artifacts()[0].sha256.as_deref(),
+            Some("sha-second")
+        );
+        assert_eq!(state.retained_artifacts()[0].bytes, 150);
+    }
+
+    #[test]
+    fn update_latest_artifact_bytes_also_updates_retained_artifact() {
+        let mut state = test_state(3, 10_000);
+        state
+            .record_observation(&observation(1), BrowserArtifactPurpose::Milestone, 0)
+            .expect("record milestone");
+
+        state
+            .update_latest_artifact_bytes(b"new bytes", "sha-updated".to_string())
+            .expect("update latest bytes");
+
+        assert_eq!(state.retained_artifacts().len(), 1);
+        assert_eq!(
+            state.retained_artifacts()[0].sha256.as_deref(),
+            Some("sha-updated")
+        );
+        assert_eq!(state.retained_artifacts()[0].bytes, 9);
     }
 
     fn test_state(max_ring_frames: usize, max_total_bytes: u64) -> BrowserSessionState {
