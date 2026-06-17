@@ -11,12 +11,12 @@ Default branch: `dev`.
 ## Scale and decision principles
 
 - Personal use, up to 2-3 people; target load up to 5 RPS.
-- Over-engineering is forbidden: no sharding, HA, extra queues, multi-layer abstractions, or heavy observability without proven need.
-- Prefer the simplest maintainable solution; optimize only after a real bottleneck.
+- No sharding, HA, extra queues, multi-layer abstractions, or heavy observability without proven need.
+- Optimize only after a real bottleneck; if a fix leaves a class of problems open, redesign the root cause rather than preserve a broken architecture.
 
 ## Implementation bias
 
-- Smallest working change that preserves current architecture.
+- Smallest fundamentally correct change; preserve architecture only when it is sound.
 - Boring, explicit, locally understandable code over generic frameworks.
 - No new crates, services, queues, caches, storage backends, protocols, or abstraction layers unless clearly required.
 - Add abstraction only after real duplication or multiple call sites exist.
@@ -84,14 +84,7 @@ Default branch: `dev`.
 - Do not reintroduce embedding-selected skills.
 
 ### Prompt cache hit
-- **Static prefix + dynamic suffix** — все динамические блоки (date/time, wiki context) строго в конце system prompt. Стабильные блоки (fallback, workflow, structured output, topic AGENTS.md) в начале формируют cacheable prefix.
-- **Assembly order**: `[fallback + profile + workflow_guidance + structured_output] + [wiki_context] + [date_context]`. Дата и wiki — всегда в конце.
-- **Fold system messages** (`history.rs`): stable (`[TOPIC_AGENTS_MD]`, `[OXIDE_COMPACTED_SUMMARY_V1]`) идут перед `date_suffix` в cacheable prefix; volatile (retry notes, temporal context, infra status) — после `date_suffix`.
-- **Tool schemas**: в prompt только compact sorted tool-name list (`~98 bytes`); полные JSON schemas — исключительно через native `tools[]` payload.
-- **Compacted summary**: в prompt-visible текст только `generation` + `wiki_memory_lookup_available`; `created_at`, provider, route, token counts — только в логах.
-- **Budget guard**: `compress` tool blocked при <85% context utilization, предотвращая premature compaction и сброс кэша.
-- **Cache telemetry**: `TokenUsage` содержит `cached_tokens`, `cache_creation_tokens`, метод `cache_hit_rate()`. Парсится у всех 9 production providers.
-- Детали: `docs/tips/cache-hit.md` — полный анализ, provider-specific механизмы, production validation, smoke test.
+- Static prefix + dynamic suffix; provider-specific details and smoke test in `docs/tips/cache-hit.md`.
 
 ### Topic- and flow-scoped state
 - Contexts in `UserConfig.contexts` via `UserContextConfig`. Memory uses context-scoped APIs.
