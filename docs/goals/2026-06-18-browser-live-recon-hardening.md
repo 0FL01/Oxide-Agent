@@ -126,7 +126,7 @@ Out of scope:
 - Acceptance: every completed checkpoint has a separate git commit after validation and goal doc update.
 - Evidence required: commit hashes recorded in Progress Log.
 - Status: in_progress
-- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`. CP-3 committed as `036c5485 fix(browser-live): enforce strict action schema`. CP-4 committed as `71629d4e fix(browser-live): make DOM extraction deterministic`.
+- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`. CP-3 committed as `036c5485 fix(browser-live): enforce strict action schema`. CP-4 committed as `71629d4e fix(browser-live): make DOM extraction deterministic`. CP-5 committed as `366b5cb3 fix(browser-live): diagnose observation freshness`.
 
 ### N1: Browser Live direct-control architecture preserved
 - Source: existing completed direct-control goal and current repo invariants.
