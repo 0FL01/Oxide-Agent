@@ -746,7 +746,9 @@ curl -fsS http://127.0.0.1:8787/healthz -H "Authorization: Bearer ${BROWSER_AGEN
 ```
 
 Browser Live is disabled by default, uses ephemeral profiles, and requires a
-shared token between the app and sidecar. Full setup details are in
+shared token between the app and sidecar. The agent has full browser access in
+Yolo mode: it can type secrets, submit forms, and interact with any reachable
+page. Full setup details and warnings are in
 [docs/browser-live.md](docs/browser-live.md).
 
 ## Key Dependencies

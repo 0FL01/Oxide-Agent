@@ -1,24 +1,28 @@
 # Browser Live Agent
 
-Oxide Browser Live is an autonomous headless-browser capability. The agent can
-open a browser session, observe pages, execute bounded actions, debug
-console/network events, and close the session. The browser is controlled by a
-local `chrome-agent-sidecar` container rather than an external service.
+Oxide Browser Live is an autonomous headless-browser capability. The agent has
+full control over a browser session: it can open any URL, observe pages, execute
+actions, fill forms, submit data, and close the session. The browser is controlled
+by a local `chrome-agent-sidecar` container rather than an external service.
+
+> **Warning:** Browser Live runs in Yolo mode. The agent is allowed to type
+> passwords, secrets, and other sensitive data into web pages, and to submit
+> forms on your behalf. It acts as an extension of your own credentials. Use it
+> only on sites and tasks you trust.
 
 ## What is supported
 
 - `browser_start` / `browser_observe` / `browser_step` / `browser_debug` / `browser_close` tools
-- HTTP/HTTPS navigation only
+- Navigation to any URL the Chromium instance can reach
 - Screenshot artifacts, DOM/a11y snapshots, network and console summaries
+- Form input, clicking, typing, scrolling, and other autonomous actions
 - Web UI preview panel and Telegram milestone/blocked/final reporting
 - OpenCode Go `mimo-v2.5` as the only screenshot-vision route in MVP
 
 ## What is not supported in MVP
 
-- Manual control, iframe/VNC, or browser start from Telegram
+- Manual control, iframe/VNC, or direct user manipulation of the browser
 - Persistent browser profiles or real Chrome profile attach
-- `file://`, `chrome://`, `devtools://`, `data:` URLs
-- CAPTCHA/2FA/anti-bot bypass; these are safe-stopped with a blocked report
 - Direct Xiaomi fallback; no `mimo-v2.5-pro` for vision
 
 ## Requirements
@@ -89,21 +93,21 @@ Expected sidecar response:
 1. Start the web compose stack and open the console.
 2. Create a task and ask the agent to use the browser, e.g. "Open a browser,
    go to example.com, and tell me what you see".
-3. The agent calls `browser_start`, `browser_observe`, and `browser_close` as
-   needed. The Browser Live panel shows the latest screenshot artifact and
-   action status. There is no manual browser control.
+3. The agent calls `browser_start`, `browser_observe`, `browser_step`, and
+   `browser_close` as needed. The Browser Live panel shows the latest screenshot
+   artifact and action status. There is no manual browser control.
 
-## Security and limits
+## Limits and warnings
 
 - Browser sessions are ephemeral; the profile is purged on `browser_close`.
 - The sidecar requires a shared bearer token; keep it secret and out of logs.
 - The app and sidecar communicate over loopback only.
-- Non-web URL schemes are rejected before the sidecar is called.
-- Sub-agents cannot start browser sessions.
 - Screenshots are stored as artifact refs; bytes are not persisted in durable
   chat history.
 - Large or repeated pages are bounded by the live-frame byte cap and ring-buffer
   eviction.
+- The agent is allowed to submit forms, type secrets, and interact with any
+  page it can reach. Review agent actions before trusting them on sensitive sites.
 
 ## Troubleshooting
 
@@ -122,11 +126,16 @@ Expected sidecar response:
 
 - **Browser starts but actions fail with timeout**  
   Some sites require longer waits or use anti-bot measures. The recovery engine
-  will try bounded retries; if it cannot recover, it returns a blocked report.
+  will try bounded retries; if it cannot recover, it returns a failure report.
 
 - **No screenshot preview in Web UI**  
   Confirm the artifact directory is writable and the sidecar created the artifact
   volume. Screenshot artifact refs are named `artifact://browser/<task>/<session>/`.
+
+- **JS-rendered pages show an empty DOM snapshot**
+  The sidecar waits briefly for the page to render before producing an observation.
+  If the app still appears empty, ask the agent to observe again or to wait before
+  acting.
 
 ## Staging checklist
 
@@ -138,7 +147,6 @@ Expected sidecar response:
 - [ ] Web app health returns `{"status":"ok"}`
 - [ ] A test task can open a browser and observe `https://example.com`
 - [ ] `browser_close` purges the profile and returns `sidecar_errors: 0`
-- [ ] Telegram does not show any browser start/control commands
 - [ ] No browser token is present in logs or chat history
 
 ## Rollback

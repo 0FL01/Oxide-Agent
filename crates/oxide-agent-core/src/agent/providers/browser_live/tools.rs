@@ -4,10 +4,7 @@ use super::client::{BrowserSidecar, BrowserSidecarClient, IdempotencyKey};
 use super::error::BrowserSidecarError;
 use super::metrics::BrowserMetricsCollector;
 use super::mimo::{BrowserDecisionEngine, BrowserMimoDecider, BrowserMimoError};
-use super::policy::{
-    BrowserPolicyError, policy_audit_event, validate_decision_policy, validate_navigation_url,
-    validate_session_policy,
-};
+
 use super::prompt::{BrowserDecisionPromptContext, viewport_from_observation};
 use super::recovery::{
     BrowserRecoveryPlan, BrowserRecoveryReport, BrowserRecoverySettings, BrowserRecoveryStatus,
@@ -209,15 +206,6 @@ impl BrowserLiveProvider {
             allow_uploads: false,
             start_url: args.start_url,
         };
-        if let Some(start_url) = &request.start_url {
-            validate_navigation_url(start_url).map_err(policy_runtime_error)?;
-        }
-        validate_session_policy(
-            request.profile,
-            request.allow_downloads,
-            request.allow_uploads,
-        )
-        .map_err(policy_runtime_error)?;
         let key = idempotency_key(invocation, "start", &request.task_id)?;
         let response = self
             .measure_sidecar(self.sidecar.create_session(&request, &key))
@@ -386,30 +374,6 @@ impl BrowserLiveProvider {
             )
             .await
             .map_err(mimo_runtime_error)?;
-        if let Err(error) = validate_decision_policy(&decision) {
-            let audit = policy_audit_event(&decision, false, error.to_string());
-            tracing::info!(
-                session_id = %args.session_id,
-                action_seq,
-                decision = "block",
-                reason = %audit.reason,
-                "browser policy blocked decision"
-            );
-            self.emit_progress(format!(
-                "BrowserPolicy session_id={} action_seq={} decision=block reason={}",
-                args.session_id, action_seq, audit.reason
-            ))
-            .await;
-            return Ok(json!({
-                "status": "blocked",
-                "session_id": args.session_id,
-                "action_seq": action_seq,
-                "message": error.to_string(),
-                "decision": decision,
-                "observation": observe,
-                "policy_audit": audit,
-            }));
-        }
         let plan = plan_browser_action(&decision, action_seq, args.action_timeout_ms())
             .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
         tracing::info!(
@@ -1136,10 +1100,6 @@ fn mimo_runtime_error(error: BrowserMimoError) -> ToolRuntimeError {
     ToolRuntimeError::Failure(error.to_string())
 }
 
-fn policy_runtime_error(error: BrowserPolicyError) -> ToolRuntimeError {
-    ToolRuntimeError::InvalidArguments(error.to_string())
-}
-
 fn observation_payload(
     session_id: &str,
     screenshot: &ScreenshotArtifact,
@@ -1385,24 +1345,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_start_rejects_non_web_start_url_and_disables_downloads_uploads() {
+    async fn browser_start_yolo_allows_any_start_url() {
         let provider = test_provider();
         let executors = provider.tool_runtime_executors();
-
-        let error = execute_result(
-            &executors,
-            TOOL_BROWSER_START,
-            r#"{"task_id":"task-1","start_url":"file:///etc/passwd"}"#,
-        )
-        .await
-        .expect_err("non-web start_url should fail before sidecar call");
-
-        assert!(error.to_string().contains("http or https"));
 
         let start = execute(
             &executors,
             TOOL_BROWSER_START,
-            r#"{"task_id":"task-1","start_url":"https://example.test"}"#,
+            r#"{"task_id":"task-1","start_url":"file:///etc/passwd"}"#,
+        )
+        .await;
+        assert!(start.success);
+
+        let start = execute(
+            &executors,
+            TOOL_BROWSER_START,
+            r#"{"task_id":"task-2","start_url":"https://example.test"}"#,
         )
         .await;
         assert!(start.success);
@@ -1706,7 +1664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_step_sensitive_policy_blocks_before_action() {
+    async fn browser_step_yolo_allows_sensitive_action() {
         let mut decision = click_decision();
         decision.expected_result = "CAPTCHA solved".to_string();
         let provider = test_provider_with_decision(decision, FakeBrowserSidecar::new());
@@ -1721,9 +1679,7 @@ mod tests {
         let payload = step.structured_payload.as_ref().expect("payload");
 
         assert!(step.success);
-        assert_eq!(payload["status"], "blocked");
-        assert_eq!(payload["policy_audit"]["event"], "browser_policy");
-        assert_eq!(payload["policy_audit"]["decision"], "block");
+        assert_eq!(payload["action_result"]["status"], "executed");
         assert!(
             !serde_json::to_string(payload)
                 .expect("json")
@@ -1916,18 +1872,6 @@ mod tests {
             .execute(invocation(name, args))
             .await
             .expect("tool execution")
-    }
-
-    async fn execute_result(
-        executors: &[Arc<dyn ToolExecutor>],
-        name: &str,
-        args: &str,
-    ) -> Result<ToolOutput, ToolRuntimeError> {
-        let executor = executors
-            .iter()
-            .find(|executor| executor.name().as_str() == name)
-            .expect("executor");
-        executor.execute(invocation(name, args)).await
     }
 
     fn invocation(name: &str, args: &str) -> ToolInvocation {

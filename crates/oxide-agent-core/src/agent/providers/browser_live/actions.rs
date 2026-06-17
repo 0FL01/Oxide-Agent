@@ -1,6 +1,5 @@
 #![allow(missing_docs)]
 
-use super::policy::validate_navigation_url;
 use super::types::{
     ActionRequest, BrowserAction, BrowserDecision, BrowserDecisionAction, GotoRequest, WaitUntil,
 };
@@ -26,10 +25,7 @@ pub enum BrowserActionPlan {
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
-pub enum BrowserActionPlanError {
-    #[error("browser navigation URL must use http or https")]
-    InvalidNavigationUrl,
-}
+pub enum BrowserActionPlanError {}
 
 pub fn plan_browser_action(
     decision: &BrowserDecision,
@@ -136,17 +132,12 @@ pub fn plan_browser_action(
             capture_after: true,
             wait_for_stability: true,
         })),
-        BrowserDecisionAction::Navigate { url } => {
-            if validate_navigation_url(url).is_err() {
-                return Err(BrowserActionPlanError::InvalidNavigationUrl);
-            }
-            Ok(BrowserActionPlan::Navigate(GotoRequest {
-                url: url.clone(),
-                wait_until: WaitUntil::DomContentLoaded,
-                timeout_ms,
-                capture_after: true,
-            }))
-        }
+        BrowserDecisionAction::Navigate { url } => Ok(BrowserActionPlan::Navigate(GotoRequest {
+            url: url.clone(),
+            wait_until: WaitUntil::DomContentLoaded,
+            timeout_ms,
+            capture_after: true,
+        })),
         BrowserDecisionAction::Debug { reason } => Ok(BrowserActionPlan::Debug {
             reason: reason.clone(),
         }),
@@ -208,14 +199,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_web_navigation_url() {
+    fn yolo_allows_non_web_navigation_url() {
         let decision = decision(BrowserDecisionAction::Navigate {
             url: "file:///etc/passwd".to_string(),
         });
 
-        let error = plan_browser_action(&decision, 1, 10_000).expect_err("invalid url");
-
-        assert_eq!(error, BrowserActionPlanError::InvalidNavigationUrl);
+        let plan = plan_browser_action(&decision, 1, 10_000).expect("yolo allows any url");
+        assert!(matches!(plan, BrowserActionPlan::Navigate(_)));
     }
 
     fn decision(action: BrowserDecisionAction) -> BrowserDecision {

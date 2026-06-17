@@ -490,6 +490,13 @@ Out of scope:
   - Audit IDs updated: Q3 (error metric coverage for empty responses), V1 (new tests/clippy), Q2 (logging hygiene — raw response is logged at WARN only when content is absent, no screenshot bytes leaked).
   - Next: commit this fix.
 
+- 2026-06-16: Post-completion change — Yolo browser mode (remove security policy)
+  - Changed: removed the browser security policy layer entirely. `policy.rs` is now a no-op; `parser.rs` no longer rejects sensitive, high-risk, or low-confidence executable actions; `tools.rs` removed all policy checks; `actions.rs` removed URL scheme validation; `prompt.rs` removed instructions to mark sensitive actions; `delegation.rs` removed browser tools from the sub-agent blocklist. Updated `docs/browser-live.md` and `README.md` to document Yolo full-access mode with an explicit warning that the agent can type secrets and submit forms.
+  - Evidence: `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"` passes; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live` passes 67 tests; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools` passes; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings` passes; `docs/browser-live.md` and `README.md` updated to remove policy language and add Yolo warning.
+  - Commands: `cargo fmt --all`; `cargo check -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go"`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" browser_live`; `cargo test -p oxide-agent-core --no-default-features --features "tool-browser-live tool-delegation" sub_agent_blocklist_includes_sensitive_tools`; `cargo clippy -p oxide-agent-core --no-default-features --features "tool-browser-live llm-opencode-go" --all-targets -- -D warnings`; `git diff --check`.
+  - Note: This overrides the original MVP constraints Q1, N1, N3, N4, N5 in the PRD by explicit user decision. The previous `verified` statuses for those audit IDs were based on the old policy implementation and are no longer enforced.
+  - Next: commit this change.
+
 ## Risks and Blockers
 
 - Live validation requires external services later

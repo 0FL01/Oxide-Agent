@@ -1,13 +1,7 @@
 #![allow(missing_docs)]
 
-use super::policy::{BrowserPolicyError, validate_decision_policy};
-use super::prompt::{
-    BROWSER_DECISION_SCHEMA_VERSION, executable_confidence_threshold,
-    sensitive_confidence_threshold,
-};
-use super::types::{
-    BrowserDecision, BrowserDecisionAction, BrowserDecisionRisk, BrowserSensitiveAction, Viewport,
-};
+use super::prompt::{BROWSER_DECISION_SCHEMA_VERSION, executable_confidence_threshold};
+use super::types::{BrowserDecision, BrowserDecisionAction, Viewport};
 use thiserror::Error;
 
 const MAX_TEXT_INPUT_CHARS: usize = 4096;
@@ -28,19 +22,12 @@ pub enum BrowserDecisionParseError {
     LowConfidence { confidence: f32, threshold: f32 },
     #[error("browser decision action is invalid: {0}")]
     InvalidAction(String),
-    #[error("browser decision marks a sensitive action that requires approval")]
-    SensitiveActionRequiresApproval,
-    #[error("browser decision high-risk executable action is not allowed")]
-    HighRiskExecutableAction,
-    #[error("browser decision violates policy: {0}")]
-    Policy(#[from] BrowserPolicyError),
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserDecisionValidation {
     pub viewport: Viewport,
     pub executable_confidence_threshold: f32,
-    pub sensitive_confidence_threshold: f32,
 }
 
 impl BrowserDecisionValidation {
@@ -49,7 +36,6 @@ impl BrowserDecisionValidation {
         Self {
             viewport,
             executable_confidence_threshold: executable_confidence_threshold(),
-            sensitive_confidence_threshold: sensitive_confidence_threshold(),
         }
     }
 }
@@ -87,22 +73,6 @@ pub fn validate_browser_decision(
         });
     }
 
-    validate_sensitive_action(&decision.sensitive_action)?;
-    if decision.sensitive_action.required && is_executable_action(&decision.action) {
-        return Err(BrowserDecisionParseError::SensitiveActionRequiresApproval);
-    }
-    if decision.sensitive_action.required
-        && decision.confidence < validation.sensitive_confidence_threshold
-    {
-        return Err(BrowserDecisionParseError::LowConfidence {
-            confidence: decision.confidence,
-            threshold: validation.sensitive_confidence_threshold,
-        });
-    }
-    if decision.risk == BrowserDecisionRisk::High && is_executable_action(&decision.action) {
-        return Err(BrowserDecisionParseError::HighRiskExecutableAction);
-    }
-    validate_decision_policy(decision)?;
     Ok(())
 }
 
@@ -172,20 +142,6 @@ fn validate_action(
         } => {
             non_empty("final_answer", final_answer)?;
             non_empty("evidence", evidence)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_sensitive_action(
-    sensitive: &BrowserSensitiveAction,
-) -> Result<(), BrowserDecisionParseError> {
-    if sensitive.required {
-        if let Some(category) = &sensitive.category {
-            non_empty("sensitive_action.category", category)?;
-        }
-        if let Some(reason) = &sensitive.reason {
-            non_empty("sensitive_action.reason", reason)?;
         }
     }
     Ok(())
@@ -339,18 +295,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_sensitive_executable_action() {
+    fn yolo_allows_sensitive_executable_action() {
         let output = valid_click().replace(
             "\"required\": false",
             "\"required\": true, \"category\": \"credentials\", \"reason\": \"password entry\"",
         );
 
-        let error = parse_browser_decision(&output, validation()).expect_err("sensitive action");
-
-        assert!(matches!(
-            error,
-            BrowserDecisionParseError::SensitiveActionRequiresApproval
-        ));
+        let decision =
+            parse_browser_decision(&output, validation()).expect("yolo allows sensitive action");
+        assert!(decision.sensitive_action.required);
     }
 
     fn validation() -> BrowserDecisionValidation {
