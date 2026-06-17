@@ -1,11 +1,11 @@
 # Goal: Browser Live SPA improvements — URL tracking, hash navigation, DOM waits, response bodies
 
 Date started: 2026-06-17
-Status: active
+Status: complete
 Codex goal: not set
 Source spec: user-provided test report "Отчёт по тесту v2: OTS One Time Secrets" (2026-06-17 19:53–19:58 UTC+3)
 Goal doc owner: Codex
-Last updated: 2026-06-17 22:45
+Last updated: 2026-06-17 23:10
 
 ## Objective
 
@@ -97,8 +97,8 @@ None. All required evidence can be produced from the existing repo and the publi
 - Source: test report final result.
 - Acceptance: the full OTS flow (create secret → extract share link → open link → reveal) completes with all audit items verified.
 - Evidence required: live REST test or web console run transcript.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-6 ran a full sidecar REST E2E script against `https://ots.bash.md/`. Steps: create session1 at `https://ots.bash.md/`; fill `#createSecretData`; click `button[type=submit]`; wait for `input[readonly]`; extract share link; create session2 with that share link as start URL; wait for `button.btn-success`; click reveal; wait for `textarea`; read the secret. Recovered value matched the injected secret (`hello world 1781717866`). Network debug captured the form `POST https://ots.bash.md/api/create` 201 with response body containing `secret_id`, and the reveal `GET https://ots.bash.md/api/get/{secret_id}` 200 with the encrypted payload. URLs in observations were correct (`https://ots.bash.md/` for create and `https://ots.bash.md/#...|...` for reveal). The final line was `✅ E2E SUCCESS`.
 
 ### N1: Do not change the core REST contract
 - Source: project architectural invariants.
@@ -241,6 +241,13 @@ None. All required evidence can be produced from the existing repo and the publi
   - Audit IDs updated: G5 pending → verified, Q1 verified (extended).
   - Next: CP-6 — final end-to-end OTS verification.
 
+- 2026-06-17: CP-6 — Final end-to-end OTS verification passed.
+  - Changed: none; this checkpoint was verification-only. Removed the temporary `tmp_cp6_e2e.sh` test helper.
+  - Evidence: Ran a full sidecar REST E2E script on `https://ots.bash.md/` (create secret → extract share link → open link → reveal). Recovered value matched the injected secret. URLs were correct in every observation. Network debug captured the form POST 201 with response body and the reveal GET 200 with the encrypted payload. Static checks and tests from previous checkpoints still pass.
+  - Commands: `bash tmp_cp6_e2e.sh`, plus the static checks and sidecar self-test from previous checkpoints.
+  - Audit IDs updated: Q2 pending → verified.
+  - Next: goal complete.
+
 ## Risks and Blockers
 
 - CDP `Page.frameNavigated` may fire frequently or with `about:blank` frames.
@@ -258,20 +265,29 @@ None. All required evidence can be produced from the existing repo and the publi
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
+- Completion Audit result: all audit items verified.
 - Commands run:
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (89 pass)
+  - `cargo test -p oxide-agent-web-ui` (11 pass)
+  - `cargo test -p oxide-agent-web-contracts` (10 pass)
+  - `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`
+  - `bash tmp_cp6_e2e.sh` (full OTS REST E2E)
 - Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+  - `docker/chrome-agent-sidecar.py` — URL tracking, hash navigation, DOM waits, CDP listener body capture.
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/{types,parser,actions,prompt,policy,recovery,test_support,session}.rs` — wait actions, network body field, retained artifact dedup.
+  - `docs/goals/2026-06-17-browser-live-spa-improvements.md` — this goal doc.
+- Remaining gaps: none.
+- User-accepted exceptions: none.
+- Final status: complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-3 complete; starting CP-4.
-* What changed: added `wait_for_selector` and `wait_for_text` actions across the Rust provider and sidecar; the model can now ask the browser to wait for a DOM selector or visible text before the next step.
-* What was verified: live REST tests on `https://example.com` showed both waits succeed on real elements and fail with a structured error on missing elements; 87 Rust browser_live tests pass.
-* Which audit IDs moved: G3 pending → verified, Q1 verified (extended).
-* What remains: CP-4 through CP-6.
+* Current checkpoint: CP-6 complete; goal finished.
+* What changed: all six checkpoints from the SPA improvements plan are implemented and verified. The Browser Live provider now tracks URLs accurately, handles SPA hash navigation without timeout, exposes `wait_for_selector`/`wait_for_text` actions, captures network response bodies in the debug endpoint, and deduplicates retained screenshot descriptors.
+* What was verified: 89 Rust browser_live tests pass, 11 web-ui tests pass, 10 web-contracts tests pass, sidecar self-test passes, and the full OTS create-secret → share-link → reveal flow completed successfully via the sidecar REST API with the recovered secret matching the original.
+* Which audit IDs moved: G1-G5 verified, Q1 verified, Q2 verified, N1 verified.
+* What remains: nothing.
 * Whether anything is blocked: not blocked.
