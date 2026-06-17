@@ -367,6 +367,9 @@ pub enum BrowserAction {
     Wait {
         timeout_ms: u64,
     },
+    Script {
+        steps: Vec<BrowserAction>,
+    },
 }
 
 /// Strict MiMo browser decision returned by the Browser Live visual planner.
@@ -421,6 +424,9 @@ pub enum BrowserDecisionAction {
     },
     Wait {
         timeout_ms: u64,
+    },
+    Script {
+        steps: Vec<BrowserDecisionAction>,
     },
     Navigate {
         url: String,

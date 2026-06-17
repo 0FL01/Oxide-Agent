@@ -315,6 +315,10 @@ fn decision_action_signature(action: &BrowserDecisionAction) -> String {
         BrowserDecisionAction::Debug { .. } => "debug".to_string(),
         BrowserDecisionAction::AskUser { .. } => "ask_user".to_string(),
         BrowserDecisionAction::Done { .. } => "done".to_string(),
+        BrowserDecisionAction::Script { steps } => {
+            let inner: Vec<String> = steps.iter().map(decision_action_signature).collect();
+            format!("script:{}", inner.join("/"))
+        }
     }
 }
 

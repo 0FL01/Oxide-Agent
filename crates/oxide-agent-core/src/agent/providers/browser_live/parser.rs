@@ -135,6 +135,24 @@ fn validate_action(
                 return invalid_action("wait timeout_ms must be between 100 and 10000");
             }
         }
+        BrowserDecisionAction::Script { steps } => {
+            let len = steps.len();
+            if len == 0 || len > 10 {
+                return invalid_action("script must contain 1-10 steps");
+            }
+            for (index, step) in steps.iter().enumerate() {
+                if matches!(step, BrowserDecisionAction::Script { .. }) {
+                    return invalid_action(format!("nested script at step {index}"));
+                }
+                if !is_script_step(step) {
+                    return invalid_action(format!(
+                        "script step {index} kind {:?} is not allowed inside a script",
+                        action_kind(step)
+                    ));
+                }
+                validate_action(step, viewport)?;
+            }
+        }
         BrowserDecisionAction::Navigate { url } => {
             non_empty("url", url)?;
             if !is_http_url(url) {
@@ -154,6 +172,22 @@ fn validate_action(
     Ok(())
 }
 
+fn is_script_step(action: &BrowserDecisionAction) -> bool {
+    matches!(
+        action,
+        BrowserDecisionAction::ClickXy { .. }
+            | BrowserDecisionAction::ClickSelector { .. }
+            | BrowserDecisionAction::ClickTargetId { .. }
+            | BrowserDecisionAction::Fill { .. }
+            | BrowserDecisionAction::TypeText { .. }
+            | BrowserDecisionAction::Press { .. }
+            | BrowserDecisionAction::Scroll { .. }
+            | BrowserDecisionAction::GetElementValue { .. }
+            | BrowserDecisionAction::ExecuteJavaScript { .. }
+            | BrowserDecisionAction::Wait { .. }
+    )
+}
+
 fn is_executable_action(action: &BrowserDecisionAction) -> bool {
     matches!(
         action,
@@ -167,8 +201,29 @@ fn is_executable_action(action: &BrowserDecisionAction) -> bool {
             | BrowserDecisionAction::GetElementValue { .. }
             | BrowserDecisionAction::ExecuteJavaScript { .. }
             | BrowserDecisionAction::Wait { .. }
+            | BrowserDecisionAction::Script { .. }
             | BrowserDecisionAction::Navigate { .. }
     )
+}
+
+fn action_kind(action: &BrowserDecisionAction) -> &'static str {
+    match action {
+        BrowserDecisionAction::ClickXy { .. } => "click_xy",
+        BrowserDecisionAction::ClickSelector { .. } => "click_selector",
+        BrowserDecisionAction::ClickTargetId { .. } => "click_target_id",
+        BrowserDecisionAction::Fill { .. } => "fill",
+        BrowserDecisionAction::TypeText { .. } => "type_text",
+        BrowserDecisionAction::Press { .. } => "press",
+        BrowserDecisionAction::Scroll { .. } => "scroll",
+        BrowserDecisionAction::GetElementValue { .. } => "get_element_value",
+        BrowserDecisionAction::ExecuteJavaScript { .. } => "execute_javascript",
+        BrowserDecisionAction::Wait { .. } => "wait",
+        BrowserDecisionAction::Script { .. } => "script",
+        BrowserDecisionAction::Navigate { .. } => "navigate",
+        BrowserDecisionAction::Debug { .. } => "debug",
+        BrowserDecisionAction::AskUser { .. } => "ask_user",
+        BrowserDecisionAction::Done { .. } => "done",
+    }
 }
 
 fn non_empty(field: &str, value: &str) -> Result<(), BrowserDecisionParseError> {

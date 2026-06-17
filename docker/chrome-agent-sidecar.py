@@ -1030,8 +1030,13 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
     return {"cmd": "eval", "expression": script}
 
 
-def action_to_pipe_cmd(action: dict[str, Any]) -> dict[str, Any]:
-    """Translate a BrowserAction into a chrome-agent pipe command object."""
+def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True) -> dict[str, Any]:
+    """Translate a BrowserAction into a chrome-agent pipe command object.
+
+    When `inspect_after` is False, mutating actions are issued without the
+    chrome-agent `--inspect` flag. This is used by script execution so the
+    sidecar can perform a single post-script inspect instead of one per step.
+    """
     kind = action.get("kind")
     if kind == "click_xy":
         x = action.get("x", 0)
@@ -1043,21 +1048,21 @@ def action_to_pipe_cmd(action: dict[str, Any]) -> dict[str, Any]:
             "const target = el.closest('button, a, [role=button], input[type=submit], [onclick]') || el; "
             "target.click(); return 'clicked ' + (target.tagName || 'element'); })()"
         )
-        return {"cmd": "eval", "expression": script}
+        return {"cmd": "eval", "expression": script, "inspect": inspect_after}
     if kind == "click_selector":
-        return {"cmd": "click", "selector": action["selector"], "inspect": True}
+        return {"cmd": "click", "selector": action["selector"], "inspect": inspect_after}
     if kind == "click_target_id":
-        return {"cmd": "click", "uid": action["target_id"], "inspect": True}
+        return {"cmd": "click", "uid": action["target_id"], "inspect": inspect_after}
     if kind == "fill":
-        return {"cmd": "fill", "selector": action["selector"], "value": action["value"], "inspect": True}
+        return {"cmd": "fill", "selector": action["selector"], "value": action["value"], "inspect": inspect_after}
     if kind == "type_text":
-        return {"cmd": "type", "text": action["text"], "inspect": True}
+        return {"cmd": "type", "text": action["text"], "inspect": inspect_after}
     if kind == "press":
-        return _press_to_pipe_cmd(action["key"], inspect_after=True)
+        return _press_to_pipe_cmd(action["key"], inspect_after=inspect_after)
     if kind == "scroll":
         dx = action.get("delta_x", 0)
         dy = action.get("delta_y", 0)
-        return {"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": True}
+        return {"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": inspect_after}
     if kind == "get_element_value":
         selector = action["selector"]
         return {"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"}
@@ -1084,6 +1089,37 @@ def _extract_eval_result(result: dict[str, Any]) -> str | None:
                 return json.dumps(value, ensure_ascii=False)
             return str(value)
     return None
+
+
+MUTATING_ACTION_KINDS = {
+    "click_xy", "click_selector", "click_target_id", "fill", "type_text",
+    "press", "scroll", "execute_javascript", "script",
+}
+
+
+def _is_mutating_action(action: dict[str, Any]) -> bool:
+    """Return True if an action (or a script containing steps) mutates the page."""
+    kind = action.get("kind")
+    if kind == "script":
+        return any(
+            step.get("kind") in MUTATING_ACTION_KINDS
+            for step in action.get("steps", [])
+        )
+    return kind in MUTATING_ACTION_KINDS
+
+
+def _run_single_action_step(
+    pipe: "ChromeAgentPipe", action: dict[str, Any], timeout: float = 60.0
+) -> tuple[dict[str, Any], int]:
+    """Execute one action step via the pipe and return (result, duration_ms)."""
+    cmd = action_to_pipe_cmd(action, inspect_after=False)
+    started = time.time()
+    result = pipe.send(cmd, timeout=timeout)
+    duration_ms = int((time.time() - started) * 1000)
+    if action.get("kind") == "wait":
+        timeout_ms = action.get("timeout_ms", 1000)
+        time.sleep(timeout_ms / 1000)
+    return result, duration_ms
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1426,46 +1462,110 @@ class Handler(BaseHTTPRequestHandler):
         action_seq = int(body.get("action_seq", session.get("action_seq", 0) + 1))
         session["action_seq"] = action_seq
         capture_after = bool(body.get("capture_after", True))
-        wait_for_stability = bool(body.get("wait_for_stability", True))
-        del wait_for_stability  # chrome-agent pipe does not expose explicit stability polling yet
 
-        try:
-            cmd = action_to_pipe_cmd(action)
-        except ValueError as exc:
-            self.write_json(HTTPStatus.OK, {
-                "request_id": request_id(),
-                "session_id": session_id,
-                "ok": False,
-                "action_result": {
-                    "action_seq": action_seq,
-                    "kind": action.get("kind", "unknown"),
-                    "status": "failed",
-                    "duration_ms": 0,
-                    "technical_success": False,
-                    "hint": str(exc),
-                },
-                "post_observation": None,
-                "error": {
-                    "code": "invalid_action",
-                    "message": str(exc),
-                    "retryable": False,
-                    "hint": "use a supported action kind",
-                },
-            })
-            return
-
-        mutating_kinds = {"click_xy", "click_selector", "click_target_id", "fill", "type_text", "press", "scroll", "execute_javascript"}
-        is_mutating = action.get("kind") in mutating_kinds
-
+        kind = action.get("kind", "unknown")
         pipe = get_pipe(session_id)
-        started = time.time()
-        result = pipe.send(cmd, timeout=60)
-        duration_ms = int((time.time() - started) * 1000)
-        success = result.get("ok", False)
 
-        if action.get("kind") == "wait":
-            timeout_ms = action.get("timeout_ms", 1000)
-            time.sleep(timeout_ms / 1000)
+        result: dict[str, Any] = {}
+        duration_ms = 0
+        step_results: list[dict[str, Any]] = []
+        last_error: Any = None
+
+        if kind == "script":
+            steps = action.get("steps", [])
+            if not steps:
+                self.write_json(HTTPStatus.OK, {
+                    "request_id": request_id(),
+                    "session_id": session_id,
+                    "ok": False,
+                    "action_result": {
+                        "action_seq": action_seq,
+                        "kind": "script",
+                        "status": "failed",
+                        "duration_ms": 0,
+                        "technical_success": False,
+                        "hint": "script has no steps",
+                    },
+                    "post_observation": None,
+                    "error": {
+                        "code": "invalid_action",
+                        "message": "script has no steps",
+                        "retryable": False,
+                        "hint": "provide 1-10 executable steps",
+                    },
+                })
+                return
+            try:
+                for step in steps:
+                    action_to_pipe_cmd(step, inspect_after=False)
+            except ValueError as exc:
+                self.write_json(HTTPStatus.OK, {
+                    "request_id": request_id(),
+                    "session_id": session_id,
+                    "ok": False,
+                    "action_result": {
+                        "action_seq": action_seq,
+                        "kind": "script",
+                        "status": "failed",
+                        "duration_ms": 0,
+                        "technical_success": False,
+                        "hint": str(exc),
+                    },
+                    "post_observation": None,
+                    "error": {
+                        "code": "invalid_action",
+                        "message": str(exc),
+                        "retryable": False,
+                        "hint": "use a supported action kind inside the script",
+                    },
+                })
+                return
+
+            started = time.time()
+            for step in steps:
+                step_result, _ = _run_single_action_step(pipe, step, timeout=60)
+                step_results.append(step_result)
+                if not step_result.get("ok"):
+                    last_error = step_result.get("error")
+                    break
+            duration_ms = int((time.time() - started) * 1000)
+            result = step_results[-1] if step_results else {}
+            success = all(r.get("ok") for r in step_results)
+        else:
+            try:
+                cmd = action_to_pipe_cmd(action, inspect_after=True)
+            except ValueError as exc:
+                self.write_json(HTTPStatus.OK, {
+                    "request_id": request_id(),
+                    "session_id": session_id,
+                    "ok": False,
+                    "action_result": {
+                        "action_seq": action_seq,
+                        "kind": kind,
+                        "status": "failed",
+                        "duration_ms": 0,
+                        "technical_success": False,
+                        "hint": str(exc),
+                    },
+                    "post_observation": None,
+                    "error": {
+                        "code": "invalid_action",
+                        "message": str(exc),
+                        "retryable": False,
+                        "hint": "use a supported action kind",
+                    },
+                })
+                return
+
+            started = time.time()
+            result = pipe.send(cmd, timeout=60)
+            duration_ms = int((time.time() - started) * 1000)
+            success = result.get("ok", False)
+            if kind == "wait":
+                timeout_ms = action.get("timeout_ms", 1000)
+                time.sleep(timeout_ms / 1000)
+
+        is_mutating = _is_mutating_action(action)
 
         post_observation = None
         if success and capture_after:
@@ -1487,8 +1587,16 @@ class Handler(BaseHTTPRequestHandler):
             post_observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
 
         result_value = None
-        if success and action.get("kind") in ("get_element_value", "execute_javascript"):
-            result_value = _extract_eval_result(result)
+        if success:
+            if kind in ("get_element_value", "execute_javascript"):
+                result_value = _extract_eval_result(result)
+            elif kind == "script" and step_results:
+                steps = action.get("steps", [])
+                if steps:
+                    last_step = steps[-1]
+                    last_step_kind = last_step.get("kind")
+                    if last_step_kind in ("get_element_value", "execute_javascript"):
+                        result_value = _extract_eval_result(step_results[-1])
 
         eval_error = (
             result_value is not None
@@ -1498,25 +1606,28 @@ class Handler(BaseHTTPRequestHandler):
         if success and eval_error:
             success = False
 
+        if not success and last_error is None:
+            last_error = result.get("error")
+
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),
             "session_id": session_id,
             "ok": success,
             "action_result": {
                 "action_seq": action_seq,
-                "kind": action.get("kind", "unknown"),
+                "kind": kind,
                 "status": "failed" if not success else "executed",
                 "duration_ms": duration_ms,
                 "technical_success": success,
                 "hint": (
                     result_value
                     if (not success and eval_error)
-                    else result.get("error", {}).get("hint") if isinstance(result.get("error"), dict) else ""
+                    else (last_error.get("hint") if isinstance(last_error, dict) else "")
                 ),
                 "result": None if not success else result_value,
             },
             "post_observation": post_observation,
-            "error": result.get("error") if not success else None,
+            "error": last_error if not success else None,
         })
 
     def _handle_screenshot_latest(self, session_id: str, format_value: str, redacted: bool) -> None:

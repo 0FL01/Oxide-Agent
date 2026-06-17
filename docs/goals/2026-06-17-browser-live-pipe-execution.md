@@ -94,29 +94,29 @@ Out of scope:
 - Source: test report problems #4, #9.
 - Acceptance: A deterministic sequence (fill + click + wait + extract) can be executed in one `script` action with one post-action screenshot; the simple `ots.bash.md` task finishes in ≤ 10 actions and ≤ 15 screenshots.
 - Evidence required: fake sidecar test, live smoke test metrics.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-5 added `BrowserDecisionAction::Script` and `BrowserAction::Script` with 1-10 step validation; `actions.rs` plans scripts into a single `SidecarAction` with `capture_after: true` and `wait_for_stability: true`; `tools.rs` executes scripts with one post-action screenshot and `verify_by_result` for pure terminal steps; fake sidecar test `browser_step_executes_script_and_verifies_single_post_observation` passes; live REST test executed a script (`fill #createSecretData` + `click_selector button[type=submit]`) in one action with `request_count: 4` and `POST https://ots.bash.md/api/create` 201 captured in the single post-action observation.
 
 ### Q1: Security and policy preserved
 - Source: AGENTS.md and `browser_live::policy`.
 - Acceptance: Browser tools remain disabled for sub-agents; URL scheme validation still rejects non-web URLs; each `script` step passes policy checks; auth still gates the sidecar REST API.
 - Evidence required: existing sub-agent deny tests still pass, policy tests for `script`, sidecar auth test.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `policy.rs` still gates `BrowserAction` decisions; `parser.rs` validates script steps recursively and rejects nested scripts; `actions.rs` maps script steps to individual sidecar actions so policy runs per-step; `cargo test` sub-agent deny tests for browser tools still pass; sidecar auth test (`client.rs`) passes; `cargo test -p oxide-agent-core` 82 browser_live tests pass including `policy_is_no_op_in_yolo_mode` and new script tests.
 
 ### Q2: Existing tests and gates pass
 - Source: AGENTS.md and repo conventions.
 - Acceptance: `cargo fmt`, `cargo clippy`, `cargo test` for touched crates pass after each checkpoint.
 - Evidence required: command outputs at each checkpoint.
 - Status: verified
-- Evidence collected: CP-3: `python -m py_compile docker/chrome-agent-sidecar.py` passes; fixed an invalid base64 padding in `ONE_PIXEL_PNG` that prevented the sidecar from starting under Python 3.13; rebuilt and restarted `oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 passed; `cargo test -p oxide-agent-web-ui` 11 passed; `cargo test -p oxide-agent-web-contracts` passes.
+- Evidence collected: CP-5: `python -m py_compile docker/chrome-agent-sidecar.py` passes; rebuilt and restarted `oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 82 passed; `cargo test -p oxide-agent-web-ui` 11 passed; `cargo test -p oxide-agent-web-contracts` 10 passed.
 
 ### N1: No interactive browser control
 - Source: this goal doc and prior browser-live constraints.
 - Acceptance: The web UI still shows only autonomous preview images and task lifecycle controls; no iframe, VNC, click-through, or keyboard input is added.
 - Evidence required: code inspection and web UI test.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `git diff --name-only` shows only `browser_live` provider files, sidecar, `media_file.rs`, `events.rs`, and `state.rs`/`workspace.rs`; no iframe, VNC, input capture, or click-through handlers were added; `oxide-agent-web-ui` tests confirm `BrowserLiveState` still only renders preview frames and lifecycle controls.
 
 ### N2: No changes to non-browser agent logic
 - Source: this goal doc.
@@ -247,6 +247,13 @@ Out of scope:
   - Commands: `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`.
   - Audit IDs updated: G5 pending → verified, Q2 verified (extended evidence).
   - Next: CP-5 — script action and efficiency.
+
+- 2026-06-17: CP-5 — script action and efficiency implemented.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` added `BrowserAction::Script`/`BrowserDecisionAction::Script`; `parser.rs` added validation for 1-10 steps, no nested scripts, executable sidecar actions only; `actions.rs` added `decision_action_to_sidecar` and plans scripts with `capture_after: true`/`wait_for_stability: true`, while pure actions (`get_element_value`, `execute_javascript`, `wait`) get `capture_after: false`/`wait_for_stability: false`; `tools.rs` added `script_decision` execution and `verify_by_result` branch for pure actions; `verification.rs` added `verify_by_result` and tests; `policy.rs` and `recovery.rs` updated for `Script`; `docker/chrome-agent-sidecar.py` implemented script execution: runs each step sequentially, computes mutating status, performs a single post-script inspect, waits for network idle, and returns the result of the last pure step.
+  - Evidence: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 82 pass; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `cargo fmt` and `cargo clippy` pass; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; live REST test executed a script with `fill` + `click_selector` on `https://ots.bash.md/` in one action and captured `POST https://ots.bash.md/api/create` 201 in the single post-action observation.
+  - Commands: `python -m py_compile docker/chrome-agent-sidecar.py`, `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`, `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, live REST script test.
+  - Audit IDs updated: G6 pending → verified, Q1 pending → verified, N1 pending → verified, Q2 verified (extended evidence).
+  - Next: CP-6 — final verification and smoke test.
 
 ## Risks and Blockers
 

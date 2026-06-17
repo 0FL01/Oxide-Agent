@@ -79,6 +79,7 @@ fn action_kind(action: &super::types::BrowserDecisionAction) -> &'static str {
         super::types::BrowserDecisionAction::Debug { .. } => "debug",
         super::types::BrowserDecisionAction::AskUser { .. } => "ask_user",
         super::types::BrowserDecisionAction::Done { .. } => "done",
+        super::types::BrowserDecisionAction::Script { .. } => "script",
     }
 }
 

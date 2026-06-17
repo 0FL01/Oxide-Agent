@@ -19,7 +19,8 @@ use super::types::{
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, terminal_debug, terminal_done,
-    terminal_needs_user, timeout_report, verify_navigation, verify_sidecar_action,
+    terminal_needs_user, timeout_report, verify_by_result, verify_navigation,
+    verify_sidecar_action,
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
@@ -453,18 +454,47 @@ impl BrowserLiveProvider {
                     .await
                     .map_err(sidecar_runtime_error)?;
                 ensure_not_cancelled(invocation)?;
-                let after = match action.post_observation {
-                    Some(ref observation) => observation.clone(),
-                    None => self.observe_after_action(session_id).await?,
-                };
-                let (after_frame, after_payload) =
-                    self.record_after_observation(session_id, &after).await?;
-                let verification = verify_sidecar_action(
-                    &decision,
-                    &before_observation,
-                    &action.action_result,
-                    &after,
-                );
+                if request.capture_after {
+                    let after = match action.post_observation {
+                        Some(ref observation) => observation.clone(),
+                        None => self.observe_after_action(session_id).await?,
+                    };
+                    let (after_frame, after_payload) =
+                        self.record_after_observation(session_id, &after).await?;
+                    let verification = verify_sidecar_action(
+                        &decision,
+                        &before_observation,
+                        &action.action_result,
+                        &after,
+                    );
+                    let recovery = self
+                        .recover_after_verification_failure(
+                            invocation,
+                            session_id,
+                            action_seq,
+                            &decision,
+                            &verification,
+                            Some(&action.action_result),
+                        )
+                        .await?;
+                    self.emit_verification(session_id, action_seq, &verification)
+                        .await;
+                    return Ok(action_step_payload(
+                        session_id,
+                        action_seq,
+                        decision,
+                        before_payload,
+                        &before_frame,
+                        after_payload,
+                        &after_frame,
+                        verification,
+                        Some(action),
+                        None,
+                        recovery,
+                    ));
+                }
+                let verification =
+                    verify_by_result(&decision, &before_observation, &action.action_result);
                 let recovery = self
                     .recover_after_verification_failure(
                         invocation,
@@ -481,10 +511,10 @@ impl BrowserLiveProvider {
                     session_id,
                     action_seq,
                     decision,
+                    before_payload.clone(),
+                    &before_frame,
                     before_payload,
                     &before_frame,
-                    after_payload,
-                    &after_frame,
                     verification,
                     Some(action),
                     None,
@@ -1482,6 +1512,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_step_executes_script_and_verifies_single_post_observation() {
+        let provider = test_provider_with_decision(script_decision(), FakeBrowserSidecar::new());
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let step_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let step = execute(&executors, TOOL_BROWSER_STEP, &step_args).await;
+        let payload = step.structured_payload.as_ref().expect("payload");
+
+        assert!(step.success);
+        assert_eq!(payload["status"], "action_verified");
+        assert_eq!(payload["action_result"]["status"], "executed");
+        assert_eq!(payload["action_result"]["kind"], "script");
+        assert_ne!(
+            payload["verification"]["before_screenshot_id"],
+            payload["verification"]["after_screenshot_id"]
+        );
+    }
+
+    #[tokio::test]
     async fn browser_step_noop_click_returns_verification_failure() {
         let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::NoOp]);
         let provider = test_provider_with_decision(click_decision(), fake);
@@ -1879,6 +1932,20 @@ mod tests {
             x: 10,
             y: 20,
             target_description: Some("login button".to_string()),
+        })
+    }
+
+    fn script_decision() -> BrowserDecision {
+        decision(BrowserDecisionAction::Script {
+            steps: vec![
+                BrowserDecisionAction::Fill {
+                    selector: "#secret".to_string(),
+                    value: "hello".to_string(),
+                },
+                BrowserDecisionAction::ClickSelector {
+                    selector: "button[type=submit]".to_string(),
+                },
+            ],
         })
     }
 

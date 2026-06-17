@@ -80,6 +80,36 @@ pub fn verify_navigation(
     verify_fresh_visual_evidence(decision, before, after)
 }
 
+/// Verifies a pure sidecar action (e.g. `get_element_value`, `execute_javascript`,
+/// `wait`) that intentionally does not produce a post-action screenshot.
+pub fn verify_by_result(
+    decision: &BrowserDecision,
+    before: &BrowserObservation,
+    action_result: &ActionResult,
+) -> BrowserActionVerification {
+    if !action_result.technical_success || action_result.status != ActionStatus::Executed {
+        return failed(
+            decision,
+            before,
+            None,
+            format!(
+                "pure action status {:?} is not executed successfully",
+                action_result.status
+            ),
+        );
+    }
+    BrowserActionVerification {
+        status: BrowserVerificationStatus::ActionVerified,
+        task_success: false,
+        reason: "pure action result returned without post-action screenshot".to_string(),
+        expected_result: decision.expected_result.clone(),
+        before_observation_id: before.observation_id.clone(),
+        after_observation_id: None,
+        before_screenshot_id: before.screenshot.screenshot_id.clone(),
+        after_screenshot_id: None,
+    }
+}
+
 pub fn terminal_done(
     decision: &BrowserDecision,
     observation: &BrowserObservation,
@@ -253,15 +283,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pure_action_verified_by_result_without_post_action_screenshot() {
+        let before = observation("obs-1", "shot-1", 0);
+        let result = ActionResult {
+            action_seq: 1,
+            kind: "get_element_value".to_string(),
+            status: ActionStatus::Executed,
+            duration_ms: 10,
+            technical_success: true,
+            hint: None,
+            result: Some("secret-value".to_string()),
+        };
+
+        let verification = verify_by_result(
+            &decision_with_action(BrowserDecisionAction::GetElementValue {
+                selector: "input[name=secret]".to_string(),
+            }),
+            &before,
+            &result,
+        );
+
+        assert_eq!(
+            verification.status,
+            BrowserVerificationStatus::ActionVerified
+        );
+        assert!(!verification.task_success);
+        assert!(verification.after_observation_id.is_none());
+        assert!(verification.after_screenshot_id.is_none());
+    }
+
+    #[test]
+    fn pure_action_failure_returns_verification_failed() {
+        let before = observation("obs-1", "shot-1", 0);
+        let result = ActionResult {
+            action_seq: 1,
+            kind: "execute_javascript".to_string(),
+            status: ActionStatus::Failed,
+            duration_ms: 10,
+            technical_success: false,
+            hint: Some("error".to_string()),
+            result: None,
+        };
+
+        let verification = verify_by_result(
+            &decision_with_action(BrowserDecisionAction::ExecuteJavaScript {
+                expression: "1+1".to_string(),
+            }),
+            &before,
+            &result,
+        );
+
+        assert_eq!(
+            verification.status,
+            BrowserVerificationStatus::VerificationFailed
+        );
+    }
+
     fn decision() -> BrowserDecision {
+        decision_with_action(BrowserDecisionAction::ClickXy {
+            x: 10,
+            y: 20,
+            target_description: None,
+        })
+    }
+
+    fn decision_with_action(action: BrowserDecisionAction) -> BrowserDecision {
         BrowserDecision {
             schema_version: 1,
             rationale: "test".to_string(),
-            action: BrowserDecisionAction::ClickXy {
-                x: 10,
-                y: 20,
-                target_description: None,
-            },
+            action,
             expected_result: "expected".to_string(),
             confidence: 0.9,
             risk: BrowserDecisionRisk::Low,
