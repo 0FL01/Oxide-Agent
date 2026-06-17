@@ -54,8 +54,6 @@ services:
       - BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
       - BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
       - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
-      - BROWSER_AGENT_MIMO_PROVIDER=${BROWSER_AGENT_MIMO_PROVIDER:-opencode-go}
-      - BROWSER_AGENT_MIMO_MODEL=${BROWSER_AGENT_MIMO_MODEL:-mimo-v2.5}
       - RUST_LOG=oxide_agent_core=info,oxide_agent_core::agent_latency=${OXIDE_AGENT_LATENCY_LOG:-off},oxide_agent_transport_web=info,oxide_agent_transport_web::web_latency=${OXIDE_WEB_LATENCY_LOG:-off},oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
     volumes:
       - ./config:/app/config
