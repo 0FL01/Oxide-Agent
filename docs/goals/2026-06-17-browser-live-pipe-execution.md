@@ -1,7 +1,7 @@
 # Goal: browser-live pipe execution and reliable automation
 
 Date started: 2026-06-17
-Status: active
+Status: complete
 Codex goal: /goal Implement docs/goals/2026-06-17-browser-live-pipe-execution.md until every Completion Audit item is verified by its required evidence, working checkpoint by checkpoint and committing after each checkpoint.
 Source spec: user request and 2026-06-17 browser-live test report (https://ots.bash.md/ fill/submit/share test).
 Goal doc owner: Codex
@@ -255,6 +255,13 @@ Out of scope:
   - Audit IDs updated: G6 pending → verified, Q1 pending → verified, N1 pending → verified, Q2 verified (extended evidence).
   - Next: CP-6 — final verification and smoke test.
 
+- 2026-06-17: CP-6 — final verification and smoke test passed.
+  - Changed: `docs/goals/2026-06-17-browser-live-pipe-execution.md` updated with final verification; no code changes.
+  - Evidence: Full live end-to-end smoke test on `https://ots.bash.md/`: created session, executed a script (`fill #createSecretData` + `click_selector button[type=submit]`) in one action, captured `POST https://ots.bash.md/api/create` 201 in the post-action observation, extracted the share link from `input[readonly]`, opened the link in a new session, clicked the reveal button by a11y uid, and recovered the original secret text from `textarea`. Static checks and tests pass: `cargo fmt`, `cargo clippy`, `cargo test` (82/11/10), sidecar self-test.
+  - Commands: `python -m py_compile docker/chrome-agent-sidecar.py`, `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`, `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, live REST smoke test script.
+  - Audit IDs updated: all verified; goal status set to complete.
+  - Next: none.
+
 ## Risks and Blockers
 
 - `chrome-agent pipe` JSON shapes are stable across tested commands.
@@ -276,11 +283,31 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
+- Completion Audit result: all audit items verified.
+  - G1: persistent chrome-agent pipe per session.
+  - G2: reliable click actions (target id / selector / JS fallback).
+  - G3: hash-only SPA navigation.
+  - G4: continuous CDP network/console capture includes POST /api/create.
+  - G5: screenshot bytes validated and written to Rust artifact dir for `describe_image_file`.
+  - G6: script action executes fill+click+wait+extract with a single post-action screenshot.
+  - Q1: security/policy preserved (sub-agent deny, auth, per-step script validation).
+  - Q2: all static checks and touched-crate tests pass.
+  - N1: no interactive browser control added.
+  - N2: no non-browser agent logic changed.
 - Commands run:
+  - `python -m py_compile docker/chrome-agent-sidecar.py`
+  - `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`
+  - `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (82 passed)
+  - `cargo test -p oxide-agent-web-ui` (11 passed)
+  - `cargo test -p oxide-agent-web-contracts` (10 passed)
+  - CP-6 live smoke test: created session, filled `#createSecretData`, clicked `button[type=submit]` via script, extracted share link from `input[readonly]`, opened link in new session, clicked reveal button by `uid`, recovered original secret from `textarea`.
 - Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+  - `docker/chrome-agent-sidecar.py` — pipe client, CDP listener, script execution.
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/` — types, parser, actions, policy, tools, verification, session, artifacts, mimo.
+  - `crates/oxide-agent-web-contracts/src/events.rs` and `crates/oxide-agent-web-ui/src/tasks/state.rs`/`workspace.rs` — network request count badge.
+- Remaining gaps: none.
+- User-accepted exceptions: none.
+- Final status: complete.
