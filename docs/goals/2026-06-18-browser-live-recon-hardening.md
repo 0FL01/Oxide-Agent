@@ -5,7 +5,7 @@ Status: active
 Codex goal: Iterate on Browser Live according to the RECON plan: verify live contracts, fix SPA input, fresh navigation, strict action schema, DOM extraction, docs, validate every checkpoint, and create a separate git commit after each completed checkpoint.
 Source spec: user-provided v6 OTS evidence report and RECON review request
 Goal doc owner: Codex
-Last updated: 2026-06-18 02:35
+Last updated: 2026-06-18 02:40
 
 ## Objective
 
@@ -126,7 +126,7 @@ Out of scope:
 - Acceptance: every completed checkpoint has a separate git commit after validation and goal doc update.
 - Evidence required: commit hashes recorded in Progress Log.
 - Status: in_progress
-- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`. CP-3 committed as `036c5485 fix(browser-live): enforce strict action schema`.
+- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`. CP-3 committed as `036c5485 fix(browser-live): enforce strict action schema`. CP-4 committed as `71629d4e fix(browser-live): make DOM extraction deterministic`.
 
 ### N1: Browser Live direct-control architecture preserved
 - Source: existing completed direct-control goal and current repo invariants.
@@ -290,10 +290,10 @@ Out of scope:
 
 - 2026-06-18 02:35: CP-4 deterministic DOM extraction completed.
   - Changed: `browser_extract` DOM extraction now embeds selectors as safe JS string literals, collects normalized DOM properties and all attributes, and returns the requested property/attribute as `matches[].value` with `attribute_source`/`found` diagnostics; added an ignored live OTS Browser Live extraction test.
-  - Evidence: focused unit tests cover `attribute:"value"`, `data-*` extraction, expression generation without `JSON.parse`, and property precedence. Live OTS Browser Live extraction test created a secret and extracted the share URL through `browser_extract` (`matches[].value` starts with `https://ots.bash.md/#`, `attribute_source:"property"`, `found:true`) without raw `execute_javascript` querySelector workarounds.
+  - Evidence: git commit `71629d4e fix(browser-live): make DOM extraction deterministic`. Focused unit tests cover `attribute:"value"`, `data-*` extraction, expression generation without `JSON.parse`, and property precedence. Live OTS Browser Live extraction test created a secret and extracted the share URL through `browser_extract` (`matches[].value` starts with `https://ots.bash.md/#`, `attribute_source:"property"`, `found:true`) without raw `execute_javascript` querySelector workarounds.
   - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live::tools::tests::browser_extract agent::providers::browser_live::tools::tests::dom_extract agent::providers::browser_live::tools::tests::select_dom --quiet`; `BROWSER_AGENT_SIDECAR_TOKEN="$(docker exec oxide_chrome_agent_sidecar sh -lc 'printf %s "$BROWSER_AGENT_SIDECAR_TOKEN"')" OXIDE_BROWSER_LIVE_E2E=1 cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live::tools::tests::live_ots_browser_extract_returns_share_url_value_attribute --ignored --nocapture`; `python3 -m py_compile docker/chrome-agent-sidecar.py`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib --quiet`; `cargo fmt --all -- --check`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`.
   - Audit IDs updated: G5 verified; Q1/Q2 in progress.
-  - Next: review CP-4 diff/status, commit checkpoint, then start CP-5 observation freshness and diagnostics.
+  - Next: commit this ledger hash update, then start CP-5 observation freshness and diagnostics.
 
 ## Risks and Blockers
 
