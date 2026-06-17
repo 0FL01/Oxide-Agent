@@ -59,22 +59,22 @@ Out of scope:
 - Source: 2026-06-17 test report and subsequent verification.
 - Acceptance: Each browser session runs one `chrome-agent --browser {session_id} --json pipe` process; all commands go through stdin/stdout; REST endpoints remain unchanged.
 - Evidence required: `docker exec` test, sidecar self-test, unit test for JSON-line correlation, no `subprocess.run` per action.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-1 implemented `ChromeAgentPipe`; `docker exec` verified `chrome-agent --json pipe` executes `goto`, `click`, `inspect` as JSON lines; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 passed.
 
 ### G2: Click actions are reliable
 - Source: test report problem #1.
 - Acceptance: The model prefers `click_target_id`/`click_selector`; the sidecar falls back to JS `elementFromPoint(...).click()` for `click_xy`; a successful click on `https://ots.bash.md/` button triggers form submission without requiring JS eval from the agent.
 - Evidence required: fake sidecar test, live smoke test, no `click_xy` in successful trace.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `prompt.rs` now includes the a11y tree and instructs the model to prefer `click_target_id`/`click_selector`; sidecar `click_target_id` uses `click {uid}` and falls back to JS `elementFromPoint` for `click_xy`; live REST test on `https://ots.bash.md/` filled `textarea` and clicked `click_target_id` uid `n64` ("Create the secret!"); after a `wait` the a11y tree showed "Secret created!" and the share URL.
 
 ### G3: Hash-only SPA navigation completes without timeout
 - Source: test report problem #2.
 - Acceptance: Navigating to a URL that differs only by hash from the current page uses `window.location.hash = ...` and waits for the new route; no 15s+ timeout.
 - Evidence required: fake sidecar test, live smoke test on `https://ots.bash.md/#...`.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: Sidecar `_handle_goto` detects same-origin hash-only URLs and executes `window.location.hash = ...` followed by `inspect`; live REST test on `https://example.com#section` returned `ok: true` and `final_url: https://example.com#section` without a 15s timeout.
 
 ### G4: Network summary captures XHR/fetch
 - Source: test report problem #6.
@@ -108,8 +108,8 @@ Out of scope:
 - Source: AGENTS.md and repo conventions.
 - Acceptance: `cargo fmt`, `cargo clippy`, `cargo test` for touched crates pass after each checkpoint.
 - Evidence required: command outputs at each checkpoint.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-2: `python -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 passed.
 
 ### N1: No interactive browser control
 - Source: this goal doc and prior browser-live constraints.
@@ -122,8 +122,8 @@ Out of scope:
 - Source: this goal doc.
 - Acceptance: Changes stay inside `browser_live` provider, the sidecar, and the minimal media_file/artifact plumbing needed for `describe_image_file`; no other providers, runner, or transport logic changes.
 - Evidence required: `git diff --name-only` at each checkpoint.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-2 changed only `docker/chrome-agent-sidecar.py` and `crates/oxide-agent-core/src/agent/providers/browser_live/prompt.rs`; `git diff --name-only` confirms no other crates touched.
 
 ## Implementation Plan
 
@@ -225,6 +225,13 @@ Out of scope:
   - Commands: `docker build ...`, `docker restart ...`, `curl` create/observe/click/close inside the container.
   - Audit IDs updated: G1 pending → in_progress, Q2 pending → in_progress.
   - Next: CP-2 — reliable click and hash navigation.
+
+- 2026-06-17: CP-2 — reliable click and hash navigation implemented.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/prompt.rs` now includes compact a11y tree in the dynamic prompt and instructs the model to prefer `click_target_id`/`click_selector`; `docker/chrome-agent-sidecar.py` always inspects after mutating actions, extracts title from a11y tree when `inspect` has no `title`, updates `session["url"]` for hash navigation, and implements a real `wait` sleep.
+  - Evidence: `cargo test` 77 browser_live tests pass; `click_target_id` on `https://ots.bash.md/` uid `n64` after filling `textarea` resulted in "Secret created!" and a share URL; `click_selector` on `https://example.com` navigated; hash navigation on `https://example.com#section` completed without timeout; `cargo fmt`, `cargo clippy` pass.
+  - Commands: `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`, `curl` REST tests against `example.com` and `ots.bash.md`, `cargo test -p oxide-agent-core ...`.
+  - Audit IDs updated: G1 in_progress → verified, G2 pending → verified, G3 pending → verified, Q2 pending → verified, N2 pending → verified.
+  - Next: CP-3 — network and console streaming.
 
 ## Risks and Blockers
 

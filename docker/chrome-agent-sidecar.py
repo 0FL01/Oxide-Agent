@@ -545,6 +545,15 @@ def build_console_debug_payload(
     }
 
 
+def _title_from_a11y(items: list[dict[str, Any]]) -> str | None:
+    for item in items:
+        if item.get("role") == "RootWebArea":
+            text = item.get("text")
+            if text:
+                return text
+    return None
+
+
 def build_observation(
     session_id: str,
     chrome_output: dict[str, Any],
@@ -564,11 +573,15 @@ def build_observation(
     viewport = session.get("viewport", {"width": 1365, "height": 768, "device_scale_factor": 1.0})
     url = chrome_output.get("url", session.get("url", ""))
     title = chrome_output.get("title", session.get("title", ""))
-    session["url"] = url
-    session["title"] = title
 
     screenshot = capture_screenshot(session_id, fresh=fresh)
     a11y_summary = parse_snapshot(chrome_output.get("snapshot", ""))
+
+    if "title" not in chrome_output:
+        title = _title_from_a11y(a11y_summary) or title
+
+    session["url"] = url
+    session["title"] = title
 
     network_summary = None
     console_summary = None
@@ -717,6 +730,8 @@ def action_to_pipe_cmd(action: dict[str, Any]) -> dict[str, Any]:
         expression = action["expression"]
         return {"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}
     if kind == "wait":
+        # chrome-agent pipe has no native "wait" command; the sidecar sleeps
+        # in _handle_action before capturing the post-action observation.
         return {"cmd": "eval", "expression": "true"}
     raise ValueError(f"unsupported action kind: {kind}")
 
@@ -955,6 +970,7 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.5)
             inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
             chrome_output = inspect_result if inspect_result.get("ok") else {"url": url, "title": session.get("title", "")}
+            session["url"] = url
             observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -1112,12 +1128,17 @@ class Handler(BaseHTTPRequestHandler):
         duration_ms = int((time.time() - started) * 1000)
         success = result.get("ok", False)
 
+        if action.get("kind") == "wait":
+            timeout_ms = action.get("timeout_ms", 1000)
+            time.sleep(timeout_ms / 1000)
+
         post_observation = None
         if success and capture_after:
             chrome_output = result
-            if is_mutating and "snapshot" not in result:
-                # Some mutating pipe commands (e.g., type, press, click_xy eval) do not
-                # include a post-action snapshot; fetch one explicitly.
+            if is_mutating:
+                # chrome-agent action results may only contain a message or a snapshot
+                # without url/title. Fetch a fresh inspect to get the authoritative
+                # post-action page state for verification.
                 inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
                 chrome_output = inspect_result if inspect_result.get("ok") else result
             post_observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
