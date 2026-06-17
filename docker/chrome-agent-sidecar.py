@@ -30,10 +30,15 @@ from urllib.parse import parse_qs, urlparse
 
 
 ONE_PIXEL_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 )
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+
+# Seconds to run chrome-agent ``network --live`` when capturing traffic after an
+# action. 2 seconds is enough for most SPA form submissions while keeping the
+# per-action latency bounded.  Increase via ``BROWSER_AGENT_NETWORK_LIVE_SECONDS``.
+NETWORK_LIVE_SECONDS = int(os.getenv("BROWSER_AGENT_NETWORK_LIVE_SECONDS", "2"))
 
 
 class SidecarState:
@@ -396,8 +401,39 @@ def parse_snapshot(snapshot: str) -> list[dict[str, Any]]:
     return items
 
 
+def _resource_type_from_content_type(content_type: str | None) -> str:
+    """Map chrome-agent live-network contentType to the sidecar resource_type."""
+    value = (content_type or "").lower()
+    if "xhr" in value or "fetch" in value:
+        return "xhr"
+    if "script" in value:
+        return "script"
+    if "stylesheet" in value or "css" in value:
+        return "stylesheet"
+    if "image" in value or value.endswith("png") or value.endswith("jpg") or value.endswith("jpeg"):
+        return "image"
+    if "document" in value or "html" in value:
+        return "document"
+    return value or "other"
+
+
+def normalize_network_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Convert a chrome-agent live-network item into the canonical NetworkItem shape."""
+    status = item.get("status")
+    if not isinstance(status, int) or status == 0:
+        status = None
+    return {
+        "timestamp": item.get("timestamp", now_iso()),
+        "method": item.get("method", "GET"),
+        "url_redacted": item.get("url", ""),
+        "status": status,
+        "resource_type": _resource_type_from_content_type(item.get("contentType")),
+        "error_text": item.get("error_text"),
+    }
+
+
 def summarize_network(requests: list[dict[str, Any]], limit: int = 20) -> dict[str, Any]:
-    """Map chrome-agent network requests to the Rust NetworkSummary shape."""
+    """Map chrome-agent network requests to the expanded Rust NetworkSummary shape."""
     failures: list[dict[str, Any]] = []
     for req in requests:
         status = req.get("status")
@@ -413,6 +449,8 @@ def summarize_network(requests: list[dict[str, Any]], limit: int = 20) -> dict[s
     return {
         "failed_count": len(failures),
         "recent_failures": failures[:limit],
+        "request_count": len(requests),
+        "recent_requests": requests[:limit],
     }
 
 
@@ -507,9 +545,9 @@ def build_network_debug_payload(
             or item.get("error_text")
         ]
     elif filter_value == "xhr":
-        items = [item for item in items if (item.get("resource_type") or "").lower() == "xhr"]
+        items = [item for item in items if "xhr" in (item.get("resource_type") or "").lower()]
     elif filter_value == "fetch":
-        items = [item for item in items if (item.get("resource_type") or "").lower() == "fetch"]
+        items = [item for item in items if "fetch" in (item.get("resource_type") or "").lower()]
     elif filter_value == "document":
         items = [item for item in items if (item.get("resource_type") or "").lower() == "document"]
     failures = [item for item in items if isinstance(item.get("status"), int) and item["status"] >= 400]
@@ -587,9 +625,16 @@ def build_observation(
     console_summary = None
     pipe = get_pipe(session_id)
     if include_network:
-        network = pipe.send({"cmd": "network"}, timeout=10)
+        # Live capture for a bounded window to catch XHR/fetch triggered by the
+        # latest action.  A subprocess-pipe cannot run a continuous listener and
+        # actions on the same stdin/stdout, so we sample after the action instead.
+        network = pipe.send(
+            {"cmd": "network", "live": NETWORK_LIVE_SECONDS},
+            timeout=NETWORK_LIVE_SECONDS + 5,
+        )
         if network.get("ok"):
-            _merge_history(session, "network_history", network.get("requests", []), action_seq)
+            normalized = [normalize_network_item(req) for req in network.get("requests", [])]
+            _merge_history(session, "network_history", normalized, action_seq)
             network_summary = summarize_network(
                 [entry["item"] for entry in session.get("network_history", [])],
                 limit=max_debug_items,

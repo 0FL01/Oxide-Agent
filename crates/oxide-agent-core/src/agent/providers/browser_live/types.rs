@@ -297,6 +297,10 @@ pub struct NetworkSummary {
     pub failed_count: u32,
     #[serde(default)]
     pub recent_failures: Vec<NetworkItem>,
+    #[serde(default)]
+    pub request_count: u32,
+    #[serde(default)]
+    pub recent_requests: Vec<NetworkItem>,
 }
 
 /// Console summary embedded in observations.

@@ -568,6 +568,8 @@ impl FakeSession {
             network_summary: Some(NetworkSummary {
                 failed_count,
                 recent_failures: network_items.to_vec(),
+                request_count: network_items.len() as u32,
+                recent_requests: network_items.to_vec(),
             }),
             console_summary: Some(ConsoleSummary {
                 error_count,

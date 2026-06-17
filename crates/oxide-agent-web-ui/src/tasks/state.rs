@@ -127,6 +127,7 @@ pub(super) struct BrowserLiveState {
     pub blocked_reason: Option<String>,
     pub screenshot: Option<BrowserLiveScreenshotRef>,
     pub network_failed_count: u32,
+    pub network_request_count: u32,
     pub console_error_count: u32,
     pub console_warning_count: u32,
     pub artifact_refs: Vec<String>,
@@ -188,6 +189,7 @@ fn apply_browser_live_payload(state: &mut BrowserLiveState, payload: BrowserLive
     state.screenshot = payload.screenshot.or(state.screenshot.take());
     if let Some(debug) = payload.debug {
         state.network_failed_count = debug.network_failed_count;
+        state.network_request_count = debug.network_request_count;
         state.console_error_count = debug.console_error_count;
         state.console_warning_count = debug.console_warning_count;
     }
@@ -291,6 +293,11 @@ fn update_observation(state: &mut BrowserLiveState, observation: &Value) {
             .get("failed_count")
             .and_then(Value::as_u64)
             .unwrap_or(state.network_failed_count as u64)
+            as u32;
+        state.network_request_count = network
+            .get("request_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(state.network_request_count as u64)
             as u32;
     }
     if let Some(console) = observation.get("console_summary") {
@@ -470,6 +477,7 @@ mod tests {
             Some("action_verified")
         );
         assert_eq!(state.network_failed_count, 1);
+        assert_eq!(state.network_request_count, 0);
         assert_eq!(state.console_error_count, 2);
         assert_eq!(state.console_warning_count, 3);
         let screenshot = state.screenshot.expect("latest screenshot");

@@ -88,6 +88,8 @@ pub struct BrowserLiveDebugBadges {
     #[serde(default)]
     pub network_failed_count: u32,
     #[serde(default)]
+    pub network_request_count: u32,
+    #[serde(default)]
     pub console_error_count: u32,
     #[serde(default)]
     pub console_warning_count: u32,
@@ -213,6 +215,7 @@ mod tests {
             }),
             debug: Some(BrowserLiveDebugBadges {
                 network_failed_count: 1,
+                network_request_count: 0,
                 console_error_count: 2,
                 console_warning_count: 3,
             }),

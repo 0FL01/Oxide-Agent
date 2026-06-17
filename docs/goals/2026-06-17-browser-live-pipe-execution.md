@@ -79,9 +79,9 @@ Out of scope:
 ### G4: Network summary captures XHR/fetch
 - Source: test report problem #6.
 - Acceptance: `network_summary` shows the actual POST/GET requests made during page actions; `NetworkSummary` includes `request_count` and `recent_requests`, not only `failed_count`.
-- Evidence required: fake sidecar test, live test showing the form submit request.
-- Status: pending
-- Evidence collected:
+- Evidence required: fake sidecar test, live test showing XHR/fetch requests.
+- Status: verified
+- Evidence collected: CP-3 changed `build_observation` to use `network --live` via the pipe and normalized chrome-agent live-network items into `NetworkItem` shape with `resource_type` mapped from `contentType`; `NetworkSummary` expanded with `request_count` and `recent_requests`; fake sidecar test updated; web UI `BrowserLiveDebugBadges` and `BrowserLiveState` gained `network_request_count`; live REST test on `https://ots.bash.md/` after fill+click showed `request_count: 8` and an `xhr` entry for `https://ots.bash.md/api/isWritable`.
 
 ### G5: Screenshot bytes are valid and accessible to describe_image_file
 - Source: test report problems #5, #7.
@@ -109,7 +109,7 @@ Out of scope:
 - Acceptance: `cargo fmt`, `cargo clippy`, `cargo test` for touched crates pass after each checkpoint.
 - Evidence required: command outputs at each checkpoint.
 - Status: verified
-- Evidence collected: CP-2: `python -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 passed.
+- Evidence collected: CP-3: `python -m py_compile docker/chrome-agent-sidecar.py` passes; fixed an invalid base64 padding in `ONE_PIXEL_PNG` that prevented the sidecar from starting under Python 3.13; rebuilt and restarted `oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 passed; `cargo test -p oxide-agent-web-ui` 11 passed; `cargo test -p oxide-agent-web-contracts` passes.
 
 ### N1: No interactive browser control
 - Source: this goal doc and prior browser-live constraints.
@@ -233,12 +233,23 @@ Out of scope:
   - Audit IDs updated: G1 in_progress → verified, G2 pending → verified, G3 pending → verified, Q2 pending → verified, N2 pending → verified.
   - Next: CP-3 — network and console streaming.
 
+- 2026-06-17: CP-3 — network and console streaming implemented.
+  - Changed: `docker/chrome-agent-sidecar.py` now uses `network --live` via the pipe to capture real XHR/fetch after actions; added `normalize_network_item` and `_resource_type_from_content_type`; `summarize_network` now returns `request_count` and `recent_requests`; `build_network_debug_payload` filters `xhr`/`fetch` by substring; `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` expanded `NetworkSummary`; `crates/oxide-agent-core/src/agent/providers/browser_live/prompt.rs` includes network request count and recent requests; `crates/oxide-agent-web-contracts/src/events.rs` and `crates/oxide-agent-web-ui/src/tasks/state.rs`/`workspace.rs` display `network_request_count`.
+  - Evidence: Fixed invalid `ONE_PIXEL_PNG` base64 padding (Python 3.13 strict); sidecar self-test passes; rebuilt and restarted sidecar; live REST test on `https://ots.bash.md/` showed `request_count: 8` and an `xhr` entry for `https://ots.bash.md/api/isWritable` after fill+click; `cargo test` passes.
+  - Commands: `python -m py_compile docker/chrome-agent-sidecar.py`, `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`, `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`.
+  - Audit IDs updated: G4 pending → verified, Q2 verified (extended evidence).
+  - Next: CP-4 — image validation and artifact plumbing.
+
 ## Risks and Blockers
 
-- `chrome-agent pipe` may not expose all commands in the same JSON shape as standalone CLI.
-  - Impact: sidecar pipe mapping may need format adjustments.
-  - Evidence: `goto`, `click --selector`, `inspect` worked in the container test; `network`/`console` shapes still need verification.
+- `chrome-agent pipe` JSON shapes are stable across tested commands.
+  - Impact: none; the risk is resolved.
+  - Evidence: `goto`, `click --selector`, `inspect`, `network --live`, and `console --level error` JSON shapes verified in the container.
   - Mitigation: keep per-command JSON mapping isolated and add tests.
+- Continuous network listener on the same pipe is not possible (chrome-agent pipe is synchronous request/response; a second pipe to the same browser shares stdout and is unreliable; direct CDP port is blocked by host SELinux on Fedora 44).
+  - Impact: traffic that completes before the post-action `network --live` window starts may be missed.
+  - Evidence: live test captured `/api/isWritable` XHR; form submit POST may require an explicit wait or longer `BROWSER_AGENT_NETWORK_LIVE_SECONDS`.
+  - Mitigation: use `BROWSER_AGENT_NETWORK_LIVE_SECONDS` to tune the window; CP-5 `script` action will reduce the number of observation windows per task.
 - Persistent pipe process may leak if not cleaned up on close/error.
   - Impact: resource leak or zombie Chrome processes.
   - Evidence: not yet observed.

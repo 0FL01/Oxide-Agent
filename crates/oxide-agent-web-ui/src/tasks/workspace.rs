@@ -1318,8 +1318,11 @@ fn BrowserLivePanel(
         .confidence
         .map(|value| format!("{:.0}%", value * 100.0));
     let debug_label = format!(
-        "network {} · console {} / warnings {}",
-        state.network_failed_count, state.console_error_count, state.console_warning_count
+        "network {} / {} · console {} / warnings {}",
+        state.network_failed_count,
+        state.network_request_count,
+        state.console_error_count,
+        state.console_warning_count
     );
     let artifact_refs = state.artifact_refs.clone();
     let session_id_for_shot = session_id.clone();

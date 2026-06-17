@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use super::types::{BrowserObservation, Viewport};
+use super::types::{BrowserObservation, NetworkSummary, Viewport};
 use serde_json::{Value, json};
 
 pub const BROWSER_DECISION_SCHEMA_VERSION: u8 = 1;
@@ -113,6 +113,38 @@ fn format_a11y_summary(items: &[Value]) -> String {
     lines
 }
 
+fn format_network_requests(summary: Option<&NetworkSummary>) -> String {
+    let Some(summary) = summary else {
+        return "none".to_string();
+    };
+    if summary.recent_requests.is_empty() {
+        return "none".to_string();
+    }
+    const MAX_REQUESTS: usize = 8;
+    const MAX_URL_LEN: usize = 80;
+    let mut lines = String::new();
+    for item in summary.recent_requests.iter().rev().take(MAX_REQUESTS) {
+        let url = item
+            .url_redacted
+            .chars()
+            .take(MAX_URL_LEN)
+            .collect::<String>();
+        let status = item
+            .status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let line = format!(
+            "- {} {} ({}) {}",
+            item.method, status, item.resource_type, url
+        );
+        if !lines.is_empty() {
+            lines.push('\n');
+        }
+        lines.push_str(&line);
+    }
+    lines
+}
+
 #[must_use]
 pub fn build_dynamic_state_prompt(context: &BrowserDecisionPromptContext<'_>) -> String {
     let obs = context.observation;
@@ -128,8 +160,14 @@ pub fn build_dynamic_state_prompt(context: &BrowserDecisionPromptContext<'_>) ->
         .unwrap_or_default();
     let history = context.history_summary.unwrap_or("none");
     let a11y_tree = format_a11y_summary(&obs.a11y_summary);
+    let network_request_count = obs
+        .network_summary
+        .as_ref()
+        .map(|summary| summary.request_count)
+        .unwrap_or_default();
+    let network_recent = format_network_requests(obs.network_summary.as_ref());
     format!(
-        "Task: {task}\nSession: {session_id}\nObservation: id={observation_id} action_seq={action_seq} captured_at={captured_at}\nPage: url={url} title={title} loading_state={loading_state:?}\nViewport: {width}x{height} dsf={dsf}\nScreenshot: artifact_ref={artifact_uri} screenshot_id={screenshot_id} sha256={sha256} redacted={redacted}. The image bytes are attached separately, not in this text.\nA11y tree (use uid for click_target_id, selector for click_selector):\n{a11y_tree}\nNetwork failed count: {network_failed}\nConsole error count: {console_errors}\nCompact browser history: {history}\nReturn BrowserDecision JSON only. Schema: {schema}",
+        "Task: {task}\nSession: {session_id}\nObservation: id={observation_id} action_seq={action_seq} captured_at={captured_at}\nPage: url={url} title={title} loading_state={loading_state:?}\nViewport: {width}x{height} dsf={dsf}\nScreenshot: artifact_ref={artifact_uri} screenshot_id={screenshot_id} sha256={sha256} redacted={redacted}. The image bytes are attached separately, not in this text.\nA11y tree (use uid for click_target_id, selector for click_selector):\n{a11y_tree}\nNetwork requests captured: {network_request_count}, failed: {network_failed}\nRecent network requests:\n{network_recent}\nConsole error count: {console_errors}\nCompact browser history: {history}\nReturn BrowserDecision JSON only. Schema: {schema}",
         task = sanitize_prompt_text(context.task),
         session_id = sanitize_prompt_text(context.session_id),
         observation_id = sanitize_prompt_text(&obs.observation_id),
@@ -146,7 +184,9 @@ pub fn build_dynamic_state_prompt(context: &BrowserDecisionPromptContext<'_>) ->
         sha256 = sanitize_prompt_text(&obs.screenshot.sha256),
         redacted = obs.screenshot.redacted,
         a11y_tree = a11y_tree,
+        network_request_count = network_request_count,
         network_failed = network_failed,
+        network_recent = network_recent,
         console_errors = console_errors,
         history = sanitize_prompt_text(history),
         schema = browser_decision_json_schema(),
