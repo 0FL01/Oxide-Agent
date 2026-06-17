@@ -1,0 +1,277 @@
+# Goal: Browser Live RECON hardening
+
+Date started: 2026-06-18
+Status: active
+Codex goal: Iterate on Browser Live according to the RECON plan: verify live contracts, fix SPA input, fresh navigation, strict action schema, DOM extraction, docs, validate every checkpoint, and create a separate git commit after each completed checkpoint.
+Source spec: user-provided v6 OTS evidence report and RECON review request
+Goal doc owner: Codex
+Last updated: 2026-06-18 00:03
+
+## Objective
+
+Harden Browser Live after the v6 OTS automation evidence so SPA interaction failures become architecturally impossible instead of documented workarounds. Browser Live must provide reliable semantic input, sidecar-owned fresh navigation, strict action schemas, deterministic DOM value extraction, accurate documentation, and validated live evidence.
+
+Done when every required Completion Audit item is verified by its listed evidence, every checkpoint has an individual git commit, and the final OTS browser flow proves create → extract share URL → fresh reveal → second-consumption verification without relying on ad-hoc page JavaScript hacks for normal DOM values.
+
+## Scope
+
+In scope:
+- `docker/chrome-agent-sidecar.py` — sidecar live contract, SPA-safe input dispatch, fresh navigation behavior, DOM snapshot/extraction internals.
+- `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` — typed request/response/action contracts.
+- `crates/oxide-agent-core/src/agent/providers/browser_live/actions.rs` — action planning and timeout/schema semantics.
+- `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` — tool schemas, extraction behavior, post-action observations, tests.
+- `crates/oxide-agent-core/src/agent/providers/browser_live/test_support.rs` — fake sidecar support for contract tests.
+- `crates/oxide-agent-core/src/agent/prompt/composer.rs` — only if prompt guidance must reflect a changed tool contract.
+- `docs/browser-live.md` and this goal doc.
+
+Out of scope:
+- Reintroducing MiMo, `browser_step`, parser/recovery decision loops, or non-vision fallback control.
+- New crates, services, queues, storage backends, or browser automation engines.
+- Changes to unrelated providers, transports, storage, SSH, sandbox, reminders, or web UI unless a type contract change proves a direct compile-time dependency.
+- Teaching the model workaround recipes as the primary fix when the tool/sidecar can own the contract.
+
+## Missing Inputs
+
+- None for CP-0: the docker `oxide_chrome_agent_sidecar` container is running and accepts authenticated local REST probes from inside the container.
+
+## Repository Context
+
+- Relevant entry points:
+  - `docker/chrome-agent-sidecar.py` REST adapter over `chrome-agent --json pipe`.
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/client.rs` typed sidecar trait/client.
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` public browser tools and tool JSON schemas.
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` serde action/request/response contracts.
+  - `docs/browser-live.md` user-facing setup/usage documentation.
+- Existing conventions:
+  - Browser Live is feature-gated under `tool-browser-live` and registered through capability modules.
+  - Rust contracts are explicit serde structs/enums; sidecar returns stable JSON envelopes.
+  - Checkpoints should be small and committed separately.
+- Dependencies or runtime assumptions:
+  - Live validation needs the docker `chrome-agent-sidecar` service with `chrome-agent` available in the container.
+  - Local host currently may not have `chrome-agent`; local py_compile/unit tests remain useful but insufficient for live audit items.
+- Validation infrastructure:
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`
+  - `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`
+  - Live OTS REST/tool run against `https://ots.bash.md/`
+- Risky areas:
+  - CDP listener threading and response draining.
+  - SPA hash routing and one-time secret state caching.
+  - Framework-controlled input value tracking (React/Vue/Angular/native setters).
+  - Tool schema compatibility for existing `BrowserAction` variants.
+
+## Completion Audit
+
+### G1: Live contracts verified before design/code
+- Source: RECON CP-0 and P0.5 verification requirement.
+- Acceptance: current live behavior is captured with raw payloads for `type_text` vs `fill`, `force_reload`, `about:blank` recovery, and `browser_extract` DOM value semantics before depending on those contracts.
+- Evidence required: commands/scripts used, raw response summaries with fields/status/timings, and classification of unavailable runtime if sidecar cannot run.
+- Status: verified
+- Evidence collected: CP-0 live probes ran inside `oxide_chrome_agent_sidecar` against `https://ots.bash.md/` without printing the bearer token. Health returned `{"ok":true,"chrome_agent_available":true,"chrome_agent_status":"stopped","auth_configured":true,...}` and `chrome-agent-sidecar --self-test` returned `chrome-agent-sidecar self-test ok`. `type_text` on `#createSecretData` returned `ok:true`, `status:"executed"`, then JS state reported `{"value":"cp0 compact type_text ...","disabled":false}`; submit created a share URL (`share_present:true`, `share_hash_len:59`). `fill` returned the same successful shape and created a share URL (`share_present:true`, `share_hash_len:59`). `navigate` to the generated share URL with `force_reload:true` returned `ok:true`, `navigation.status:"loaded"`, `force_reload:true`, final URL preserved the redacted OTS hash, DOM snapshot length 9, and waiting for `button.btn-success` succeeded. Native sidecar `/goto` to `about:blank` returned `ok:false`, `status:"blocked"`; subsequent native `/goto` back to `https://ots.bash.md/` returned `ok:true`, DOM snapshot length 12, and waiting for `#createSecretData` succeeded. Current `browser_extract` DOM baseline is code-owned rather than a sidecar REST endpoint: `extract_from_dom` builds an `execute_javascript` expression and currently echoes requested `attribute` while returning all properties; existing test `browser_extract_dom_returns_js_result_elements` verifies returned `value`/`innerText` but not exact attribute selection.
+
+### G2: SPA-safe semantic input
+- Source: v6 problem: `type_text` returns technical success but does not reliably trigger SPA state updates.
+- Acceptance: `fill` and `type_text` share one sidecar-owned semantic value-setting primitive that uses native value setters where required, dispatches framework-visible events, returns final value diagnostics, and works on OTS without extra JS hacks.
+- Evidence required: sidecar/unit tests plus live OTS run where `type_text` alone enables submit and creates a secret.
+- Status: pending
+- Evidence collected:
+
+### G3: Fresh navigation contract for hash SPAs
+- Source: v6 problem: same-hash SPA navigation caches state; `location.reload()`/`about:blank` break DOM.
+- Acceptance: `navigate { force_reload: true }` means sidecar-owned fresh document navigation preserving the full target URL/hash; it must not rely on page JS `window.location.reload(true)` as the correctness mechanism and must fail structurally if freshness cannot be guaranteed.
+- Evidence required: code review of sidecar fresh navigation path, unit/fake tests for `force_reload`, and live OTS reveal in a fresh browser context after previous SPA state.
+- Status: pending
+- Evidence collected:
+
+### G4: Strict `BrowserAction` tool schema
+- Source: v6 problem: `wait` requires `timeout_ms`, but loose schema permits/encourages wrong `ms` field.
+- Acceptance: `browser_execute` exposes a strict nested `oneOf`/equivalent schema for all public `BrowserAction` variants with required fields, ranges, and `additionalProperties:false`; no `ms` alias is added.
+- Evidence required: unit tests inspecting tool schema for representative variants and absence of legacy/alias fields.
+- Status: pending
+- Evidence collected:
+
+### G5: Deterministic DOM value/attribute extraction
+- Source: v6 problem: share URL requires JS `querySelector(...).value` workaround.
+- Acceptance: normal DOM values and attributes are extracted through `browser_extract`/typed action contract, with `attribute:"value"` returning the requested property deterministically and OTS share URL extracted without ad-hoc JavaScript.
+- Evidence required: unit tests for DOM extraction shape/attribute selection and live OTS share URL extraction through `browser_extract`.
+- Status: pending
+- Evidence collected:
+
+### G6: Post-action observations remain current and diagnosable
+- Source: v6 improvement and remaining low priority note that `execute_javascript` DOM mutations may not refresh snapshots.
+- Acceptance: every state-changing successful action returns a fresh post-observation with DOM snapshot or structured DOM snapshot error; read-only actions clearly report result-only behavior.
+- Evidence required: unit tests for `execute_javascript`/script post-observation behavior and code review of action category handling.
+- Status: pending
+- Evidence collected:
+
+### G7: Browser-based one-time verification
+- Source: v6 problem: one-time verification uses direct API because browser navigation reuses SPA state.
+- Acceptance: final validation proves first browser reveal returns the secret and a second browser fresh-context attempt reports consumed/missing state; direct API verification may be corroborating but not the only browser-live evidence.
+- Evidence required: live OTS transcript with share URL redacted only if necessary, first reveal value match, second attempt consumed/error state, and network/console summaries.
+- Status: pending
+- Evidence collected:
+
+### Q1: Static checks and tests pass at each code checkpoint
+- Source: repo development practices.
+- Acceptance: relevant targeted checks pass before each checkpoint commit; final gate includes broad static/test commands listed in Validation Contract.
+- Evidence required: command outputs per checkpoint.
+- Status: in_progress
+- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed).
+
+### Q2: One commit per completed checkpoint
+- Source: user instruction.
+- Acceptance: every completed checkpoint has a separate git commit after validation and goal doc update.
+- Evidence required: commit hashes recorded in Progress Log.
+- Status: in_progress
+- Evidence collected: CP-0 is ready for diff review and commit after this evidence update.
+
+### N1: Browser Live direct-control architecture preserved
+- Source: existing completed direct-control goal and current repo invariants.
+- Must preserve: no `browser_step`, no MiMo decision layer, no internal vision fallback, no broad transport/provider rewrites.
+- Evidence required: code search and diff review before final completion.
+- Status: pending
+- Evidence collected:
+
+## Implementation Plan
+
+### CP-0: Verification skeleton and live contract baseline
+- Audit IDs: G1, Q2.
+- Expected changes:
+  - Create this goal doc.
+  - Check sidecar/docker availability.
+  - Run or prepare live contract probes for `type_text`, `fill`, `force_reload`, `about:blank`, and DOM extraction.
+  - Record raw facts before code design.
+- Validation:
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`
+  - live sidecar probe commands when runtime is available.
+- Exit condition: live baseline facts or exact environment blocker are documented, and CP-0 is committed.
+
+### CP-1: Unified SPA-safe input primitive
+- Audit IDs: G2, Q1, Q2.
+- Expected changes:
+  - Replace divergent input JS with one sidecar primitive used by `fill` and `type_text`.
+  - Use native element value setters and framework-visible event dispatch.
+  - Return structured input diagnostics in action results where possible.
+  - Add tests covering generated behavior and Rust/fake expectations.
+- Validation:
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - targeted browser_live Rust tests
+  - live OTS `type_text` create-secret check.
+- Exit condition: `type_text` and `fill` have the same reliable semantic input behavior.
+
+### CP-2: Sidecar-owned fresh navigation
+- Audit IDs: G3, G7, Q1, Q2.
+- Expected changes:
+  - Redefine/implement `force_reload` as fresh document navigation owned by sidecar, not page JS reload.
+  - Preserve full target hash and return structured failure if freshness cannot be guaranteed.
+  - Add tests for `force_reload` propagation and failure/success shape.
+- Validation:
+  - sidecar py_compile/self-test
+  - targeted Rust tests
+  - live OTS fresh reveal after previous SPA state.
+- Exit condition: same-session or sidecar-owned fresh-context hash navigation no longer needs `about:blank` or `location.reload()` workarounds.
+
+### CP-3: Strict public action schema
+- Audit IDs: G4, Q1, Q2.
+- Expected changes:
+  - Replace prose-only nested `action` schema with exact per-variant schema.
+  - Include strict `wait.timeout_ms`, `navigate.force_reload`, `fill/type_text.selector/value`, and script step schemas.
+  - Add schema inspection tests.
+- Validation:
+  - targeted Rust tests.
+  - review generated tool definition payload.
+- Exit condition: wrong fields such as `ms` are rejected by schema rather than handled as runtime surprises.
+
+### CP-4: Deterministic DOM extraction
+- Audit IDs: G5, Q1, Q2.
+- Expected changes:
+  - Make `browser_extract` honor requested DOM `attribute`/property exactly.
+  - Return matched values with selector/tag/count diagnostics.
+  - Update tests and documentation guidance.
+- Validation:
+  - targeted Rust tests.
+  - live OTS share URL extraction via `browser_extract` with `attribute:"value"`.
+- Exit condition: OTS share URL is available without raw `execute_javascript` querySelector hacks.
+
+### CP-5: Observation freshness and diagnostics
+- Audit IDs: G6, Q1, Q2.
+- Expected changes:
+  - Make action categories explicit.
+  - Ensure state-changing actions return fresh post-observations or structured DOM snapshot errors.
+  - Add tests for `execute_javascript` mutation behavior.
+- Validation:
+  - targeted Rust tests.
+  - sidecar py_compile/self-test.
+- Exit condition: post-action state is current or diagnostically failed, never silently stale/empty.
+
+### CP-6: Docs and final OTS E2E
+- Audit IDs: G7, Q1, Q2, N1.
+- Expected changes:
+  - Update `docs/browser-live.md` to current direct-control tools and SPA semantics.
+  - Run final OTS browser E2E: create, extract, fresh reveal, second consumption.
+  - Run final broad gate and code search for non-goals.
+- Validation:
+  - Final Validation Contract.
+- Exit condition: every audit item is verified and final checkpoint committed.
+
+## Validation Contract
+
+- Static checks:
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+- Tests:
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`
+- Runtime/manual verification:
+  - `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`
+  - live OTS create → extract share URL → fresh reveal → second consumption check.
+- Artifact verification:
+  - Goal doc progress log records commands, evidence, and commit hash per checkpoint.
+  - Final diff/code search confirms non-goals preserved.
+- Done when: all Completion Audit statuses are `verified`, no required live evidence is missing, and the session goal can be closed with concrete evidence.
+
+## Decisions
+
+- 2026-06-18: Do not add compatibility aliases like `wait.ms`; wrong nested action fields are a schema-contract bug and should be rejected by strict schema.
+- 2026-06-18: Treat `force_reload` as an intent for fresh document state owned by sidecar, not permission for the LLM or page JS to choose `reload()`/`about:blank` workarounds.
+- 2026-06-18: Keep `fill` and `type_text` public, but make them share the same semantic value-setting primitive so SPA correctness cannot diverge by action name.
+
+## Progress Log
+
+- 2026-06-18 00:00: CP-0 started — goal contract created.
+  - Changed: added this goal doc with audit IDs, checkpoint plan, validation contract, and checkpoint commit policy.
+  - Evidence: pending CP-0 runtime probes.
+  - Commands: pending.
+  - Audit IDs updated: G1, Q2 in progress.
+  - Next: check sidecar/docker availability and run live contract probes or record exact environment blocker.
+
+- 2026-06-18 00:03: CP-0 live contract baseline completed.
+  - Changed: updated this goal doc with CP-0 evidence.
+  - Evidence: sidecar container running; health/self-test pass; live OTS probes show current `type_text` and `fill` both enable submit and create a share URL, `force_reload:true` loads the redacted share URL and exposes the reveal button, native `/goto about:blank` is blocked but native recovery to OTS succeeds, and current `browser_extract` exact-attribute behavior remains a code-level gap for CP-4.
+  - Commands: `docker ps --format '{{.Names}}' | sort`; `docker exec oxide_chrome_agent_sidecar sh -lc 'curl -fsS -H "Authorization: Bearer $BROWSER_AGENT_SIDECAR_TOKEN" http://127.0.0.1:8787/healthz && printf "\n" && chrome-agent-sidecar --self-test'`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...`; `python3 -m py_compile docker/chrome-agent-sidecar.py`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`.
+  - Audit IDs updated: G1 verified; Q1/Q2 in progress.
+  - Next: review diff, commit CP-0, then start CP-1 input primitive hardening.
+
+## Risks and Blockers
+
+- Live sidecar availability is confirmed for CP-0 but may still be transient in later checkpoints.
+  - Impact: G2/G3/G5/G7 final live evidence depends on the docker sidecar and public OTS target remaining reachable.
+  - Evidence: CP-0 health/self-test/live probes passed from `oxide_chrome_agent_sidecar`.
+  - Mitigation or requested decision: rerun targeted live probes at each affected checkpoint; if runtime becomes unavailable, record exact command output and do not mark live audit items verified.
+  - Audit IDs affected: G2, G3, G5, G7.
+
+## Final Verification
+
+Filled only when complete.
+
+- Completion Audit result:
+- Commands run:
+- Artifacts inspected:
+- Remaining gaps:
+- User-accepted exceptions:
+- Final status:
