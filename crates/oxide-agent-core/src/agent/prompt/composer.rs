@@ -368,6 +368,42 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
     if has_any_tool(
         &tool_names,
         &[
+            "browser_start",
+            "browser_observe",
+            "browser_execute",
+            "browser_extract",
+            "browser_debug",
+            "browser_close",
+        ],
+    ) {
+        let mut lines = Vec::new();
+        if has_tool(&tool_names, "browser_start") {
+            lines.push("Use `browser_start` to open a new browser session for a task.".to_string());
+        }
+        if has_tool(&tool_names, "browser_observe") {
+            lines.push("Use `browser_observe` to capture the current page state and a screenshot; the screenshot is attached as a native image to the tool result.".to_string());
+        }
+        if has_tool(&tool_names, "browser_execute") {
+            lines.push("Use `browser_execute` to perform one concrete browser action at a time (click, fill, navigate, script, etc.) based on the screenshot.".to_string());
+            lines.push("If a JavaScript or wait action returns a result, use that value before relying on the screenshot.".to_string());
+        }
+        if has_tool(&tool_names, "browser_extract") {
+            lines.push("Use `browser_extract` to pull structured data such as network response bodies or DOM element values.".to_string());
+        }
+        if has_tool(&tool_names, "browser_debug") {
+            lines.push("Use `browser_debug` for network or console summaries when observation summaries are insufficient.".to_string());
+        }
+        if has_tool(&tool_names, "browser_close") {
+            lines.push(
+                "Use `browser_close` when the browser session is no longer needed.".to_string(),
+            );
+        }
+        builder.push_section("browser_direct_control", "Browser Direct Control", lines);
+    }
+
+    if has_any_tool(
+        &tool_names,
+        &[
             "ssh_exec",
             "ssh_sudo_exec",
             "ssh_read_file",
@@ -765,6 +801,50 @@ mod tests {
 
         assert!(prompt.contains("If `send_file_to_user` returns `download_url`"));
         assert!(prompt.contains("main chat response"));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_adds_browser_direct_control_guidance() {
+        let tools = [
+            ToolDefinition {
+                name: "browser_start".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "browser_observe".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "browser_execute".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "browser_extract".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "browser_close".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+        ];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
+
+        assert!(prompt.contains("## Browser Direct Control"));
+        assert!(prompt.contains("Use `browser_observe` to capture the current page state"));
+        assert!(prompt.contains("Use `browser_execute` to perform one concrete browser action"));
+        assert!(prompt.contains("Use `browser_extract` to pull structured data"));
+        assert!(
+            prompt.contains("Use `browser_close` when the browser session is no longer needed")
+        );
     }
 
     #[tokio::test]

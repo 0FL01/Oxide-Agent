@@ -1047,7 +1047,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXECUTE => (
-            "Execute a single concrete BrowserAction in the session and return the action result plus a post-action screenshot when available.",
+            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot, then call this tool with exactly one action (click, fill, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values.",
             json!({
                 "type": "object",
                 "required": ["session_id", "action"],

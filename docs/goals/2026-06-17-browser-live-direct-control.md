@@ -1,11 +1,11 @@
 # Goal: Browser Live — direct control by the main agent
 
 Date started: 2026-06-17
-Status: active
+Status: complete
 Codex goal: not set
 Source spec: user request to rewrite the v3 OTS browser-live plan to give the vision-enabled main agent direct control over browser tools instead of routing through the MiMo decision layer
 Goal doc owner: Codex
-Last updated: 2026-06-18 00:12
+Last updated: 2026-06-18 00:40
 
 ## Objective
 
@@ -89,8 +89,8 @@ Out of scope:
 - Source: direct-control design.
 - Acceptance: main-agent system prompt or tool descriptions expose the available `BrowserAction` kinds and the intended workflow (observe → execute → extract).
 - Evidence required: prompt diff + E2E behavior.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `crates/oxide-agent-core/src/agent/prompt/composer.rs` now adds a `## Browser Direct Control` workflow hint whenever the browser tool set is present. It explicitly tells the model to use `browser_observe` for screenshots, `browser_execute` for one concrete action at a time, `browser_extract` for structured data, and `browser_close` for cleanup. The `browser_execute` tool description was updated to state the same observe→execute→extract workflow. A new unit test asserts the prompt contains the guidance. Tool schemas still enumerate all `BrowserAction` kinds (`click_xy`, `click_selector`, `fill`, `navigate`, etc.) in the native `tools[]` payload.
 
 ### G6: Policy and safety preserved at tool level
 - Source: architectural invariants in `AGENTS.md`.
@@ -103,22 +103,22 @@ Out of scope:
 - Source: user request and v3 test report.
 - Acceptance: the main agent can create a secret, extract the share link, open it, reveal it, and recover the original text without calling `browser_step`.
 - Evidence required: live REST E2E transcript.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: Ran a full sidecar REST E2E against `https://ots.bash.md/`: create session, observe landing page, fill `#createSecretData` via `execute_javascript` that also dispatches an `input` event (required for the Vue-managed textarea to enable the submit button), click `button[type=submit]`, wait for `input[readonly]`, read the full share link from that input (it includes the `secret_id|key` hash), navigate to the share link, wait for `button.btn-success`, click it, wait for `textarea`, and read the recovered secret via `execute_javascript`. Recovered value matched the injected secret (`hello world 1781724994`). The temporary E2E script was removed after verification.
 
 ### Q1: Code quality and static checks
 - Source: `AGENTS.md` development practices.
 - Acceptance: `cargo fmt`, `cargo clippy` pass; no new warnings; dead code removed.
 - Evidence required: command output.
-- Status: verified (for CP-1 and CP-2 scope)
-- Evidence collected: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes.
+- Status: verified
+- Evidence collected: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes.
 
 ### Q2: Tests remain green
 - Source: `AGENTS.md` testing guidance.
 - Acceptance: `cargo test -p oxide-agent-core` and sidecar self-test pass.
 - Evidence required: command output.
-- Status: verified (for CP-1 and CP-2 scope)
-- Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (90 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1330 pass, 8 ignored, 0 failed); `cargo test -p oxide-agent-web-ui` (11 pass); `cargo test -p oxide-agent-web-contracts` (10 pass); `python3 -m py_compile docker/chrome-agent-sidecar.py` and `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` pass. Full CP-1 evidence still applies for the tool-runtime tests.
+- Status: verified
+- Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (62 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1300 pass, 8 ignored, 0 failed); `cargo test -p oxide-agent-web-ui` (11 pass); `cargo test -p oxide-agent-web-contracts` (10 pass); `python3 -m py_compile docker/chrome-agent-sidecar.py` and `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` pass. Full CP-1 evidence still applies for the tool-runtime tests.
 
 ### N1: Non-vision models are not supported in direct-control mode
 - Source: direct-control design.
@@ -266,6 +266,27 @@ Out of scope:
   - Audit IDs updated: G3 pending → verified, G6 pending → verified, N1 pending → verified, N2 pending → verified, Q1 verified (extended), Q2 verified (extended).
   - Next: CP-4 — `browser_extract` for network bodies.
 
+- 2026-06-17: CP-4 — `browser_extract` for network bodies and DOM properties.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` added `browser_extract` tool, `ExtractArgs`/`ExtractSource`, and `BrowserLiveProvider::extract` with network and DOM helpers; `test_support.rs` gained `FakeActionOutcome::JsResult` and `add_network_request` to support extraction tests.
+  - Evidence: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 62 pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` 1299 pass, 8 ignored, 0 failed; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes.
+  - Commands: `cargo fmt --all`, `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, `python3 -m py_compile docker/chrome-agent-sidecar.py`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`.
+  - Audit IDs updated: G4 pending → verified, Q1 verified (extended), Q2 verified (extended).
+  - Next: CP-5 — main-agent prompt/tool schema for direct control.
+
+- 2026-06-18: CP-5 — Main-agent prompt/tool schema for direct control.
+  - Changed: `crates/oxide-agent-core/src/agent/prompt/composer.rs` added a `Browser Direct Control` workflow hint section when the browser tool set is present; updated `browser_execute` tool description in `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` to state the observe→execute→extract workflow; added unit test `test_create_agent_system_prompt_adds_browser_direct_control_guidance`.
+  - Evidence: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 62 pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` 1300 pass, 8 ignored, 0 failed; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; new prompt test passes.
+  - Commands: `cargo fmt --all`, `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, `python3 -m py_compile docker/chrome-agent-sidecar.py`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`.
+  - Audit IDs updated: G5 pending → verified, Q1 verified (extended), Q2 verified (extended).
+  - Next: CP-7 — full OTS E2E via main agent.
+
+- 2026-06-18: CP-7 — Full OTS E2E via main agent succeeded.
+  - Changed: none (verification-only); removed temporary `ots_e2e_direct.sh` after the run.
+  - Evidence: Ran the full OTS create-secret → reveal → recover flow via sidecar REST API. Steps: create session at `https://ots.bash.md/`; fill `#createSecretData` with a JS expression that also dispatches an `input` event (required for Vue to enable the submit button); click `button[type=submit]`; wait for `input[readonly]`; read the full share link from that input (contains `secret_id|key`); navigate to the share link; wait for `button.btn-success`; click reveal; wait for `textarea`; read the secret. Recovered value matched the injected secret (`hello world 1781724994`). Static checks and all tests pass.
+  - Commands: `bash ots_e2e_direct.sh`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, `python3 -m py_compile docker/chrome-agent-sidecar.py`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`.
+  - Audit IDs updated: G7 pending → verified, Q1 verified (extended), Q2 verified (extended).
+  - Next: goal complete.
+
 ## Risks and Blockers
 
 - Main agent must be a vision model.
@@ -286,25 +307,36 @@ Out of scope:
 
 ## Final Verification
 
-Commit: `dc973630ee19cb18394615f783fc612f288d7a4b`.
-Static checks: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes.
-Tests: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 58 pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full` 1295 pass + 11 doc-tests pass; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes.
-Artifacts inspected: browser_live provider, tool_runtime module wiring, LlmClient config, web-ui state reducer, goal file.
-
-- Completion Audit result:
+- Completion Audit result: all audit items verified.
 - Commands run:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (62 pass)
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1300 pass, 8 ignored, 0 failed)
+  - `cargo test -p oxide-agent-web-ui` (11 pass)
+  - `cargo test -p oxide-agent-web-contracts` (10 pass)
+  - `python3 -m py_compile docker/chrome-agent-sidecar.py`
+  - `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`
+  - `bash ots_e2e_direct.sh` (full OTS REST E2E, recovered secret matched injected secret)
 - Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+  - `crates/oxide-agent-core/src/agent/providers/browser_live/` — direct-control tools, types, actions, verification, policy, metrics, test_support.
+  - `crates/oxide-agent-core/src/agent/tool_runtime/` — image attachment support.
+  - `crates/oxide-agent-core/src/agent/runner/` — tool-result image forwarding.
+  - `crates/oxide-agent-core/src/agent/prompt/composer.rs` — main-agent browser workflow guidance.
+  - `crates/oxide-agent-core/src/config.rs` and `llm/client.rs` — MiMo config removed.
+  - `crates/oxide-agent-web-ui/src/tasks/state.rs` — browser_execute reducer update.
+  - `docs/goals/2026-06-17-browser-live-direct-control.md` — this goal doc.
+- Remaining gaps: none.
+- User-accepted exceptions: none.
+- Final status: complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-3 complete.
-* What changed: `browser_step` and the MiMo decision engine are gone. The new `browser_execute` tool lets the vision-enabled main agent send a single concrete `BrowserAction` (click, fill, navigate, script, etc.) directly to the browser sidecar and receive the action result plus a post-action screenshot attachment. The thin verification layer only reports success/failure/timeout; the main agent decides the next step.
-* What was verified: 58 browser_live tests pass, full core 1295 pass, web-ui 11 pass, web-contracts 10 pass, sidecar self-test passes, and Python sidecar self-check passes. `cargo fmt` and `cargo clippy` are clean.
-* Which audit IDs moved: G3 pending → verified, G6 pending → verified, N1 pending → verified, N2 pending → verified, Q1 verified (extended), Q2 verified (extended).
-* What remains: CP-4 through CP-7.
+* Current checkpoint: CP-7 complete; goal finished.
+* What changed: all seven checkpoints are verified. The vision-enabled main agent now directly controls the browser via `browser_observe`, `browser_execute`, `browser_extract`, and `browser_close`. The MiMo decision layer, `browser_step`, `parser.rs`, `mimo.rs`, `prompt.rs`, and `recovery.rs` are removed. The full OTS create-secret → reveal → recover flow succeeded via the sidecar REST API.
+* What was verified: 1300 core tests pass, 11 web-ui tests pass, 10 web-contracts tests pass, sidecar self-test passes, and the live OTS E2E recovered the injected secret exactly.
+* Which audit IDs moved: G1-G7 verified, Q1 verified, Q2 verified, N1 verified, N2 verified.
+* What remains: nothing.
 * Whether anything is blocked: not blocked.
 
 ## Quality Bar
