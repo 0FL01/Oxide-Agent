@@ -24,8 +24,8 @@ use super::verification::{
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
-    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
-    ToolRuntimeError,
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
+    ToolOutputImageAttachment, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::llm::LlmClient;
 use crate::llm::ToolDefinition;
@@ -61,6 +61,34 @@ pub struct BrowserLiveProvider {
     recovery_settings: BrowserRecoverySettings,
     recovery_signatures: Arc<Mutex<BTreeMap<String, BTreeMap<String, u32>>>>,
     metrics: Arc<BrowserMetricsCollector>,
+}
+
+/// Result returned by the `browser_observe` tool executor.
+///
+/// Contains the compact model-facing JSON payload plus an optional image
+/// attachment for vision-capable main-agent routes.
+#[derive(Debug, Clone)]
+struct ObserveToolResult {
+    payload: Value,
+    image_attachment: Option<ToolOutputImageAttachment>,
+}
+
+fn screenshot_image_attachment(frame: &BrowserFrame) -> Option<ToolOutputImageAttachment> {
+    if frame.screenshot.redacted || frame.screenshot.byte_size == 0 {
+        return None;
+    }
+    let file_name = frame
+        .artifact
+        .local_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("screenshot-{}.png", frame.screenshot.screenshot_id));
+    Some(ToolOutputImageAttachment::image(
+        file_name,
+        Some(frame.screenshot.mime_type.clone()),
+        frame.screenshot.byte_size,
+        frame.artifact.local_path.to_string_lossy().to_string(),
+    ))
 }
 
 impl BrowserLiveProvider {
@@ -250,7 +278,7 @@ impl BrowserLiveProvider {
         &self,
         invocation: &ToolInvocation,
         args: ObserveArgs,
-    ) -> Result<Value, ToolRuntimeError> {
+    ) -> Result<ObserveToolResult, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
         let query = ObserveQuery {
             fresh: args.fresh,
@@ -288,11 +316,11 @@ impl BrowserLiveProvider {
         self.persist_latest_screenshot(&args.session_id, &mut frame)
             .await?;
 
-        Ok(observation_payload(
-            &args.session_id,
-            &frame.screenshot,
-            &frame,
-        ))
+        let image_attachment = screenshot_image_attachment(&frame);
+        Ok(ObserveToolResult {
+            payload: observation_payload(&args.session_id, &frame.screenshot, &frame),
+            image_attachment,
+        })
     }
 
     #[instrument(
@@ -1030,26 +1058,27 @@ impl ToolExecutor for BrowserLiveToolExecutor {
             timeout: invocation.timeout.clone(),
             ..ToolRuntimeConfig::default()
         });
-        let payload = match self.tool_name {
+        let (payload, image_attachment) = match self.tool_name {
             TOOL_BROWSER_START => {
                 let args = parse_args::<StartArgs>(&invocation)?;
-                self.provider.start(&invocation, args).await?
+                (self.provider.start(&invocation, args).await?, None)
             }
             TOOL_BROWSER_OBSERVE => {
                 let args = parse_args::<ObserveArgs>(&invocation)?;
-                self.provider.observe(&invocation, args).await?
+                let result = self.provider.observe(&invocation, args).await?;
+                (result.payload, result.image_attachment)
             }
             TOOL_BROWSER_STEP => {
                 let args = parse_args::<StepArgs>(&invocation)?;
-                self.provider.step(&invocation, args).await?
+                (self.provider.step(&invocation, args).await?, None)
             }
             TOOL_BROWSER_DEBUG => {
                 let args = parse_args::<DebugArgs>(&invocation)?;
-                self.provider.debug(&invocation, args).await?
+                (self.provider.debug(&invocation, args).await?, None)
             }
             TOOL_BROWSER_CLOSE => {
                 let args = parse_args::<CloseArgs>(&invocation)?;
-                self.provider.close(&invocation, args).await?
+                (self.provider.close(&invocation, args).await?, None)
             }
             other => {
                 return Err(ToolRuntimeError::Internal(format!(
@@ -1061,6 +1090,9 @@ impl ToolExecutor for BrowserLiveToolExecutor {
             .map_err(|error| ToolRuntimeError::Internal(error.to_string()))?;
         let mut output = normalizer.success(&invocation, &text, "");
         output.structured_payload = Some(payload);
+        if let Some(image) = image_attachment {
+            output = output.with_image_attachment(image);
+        }
         Ok(output)
     }
 }
@@ -1270,13 +1302,13 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
             }),
         ),
         TOOL_BROWSER_OBSERVE => (
-            "Return compact browser state and latest screenshot artifact reference.",
+            "Return compact browser state (url, title, loading state, network/console summaries) and attach the latest screenshot as a native image for vision models.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
                 "properties": {
                     "session_id": {"type": "string"},
-                    "fresh": {"type": "boolean", "default": false},
+                    "fresh": {"type": "boolean", "default": false, "description": "capture a fresh screenshot instead of reusing the last cached one"},
                     "include_a11y": {"type": "boolean", "default": false},
                     "max_debug_items": {"type": "integer", "minimum": 0, "maximum": 100}
                 },
@@ -1417,10 +1449,66 @@ mod tests {
         assert!(observe_text.contains("artifact://browser/task-1/"));
         assert!(!observe_text.contains("base64"));
         assert!(!observe_text.contains("data:image"));
+        let image = observe
+            .image_attachment
+            .as_ref()
+            .expect("observe screenshot image attachment");
+        assert!(
+            image
+                .mime_type
+                .as_deref()
+                .expect("mime")
+                .starts_with("image/")
+        );
+        assert!(image.size_bytes > 0);
+        assert!(std::path::Path::new(&image.sandbox_path).exists());
+        assert!(image.sandbox_path.contains("step-"));
         assert_eq!(
             close.structured_payload.as_ref().expect("payload")["status"],
             "closed"
         );
+    }
+
+    #[test]
+    fn screenshot_image_attachment_skips_redacted_or_empty_screenshots() {
+        use crate::agent::providers::browser_live::types::LoadingState;
+        use crate::agent::tool_runtime::artifacts::{ArtifactKind, ArtifactRef};
+        let base = BrowserFrame {
+            observation_id: "obs-1".to_string(),
+            action_seq: 1,
+            screenshot: ScreenshotArtifact {
+                screenshot_id: "shot-1".to_string(),
+                artifact_uri: "browser/task/session/shot-1.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                width: 1365,
+                height: 768,
+                sha256: "sha-1".to_string(),
+                captured_at: None,
+                redacted: false,
+                byte_size: 42,
+            },
+            url: "https://example.test".to_string(),
+            title: "Example".to_string(),
+            loading_state: LoadingState::Idle,
+            network_summary: None,
+            console_summary: None,
+            artifact: ArtifactRef::internal(
+                "artifact://browser/task/session/step-0001-live.png",
+                std::path::PathBuf::from("/tmp/step-0001-live.png"),
+                ArtifactKind::File,
+                42,
+            ),
+            retained: false,
+        };
+        assert!(screenshot_image_attachment(&base).is_some());
+
+        let mut redacted = base.clone();
+        redacted.screenshot.redacted = true;
+        assert!(screenshot_image_attachment(&redacted).is_none());
+
+        let mut empty = base;
+        empty.screenshot.byte_size = 0;
+        assert!(screenshot_image_attachment(&empty).is_none());
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ Status: active
 Codex goal: not set
 Source spec: user request to rewrite the v3 OTS browser-live plan to give the vision-enabled main agent direct control over browser tools instead of routing through the MiMo decision layer
 Goal doc owner: Codex
-Last updated: 2026-06-17 23:55
+Last updated: 2026-06-17 23:59
 
 ## Objective
 
@@ -68,8 +68,8 @@ Out of scope:
 - Source: direct-control design.
 - Acceptance: `browser_observe` returns URL, title, loading state, network/console summaries, and an image attachment; the main agent sees the screenshot.
 - Evidence required: live REST test + `cargo test` pass.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` now returns `ObserveToolResult { payload, image_attachment }` from `BrowserLiveProvider::observe`; the executor attaches the image to `ToolOutput`. The `browser_observe` tool description was updated to say the latest screenshot is attached as a native image for vision models. Unit tests assert the image attachment exists, has a valid MIME type, non-zero size, and the referenced sandbox path exists; another test asserts redacted/empty screenshots are skipped. Validation: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 90 pass; live REST test on `http://127.0.0.1:8787` created a session for `https://example.com` and `/sessions/{id}/observe` returned URL/title/loading state; `/sessions/{id}/screenshot/latest?format=binary` returned a 14,846-byte PNG.
 
 ### G3: `browser_execute` replaces `browser_step`
 - Source: direct-control design.
@@ -110,15 +110,15 @@ Out of scope:
 - Source: `AGENTS.md` development practices.
 - Acceptance: `cargo fmt`, `cargo clippy` pass; no new warnings; dead code removed.
 - Evidence required: command output.
-- Status: verified (for CP-1 scope)
-- Evidence collected: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` passes.
+- Status: verified (for CP-1 and CP-2 scope)
+- Evidence collected: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes.
 
 ### Q2: Tests remain green
 - Source: `AGENTS.md` testing guidance.
 - Acceptance: `cargo test -p oxide-agent-core` and sidecar self-test pass.
 - Evidence required: command output.
-- Status: verified (for CP-1 scope)
-- Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::tool_runtime` (39 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::runner::tools::tests` (12 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::runner::llm_calls::tests` (10 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::memory::tests` (30 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- llm::providers::chat_completions::request::tests` (6 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- llm::providers::messages::request::tests` (8 pass). Full `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` had 1328 pass, 1 unrelated/flaky failure in `agent::wiki_memory::context::tests::assembler_loads_overview_and_matching_topic_page` which passes in isolation.
+- Status: verified (for CP-1 and CP-2 scope)
+- Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` (90 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1330 pass, 8 ignored, 0 failed); `cargo test -p oxide-agent-web-ui` (11 pass); `cargo test -p oxide-agent-web-contracts` (10 pass); `python3 -m py_compile docker/chrome-agent-sidecar.py` and `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` pass. Full CP-1 evidence still applies for the tool-runtime tests.
 
 ### N1: Non-vision models are not supported in direct-control mode
 - Source: direct-control design.
@@ -252,6 +252,13 @@ Out of scope:
   - Audit IDs updated: G1 pending → verified, Q1 pending → verified, Q2 pending → verified.
   - Next: CP-2 — `browser_observe` returns compact state + screenshot.
 
+- 2026-06-17: CP-2 — `browser_observe` returns compact state + screenshot.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` added `ObserveToolResult` and `screenshot_image_attachment`; `BrowserLiveProvider::observe` returns payload + image attachment; `BrowserLiveToolExecutor::execute` attaches the image to `ToolOutput`; `browser_observe` tool description updated to mention the native image attachment.
+  - Evidence: `cargo fmt`, `cargo clippy` pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 90 pass; full core test run 1330 pass, 8 ignored, 0 failed; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; sidecar self-test passes; live REST observe on `http://127.0.0.1:8787` returned URL/title/loading state and a 14,846-byte PNG screenshot.
+  - Commands: `cargo fmt --all`, `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live`, `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`, `python3 -m py_compile docker/chrome-agent-sidecar.py`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`, live REST observe.
+  - Audit IDs updated: G2 pending → verified, Q1 verified (extended), Q2 verified (extended).
+  - Next: CP-3 — `browser_execute` replaces `browser_step`.
+
 ## Risks and Blockers
 
 - Main agent must be a vision model.
@@ -283,11 +290,11 @@ Filled only when complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-1 complete.
-* What changed: tool runtime now supports image attachments on tool results; the runner forwards them into agent memory; vision-capable LLM routes (chat-completions generic and Anthropic messages) serialize image content parts inside tool-result messages.
-* What was verified: `cargo fmt`, `cargo clippy`, and targeted tests pass; full core test run is 1328 pass with one unrelated/flaky `wiki_memory` test that passes in isolation.
-* Which audit IDs moved: G1 pending → verified, Q1 pending → verified, Q2 pending → verified.
-* What remains: CP-2 through CP-7.
+* Current checkpoint: CP-2 complete.
+* What changed: `browser_observe` now returns a compact state payload plus a screenshot image attachment. The provider attaches the latest persisted screenshot to the `ToolOutput` so the vision-enabled main agent sees the page without an extra `browser_screenshot` call.
+* What was verified: 90 browser_live tests pass, full core 1330 pass, web-ui 11 pass, web-contracts 10 pass, sidecar self-test passes, and a live REST observe on a real page returned a 14,846-byte PNG screenshot.
+* Which audit IDs moved: G2 pending → verified, Q1 verified (extended), Q2 verified (extended).
+* What remains: CP-3 through CP-7.
 * Whether anything is blocked: not blocked.
 
 ## Quality Bar
