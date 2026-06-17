@@ -1418,8 +1418,16 @@ mod tests {
             vision_body["messages"][2]["content"],
             json!("Calling tools")
         );
-        assert_eq!(vision_body["messages"][3]["content"], json!("contents"));
-        assert!(vision_body["messages"][3]["content"].is_string());
+        let vision_tool_content = vision_body["messages"][3]["content"]
+            .as_array()
+            .expect("vision tool content should be an array");
+        assert_eq!(vision_tool_content[0]["type"], json!("text"));
+        assert_eq!(vision_tool_content[0]["text"], json!("contents"));
+        assert_eq!(vision_tool_content[1]["type"], json!("image_url"));
+        assert_eq!(
+            vision_tool_content[1]["image_url"]["url"],
+            json!("data:image/png;base64,aWdub3JlZA==")
+        );
 
         let text_only_body = build_tool_chat_body(
             "system",
@@ -1435,6 +1443,8 @@ mod tests {
             text_only_body["messages"][1]["content"],
             json!("What is written here?")
         );
+        assert_eq!(text_only_body["messages"][3]["content"], json!("contents"));
+        assert!(text_only_body["messages"][3]["content"].is_string());
     }
 
     #[tokio::test]

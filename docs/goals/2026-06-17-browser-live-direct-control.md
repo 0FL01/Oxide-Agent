@@ -5,7 +5,7 @@ Status: active
 Codex goal: not set
 Source spec: user request to rewrite the v3 OTS browser-live plan to give the vision-enabled main agent direct control over browser tools instead of routing through the MiMo decision layer
 Goal doc owner: Codex
-Last updated: 2026-06-17 23:15
+Last updated: 2026-06-17 23:55
 
 ## Objective
 
@@ -61,8 +61,8 @@ Out of scope:
 - Source: user request and direct-control design.
 - Acceptance: a tool can attach a screenshot image to its result, and the runner can include it in the next main-agent turn.
 - Evidence required: unit test + `cargo test` pass.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `ToolOutput` now carries `image_attachment: Option<ToolOutputImageAttachment>`; `runner/tools.rs` maps it to `AgentMessageAttachment` and stores it in memory; `llm_calls.rs` attaches native image content parts for both user and tool messages; `chat_completions` and `messages` (Anthropic) providers serialize image content parts inside tool-result messages. Unit tests: `tool_output_image_attachment_is_carried_without_bytes`, `typed_runtime_tool_output_image_attachment_is_recorded_in_memory`, `native_image_parts_resolve_for_tool_messages`, `chat_completions_generic_tool_request_includes_image_content_parts`, `prepare_messages_includes_image_blocks_in_tool_results`.
 
 ### G2: `browser_observe` returns compact state + screenshot
 - Source: direct-control design.
@@ -110,15 +110,15 @@ Out of scope:
 - Source: `AGENTS.md` development practices.
 - Acceptance: `cargo fmt`, `cargo clippy` pass; no new warnings; dead code removed.
 - Evidence required: command output.
-- Status: pending
-- Evidence collected:
+- Status: verified (for CP-1 scope)
+- Evidence collected: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` passes.
 
 ### Q2: Tests remain green
 - Source: `AGENTS.md` testing guidance.
 - Acceptance: `cargo test -p oxide-agent-core` and sidecar self-test pass.
 - Evidence required: command output.
-- Status: pending
-- Evidence collected:
+- Status: verified (for CP-1 scope)
+- Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::tool_runtime` (39 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::runner::tools::tests` (12 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::runner::llm_calls::tests` (10 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::memory::tests` (30 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- llm::providers::chat_completions::request::tests` (6 pass); `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- llm::providers::messages::request::tests` (8 pass). Full `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` had 1328 pass, 1 unrelated/flaky failure in `agent::wiki_memory::context::tests::assembler_loads_overview_and_matching_topic_page` which passes in isolation.
 
 ### N1: Non-vision models are not supported in direct-control mode
 - Source: direct-control design.
@@ -245,6 +245,13 @@ Out of scope:
   - Audit IDs updated: all pending.
   - Next: CP-1 — image attachments in tool runtime.
 
+- 2026-06-17: CP-1 — image attachments in tool runtime.
+  - Changed: `crates/oxide-agent-core/src/agent/tool_runtime/output.rs` added `ToolOutputImageAttachment` and `ToolOutput.image_attachment`; `crates/oxide-agent-core/src/agent/tool_runtime/mod.rs` re-exported the new type; `crates/oxide-agent-core/src/agent/runner/tools.rs` maps the attachment to `AgentMessageAttachment` in memory; `crates/oxide-agent-core/src/agent/memory.rs` added `native_image_attachments()` for user/tool messages; `crates/oxide-agent-core/src/agent/runner/llm_calls.rs` attaches native image content parts for tool messages; `crates/oxide-agent-core/src/llm/providers/chat_completions/request.rs` and `messages/request.rs` serialize image content parts inside tool-result messages; `crates/oxide-agent-core/src/llm/providers/opencode_go.rs` test updated to assert new tool-result image behavior.
+  - Evidence: `cargo fmt`, `cargo clippy` pass; targeted tests pass; full core test run has 1328 pass with one unrelated/flaky `wiki_memory` test that passes in isolation.
+  - Commands: `cargo fmt --all`, `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings`, targeted `cargo test -p oxide-agent-core ...` commands, full `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib`.
+  - Audit IDs updated: G1 pending → verified, Q1 pending → verified, Q2 pending → verified.
+  - Next: CP-2 — `browser_observe` returns compact state + screenshot.
+
 ## Risks and Blockers
 
 - Main agent must be a vision model.
@@ -276,11 +283,11 @@ Filled only when complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-1 pending.
-* What changed: goal document created; direct-control plan approved.
-* What was verified: plan reviewed against repository conventions.
-* Which audit IDs moved: none yet.
-* What remains: CP-1 through CP-7.
+* Current checkpoint: CP-1 complete.
+* What changed: tool runtime now supports image attachments on tool results; the runner forwards them into agent memory; vision-capable LLM routes (chat-completions generic and Anthropic messages) serialize image content parts inside tool-result messages.
+* What was verified: `cargo fmt`, `cargo clippy`, and targeted tests pass; full core test run is 1328 pass with one unrelated/flaky `wiki_memory` test that passes in isolation.
+* Which audit IDs moved: G1 pending → verified, Q1 pending → verified, Q2 pending → verified.
+* What remains: CP-2 through CP-7.
 * Whether anything is blocked: not blocked.
 
 ## Quality Bar

@@ -99,7 +99,7 @@ impl AgentRunner {
     fn has_image_attachment_refs(memory_messages: &[AgentMessage]) -> bool {
         memory_messages.iter().any(|message| {
             message
-                .user_attachments()
+                .native_image_attachments()
                 .iter()
                 .any(|attachment| attachment.kind == AgentMessageAttachmentKind::Image)
         })
@@ -112,12 +112,12 @@ impl AgentRunner {
         route: &ModelInfo,
     ) {
         for (message, memory_message) in messages.iter_mut().zip(memory_messages) {
-            if message.role != "user" {
+            if message.role != "user" && message.role != "tool" {
                 continue;
             }
 
             let mut content_parts = Vec::new();
-            for attachment in memory_message.user_attachments() {
+            for attachment in memory_message.native_image_attachments() {
                 if attachment.kind != AgentMessageAttachmentKind::Image {
                     continue;
                 }
@@ -1114,7 +1114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_image_parts_ignore_tool_messages() {
+    async fn native_image_parts_resolve_for_tool_messages() {
         let mut tool_message = AgentMessage::tool("call-1", "describe_image_file", "result");
         tool_message.attachments = image_message("/workspace/uploads/shot.jpg").attachments;
         let memory_messages = vec![tool_message];
@@ -1130,8 +1130,13 @@ mod tests {
         )
         .await;
 
-        assert_eq!(fileops.read_count(), 0);
-        assert!(messages[0].content_parts.is_empty());
+        assert_eq!(fileops.read_count(), 1);
+        assert_eq!(messages[0].content_parts.len(), 1);
+        assert!(matches!(
+            &messages[0].content_parts[0],
+            MessageContentPart::Image { mime_type, bytes }
+                if mime_type == "image/jpeg" && bytes == b"jpg"
+        ));
         assert_eq!(messages[0].role, "tool");
     }
 

@@ -284,9 +284,12 @@ pub(crate) fn prepare_messages(
             options.allow_native_image_parts,
             options.profile.include_empty_system_message,
         ),
-        ChatMessageLayoutPolicy::MistralStrict => {
-            prepare_mistral_messages(system_prompt, history, tool_id_mapper)
-        }
+        ChatMessageLayoutPolicy::MistralStrict => prepare_mistral_messages(
+            system_prompt,
+            history,
+            tool_id_mapper,
+            options.allow_native_image_parts,
+        ),
     }
 }
 
@@ -367,7 +370,9 @@ fn prepare_generic_messages(
             }
             "tool" => {
                 let mut mapper = None;
-                if let Some(tool_message) = tool_result_message(msg, &mut mapper, false) {
+                if let Some(tool_message) =
+                    tool_result_message(msg, &mut mapper, false, allow_native_image_parts)
+                {
                     messages.push(tool_message);
                 }
             }
@@ -385,6 +390,7 @@ fn prepare_mistral_messages(
     system_prompt: &str,
     history: &[Message],
     mut mapper: Option<&mut dyn ChatToolCallIdMapper>,
+    allow_native_image_parts: bool,
 ) -> Vec<Value> {
     let mut history_systems = Vec::new();
     let mut other_messages = Vec::new();
@@ -397,7 +403,9 @@ fn prepare_mistral_messages(
             })),
             "assistant" => other_messages.push(assistant_message(msg, &mut mapper)),
             "tool" => {
-                if let Some(tool_message) = tool_result_message(msg, &mut mapper, true) {
+                if let Some(tool_message) =
+                    tool_result_message(msg, &mut mapper, true, allow_native_image_parts)
+                {
                     other_messages.push(tool_message);
                 }
             }
@@ -462,15 +470,45 @@ fn tool_result_message(
     msg: &Message,
     mapper: &mut Option<&mut dyn ChatToolCallIdMapper>,
     include_name: bool,
+    allow_native_image_parts: bool,
 ) -> Option<Value> {
     let result = CHAT_LIKE_TOOL_PROFILE
         .encode_tool_result(msg)
         .and_then(|result| result.into_chat_like())?;
     let id = map_id(mapper, &result.tool_call_id);
+    let content = if allow_native_image_parts && !msg.content_parts.is_empty() {
+        let mut parts = Vec::new();
+        if !result.content.is_empty() {
+            parts.push(json!({
+                "type": "text",
+                "text": result.content,
+            }));
+        }
+        for part in &msg.content_parts {
+            match part {
+                MessageContentPart::Image { mime_type, bytes } if !bytes.is_empty() => {
+                    parts.push(json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": media::image_data_url_with_mime(bytes, mime_type),
+                        },
+                    }));
+                }
+                MessageContentPart::Image { .. } => {}
+            }
+        }
+        if parts.is_empty() {
+            json!(result.content)
+        } else {
+            json!(parts)
+        }
+    } else {
+        json!(result.content)
+    };
     let mut message = json!({
         "role": "tool",
         "tool_call_id": id,
-        "content": result.content,
+        "content": content,
     });
     if include_name && let Some(name) = result.name {
         message["name"] = json!(name);
@@ -708,6 +746,47 @@ mod tests {
         assert_eq!(body["messages"][3]["name"], json!("get_weather"));
         assert_eq!(body["parallel_tool_calls"], json!(true));
         assert_eq!(body["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn chat_completions_generic_tool_request_includes_image_content_parts() {
+        let mut tool_message = Message::tool("call_123", "browser_observe", "observed");
+        tool_message.content_parts = vec![MessageContentPart::image(
+            "image/png",
+            vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'],
+        )];
+        let history = vec![
+            Message::system("History system"),
+            Message::assistant_with_tools("", vec![sample_tool_call("call_123")]),
+            tool_message,
+        ];
+
+        let body = build_tool_body(
+            "System",
+            &history,
+            &[sample_tool()],
+            "gpt-4o",
+            1024,
+            None,
+            false,
+            ChatRequestOptions::new(ChatCompletionsProfile::generic()),
+            None,
+        );
+
+        assert_eq!(body["messages"][3]["role"], json!("tool"));
+        assert_eq!(body["messages"][3]["tool_call_id"], json!("call_123"));
+        let content = body["messages"][3]["content"]
+            .as_array()
+            .expect("content is array");
+        assert_eq!(content[0]["type"], json!("text"));
+        assert_eq!(content[0]["text"], json!("observed"));
+        assert_eq!(content[1]["type"], json!("image_url"));
+        assert!(
+            content[1]["image_url"]["url"]
+                .as_str()
+                .expect("image_url url is a string")
+                .starts_with("data:image/png;base64,")
+        );
     }
 
     #[test]

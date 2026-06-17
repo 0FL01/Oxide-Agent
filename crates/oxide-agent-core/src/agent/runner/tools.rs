@@ -5,7 +5,7 @@ use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunSta
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
-use crate::agent::memory::AgentMessage;
+use crate::agent::memory::{AgentMessage, AgentMessageAttachment};
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
@@ -388,7 +388,7 @@ impl AgentRunner {
             &tool_name,
             memory_content,
         ));
-        let memory_message = if let Some(summary) = failure_summary {
+        let mut memory_message = if let Some(summary) = failure_summary {
             AgentMessage::pruned_tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
@@ -405,6 +405,16 @@ impl AgentRunner {
                 &content,
             )
         };
+        if let Some(image) = output.image_attachment {
+            memory_message
+                .attachments
+                .push(AgentMessageAttachment::image(
+                    image.file_name,
+                    image.mime_type,
+                    image.size_bytes,
+                    image.sandbox_path,
+                ));
+        }
         ctx.agent.memory_mut().add_message(memory_message);
     }
 
@@ -1598,5 +1608,129 @@ mod tests {
             Some("invoke-read-openai-base")
         );
         assert!(memory[1].content.contains("runtime-ok"));
+    }
+
+    struct ScreenshotRuntimeExecutor;
+
+    #[async_trait]
+    impl ToolExecutor for ScreenshotRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("browser_observe")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "browser_observe".to_string(),
+                description: "observe browser".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+                .success(&invocation, "observed", "")
+                .with_image_attachment(
+                    crate::agent::tool_runtime::ToolOutputImageAttachment::image(
+                        "screenshot.png",
+                        Some("image/png".to_string()),
+                        3,
+                        "/workspace/uploads/screenshot.png",
+                    ),
+                );
+            Ok(output)
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_tool_output_image_attachment_is_recorded_in_memory() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(ScreenshotRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "screenshot attachment",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-screenshot-attachment-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "call-screenshot-1",
+            ToolCallFunction {
+                name: "browser_observe".to_string(),
+                arguments: r#"{"session_id":"sess-1"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-screenshot-1")
+                .with_provider_tool_call_id("call-screenshot-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(""),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        let result_message = memory
+            .iter()
+            .find(|m| m.tool_name.as_deref() == Some("browser_observe"))
+            .expect("browser_observe result should be in memory");
+        assert_eq!(result_message.attachments.len(), 1);
+        assert_eq!(
+            result_message.attachments[0].sandbox_path,
+            "/workspace/uploads/screenshot.png"
+        );
+        assert_eq!(result_message.attachments[0].file_name, "screenshot.png");
+        assert_eq!(
+            result_message.attachments[0].mime_type.as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(result_message.attachments[0].size_bytes, 3);
     }
 }

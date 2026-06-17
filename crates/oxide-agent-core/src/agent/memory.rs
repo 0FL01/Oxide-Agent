@@ -599,6 +599,18 @@ impl AgentMessage {
             &[]
         }
     }
+
+    /// Return safe attachment refs for messages that may carry native image parts.
+    ///
+    /// User turns and tool result messages can both include image attachments for
+    /// vision-capable routes.
+    #[must_use]
+    pub fn native_image_attachments(&self) -> &[AgentMessageAttachment] {
+        match self.role {
+            MessageRole::User | MessageRole::Tool => &self.attachments,
+            _ => &[],
+        }
+    }
 }
 
 /// Agent memory for the active hot context window
@@ -1025,10 +1037,13 @@ mod tests {
         );
         let user =
             AgentMessage::user_turn("See attached").with_user_attachments(vec![attachment.clone()]);
-        let assistant =
-            AgentMessage::assistant("No media here").with_user_attachments(vec![attachment]);
+        let assistant = AgentMessage::assistant("No media here")
+            .with_user_attachments(vec![attachment.clone()]);
+        let mut tool = AgentMessage::tool("call-1", "describe_image_file", "result");
+        tool.attachments.push(attachment);
 
         assert!(assistant.attachments.is_empty());
+        assert_eq!(tool.native_image_attachments(), tool.attachments.as_slice());
 
         let value = serde_json::to_value(&user).expect("message serializes");
         assert_eq!(value["attachments"][0]["kind"], json!("image"));

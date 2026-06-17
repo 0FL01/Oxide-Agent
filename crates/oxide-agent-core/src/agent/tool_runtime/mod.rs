@@ -91,7 +91,7 @@ pub use modules::{ToolModule, ToolModuleContext};
 pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,
-    ToolOutput, ToolOutputIdentity, ToolOutputStatus,
+    ToolOutput, ToolOutputIdentity, ToolOutputImageAttachment, ToolOutputStatus,
 };
 pub use process::ProcessManager;
 pub use provider_opencode_go::{
