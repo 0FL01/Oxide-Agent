@@ -286,7 +286,10 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
+Commit: `dc973630ee19cb18394615f783fc612f288d7a4b`.
+Static checks: `cargo fmt --all -- --check` passes; `cargo clippy -p oxide-agent-core -p oxide-agent-web-contracts -p oxide-agent-web-ui --no-default-features --features profile-full --all-targets -- -D warnings` passes.
+Tests: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 58 pass; `cargo test -p oxide-agent-core --no-default-features --features profile-full` 1295 pass + 11 doc-tests pass; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `python3 -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes.
+Artifacts inspected: browser_live provider, tool_runtime module wiring, LlmClient config, web-ui state reducer, goal file.
 
 - Completion Audit result:
 - Commands run:
