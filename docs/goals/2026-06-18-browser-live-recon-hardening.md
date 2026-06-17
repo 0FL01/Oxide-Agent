@@ -126,7 +126,7 @@ Out of scope:
 - Acceptance: every completed checkpoint has a separate git commit after validation and goal doc update.
 - Evidence required: commit hashes recorded in Progress Log.
 - Status: in_progress
-- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`.
+- Evidence collected: CP-0 committed as `62ba7a7d docs(browser-live): add recon hardening goal`. CP-1 committed as `b951bc92 fix(browser-live): unify semantic input actions`. CP-2 committed as `0b103b89 fix(browser-live): make force reload fresh`. CP-3 committed as `036c5485 fix(browser-live): enforce strict action schema`.
 
 ### N1: Browser Live direct-control architecture preserved
 - Source: existing completed direct-control goal and current repo invariants.
@@ -282,10 +282,10 @@ Out of scope:
 
 - 2026-06-18 02:05: CP-3 strict public action schema completed.
   - Changed: `browser_execute.action` now exposes a strict per-variant `oneOf` schema with literal `kind` values, required fields, numeric bounds, and `additionalProperties:false`; `BrowserAction` deserialization now rejects unknown variant fields so bad aliases are not silently ignored.
-  - Evidence: schema tests inspect `wait`, `navigate`, `fill`, and `script` variants; deserialization tests reject `wait.ms` and unexpected fields. Commit hash will be recorded in the follow-up ledger entry after the checkpoint commit exists.
+  - Evidence: git commit `036c5485 fix(browser-live): enforce strict action schema`. Schema tests inspect `wait`, `navigate`, `fill`, and `script` variants; deserialization tests reject `wait.ms` and unexpected fields.
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib --quiet`; `cargo fmt --all`; `cargo fmt --all -- --check`; `git diff -- crates/oxide-agent-core/src/agent/providers/browser_live/types.rs crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs`; `git status --short`.
   - Audit IDs updated: G4 verified; Q1/Q2 in progress.
-  - Next: commit CP-3, record the finalized commit hash, then start CP-4 deterministic DOM extraction.
+  - Next: commit this ledger update, then start CP-4 deterministic DOM extraction.
 
 ## Risks and Blockers
 
