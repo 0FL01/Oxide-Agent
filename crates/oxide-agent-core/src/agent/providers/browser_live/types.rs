@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Stable sidecar failure envelope body.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -253,6 +254,27 @@ pub struct ObserveResponse {
     pub error: Option<SidecarErrorBody>,
 }
 
+/// Snapshot of a DOM element included in observations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DomSnapshotNode {
+    /// CSS selector hint for the element.
+    pub selector: String,
+    /// Element tag name.
+    pub tag: String,
+    /// Visible text (truncated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Form element value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Resolved absolute URL for anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    /// Data-* attributes that are often used by SPAs to store state.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
+}
+
 /// Full browser observation payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserObservation {
@@ -266,6 +288,8 @@ pub struct BrowserObservation {
     pub screenshot: ScreenshotArtifact,
     #[serde(default)]
     pub a11y_summary: Vec<Value>,
+    #[serde(default)]
+    pub dom_snapshot: Vec<DomSnapshotNode>,
     #[serde(default)]
     pub network_summary: Option<NetworkSummary>,
     #[serde(default)]
@@ -340,15 +364,13 @@ pub enum BrowserAction {
     ClickSelector {
         selector: String,
     },
-    ClickTargetId {
-        target_id: String,
-    },
     Fill {
         selector: String,
         value: String,
     },
     TypeText {
-        text: String,
+        selector: String,
+        value: String,
     },
     Press {
         key: String,

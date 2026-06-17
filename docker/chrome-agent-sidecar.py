@@ -404,6 +404,23 @@ def _decode_response_body(result: dict[str, Any] | None) -> str | None:
     return body[:MAX_BODY_CHARS]
 
 
+# Network/console noise that should never reach the agent's summary.
+NOISE_URL_SUFFIXES = ("/favicon.ico",)
+
+
+def _is_noise_event(event: dict[str, Any]) -> bool:
+    """Return True for network/console events that are irrelevant to the agent."""
+    if event.get("type") == "console":
+        text = event.get("text", "")
+        return "favicon.ico" in text and event.get("level", "info") in ("info", "warning", "verbose")
+    url = event.get("url", "")
+    if any(url.endswith(suffix) for suffix in NOISE_URL_SUFFIXES):
+        status = event.get("status")
+        if status is None or (isinstance(status, int) and status == 404):
+            return True
+    return False
+
+
 class CDPListener:
     """Continuous CDP listener for a single browser session.
 
@@ -781,6 +798,84 @@ def parse_snapshot(snapshot: str) -> list[dict[str, Any]]:
     return items
 
 
+DOM_SNAPSHOT_MAX_ELEMENTS = 150
+DOM_SNAPSHOT_MAX_TEXT = 200
+DOM_SNAPSHOT_MAX_ATTR = 512
+
+
+DOM_SNAPSHOT_SCRIPT = """
+(() => {
+  const MAX = 150;
+  const TEXT_MAX = 200;
+  const ATTR_MAX = 512;
+  function selectorHint(el) {
+    const tag = el.tagName.toLowerCase();
+    const parts = [tag];
+    if (el.id) parts.push('#' + el.id);
+    const testId = el.getAttribute('data-testid');
+    if (testId) parts.push('[data-testid="' + String(testId).replace(/"/g, '\\"') + '"]');
+    if (el.name) parts.push('[name="' + String(el.name).replace(/"/g, '\\"') + '"]');
+    const cls = Array.from(el.classList).slice(0, 2).join('.');
+    if (cls) parts.push('.' + cls);
+    return parts.join('');
+  }
+  const candidates = new Set();
+  const add = (el) => { if (el) candidates.add(el); };
+  document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [data-clipboard-text]').forEach(add);
+  document.querySelectorAll('[data-clipboard-text]').forEach(add);
+  const seen = new Set();
+  const result = [];
+  for (const el of candidates) {
+    if (seen.has(el)) continue;
+    seen.add(el);
+    if (result.length >= MAX) break;
+    const tag = el.tagName.toLowerCase();
+    const attrs = {};
+    for (const name of el.getAttributeNames()) {
+      if (name.startsWith('data-')) {
+        attrs[name] = String(el.getAttribute(name) || '').slice(0, ATTR_MAX);
+      }
+    }
+    let href = null;
+    if (tag === 'a') {
+      try {
+        href = new URL(el.href, location.href).href;
+      } catch (e) {
+        href = el.getAttribute('href');
+      }
+    }
+    let value = null;
+    if ('value' in el) {
+      value = el.value;
+    }
+    let text = (el.innerText || '').trim().slice(0, TEXT_MAX);
+    if (!text) {
+      text = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+    }
+    result.push({ tag, selector: selectorHint(el), attributes: attrs, href, value, text });
+  }
+  return JSON.stringify(result);
+})()
+"""
+
+
+def capture_dom_snapshot(pipe: ChromeAgentPipe) -> list[dict[str, Any]] | None:
+    """Capture a compact DOM snapshot with resolved URLs and data-* attributes."""
+    result = pipe.send({"cmd": "eval", "expression": DOM_SNAPSHOT_SCRIPT}, timeout=15)
+    if not result.get("ok"):
+        return None
+    raw = result.get("result") or result.get("value")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+        return parsed
+    except json.JSONDecodeError:
+        return None
+
+
 def _resource_type_from_content_type(content_type: str | None) -> str:
     """Map chrome-agent live-network contentType to the sidecar resource_type."""
     value = (content_type or "").lower()
@@ -897,6 +992,8 @@ def _merge_history(
         item = entry["item"]
         seen.add(_network_item_key(item) if key == "network_history" else _console_item_key(item))
     for item in fresh_items:
+        if _is_noise_event(item):
+            continue
         item_key = _network_item_key(item) if key == "network_history" else _console_item_key(item)
         if item_key in seen:
             continue
@@ -1002,8 +1099,10 @@ def build_observation(
     action_seq: int = 0,
     include_network: bool = True,
     include_console: bool = True,
+    include_dom: bool = False,
     fresh: bool = True,
     max_debug_items: int = 20,
+    dom_snapshot: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a full BrowserObservation from chrome-agent output."""
     session = STATE.sessions.setdefault(session_id, {})
@@ -1088,12 +1187,14 @@ def build_observation(
         "network_summary": network_summary,
         "console_summary": console_summary,
     }
+    if include_dom and dom_snapshot is not None:
+        observation["dom_snapshot"] = dom_snapshot
     session["last_observation"] = observation
     return observation
 
 
-def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
-    """Map a press key to a chrome-agent pipe command.
+def _press_to_pipe_cmd(key: str, inspect_after: bool) -> list[dict[str, Any]]:
+    """Map a press key to a chrome-agent pipe command list.
 
     Simple keys are sent through the native ``press`` command.  Combinations
     like ``ctrl+a`` are dispatched via a JavaScript ``KeyboardEvent`` so the
@@ -1103,7 +1204,7 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
         cmd: dict[str, Any] = {"cmd": "press", "key": key}
         if inspect_after:
             cmd["inspect"] = True
-        return cmd
+        return [cmd]
 
     parts = [part.strip().lower() for part in key.split("+")]
     modifier_aliases = {
@@ -1145,10 +1246,7 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
             keys.append(key_aliases.get(part, part))
 
     if not keys:
-        return {
-            "cmd": "eval",
-            "expression": "(() => { return 'Error: no key in combo'; })()",
-        }
+        return [{"cmd": "eval", "expression": "(() => { return 'Error: no key in combo'; })()"}]
 
     resolved = keys[0]
     modifier_js = ", ".join(
@@ -1161,15 +1259,47 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
         "['keydown', 'keypress', 'keyup'].forEach(type => target.dispatchEvent(new KeyboardEvent(type, init))); "
         "return " + json.dumps("dispatched " + key) + "; })()"
     )
-    return {"cmd": "eval", "expression": script}
+    return [{"cmd": "eval", "expression": script}]
 
 
-def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True, timeout_ms: int | None = None) -> dict[str, Any]:
-    """Translate a BrowserAction into a chrome-agent pipe command object.
+def _input_dispatch_script(selector: str | None, value: str, fill: bool) -> str:
+    """Build a JS snippet that sets a value and dispatches SPA input events."""
+    selector_json = json.dumps(selector)
+    value_json = json.dumps(value)
+    action = "fill" if fill else "type"
+    return (
+        "(() => { "
+        "const el = " + (f"document.querySelector({selector_json})" if selector is not None else "document.activeElement") + "; "
+        "if (!el) return 'Error: no element found'; "
+        "if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') { "
+        "el.value = " + value_json + "; "
+        "} else if (el.isContentEditable) { "
+        "el.textContent = " + value_json + "; "
+        "} else { "
+        "return 'Error: element not fillable'; "
+        "} "
+        "el.focus(); "
+        "const common = { bubbles: true, cancelable: true }; "
+        "el.dispatchEvent(new Event('focus', common)); "
+        "el.dispatchEvent(new Event('input', common)); "
+        "el.dispatchEvent(new Event('change', common)); "
+        "el.dispatchEvent(new KeyboardEvent('keyup', { ...common, key: 'End' })); "
+        "return " + json.dumps(action + " dispatched for " + (selector if selector is not None else "activeElement")) + "; "
+        "})()"
+    )
+
+
+def action_to_pipe_cmd(
+    action: dict[str, Any], inspect_after: bool = True, timeout_ms: int | None = None
+) -> list[dict[str, Any]]:
+    """Translate a BrowserAction into a list of chrome-agent pipe commands.
 
     When `inspect_after` is False, mutating actions are issued without the
     chrome-agent `--inspect` flag. This is used by script execution so the
     sidecar can perform a single post-script inspect instead of one per step.
+
+    Input actions (fill, type_text) are split into a value-setting command and
+    a SPA event-dispatch command so React/Vue/Angular observe the change.
     """
     kind = action.get("kind")
     if kind == "click_xy":
@@ -1182,39 +1312,48 @@ def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True, timeo
             "const target = el.closest('button, a, [role=button], input[type=submit], [onclick]') || el; "
             "target.click(); return 'clicked ' + (target.tagName || 'element'); })()"
         )
-        return {"cmd": "eval", "expression": script, "inspect": inspect_after}
+        return [{"cmd": "eval", "expression": script, "inspect": inspect_after}]
     if kind == "click_selector":
-        return {"cmd": "click", "selector": action["selector"], "inspect": inspect_after}
+        return [{"cmd": "click", "selector": action["selector"], "inspect": inspect_after}]
     if kind == "click_target_id":
-        return {"cmd": "click", "uid": action["target_id"], "inspect": inspect_after}
+        return [{"cmd": "click", "uid": action["target_id"], "inspect": inspect_after}]
     if kind == "fill":
-        return {"cmd": "fill", "selector": action["selector"], "value": action["value"], "inspect": inspect_after}
+        selector = action["selector"]
+        value = action["value"]
+        return [
+            {"cmd": "fill", "selector": selector, "value": value},
+            {"cmd": "eval", "expression": _input_dispatch_script(selector, value, fill=True)},
+        ]
     if kind == "type_text":
-        return {"cmd": "type", "text": action["text"], "inspect": inspect_after}
+        selector = action.get("selector")
+        value = action.get("value", action.get("text", ""))
+        return [
+            {"cmd": "eval", "expression": _input_dispatch_script(selector, value, fill=False)},
+        ]
     if kind == "press":
         return _press_to_pipe_cmd(action["key"], inspect_after=inspect_after)
     if kind == "scroll":
         dx = action.get("delta_x", 0)
         dy = action.get("delta_y", 0)
-        return {"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": inspect_after}
+        return [{"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": inspect_after}]
     if kind == "get_element_value":
         selector = action["selector"]
-        return {"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"}
+        return [{"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"}]
     if kind == "execute_javascript":
         expression = action["expression"]
-        return {"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}
+        return [{"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}]
     if kind == "wait_for_selector":
         selector = action["selector"]
         timeout_s = max(1, (timeout_ms or action.get("timeout_ms", 10000)) // 1000)
-        return {"cmd": "wait", "what": "selector", "pattern": selector, "timeout": timeout_s}
+        return [{"cmd": "wait", "what": "selector", "pattern": selector, "timeout": timeout_s}]
     if kind == "wait_for_text":
         text = action["text"]
         timeout_s = max(1, (timeout_ms or action.get("timeout_ms", 10000)) // 1000)
-        return {"cmd": "wait", "what": "text", "pattern": text, "timeout": timeout_s}
+        return [{"cmd": "wait", "what": "text", "pattern": text, "timeout": timeout_s}]
     if kind == "wait":
         # chrome-agent pipe has no native "wait" command; the sidecar sleeps
         # in _handle_action before capturing the post-action observation.
-        return {"cmd": "eval", "expression": "true"}
+        return [{"cmd": "eval", "expression": "true"}]
     raise ValueError(f"unsupported action kind: {kind}")
 
 
@@ -1253,10 +1392,14 @@ def _is_mutating_action(action: dict[str, Any]) -> bool:
 def _run_single_action_step(
     pipe: "ChromeAgentPipe", action: dict[str, Any], timeout: float = 60.0
 ) -> tuple[dict[str, Any], int]:
-    """Execute one action step via the pipe and return (result, duration_ms)."""
-    cmd = action_to_pipe_cmd(action, inspect_after=False, timeout_ms=action.get("timeout_ms"))
+    """Execute one action step via the pipe and return (last_result, duration_ms)."""
+    cmds = action_to_pipe_cmd(action, inspect_after=False, timeout_ms=action.get("timeout_ms"))
     started = time.time()
-    result = pipe.send(cmd, timeout=timeout)
+    result: dict[str, Any] = {}
+    for cmd in cmds:
+        result = pipe.send(cmd, timeout=timeout)
+        if not result.get("ok"):
+            break
     duration_ms = int((time.time() - started) * 1000)
     if action.get("kind") == "wait":
         timeout_ms = action.get("timeout_ms", 1000)
@@ -1290,9 +1433,10 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             include_network = query.get("include_network_summary", ["true"])[0].lower() != "false"
             include_console = query.get("include_console_summary", ["true"])[0].lower() != "false"
+            include_dom = query.get("include_dom", ["false"])[0].lower() == "true"
             fresh = query.get("fresh", ["false"])[0].lower() == "true"
             max_debug_items = int(query.get("max_debug_items", ["20"])[0] or 20)
-            self._handle_observe(session_id, include_network, include_console, fresh, max_debug_items)
+            self._handle_observe(session_id, include_network, include_console, include_dom, fresh, max_debug_items)
             return
 
         if parsed.path.endswith("/debug/network"):
@@ -1571,11 +1715,13 @@ class Handler(BaseHTTPRequestHandler):
             "error": None,
         })
 
+
     def _handle_observe(
         self,
         session_id: str,
         include_network: bool,
         include_console: bool,
+        include_dom: bool,
         fresh: bool,
         max_debug_items: int,
     ) -> None:
@@ -1606,14 +1752,20 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        dom_snapshot = None
+        if include_dom:
+            dom_snapshot = capture_dom_snapshot(pipe)
+
         observation = build_observation(
             session_id,
             result,
             action_seq=action_seq,
             include_network=include_network,
             include_console=include_console,
+            include_dom=include_dom,
             fresh=fresh,
             max_debug_items=max_debug_items,
+            dom_snapshot=dom_snapshot,
         )
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),
@@ -1715,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
             success = all(r.get("ok") for r in step_results)
         else:
             try:
-                cmd = action_to_pipe_cmd(action, inspect_after=True, timeout_ms=action.get("timeout_ms"))
+                cmds = action_to_pipe_cmd(action, inspect_after=True, timeout_ms=action.get("timeout_ms"))
             except ValueError as exc:
                 self.write_json(HTTPStatus.OK, {
                     "request_id": request_id(),
@@ -1740,7 +1892,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             started = time.time()
-            result = pipe.send(cmd, timeout=60)
+            result: dict[str, Any] = {}
+            for cmd in cmds:
+                result = pipe.send(cmd, timeout=60)
+                if not result.get("ok"):
+                    break
             duration_ms = int((time.time() - started) * 1000)
             success = result.get("ok", False)
             if kind == "wait":

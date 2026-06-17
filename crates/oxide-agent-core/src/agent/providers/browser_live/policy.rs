@@ -62,7 +62,6 @@ fn action_kind(action: &super::types::BrowserAction) -> &'static str {
     match action {
         super::types::BrowserAction::ClickXy { .. } => "click_xy",
         super::types::BrowserAction::ClickSelector { .. } => "click_selector",
-        super::types::BrowserAction::ClickTargetId { .. } => "click_target_id",
         super::types::BrowserAction::Fill { .. } => "fill",
         super::types::BrowserAction::TypeText { .. } => "type_text",
         super::types::BrowserAction::Press { .. } => "press",

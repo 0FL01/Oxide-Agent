@@ -310,6 +310,7 @@ mod tests {
                 byte_size: 0,
             },
             a11y_summary: Vec::new(),
+            dom_snapshot: Vec::new(),
             network_summary: None,
             console_summary: None,
         }

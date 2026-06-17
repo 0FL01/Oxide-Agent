@@ -2,7 +2,8 @@ use super::artifacts::{
     BrowserArtifactPurpose, BrowserArtifactSettings, build_browser_artifact_ref,
 };
 use super::types::{
-    BrowserObservation, ConsoleSummary, LoadingState, NetworkSummary, ScreenshotArtifact, Viewport,
+    BrowserObservation, ConsoleSummary, DomSnapshotNode, LoadingState, NetworkSummary,
+    ScreenshotArtifact, Viewport,
 };
 use crate::agent::tool_runtime::artifacts::ArtifactRef;
 use chrono::{DateTime, Utc};
@@ -29,6 +30,8 @@ pub struct BrowserFrame {
     pub network_summary: Option<NetworkSummary>,
     /// Compact console error/warning summary for UI badges.
     pub console_summary: Option<ConsoleSummary>,
+    /// DOM snapshot of interactive elements (links, buttons, inputs, data-*).
+    pub dom_snapshot: Vec<DomSnapshotNode>,
     /// Internal artifact reference resolvable by UI/reporting layers.
     pub artifact: ArtifactRef,
     /// Whether this artifact must survive ring-buffer eviction.
@@ -152,6 +155,7 @@ impl BrowserSessionState {
             loading_state: observation.loading_state,
             network_summary: observation.network_summary.clone(),
             console_summary: observation.console_summary.clone(),
+            dom_snapshot: observation.dom_snapshot.clone(),
             retained: purpose.is_retained(),
             artifact,
         };
@@ -480,6 +484,7 @@ mod tests {
                 byte_size: 0,
             },
             a11y_summary: Vec::new(),
+            dom_snapshot: Vec::new(),
             network_summary: None,
             console_summary: None,
         }

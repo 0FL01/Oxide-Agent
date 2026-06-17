@@ -260,7 +260,7 @@ impl BrowserLiveProvider {
         ensure_not_cancelled(invocation)?;
         let query = ObserveQuery {
             fresh: args.fresh,
-            include_dom: false,
+            include_dom: args.include_dom,
             include_a11y: args.include_a11y,
             include_network_summary: true,
             include_console_summary: true,
@@ -555,7 +555,7 @@ impl BrowserLiveProvider {
                 session_id,
                 &ObserveQuery {
                     fresh: true,
-                    include_dom: false,
+                    include_dom: true,
                     include_a11y: false,
                     include_network_summary: true,
                     include_console_summary: true,
@@ -853,6 +853,8 @@ struct ObserveArgs {
     session_id: String,
     #[serde(default)]
     fresh: bool,
+    #[serde(default = "default_true")]
+    include_dom: bool,
     #[serde(default)]
     include_a11y: bool,
     #[serde(default)]
@@ -977,6 +979,7 @@ fn observation_payload(
         "loading_state": frame.loading_state,
         "network_summary": frame.network_summary,
         "console_summary": frame.console_summary,
+        "dom_snapshot": frame.dom_snapshot,
         "screenshot": {
             "screenshot_id": screenshot.screenshot_id,
             "artifact_uri": frame.artifact.uri,
@@ -1033,13 +1036,14 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_OBSERVE => (
-            "Return compact browser state (url, title, loading state, network/console summaries) and attach the latest screenshot as a native image for vision models.",
+            "Return compact browser state (url, title, loading state, network/console summaries, optional DOM snapshot) and attach the latest screenshot as a native image for vision models.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
                 "properties": {
                     "session_id": {"type": "string"},
                     "fresh": {"type": "boolean", "default": false, "description": "capture a fresh screenshot instead of reusing the last cached one"},
+                    "include_dom": {"type": "boolean", "default": true, "description": "include a DOM snapshot of interactive elements, data-* attributes and resolved hrefs"},
                     "include_a11y": {"type": "boolean", "default": false},
                     "max_debug_items": {"type": "integer", "minimum": 0, "maximum": 100}
                 },
@@ -1047,7 +1051,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXECUTE => (
-            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot, then call this tool with exactly one action (click, fill, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values.",
+            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot and DOM snapshot, then call this tool with exactly one action (click, fill, type_text, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values.",
             json!({
                 "type": "object",
                 "required": ["session_id", "action"],
@@ -1055,7 +1059,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "session_id": {"type": "string"},
                     "action": {
                         "type": "object",
-                        "description": "BrowserAction schema: one of click_xy, click_selector, click_target_id, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate"
+                        "description": "BrowserAction schema: one of click_xy, click_selector, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate"
                     },
                     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
                     "expected_result": {"type": "string"}
@@ -1064,7 +1068,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXTRACT => (
-            "Extract structured data from the current page: network response bodies or DOM element properties.",
+            "Extract structured data from the current page: network response bodies or DOM element properties and attributes.",
             json!({
                 "type": "object",
                 "required": ["session_id", "source"],
@@ -1072,7 +1076,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "session_id": {"type": "string"},
                     "source": {"type": "string", "enum": ["dom", "network"]},
                     "selector": {"type": "string", "description": "CSS selector for dom source"},
-                    "attribute": {"type": "string", "description": "preferred dom attribute: value, innerText, innerHTML, textContent (all are returned if omitted)"},
+                    "attribute": {"type": "string", "description": "preferred dom attribute: value, innerText, innerHTML, textContent, href, or any data-* attribute (all are returned if omitted)"},
                     "url_pattern": {"type": "string", "description": "glob/ substring pattern for network source, e.g. */api/create"},
                     "method": {"type": "string", "description": "HTTP method filter for network source"},
                     "status_code": {"type": "integer", "description": "HTTP status filter for network source"},
@@ -1232,6 +1236,8 @@ async fn extract_from_dom(
                 "innerText": element.get("innerText"),
                 "innerHTML": element.get("innerHTML"),
                 "textContent": element.get("textContent"),
+                "href": element.get("href"),
+                "attributes": element.get("attributes"),
             })
         })
         .collect())
@@ -1274,7 +1280,14 @@ fn url_matches_pattern(url: &str, pattern: &str) -> bool {
 fn dom_extract_expression(selector: &str) -> String {
     let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
     format!(
-        "JSON.stringify(Array.from(document.querySelectorAll(JSON.parse({selector_json}))).map(el => ({{ value: el.value !== undefined ? el.value : null, innerText: el.innerText, innerHTML: el.innerHTML, textContent: el.textContent }})))"
+        "JSON.stringify(Array.from(document.querySelectorAll(JSON.parse({selector_json}))).map(el => ({{ \
+            value: el.value !== undefined ? el.value : null, \
+            innerText: el.innerText, \
+            innerHTML: el.innerHTML, \
+            textContent: el.textContent, \
+            href: el.tagName === 'A' ? new URL(el.href, location.href).href : null, \
+            attributes: Object.fromEntries(Array.from(el.attributes).filter(a => a.name.startsWith('data-')).map(a => [a.name, a.value])) \
+        }})))"
     )
 }
 
@@ -1501,6 +1514,7 @@ mod tests {
             loading_state: LoadingState::Idle,
             network_summary: None,
             console_summary: None,
+            dom_snapshot: Vec::new(),
             artifact: ArtifactRef::internal(
                 "artifact://browser/task/session/step-0001-live.png",
                 std::path::PathBuf::from("/tmp/step-0001-live.png"),

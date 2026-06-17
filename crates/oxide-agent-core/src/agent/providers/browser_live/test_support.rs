@@ -590,6 +590,7 @@ impl FakeSession {
             loading_state: LoadingState::Idle,
             screenshot: self.screenshot(session_id),
             a11y_summary: Vec::new(),
+            dom_snapshot: Vec::new(),
             network_summary: Some(NetworkSummary {
                 failed_count,
                 recent_failures: network_items.to_vec(),
