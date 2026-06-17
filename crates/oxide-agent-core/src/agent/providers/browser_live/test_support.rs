@@ -8,9 +8,9 @@ use super::types::{
     ConsoleDebugQuery, ConsoleDebugResponse, ConsoleItem, ConsoleLevel, ConsoleSummary,
     CreateSessionRequest, CreateSessionResponse, DebugLevel, GotoRequest, GotoResponse,
     LoadingState, NavigationResult, NavigationStatus, NetworkDebugPayload, NetworkDebugQuery,
-    NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary, ObservationSummary,
-    ObserveQuery, ObserveResponse, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery,
-    ScreenshotResponse, Viewport,
+    NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary, ObserveQuery,
+    ObserveResponse, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, ScreenshotResponse,
+    Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -26,6 +26,7 @@ pub(crate) enum FakeActionOutcome {
     CoordinateDrift,
     Failure,
     StaleFrame,
+    JsError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,8 @@ struct FakeSession {
     url: String,
     title: String,
     closed: bool,
+    network_history: Vec<(u64, NetworkItem)>,
+    console_history: Vec<(u64, ConsoleItem)>,
 }
 
 impl Default for FakeBrowserSidecar {
@@ -102,6 +105,44 @@ impl FakeBrowserSidecar {
         });
     }
 
+    pub(crate) fn add_network_failure_to_session(
+        &self,
+        session_id: &str,
+        url_redacted: &str,
+        error_text: &str,
+    ) {
+        let mut state = self.state();
+        let session = state.sessions.get_mut(session_id).expect("session exists");
+        let action_seq = session.action_seq;
+        session.network_history.push((
+            action_seq,
+            NetworkItem {
+                timestamp: fixed_timestamp(),
+                method: "GET".to_string(),
+                url_redacted: url_redacted.to_string(),
+                status: None,
+                resource_type: "xhr".to_string(),
+                error_text: Some(error_text.to_string()),
+            },
+        ));
+    }
+
+    pub(crate) fn add_console_error_to_session(&self, session_id: &str, text_redacted: &str) {
+        let mut state = self.state();
+        let session = state.sessions.get_mut(session_id).expect("session exists");
+        let action_seq = session.action_seq;
+        session.console_history.push((
+            action_seq,
+            ConsoleItem {
+                timestamp: fixed_timestamp(),
+                level: ConsoleLevel::Error,
+                text_redacted: text_redacted.to_string(),
+                source: Some("app.js".to_string()),
+                line: Some(42),
+            },
+        ));
+    }
+
     pub(crate) fn crash_next_request(&self) {
         self.state().crash_next_request = true;
     }
@@ -132,6 +173,18 @@ impl BrowserSidecar for FakeBrowserSidecar {
             .clone()
             .unwrap_or_else(|| "about:blank".to_string());
         let title = title_for_url(&url);
+        let network_history: Vec<(u64, NetworkItem)> = state
+            .network_items
+            .iter()
+            .cloned()
+            .map(|item| (0, item))
+            .collect();
+        let console_history: Vec<(u64, ConsoleItem)> = state
+            .console_items
+            .iter()
+            .cloned()
+            .map(|item| (0, item))
+            .collect();
         let session = FakeSession {
             task_id: request.task_id.clone(),
             viewport: request.viewport,
@@ -140,6 +193,8 @@ impl BrowserSidecar for FakeBrowserSidecar {
             url,
             title,
             closed: false,
+            network_history,
+            console_history,
         };
         state.sessions.insert(session_id.clone(), session);
 
@@ -187,12 +242,12 @@ impl BrowserSidecar for FakeBrowserSidecar {
     ) -> Result<GotoResponse, BrowserSidecarError> {
         self.maybe_crash()?;
         let mut state = self.state();
-        let summary = {
+        let observation = {
             let session = state.session_mut(session_id)?;
             session.url.clone_from(&request.url);
             session.title = title_for_url(&request.url);
             session.observation_seq += 1;
-            session.summary(session_id)
+            session.observation(session_id)
         };
 
         Ok(GotoResponse {
@@ -206,7 +261,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
                 http_status: Some(200),
                 redirect_count: 0,
             },
-            observation: summary,
+            observation: Some(observation),
             error: None,
         })
     }
@@ -220,10 +275,8 @@ impl BrowserSidecar for FakeBrowserSidecar {
         let mut state = self.state();
         let request_id = state.next_request_id();
         let observation = {
-            let network_items = state.network_items.clone();
-            let console_items = state.console_items.clone();
             let session = state.session_mut(session_id)?;
-            session.observation(session_id, &network_items, &console_items)
+            session.observation(session_id)
         };
 
         Ok(ObserveResponse {
@@ -263,7 +316,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
         }
 
         let mut state = self.state();
-        let summary = {
+        let post_observation = if request.capture_after {
             let session = state.session_mut(session_id)?;
             session.action_seq = request.action_seq;
             if outcome != FakeActionOutcome::StaleFrame {
@@ -273,7 +326,9 @@ impl BrowserSidecar for FakeBrowserSidecar {
                 session.url = "https://example.test/success".to_string();
                 session.title = "Success".to_string();
             }
-            session.summary(session_id)
+            Some(session.observation(session_id))
+        } else {
+            None
         };
         let status = match outcome {
             FakeActionOutcome::Success
@@ -281,10 +336,12 @@ impl BrowserSidecar for FakeBrowserSidecar {
             | FakeActionOutcome::StaleFrame => ActionStatus::Executed,
             FakeActionOutcome::NoOp | FakeActionOutcome::CoordinateDrift => ActionStatus::NoOp,
             FakeActionOutcome::Failure => unreachable!("failure returned above"),
+            FakeActionOutcome::JsError(_) => ActionStatus::Failed,
         };
         let technical_success = status == ActionStatus::Executed;
         let hint = match outcome {
             FakeActionOutcome::CoordinateDrift => Some("coordinate mismatch detected".to_string()),
+            FakeActionOutcome::JsError(ref message) => Some(message.clone()),
             _ => (status == ActionStatus::NoOp)
                 .then(|| "action produced no visible change".to_string()),
         };
@@ -300,8 +357,9 @@ impl BrowserSidecar for FakeBrowserSidecar {
                 duration_ms: 25,
                 technical_success,
                 hint,
+                result: None,
             },
-            post_observation: summary,
+            post_observation,
             error: None,
         })
     }
@@ -359,8 +417,13 @@ impl BrowserSidecar for FakeBrowserSidecar {
     ) -> Result<NetworkDebugResponse, BrowserSidecarError> {
         self.maybe_crash()?;
         let mut state = self.state();
-        state.session_mut(session_id)?;
-        let mut items = state.network_items.clone();
+        let session = state.session_mut(session_id)?;
+        let mut items: Vec<NetworkItem> = session
+            .network_history
+            .iter()
+            .filter(|(seq, _)| *seq >= query.since_action_seq)
+            .map(|(_, item)| item.clone())
+            .collect();
         if query.filter == NetworkFilter::Failed {
             items.retain(|item| {
                 item.error_text.is_some() || item.status.is_some_and(|status| status >= 400)
@@ -387,8 +450,13 @@ impl BrowserSidecar for FakeBrowserSidecar {
     ) -> Result<ConsoleDebugResponse, BrowserSidecarError> {
         self.maybe_crash()?;
         let mut state = self.state();
-        state.session_mut(session_id)?;
-        let mut items = state.console_items.clone();
+        let session = state.session_mut(session_id)?;
+        let mut items: Vec<ConsoleItem> = session
+            .console_history
+            .iter()
+            .filter(|(seq, _)| *seq >= query.since_action_seq)
+            .map(|(_, item)| item.clone())
+            .collect();
         if query.min_level == ConsoleLevel::Error {
             items.retain(|item| item.level == ConsoleLevel::Error);
         }
@@ -461,22 +529,17 @@ impl FakeState {
 }
 
 impl FakeSession {
-    fn summary(&self, _session_id: &str) -> ObservationSummary {
-        ObservationSummary {
-            observation_id: self.observation_id(),
-            screenshot_id: self.screenshot_id(),
-            url: self.url.clone(),
-            title: self.title.clone(),
-            loading_state: LoadingState::Idle,
-        }
-    }
-
-    fn observation(
-        &self,
-        session_id: &str,
-        network_items: &[NetworkItem],
-        console_items: &[ConsoleItem],
-    ) -> BrowserObservation {
+    fn observation(&self, session_id: &str) -> BrowserObservation {
+        let network_items: Vec<NetworkItem> = self
+            .network_history
+            .iter()
+            .map(|(_, item)| item.clone())
+            .collect();
+        let console_items: Vec<ConsoleItem> = self
+            .console_history
+            .iter()
+            .map(|(_, item)| item.clone())
+            .collect();
         let failed_count = network_items
             .iter()
             .filter(|item| {
@@ -647,11 +710,30 @@ mod tests {
 
         assert!(session.ok);
         assert_eq!(first_observation.observation.observation_id, "fake-obs-1");
-        assert_eq!(goto.observation.observation_id, "fake-obs-2");
-        assert_eq!(click.post_observation.observation_id, "fake-obs-3");
+        assert_eq!(
+            goto.observation
+                .as_ref()
+                .expect("goto observation")
+                .observation_id,
+            "fake-obs-2"
+        );
+        assert_eq!(
+            click
+                .post_observation
+                .as_ref()
+                .expect("click post_observation")
+                .observation_id,
+            "fake-obs-3"
+        );
         assert_eq!(noop.action_result.status, ActionStatus::NoOp);
         assert!(!noop.action_result.technical_success);
-        assert_eq!(noop.post_observation.observation_id, "fake-obs-4");
+        assert_eq!(
+            noop.post_observation
+                .as_ref()
+                .expect("noop post_observation")
+                .observation_id,
+            "fake-obs-4"
+        );
         assert_eq!(screenshot.screenshot.screenshot_id, "fake-shot-4");
         assert!(closed.closed);
     }
@@ -675,14 +757,15 @@ mod tests {
             .await
             .expect("stale action response");
 
+        let post = action
+            .post_observation
+            .as_ref()
+            .expect("stale post_observation");
         assert_eq!(
-            action.post_observation.screenshot_id,
+            post.screenshot.screenshot_id,
             before.observation.screenshot.screenshot_id
         );
-        assert_eq!(
-            action.post_observation.observation_id,
-            before.observation.observation_id
-        );
+        assert_eq!(post.observation_id, before.observation.observation_id);
     }
 
     #[tokio::test]
@@ -777,6 +860,145 @@ mod tests {
                 .error_count,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn fake_debug_network_respects_since_action_seq() {
+        let fake = FakeBrowserSidecar::new();
+        fake.add_network_failure("https://example.test/old", "old reset");
+        let key = key();
+        let session = fake
+            .create_session(&create_request(None), &key)
+            .await
+            .expect("create fake session");
+
+        let action = fake
+            .execute_action(&session.session_id, &click_request(1), &key)
+            .await
+            .expect("click");
+        assert_eq!(action.action_result.status, ActionStatus::Executed);
+
+        fake.add_network_failure_to_session(
+            &session.session_id,
+            "https://example.test/new",
+            "new reset",
+        );
+
+        let all = fake
+            .debug_network(
+                &session.session_id,
+                &NetworkDebugQuery {
+                    since_action_seq: 0,
+                    level: DebugLevel::Summary,
+                    include_bodies: false,
+                    filter: NetworkFilter::Failed,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("debug all");
+        let recent = fake
+            .debug_network(
+                &session.session_id,
+                &NetworkDebugQuery {
+                    since_action_seq: 1,
+                    level: DebugLevel::Summary,
+                    include_bodies: false,
+                    filter: NetworkFilter::Failed,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("debug recent");
+
+        assert_eq!(all.network.items.len(), 2);
+        assert_eq!(recent.network.items.len(), 1);
+        assert_eq!(
+            recent.network.items[0].url_redacted,
+            "https://example.test/new"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_debug_console_respects_since_action_seq() {
+        let fake = FakeBrowserSidecar::new();
+        fake.add_console_error("old error");
+        let key = key();
+        let session = fake
+            .create_session(&create_request(None), &key)
+            .await
+            .expect("create fake session");
+
+        fake.execute_action(&session.session_id, &click_request(1), &key)
+            .await
+            .expect("click");
+
+        fake.add_console_error_to_session(&session.session_id, "new error");
+
+        let all = fake
+            .debug_console(
+                &session.session_id,
+                &ConsoleDebugQuery {
+                    since_action_seq: 0,
+                    level: DebugLevel::Summary,
+                    min_level: ConsoleLevel::Error,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("debug all");
+        let recent = fake
+            .debug_console(
+                &session.session_id,
+                &ConsoleDebugQuery {
+                    since_action_seq: 1,
+                    level: DebugLevel::Summary,
+                    min_level: ConsoleLevel::Error,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("debug recent");
+
+        assert_eq!(all.console.items.len(), 2);
+        assert_eq!(recent.console.items.len(), 1);
+        assert_eq!(recent.console.items[0].text_redacted, "new error");
+    }
+
+    #[tokio::test]
+    async fn fake_js_error_action_returns_failed_status() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::JsError(
+            "Error: element not found".to_string(),
+        )]);
+        let key = key();
+        let session = fake
+            .create_session(&create_request(None), &key)
+            .await
+            .expect("create fake session");
+
+        let request = ActionRequest {
+            action_seq: 1,
+            action: BrowserAction::ExecuteJavaScript {
+                expression: "document.querySelector('missing').value".to_string(),
+            },
+            expected_result: "read value".to_string(),
+            timeout_ms: 1_000,
+            capture_after: true,
+            wait_for_stability: true,
+        };
+
+        let response = fake
+            .execute_action(&session.session_id, &request, &key)
+            .await
+            .expect("execute action");
+
+        assert_eq!(response.action_result.status, ActionStatus::Failed);
+        assert!(!response.action_result.technical_success);
+        assert_eq!(
+            response.action_result.hint,
+            Some("Error: element not found".to_string())
+        );
+        assert!(response.post_observation.is_some());
     }
 
     fn create_request(start_url: Option<&str>) -> CreateSessionRequest {

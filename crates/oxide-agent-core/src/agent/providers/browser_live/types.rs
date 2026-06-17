@@ -170,13 +170,13 @@ pub struct GotoRequest {
 }
 
 /// Response from `POST /sessions/{id}/goto`.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GotoResponse {
     pub request_id: String,
     pub session_id: String,
     pub ok: bool,
     pub navigation: NavigationResult,
-    pub observation: ObservationSummary,
+    pub observation: Option<BrowserObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<SidecarErrorBody>,
 }
@@ -201,16 +201,6 @@ pub enum NavigationStatus {
     Partial,
     Timeout,
     Blocked,
-}
-
-/// Compact observation summary returned by mutating endpoints.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-pub struct ObservationSummary {
-    pub observation_id: String,
-    pub screenshot_id: String,
-    pub url: String,
-    pub title: String,
-    pub loading_state: LoadingState,
 }
 
 /// Loading state reported by the sidecar.
@@ -363,6 +353,13 @@ pub enum BrowserAction {
         delta_x: i32,
         delta_y: i32,
     },
+    GetElementValue {
+        selector: String,
+    },
+    #[serde(rename = "execute_javascript")]
+    ExecuteJavaScript {
+        expression: String,
+    },
     Wait {
         timeout_ms: u64,
     },
@@ -411,6 +408,13 @@ pub enum BrowserDecisionAction {
         delta_x: i32,
         delta_y: i32,
     },
+    GetElementValue {
+        selector: String,
+    },
+    #[serde(rename = "execute_javascript")]
+    ExecuteJavaScript {
+        expression: String,
+    },
     Wait {
         timeout_ms: u64,
     },
@@ -449,13 +453,13 @@ pub struct BrowserSensitiveAction {
 }
 
 /// Response from `POST /sessions/{id}/action`.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActionResponse {
     pub request_id: String,
     pub session_id: String,
     pub ok: bool,
     pub action_result: ActionResult,
-    pub post_observation: ObservationSummary,
+    pub post_observation: Option<BrowserObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<SidecarErrorBody>,
 }
@@ -470,6 +474,9 @@ pub struct ActionResult {
     pub technical_success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Optional string result returned by the action (e.g., DOM value or JS eval output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
 }
 
 /// Technical action status.
@@ -750,6 +757,27 @@ mod tests {
         };
         let value = serde_json::to_value(action).expect("serialize action");
         assert_eq!(value["kind"], "click_xy");
+
+        let get_value = BrowserAction::GetElementValue {
+            selector: "input[name=secret]".to_string(),
+        };
+        let value = serde_json::to_value(get_value).expect("serialize action");
+        assert_eq!(value["kind"], "get_element_value");
+        assert_eq!(value["selector"], "input[name=secret]");
+
+        let execute_js = BrowserAction::ExecuteJavaScript {
+            expression: "document.title".to_string(),
+        };
+        let value = serde_json::to_value(execute_js).expect("serialize action");
+        assert_eq!(value["kind"], "execute_javascript");
+        assert_eq!(value["expression"], "document.title");
+
+        let press = BrowserAction::Press {
+            key: "ctrl+a".to_string(),
+        };
+        let value = serde_json::to_value(press).expect("serialize press");
+        assert_eq!(value["kind"], "press");
+        assert_eq!(value["key"], "ctrl+a");
 
         let event = BrowserStreamEvent::Heartbeat {
             session_id: "br_1".to_string(),

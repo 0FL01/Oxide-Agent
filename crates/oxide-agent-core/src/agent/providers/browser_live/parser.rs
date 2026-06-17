@@ -123,6 +123,13 @@ fn validate_action(
                 return invalid_action("scroll delta is too large");
             }
         }
+        BrowserDecisionAction::GetElementValue { selector } => non_empty("selector", selector)?,
+        BrowserDecisionAction::ExecuteJavaScript { expression } => {
+            non_empty("expression", expression)?;
+            if expression.chars().count() > MAX_TEXT_INPUT_CHARS {
+                return invalid_action("execute_javascript expression is too long");
+            }
+        }
         BrowserDecisionAction::Wait { timeout_ms } => {
             if !(100..=MAX_WAIT_MS).contains(timeout_ms) {
                 return invalid_action("wait timeout_ms must be between 100 and 10000");
@@ -157,6 +164,8 @@ fn is_executable_action(action: &BrowserDecisionAction) -> bool {
             | BrowserDecisionAction::TypeText { .. }
             | BrowserDecisionAction::Press { .. }
             | BrowserDecisionAction::Scroll { .. }
+            | BrowserDecisionAction::GetElementValue { .. }
+            | BrowserDecisionAction::ExecuteJavaScript { .. }
             | BrowserDecisionAction::Wait { .. }
             | BrowserDecisionAction::Navigate { .. }
     )
@@ -291,6 +300,51 @@ mod tests {
         assert!(matches!(
             error,
             BrowserDecisionParseError::LowConfidence { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_get_element_value_decision() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"get_element_value\", \"selector\": \"input[name=secret]\"}",
+        );
+
+        let decision = parse_browser_decision(&output, validation()).expect("valid decision");
+
+        assert!(matches!(
+            decision.action,
+            BrowserDecisionAction::GetElementValue { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_execute_javascript_decision() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"execute_javascript\", \"expression\": \"document.title\"}",
+        );
+
+        let decision = parse_browser_decision(&output, validation()).expect("valid decision");
+
+        assert!(matches!(
+            decision.action,
+            BrowserDecisionAction::ExecuteJavaScript { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_press_combo_decision() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"press\", \"key\": \"ctrl+a\"}",
+        );
+
+        let decision = parse_browser_decision(&output, validation()).expect("valid decision");
+
+        assert!(matches!(
+            decision.action,
+            BrowserDecisionAction::Press { ref key } if key == "ctrl+a"
         ));
     }
 

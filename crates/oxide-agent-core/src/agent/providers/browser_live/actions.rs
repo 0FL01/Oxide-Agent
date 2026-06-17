@@ -120,6 +120,30 @@ pub fn plan_browser_action(
                 wait_for_stability: true,
             }))
         }
+        BrowserDecisionAction::GetElementValue { selector } => {
+            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
+                action_seq,
+                action: BrowserAction::GetElementValue {
+                    selector: selector.clone(),
+                },
+                expected_result: decision.expected_result.clone(),
+                timeout_ms,
+                capture_after: true,
+                wait_for_stability: true,
+            }))
+        }
+        BrowserDecisionAction::ExecuteJavaScript { expression } => {
+            Ok(BrowserActionPlan::SidecarAction(ActionRequest {
+                action_seq,
+                action: BrowserAction::ExecuteJavaScript {
+                    expression: expression.clone(),
+                },
+                expected_result: decision.expected_result.clone(),
+                timeout_ms,
+                capture_after: true,
+                wait_for_stability: true,
+            }))
+        }
         BrowserDecisionAction::Wait {
             timeout_ms: wait_ms,
         } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
@@ -179,6 +203,66 @@ mod tests {
             panic!("expected sidecar action");
         };
         assert_eq!(request.action_seq, 7);
+        assert!(request.capture_after);
+        assert!(request.wait_for_stability);
+    }
+
+    #[test]
+    fn maps_get_element_value_decision_to_sidecar_action_request() {
+        let decision = decision(BrowserDecisionAction::GetElementValue {
+            selector: "input[name=secret]".to_string(),
+        });
+
+        let plan = plan_browser_action(&decision, 3, 10_000).expect("plan");
+
+        let BrowserActionPlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert_eq!(request.action_seq, 3);
+        assert!(matches!(
+            request.action,
+            BrowserAction::GetElementValue { ref selector } if selector == "input[name=secret]"
+        ));
+        assert!(request.capture_after);
+        assert!(request.wait_for_stability);
+    }
+
+    #[test]
+    fn maps_execute_javascript_decision_to_sidecar_action_request() {
+        let decision = decision(BrowserDecisionAction::ExecuteJavaScript {
+            expression: "document.querySelector('input').value".to_string(),
+        });
+
+        let plan = plan_browser_action(&decision, 4, 10_000).expect("plan");
+
+        let BrowserActionPlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert_eq!(request.action_seq, 4);
+        assert!(matches!(
+            request.action,
+            BrowserAction::ExecuteJavaScript { ref expression } if expression == "document.querySelector('input').value"
+        ));
+        assert!(request.capture_after);
+        assert!(request.wait_for_stability);
+    }
+
+    #[test]
+    fn maps_press_combo_decision_to_sidecar_action_request() {
+        let decision = decision(BrowserDecisionAction::Press {
+            key: "ctrl+a".to_string(),
+        });
+
+        let plan = plan_browser_action(&decision, 5, 10_000).expect("plan");
+
+        let BrowserActionPlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert_eq!(request.action_seq, 5);
+        assert!(matches!(
+            request.action,
+            BrowserAction::Press { ref key } if key == "ctrl+a"
+        ));
         assert!(request.capture_after);
         assert!(request.wait_for_stability);
     }

@@ -166,13 +166,13 @@ impl MediaFileProvider {
     fn describe_image_tool() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_DESCRIBE_IMAGE_FILE.to_string(),
-            description: "Analyze an image file stored in the sandbox or fetched from a direct URL and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
+            description: "Analyze an image file stored in the sandbox, fetched from a direct URL, or referenced by an artifact:// URI and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the image file in the sandbox (relative or absolute) or an http(s) URL to a remote image"
+                        "description": "Path to the image file in the sandbox (relative or absolute), an http(s) URL to a remote image, or an artifact:// URI produced by the browser-live tool"
                     },
                     "prompt": {
                         "type": "string",
@@ -213,7 +213,31 @@ impl MediaFileProvider {
         &self,
         path: &str,
         kind: Option<MediaKind>,
+        artifact_dir: Option<&Path>,
     ) -> Result<(String, Vec<u8>, Option<String>)> {
+        if path.starts_with("artifact://") {
+            let artifact_dir = artifact_dir.ok_or_else(|| {
+                anyhow!("artifact:// URI requires a configured artifact directory")
+            })?;
+            let relative = path.strip_prefix("artifact://").unwrap_or(path);
+            let local_path = artifact_dir.join(relative);
+            let canonical_dir = std::fs::canonicalize(artifact_dir)
+                .ok()
+                .unwrap_or_else(|| artifact_dir.to_path_buf());
+            let canonical_path = std::fs::canonicalize(&local_path)
+                .ok()
+                .unwrap_or_else(|| local_path.clone());
+            if !canonical_path.starts_with(&canonical_dir) {
+                return Err(anyhow!(
+                    "artifact URI resolves outside the artifact directory"
+                ));
+            }
+            let bytes = tokio::fs::read(&canonical_path)
+                .await
+                .map_err(|error| anyhow!("Failed to read artifact {path}: {error}"))?;
+            return Ok((canonical_path.to_string_lossy().to_string(), bytes, None));
+        }
+
         if is_remote_url(path) {
             let media_kind = kind.ok_or_else(|| anyhow!("Remote media kind is required"))?;
             let resolved_path = self.download_remote_media_file(path, media_kind).await?;
@@ -226,8 +250,12 @@ impl MediaFileProvider {
         Ok((resolved_path, bytes, None))
     }
 
-    async fn read_media_file(&self, path: &str) -> Result<(String, Vec<u8>)> {
-        let (resolved_path, bytes, _) = self.read_media_source(path, None).await?;
+    async fn read_media_file(
+        &self,
+        path: &str,
+        artifact_dir: Option<&Path>,
+    ) -> Result<(String, Vec<u8>)> {
+        let (resolved_path, bytes, _) = self.read_media_source(path, None, artifact_dir).await?;
         Ok((resolved_path, bytes))
     }
 
@@ -328,9 +356,13 @@ impl MediaFileProvider {
         }
     }
 
-    async fn handle_transcribe_audio_file(&self, arguments: &str) -> Result<String> {
+    async fn handle_transcribe_audio_file(
+        &self,
+        arguments: &str,
+        artifact_dir: Option<&Path>,
+    ) -> Result<String> {
         let args: AudioFileArgs = serde_json::from_str(arguments)?;
-        let (resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
+        let (resolved_path, audio_bytes) = self.read_media_file(&args.path, artifact_dir).await?;
         let mime_type = args
             .mime_type
             .unwrap_or_else(|| infer_audio_mime_type(&resolved_path).to_string());
@@ -355,10 +387,14 @@ impl MediaFileProvider {
         }))?)
     }
 
-    async fn handle_describe_image_file(&self, arguments: &str) -> Result<String> {
+    async fn handle_describe_image_file(
+        &self,
+        arguments: &str,
+        artifact_dir: Option<&Path>,
+    ) -> Result<String> {
         let args: ImageFileArgs = serde_json::from_str(arguments)?;
         let (resolved_path, image_bytes, cleanup_path) = self
-            .read_media_source(&args.path, Some(MediaKind::Image))
+            .read_media_source(&args.path, Some(MediaKind::Image), artifact_dir)
             .await?;
         let prompt = args.prompt.unwrap_or_else(|| {
             "Describe this image in detail for an AI agent. Include all important details, text, objects and their locations.".to_string()
@@ -385,10 +421,14 @@ impl MediaFileProvider {
         }))?)
     }
 
-    async fn handle_describe_video_file(&self, arguments: &str) -> Result<String> {
+    async fn handle_describe_video_file(
+        &self,
+        arguments: &str,
+        artifact_dir: Option<&Path>,
+    ) -> Result<String> {
         let args: VideoFileArgs = serde_json::from_str(arguments)?;
         let (resolved_path, video_bytes, cleanup_path) = self
-            .read_media_source(&args.path, Some(MediaKind::Video))
+            .read_media_source(&args.path, Some(MediaKind::Video), artifact_dir)
             .await?;
         let mime_type = args
             .mime_type
@@ -419,12 +459,26 @@ impl MediaFileProvider {
         }))?)
     }
 
-    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        artifact_dir: Option<&Path>,
+    ) -> Result<String> {
         debug!(tool = tool_name, "Executing media_file tool");
         match tool_name {
-            TOOL_TRANSCRIBE_AUDIO_FILE => self.handle_transcribe_audio_file(arguments).await,
-            TOOL_DESCRIBE_IMAGE_FILE => self.handle_describe_image_file(arguments).await,
-            TOOL_DESCRIBE_VIDEO_FILE => self.handle_describe_video_file(arguments).await,
+            TOOL_TRANSCRIBE_AUDIO_FILE => {
+                self.handle_transcribe_audio_file(arguments, artifact_dir)
+                    .await
+            }
+            TOOL_DESCRIBE_IMAGE_FILE => {
+                self.handle_describe_image_file(arguments, artifact_dir)
+                    .await
+            }
+            TOOL_DESCRIBE_VIDEO_FILE => {
+                self.handle_describe_video_file(arguments, artifact_dir)
+                    .await
+            }
             _ => anyhow::bail!("Unknown media_file tool: {tool_name}"),
         }
     }
@@ -630,7 +684,11 @@ impl ToolExecutor for MediaFileToolExecutor {
             ..ToolRuntimeConfig::default()
         });
         self.provider
-            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                Some(&invocation.execution_context.artifact_dir),
+            )
             .await
             .map(|output| normalizer.success(&invocation, &output, ""))
             .map_err(media_file_runtime_error)
@@ -833,6 +891,40 @@ mod tests {
         let output = OutputNormalizer::new(ToolRuntimeConfig::default())
             .executor_error(&runtime_invocation(TOOL_DESCRIBE_IMAGE_FILE, "{}"), error);
         assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
+    }
+
+    #[tokio::test]
+    async fn artifact_uri_resolves_to_local_artifact_file() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let artifact_dir = std::env::temp_dir().join(format!("oxide-media-artifact-test-{nonce}"));
+        let inner = artifact_dir.join("browser/task-1/session-1");
+        tokio::fs::create_dir_all(&inner)
+            .await
+            .expect("create artifact test dirs");
+        let artifact_path = inner.join("step-0001-milestone.jpg");
+        tokio::fs::write(&artifact_path, b"fake-image-bytes")
+            .await
+            .expect("write artifact test file");
+
+        let provider =
+            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
+        let (resolved_path, bytes, cleanup_path) = provider
+            .read_media_source(
+                "artifact://browser/task-1/session-1/step-0001-milestone.jpg",
+                Some(MediaKind::Image),
+                Some(&artifact_dir),
+            )
+            .await
+            .expect("resolve artifact URI");
+
+        assert_eq!(resolved_path, artifact_path.to_string_lossy());
+        assert_eq!(bytes, b"fake-image-bytes");
+        assert!(cleanup_path.is_none());
+
+        let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
     }
 
     mod media_resolver_tests {

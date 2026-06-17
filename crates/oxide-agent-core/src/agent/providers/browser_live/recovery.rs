@@ -299,6 +299,15 @@ fn decision_action_signature(action: &BrowserDecisionAction) -> String {
         BrowserDecisionAction::TypeText { .. } => "type_text".to_string(),
         BrowserDecisionAction::Press { key } => format!("press:{}", normalize_signature_text(key)),
         BrowserDecisionAction::Scroll { delta_x, delta_y } => format!("scroll:{delta_x}:{delta_y}"),
+        BrowserDecisionAction::GetElementValue { selector } => {
+            format!("get_element_value:{}", normalize_signature_text(selector))
+        }
+        BrowserDecisionAction::ExecuteJavaScript { expression } => {
+            format!(
+                "execute_javascript:{}",
+                normalize_signature_text(expression)
+            )
+        }
         BrowserDecisionAction::Wait { timeout_ms } => format!("wait:{timeout_ms}"),
         BrowserDecisionAction::Navigate { url } => {
             format!("navigate:{}", normalize_signature_text(url))
@@ -430,6 +439,7 @@ mod tests {
             duration_ms: 10,
             technical_success: status == ActionStatus::Executed,
             hint: hint.map(str::to_string),
+            result: None,
         }
     }
 

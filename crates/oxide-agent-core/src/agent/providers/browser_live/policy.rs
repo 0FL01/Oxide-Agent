@@ -72,6 +72,8 @@ fn action_kind(action: &super::types::BrowserDecisionAction) -> &'static str {
         super::types::BrowserDecisionAction::TypeText { .. } => "type_text",
         super::types::BrowserDecisionAction::Press { .. } => "press",
         super::types::BrowserDecisionAction::Scroll { .. } => "scroll",
+        super::types::BrowserDecisionAction::GetElementValue { .. } => "get_element_value",
+        super::types::BrowserDecisionAction::ExecuteJavaScript { .. } => "execute_javascript",
         super::types::BrowserDecisionAction::Wait { .. } => "wait",
         super::types::BrowserDecisionAction::Navigate { .. } => "navigate",
         super::types::BrowserDecisionAction::Debug { .. } => "debug",

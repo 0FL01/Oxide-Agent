@@ -219,6 +219,7 @@ mod tests {
             duration_ms: 10,
             technical_success: true,
             hint: None,
+            result: None,
         };
 
         let verification = verify_sidecar_action(&decision(), &before, &result, &after);
@@ -241,6 +242,7 @@ mod tests {
             duration_ms: 10,
             technical_success: false,
             hint: Some("no visible change".to_string()),
+            result: None,
         };
 
         let verification = verify_sidecar_action(&decision(), &before, &result, &after);

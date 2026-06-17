@@ -302,7 +302,6 @@ impl BrowserLiveProvider {
         args: StepArgs,
     ) -> Result<Value, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
-        let max_actions = args.max_actions();
         let query = ObserveQuery {
             fresh: true,
             include_dom: false,
@@ -339,7 +338,6 @@ impl BrowserLiveProvider {
             return Ok(json!({
                 "status": "decision_pending",
                 "message": "browser_step MiMo decision engine is not configured; current checkpoint returns a fresh observation shell",
-                "max_actions": max_actions,
                 "observation": observe,
             }));
         };
@@ -461,7 +459,10 @@ impl BrowserLiveProvider {
                     .await
                     .map_err(sidecar_runtime_error)?;
                 ensure_not_cancelled(invocation)?;
-                let after = self.observe_after_action(session_id).await?;
+                let after = match action.post_observation {
+                    Some(ref observation) => observation.clone(),
+                    None => self.observe_after_action(session_id).await?,
+                };
                 let (after_frame, after_payload) =
                     self.record_after_observation(session_id, &after).await?;
                 let verification = verify_sidecar_action(
@@ -505,7 +506,10 @@ impl BrowserLiveProvider {
                     .await
                     .map_err(sidecar_runtime_error)?;
                 ensure_not_cancelled(invocation)?;
-                let after = self.observe_after_action(session_id).await?;
+                let after = match navigation.observation {
+                    Some(ref observation) => observation.clone(),
+                    None => self.observe_after_action(session_id).await?,
+                };
                 let (after_frame, after_payload) =
                     self.record_after_observation(session_id, &after).await?;
                 let verification = verify_navigation(
@@ -1016,17 +1020,11 @@ struct StepArgs {
     task: Option<String>,
     #[serde(default)]
     action_timeout_ms: Option<u64>,
-    #[serde(default)]
-    max_actions: Option<u32>,
 }
 
 impl StepArgs {
     fn action_timeout_ms(&self) -> u64 {
         self.action_timeout_ms.unwrap_or(30_000).clamp(1, 60_000)
-    }
-
-    fn max_actions(&self) -> u32 {
-        self.max_actions.unwrap_or(1).clamp(1, 1)
     }
 }
 
@@ -1145,7 +1143,6 @@ fn action_step_payload(
         "status": step_status(&verification),
         "session_id": session_id,
         "action_seq": action_seq,
-        "max_actions": 1,
         "task_success": verification.task_success,
         "decision": decision,
         "before": before_payload,
@@ -1217,8 +1214,7 @@ fn browser_tool_definition(name: &str) -> ToolDefinition {
                 "properties": {
                     "session_id": {"type": "string"},
                     "task": {"type": "string"},
-                    "action_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
-                    "max_actions": {"type": "integer", "const": 1, "default": 1}
+                    "action_timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000}
                 },
                 "additionalProperties": false
             }),
@@ -1309,6 +1305,12 @@ mod tests {
                 .iter()
                 .all(|executor| executor.spec().parameters["type"] == "object")
         );
+    }
+
+    #[tokio::test]
+    async fn browser_step_spec_has_no_max_actions() {
+        let spec = browser_tool_definition(TOOL_BROWSER_STEP);
+        assert!(spec.parameters.get("max_actions").is_none());
     }
 
     #[tokio::test]
