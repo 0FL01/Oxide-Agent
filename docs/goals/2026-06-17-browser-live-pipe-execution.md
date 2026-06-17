@@ -219,6 +219,13 @@ Out of scope:
   - Audit IDs updated: none yet (goal start).
   - Next: CP-1 — implement sidecar pipe foundation.
 
+- 2026-06-17: CP-1 — sidecar pipe foundation implemented.
+  - Changed: `docker/chrome-agent-sidecar.py` rewritten to use `ChromeAgentPipe` with `chrome-agent --json pipe`; removed per-action subprocess for session commands; health/cleanup still use standalone CLI.
+  - Evidence: `python -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec ... --self-test` passes; restarted `oxide_chrome_agent_sidecar` container and verified create/observe/click/close endpoints.
+  - Commands: `docker build ...`, `docker restart ...`, `curl` create/observe/click/close inside the container.
+  - Audit IDs updated: G1 pending → in_progress, Q2 pending → in_progress.
+  - Next: CP-2 — reliable click and hash navigation.
+
 ## Risks and Blockers
 
 - `chrome-agent pipe` may not expose all commands in the same JSON shape as standalone CLI.

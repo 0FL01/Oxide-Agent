@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Browser Live sidecar: thin HTTP adapter over the chrome-agent CLI.
+"""Browser Live sidecar: stateful HTTP adapter over chrome-agent pipe.
 
 The sidecar exposes the stable REST contract that Oxide expects, authorizes
-requests, and translates each request into a chrome-agent invocation.
-chrome-agent (already installed in the image) controls headless Chromium
-directly, so this wrapper deliberately avoids implementing CDP by hand.
+requests, and keeps one persistent `chrome-agent --json pipe` subprocess per
+browser session. Each REST request is translated into a JSON-line command sent
+to the pipe, and the JSON-line response is returned to the caller.
 """
 
 from __future__ import annotations
@@ -13,11 +13,13 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from http import HTTPStatus
@@ -47,10 +49,14 @@ class SidecarState:
         )
         self.chrome_bin = shutil.which("chromium") or os.getenv("CHROME_BIN", "/usr/bin/chromium")
         self.sessions: dict[str, dict[str, Any]] = {}
+        self.pipes: dict[str, ChromeAgentPipe] = {}
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
 
     def reset(self) -> None:
+        for pipe in list(self.pipes.values()):
+            pipe.close(purge=True)
+        self.pipes.clear()
         for child in self.profile_dir.iterdir():
             shutil.rmtree(child, ignore_errors=True)
         self.sessions.clear()
@@ -64,7 +70,7 @@ def request_id() -> str:
 
 
 def safe(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value.strip()) or "unknown"
+    return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value.strip()) or "unknown"
 
 
 def now_iso() -> str:
@@ -92,8 +98,137 @@ def session_id_from_path(path: str, suffix: str) -> str | None:
     return value.strip("/") or None
 
 
+class ChromeAgentPipe:
+    """One persistent chrome-agent pipe per browser session.
+
+    The pipe is synchronous request/response: each command line produces one
+    response line.  Responses are queued by a reader thread and consumed by the
+    sending thread, so HTTP request handlers can block on a single command
+    without polling the pipe directly.
+    """
+
+    def __init__(self, session_id: str, task_id: str) -> None:
+        self.session_id = session_id
+        self.task_id = task_id
+        self._proc: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._closed = False
+        self._start()
+
+    def _start(self) -> None:
+        cmd = ["chrome-agent", "--browser", self.session_id, "--json", "pipe"]
+        env = os.environ.copy()
+        env.setdefault("CHROME_BIN", STATE.chrome_bin)
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("chrome-agent binary not found") from exc
+        self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader_thread.start()
+
+    def _read_stdout(self) -> None:
+        try:
+            proc = self._proc
+            if proc is None or proc.stdout is None:
+                return
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                self._queue.put(data)
+        except Exception:
+            pass
+
+    def _drain_queue(self) -> None:
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    def send(self, cmd_obj: dict[str, Any], timeout: int = 60) -> dict[str, Any]:
+        if self._closed or self._proc is None or self._proc.poll() is not None:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "sidecar_not_ready",
+                    "message": "chrome-agent pipe is not running",
+                    "retryable": True,
+                    "hint": "start a new session",
+                },
+            }
+        # Discard stale responses from a previous timed-out command.
+        self._drain_queue()
+        line = json.dumps(cmd_obj, separators=(",", ":")) + "\n"
+        try:
+            self._proc.stdin.write(line)
+            self._proc.stdin.flush()
+        except BrokenPipeError:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "sidecar_pipe_broken",
+                    "message": "chrome-agent pipe stdin closed",
+                    "retryable": True,
+                    "hint": "start a new session",
+                },
+            }
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "timeout",
+                    "message": f"chrome-agent pipe timed out after {timeout}s",
+                    "retryable": True,
+                    "hint": "retry after observing browser state",
+                },
+            }
+
+    def close(self, purge: bool = True) -> dict[str, Any]:
+        self._closed = True
+        # Ask chrome-agent to close the browser and purge the profile via the
+        # standalone CLI, then terminate the pipe process itself.
+        result = {"ok": True, "closed": True}
+        if purge:
+            try:
+                result = run_chrome_agent(self.session_id, ["close", "--purge"], timeout=15)
+            except Exception:
+                pass
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    self._proc.kill()
+                    self._proc.wait(timeout=5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return result if isinstance(result, dict) else {"ok": True, "closed": True}
+
+
 def run_chrome_agent(browser: str, args: list[str], timeout: int = 60) -> dict[str, Any]:
-    """Run chrome-agent --json and return parsed JSON, normalizing errors."""
+    """Run a one-off chrome-agent CLI invocation (health checks, cleanup)."""
     cmd = ["chrome-agent", "--browser", browser, "--json"] + args
     try:
         result = subprocess.run(
@@ -149,7 +284,6 @@ def run_chrome_agent(browser: str, args: list[str], timeout: int = 60) -> dict[s
             },
         }
 
-    # Normalize chrome-agent string errors into the Rust contract envelope.
     if data.get("ok") is False and isinstance(data.get("error"), str):
         data["error"] = {
             "code": "chrome_agent_error",
@@ -164,6 +298,13 @@ def chrome_agent_available() -> bool:
     return shutil.which("chrome-agent") is not None
 
 
+def get_pipe(session_id: str) -> ChromeAgentPipe:
+    pipe = STATE.pipes.get(session_id)
+    if pipe is None:
+        raise KeyError(session_id)
+    return pipe
+
+
 def session_artifact_dir(task_id: str, session_id: str) -> Path:
     path = STATE.artifact_dir / safe(task_id) / safe(session_id)
     path.mkdir(parents=True, exist_ok=True)
@@ -171,12 +312,7 @@ def session_artifact_dir(task_id: str, session_id: str) -> Path:
 
 
 def capture_screenshot(session_id: str, fresh: bool = True) -> dict[str, Any]:
-    """Capture a screenshot via chrome-agent and copy it into the artifact dir.
-
-    Each successful capture increments ``screenshot_seq`` and produces a unique
-    ``screenshot_id``.  When ``fresh`` is false, the last cached screenshot is
-    returned without invoking chrome-agent, allowing cheap stale observations.
-    """
+    """Capture a screenshot via the chrome-agent pipe and copy it into the artifact dir."""
     session = STATE.sessions.get(session_id, {})
     task_id = session.get("task_id", "browser-task")
     viewport = session.get("viewport", {"width": 1365, "height": 768, "device_scale_factor": 1.0})
@@ -186,7 +322,8 @@ def capture_screenshot(session_id: str, fresh: bool = True) -> dict[str, Any]:
         if last is not None:
             return last
 
-    result = run_chrome_agent(session_id, ["screenshot"], timeout=30)
+    pipe = get_pipe(session_id)
+    result = pipe.send({"cmd": "screenshot"}, timeout=30)
     if not result.get("ok"):
         artifact_dir = session_artifact_dir(task_id, session_id)
         dest = artifact_dir / "latest.png"
@@ -239,15 +376,12 @@ def parse_snapshot(snapshot: str) -> list[dict[str, Any]]:
         if not stripped.startswith("uid="):
             continue
         indent = len(line) - len(stripped)
-        # e.g. uid=n14 link "Learn more"
-        #      uid=n11 heading "Example Domain" level=1
         uid = ""
         role = ""
         text = ""
         if " " in stripped:
             uid_part, rest = stripped.split(" ", 1)
             uid = uid_part.split("=", 1)[1] if "=" in uid_part else ""
-            # role is the next token
             parts = rest.split(" ", 1)
             role = parts[0]
             remainder = parts[1] if len(parts) > 1 else ""
@@ -420,14 +554,7 @@ def build_observation(
     fresh: bool = True,
     max_debug_items: int = 20,
 ) -> dict[str, Any]:
-    """Build a full BrowserObservation from chrome-agent output.
-
-    Each fresh observation increments ``observation_seq`` and produces a unique
-    ``observation_id``.  Non-fresh observations return the last cached result.
-
-    Network and console events are accumulated into the session history so that
-    later debug endpoints can return the full history, not just the latest poll.
-    """
+    """Build a full BrowserObservation from chrome-agent output."""
     session = STATE.sessions.setdefault(session_id, {})
     if not fresh:
         last = session.get("last_observation")
@@ -445,8 +572,9 @@ def build_observation(
 
     network_summary = None
     console_summary = None
+    pipe = get_pipe(session_id)
     if include_network:
-        network = run_chrome_agent(session_id, ["network"], timeout=10)
+        network = pipe.send({"cmd": "network"}, timeout=10)
         if network.get("ok"):
             _merge_history(session, "network_history", network.get("requests", []), action_seq)
             network_summary = summarize_network(
@@ -454,7 +582,7 @@ def build_observation(
                 limit=max_debug_items,
             )
     if include_console:
-        console = run_chrome_agent(session_id, ["console"], timeout=10)
+        console = pipe.send({"cmd": "console", "level": "error"}, timeout=10)
         if console.get("ok"):
             _merge_history(session, "console_history", console.get("messages", []), action_seq)
             console_summary = summarize_console(
@@ -482,16 +610,18 @@ def build_observation(
     return observation
 
 
-def _press_args(key: str) -> list[str]:
-    """Map a press key to a chrome-agent invocation.
+def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
+    """Map a press key to a chrome-agent pipe command.
 
-    Simple keys (e.g., ``Escape``, ``Enter``) are passed through to the native
-    chrome-agent ``press`` command.  Combinations like ``ctrl+a`` or
-    ``shift+enter`` are dispatched via a JavaScript ``KeyboardEvent`` so the
+    Simple keys are sent through the native ``press`` command.  Combinations
+    like ``ctrl+a`` are dispatched via a JavaScript ``KeyboardEvent`` so the
     sidecar does not depend on chrome-agent's key-combination syntax.
     """
     if "+" not in key:
-        return ["press", key]
+        cmd: dict[str, Any] = {"cmd": "press", "key": key}
+        if inspect_after:
+            cmd["inspect"] = True
+        return cmd
 
     parts = [part.strip().lower() for part in key.split("+")]
     modifier_aliases = {
@@ -533,7 +663,10 @@ def _press_args(key: str) -> list[str]:
             keys.append(key_aliases.get(part, part))
 
     if not keys:
-        return ["eval", "(() => { return 'Error: no key in combo'; })()"]
+        return {
+            "cmd": "eval",
+            "expression": "(() => { return 'Error: no key in combo'; })()",
+        }
 
     resolved = keys[0]
     modifier_js = ", ".join(
@@ -546,39 +679,45 @@ def _press_args(key: str) -> list[str]:
         "['keydown', 'keypress', 'keyup'].forEach(type => target.dispatchEvent(new KeyboardEvent(type, init))); "
         "return " + json.dumps("dispatched " + key) + "; })()"
     )
-    return ["eval", script]
+    return {"cmd": "eval", "expression": script}
 
 
-def action_to_chrome_args(action: dict[str, Any]) -> list[str]:
+def action_to_pipe_cmd(action: dict[str, Any]) -> dict[str, Any]:
+    """Translate a BrowserAction into a chrome-agent pipe command object."""
     kind = action.get("kind")
     if kind == "click_xy":
         x = action.get("x", 0)
         y = action.get("y", 0)
-        return ["click", "--xy", f"{x},{y}"]
+        script = (
+            "(() => { const el = document.elementFromPoint("
+            + json.dumps(x) + ", " + json.dumps(y)
+            + "); if (!el) return 'Error: no element at point'; "
+            "const target = el.closest('button, a, [role=button], input[type=submit], [onclick]') || el; "
+            "target.click(); return 'clicked ' + (target.tagName || 'element'); })()"
+        )
+        return {"cmd": "eval", "expression": script}
     if kind == "click_selector":
-        return ["click", "--selector", action["selector"]]
+        return {"cmd": "click", "selector": action["selector"], "inspect": True}
     if kind == "click_target_id":
-        return ["click", action["target_id"]]
+        return {"cmd": "click", "uid": action["target_id"], "inspect": True}
     if kind == "fill":
-        return ["fill", "--selector", action["selector"], action["value"]]
+        return {"cmd": "fill", "selector": action["selector"], "value": action["value"], "inspect": True}
     if kind == "type_text":
-        return ["type", action["text"]]
+        return {"cmd": "type", "text": action["text"], "inspect": True}
     if kind == "press":
-        return _press_args(action["key"])
+        return _press_to_pipe_cmd(action["key"], inspect_after=True)
     if kind == "scroll":
         dx = action.get("delta_x", 0)
         dy = action.get("delta_y", 0)
-        # Use JS eval for arbitrary scroll; chrome-agent scroll is page/element oriented.
-        return ["eval", f"window.scrollBy({dx},{dy}); true"]
+        return {"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": True}
     if kind == "get_element_value":
         selector = action["selector"]
-        return ["eval", f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"]
+        return {"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"}
     if kind == "execute_javascript":
         expression = action["expression"]
-        return ["eval", f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"]
+        return {"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}
     if kind == "wait":
-        # chrome-agent wait expects a condition. Simple timeout wait is a no-op here.
-        return ["eval", "true"]
+        return {"cmd": "eval", "expression": "true"}
     raise ValueError(f"unsupported action kind: {kind}")
 
 
@@ -598,7 +737,7 @@ def _extract_eval_result(result: dict[str, Any]) -> str | None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "oxide-browser-sidecar/0.2"
+    server_version = "oxide-browser-sidecar/0.3"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -699,6 +838,10 @@ class Handler(BaseHTTPRequestHandler):
         viewport = body.get("viewport") or {"width": 1365, "height": 768, "device_scale_factor": 1.0}
         start_url = str(body.get("start_url") or "about:blank")
 
+        if start_url == "about:blank":
+            # chrome-agent may not accept about:blank; use a minimal valid URL.
+            start_url = "https://www.google.com"
+
         STATE.sessions[session_id] = {
             "task_id": task_id,
             "viewport": viewport,
@@ -713,8 +856,28 @@ class Handler(BaseHTTPRequestHandler):
             "console_history": [],
         }
 
-        result = run_chrome_agent(session_id, ["goto", start_url], timeout=60)
+        try:
+            pipe = ChromeAgentPipe(session_id, task_id)
+        except Exception as exc:
+            STATE.sessions.pop(session_id, None)
+            self.write_json(HTTPStatus.OK, {
+                "request_id": request_id(),
+                "session_id": session_id,
+                "ok": False,
+                "error": {
+                    "code": "sidecar_not_ready",
+                    "message": f"failed to start chrome-agent pipe: {exc}",
+                    "retryable": True,
+                    "hint": "ensure chrome-agent is installed and chromium is available",
+                },
+            })
+            return
+
+        STATE.pipes[session_id] = pipe
+        result = pipe.send({"cmd": "goto", "url": start_url}, timeout=60)
         if not result.get("ok"):
+            pipe.close(purge=True)
+            STATE.pipes.pop(session_id, None)
             STATE.sessions.pop(session_id, None)
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -772,7 +935,44 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        result = run_chrome_agent(session_id, ["goto", url], timeout=60)
+        pipe = get_pipe(session_id)
+        action_seq = session.get("action_seq", 0)
+        current_url = session.get("url", "")
+
+        # SPA hash navigation: same origin and path, only the hash changed.
+        parsed_current = urlparse(current_url)
+        parsed_target = urlparse(url)
+        if (
+            parsed_current.scheme and parsed_current.scheme == parsed_target.scheme
+            and parsed_current.netloc == parsed_target.netloc
+            and parsed_current.path == parsed_target.path
+            and (parsed_current.fragment != parsed_target.fragment or parsed_target.fragment)
+        ):
+            hash_value = parsed_target.fragment
+            script = f"window.location.hash = {json.dumps('#' + hash_value)}; true"
+            pipe.send({"cmd": "eval", "expression": script}, timeout=15)
+            # Give the SPA a moment to render, then inspect.
+            time.sleep(0.5)
+            inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
+            chrome_output = inspect_result if inspect_result.get("ok") else {"url": url, "title": session.get("title", "")}
+            observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
+            self.write_json(HTTPStatus.OK, {
+                "request_id": request_id(),
+                "session_id": session_id,
+                "ok": True,
+                "navigation": {
+                    "url": url,
+                    "final_url": chrome_output.get("url", url),
+                    "status": "loaded",
+                    "http_status": None,
+                    "redirect_count": 0,
+                },
+                "observation": observation,
+                "error": None,
+            })
+            return
+
+        result = pipe.send({"cmd": "goto", "url": url}, timeout=60)
         if not result.get("ok"):
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -784,10 +984,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        action_seq = session.get("action_seq", 0)
-        # chrome-agent goto returns navigation metadata; use a separate inspect
-        # to get the post-navigation snapshot and a11y tree.
-        inspect_result = run_chrome_agent(session_id, ["inspect"], timeout=15)
+        inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
         chrome_output = inspect_result if inspect_result.get("ok") else result
         observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
         self.write_json(HTTPStatus.OK, {
@@ -829,7 +1026,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         action_seq = session.get("action_seq", 0)
-        result = run_chrome_agent(session_id, ["inspect"], timeout=15)
+        pipe = get_pipe(session_id)
+        result = pipe.send({"cmd": "inspect"}, timeout=15)
         if not result.get("ok"):
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -878,9 +1076,10 @@ class Handler(BaseHTTPRequestHandler):
         session["action_seq"] = action_seq
         capture_after = bool(body.get("capture_after", True))
         wait_for_stability = bool(body.get("wait_for_stability", True))
+        del wait_for_stability  # chrome-agent pipe does not expose explicit stability polling yet
 
         try:
-            args = action_to_chrome_args(action)
+            cmd = action_to_pipe_cmd(action)
         except ValueError as exc:
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -904,22 +1103,24 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        # chrome-agent actions that change the page should also inspect after.
         mutating_kinds = {"click_xy", "click_selector", "click_target_id", "fill", "type_text", "press", "scroll"}
-        if action.get("kind") in mutating_kinds:
-            args.append("--inspect")
+        is_mutating = action.get("kind") in mutating_kinds
 
+        pipe = get_pipe(session_id)
         started = time.time()
-        result = run_chrome_agent(session_id, args, timeout=60)
+        result = pipe.send(cmd, timeout=60)
         duration_ms = int((time.time() - started) * 1000)
         success = result.get("ok", False)
 
         post_observation = None
         if success and capture_after:
-            # wait_for_stability is accepted by the contract. chrome-agent's --inspect
-            # already provides a post-action snapshot for mutating kinds; dedicated
-            # stability polling is a future improvement.
-            post_observation = build_observation(session_id, result, action_seq=action_seq, max_debug_items=20)
+            chrome_output = result
+            if is_mutating and "snapshot" not in result:
+                # Some mutating pipe commands (e.g., type, press, click_xy eval) do not
+                # include a post-action snapshot; fetch one explicitly.
+                inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
+                chrome_output = inspect_result if inspect_result.get("ok") else result
+            post_observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
 
         result_value = None
         if success and action.get("kind") in ("get_element_value", "execute_javascript"):
@@ -1075,10 +1276,13 @@ class Handler(BaseHTTPRequestHandler):
         keep_artifacts = bool(body.get("keep_artifacts", True))
 
         session = STATE.sessions.pop(session_id, None)
-        args = ["close"]
-        if purge:
-            args.append("--purge")
-        result = run_chrome_agent(session_id, args, timeout=15)
+        pipe = STATE.pipes.pop(session_id, None)
+        result = {"ok": True}
+        if pipe is not None:
+            result = pipe.close(purge=purge)
+        elif purge:
+            # No pipe object but profile purge requested; use standalone CLI.
+            result = run_chrome_agent(session_id, ["close", "--purge"], timeout=15)
 
         if not keep_artifacts and session is not None:
             artifact_dir = session_artifact_dir(session.get("task_id", "browser-task"), session_id)
@@ -1137,6 +1341,18 @@ def self_test() -> int:
     if not status.get("ok"):
         print(f"chrome-agent-sidecar self-test: status check failed: {status}", file=sys.stderr)
         return 1
+    # Quick pipe smoke: create a pipe and navigate to a known URL.
+    try:
+        pipe = ChromeAgentPipe("self-test-pipe", "self-test")
+        result = pipe.send({"cmd": "goto", "url": "https://example.com"}, timeout=30)
+        if not result.get("ok"):
+            print(f"chrome-agent-sidecar self-test: pipe goto failed: {result}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
+        pipe.close(purge=True)
+    except Exception as exc:
+        print(f"chrome-agent-sidecar self-test: pipe smoke failed: {exc}", file=sys.stderr)
+        return 1
     print("chrome-agent-sidecar self-test ok")
     return 0
 
@@ -1156,9 +1372,7 @@ def main() -> int:
     try:
         server.serve_forever()
     finally:
-        for session_id in list(STATE.sessions.keys()):
-            run_chrome_agent(session_id, ["close", "--purge"], timeout=15)
-        STATE.sessions.clear()
+        STATE.reset()
     return 0
 
 
