@@ -1054,7 +1054,7 @@ def _press_to_pipe_cmd(key: str, inspect_after: bool) -> dict[str, Any]:
     return {"cmd": "eval", "expression": script}
 
 
-def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True) -> dict[str, Any]:
+def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True, timeout_ms: int | None = None) -> dict[str, Any]:
     """Translate a BrowserAction into a chrome-agent pipe command object.
 
     When `inspect_after` is False, mutating actions are issued without the
@@ -1093,6 +1093,14 @@ def action_to_pipe_cmd(action: dict[str, Any], inspect_after: bool = True) -> di
     if kind == "execute_javascript":
         expression = action["expression"]
         return {"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}
+    if kind == "wait_for_selector":
+        selector = action["selector"]
+        timeout_s = max(1, (timeout_ms or action.get("timeout_ms", 10000)) // 1000)
+        return {"cmd": "wait", "what": "selector", "pattern": selector, "timeout": timeout_s}
+    if kind == "wait_for_text":
+        text = action["text"]
+        timeout_s = max(1, (timeout_ms or action.get("timeout_ms", 10000)) // 1000)
+        return {"cmd": "wait", "what": "text", "pattern": text, "timeout": timeout_s}
     if kind == "wait":
         # chrome-agent pipe has no native "wait" command; the sidecar sleeps
         # in _handle_action before capturing the post-action observation.
@@ -1136,7 +1144,7 @@ def _run_single_action_step(
     pipe: "ChromeAgentPipe", action: dict[str, Any], timeout: float = 60.0
 ) -> tuple[dict[str, Any], int]:
     """Execute one action step via the pipe and return (result, duration_ms)."""
-    cmd = action_to_pipe_cmd(action, inspect_after=False)
+    cmd = action_to_pipe_cmd(action, inspect_after=False, timeout_ms=action.get("timeout_ms"))
     started = time.time()
     result = pipe.send(cmd, timeout=timeout)
     duration_ms = int((time.time() - started) * 1000)
@@ -1561,7 +1569,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 for step in steps:
-                    action_to_pipe_cmd(step, inspect_after=False)
+                    action_to_pipe_cmd(step, inspect_after=False, timeout_ms=step.get("timeout_ms"))
             except ValueError as exc:
                 self.write_json(HTTPStatus.OK, {
                     "request_id": request_id(),
@@ -1597,7 +1605,7 @@ class Handler(BaseHTTPRequestHandler):
             success = all(r.get("ok") for r in step_results)
         else:
             try:
-                cmd = action_to_pipe_cmd(action, inspect_after=True)
+                cmd = action_to_pipe_cmd(action, inspect_after=True, timeout_ms=action.get("timeout_ms"))
             except ValueError as exc:
                 self.write_json(HTTPStatus.OK, {
                     "request_id": request_id(),
@@ -1671,7 +1679,16 @@ class Handler(BaseHTTPRequestHandler):
             success = False
 
         if not success and last_error is None:
-            last_error = result.get("error")
+            raw_error = result.get("error")
+            if isinstance(raw_error, dict):
+                last_error = raw_error
+            else:
+                last_error = {
+                    "code": "action_failed",
+                    "message": str(raw_error) if raw_error else "action failed",
+                    "retryable": False,
+                    "hint": "",
+                }
 
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),

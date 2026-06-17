@@ -75,6 +75,8 @@ fn action_kind(action: &super::types::BrowserDecisionAction) -> &'static str {
         super::types::BrowserDecisionAction::GetElementValue { .. } => "get_element_value",
         super::types::BrowserDecisionAction::ExecuteJavaScript { .. } => "execute_javascript",
         super::types::BrowserDecisionAction::Wait { .. } => "wait",
+        super::types::BrowserDecisionAction::WaitForSelector { .. } => "wait_for_selector",
+        super::types::BrowserDecisionAction::WaitForText { .. } => "wait_for_text",
         super::types::BrowserDecisionAction::Navigate { .. } => "navigate",
         super::types::BrowserDecisionAction::Debug { .. } => "debug",
         super::types::BrowserDecisionAction::AskUser { .. } => "ask_user",

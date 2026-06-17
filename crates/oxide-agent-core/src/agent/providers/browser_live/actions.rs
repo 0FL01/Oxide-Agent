@@ -71,6 +71,19 @@ fn decision_action_to_sidecar(action: &BrowserDecisionAction) -> Option<BrowserA
         BrowserDecisionAction::Wait { timeout_ms } => Some(BrowserAction::Wait {
             timeout_ms: bounded_timeout_ms(*timeout_ms),
         }),
+        BrowserDecisionAction::WaitForSelector {
+            selector,
+            timeout_ms,
+        } => Some(BrowserAction::WaitForSelector {
+            selector: selector.clone(),
+            timeout_ms: bounded_timeout_ms(*timeout_ms),
+        }),
+        BrowserDecisionAction::WaitForText { text, timeout_ms } => {
+            Some(BrowserAction::WaitForText {
+                text: text.clone(),
+                timeout_ms: bounded_timeout_ms(*timeout_ms),
+            })
+        }
         _ => None,
     }
 }
@@ -223,6 +236,34 @@ pub fn plan_browser_action(
             capture_after: false,
             wait_for_stability: false,
         })),
+        BrowserDecisionAction::WaitForSelector {
+            selector,
+            timeout_ms: wait_ms,
+        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
+            action_seq,
+            action: BrowserAction::WaitForSelector {
+                selector: selector.clone(),
+                timeout_ms: (*wait_ms).min(timeout_ms),
+            },
+            expected_result: decision.expected_result.clone(),
+            timeout_ms: (*wait_ms).min(timeout_ms),
+            capture_after: false,
+            wait_for_stability: false,
+        })),
+        BrowserDecisionAction::WaitForText {
+            text,
+            timeout_ms: wait_ms,
+        } => Ok(BrowserActionPlan::SidecarAction(ActionRequest {
+            action_seq,
+            action: BrowserAction::WaitForText {
+                text: text.clone(),
+                timeout_ms: (*wait_ms).min(timeout_ms),
+            },
+            expected_result: decision.expected_result.clone(),
+            timeout_ms: (*wait_ms).min(timeout_ms),
+            capture_after: false,
+            wait_for_stability: false,
+        })),
         BrowserDecisionAction::Navigate { url } => Ok(BrowserActionPlan::Navigate(GotoRequest {
             url: url.clone(),
             wait_until: WaitUntil::DomContentLoaded,
@@ -327,6 +368,54 @@ mod tests {
         assert!(matches!(
             request.action,
             BrowserAction::Wait { timeout_ms: 1_500 }
+        ));
+        assert!(!request.capture_after);
+        assert!(!request.wait_for_stability);
+    }
+
+    #[test]
+    fn maps_wait_for_selector_decision_to_sidecar_action_request() {
+        let decision = decision(BrowserDecisionAction::WaitForSelector {
+            selector: "#success".to_string(),
+            timeout_ms: 5_000,
+        });
+
+        let plan = plan_browser_action(&decision, 6, 10_000).expect("plan");
+
+        let BrowserActionPlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert_eq!(request.action_seq, 6);
+        assert!(matches!(
+            request.action,
+            BrowserAction::WaitForSelector {
+                selector: ref s,
+                timeout_ms: 5_000,
+            } if s == "#success"
+        ));
+        assert!(!request.capture_after);
+        assert!(!request.wait_for_stability);
+    }
+
+    #[test]
+    fn maps_wait_for_text_decision_to_sidecar_action_request() {
+        let decision = decision(BrowserDecisionAction::WaitForText {
+            text: "Secret created".to_string(),
+            timeout_ms: 7_000,
+        });
+
+        let plan = plan_browser_action(&decision, 6, 10_000).expect("plan");
+
+        let BrowserActionPlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert_eq!(request.action_seq, 6);
+        assert!(matches!(
+            request.action,
+            BrowserAction::WaitForText {
+                text: ref t,
+                timeout_ms: 7_000,
+            } if t == "Secret created"
         ));
         assert!(!request.capture_after);
         assert!(!request.wait_for_stability);

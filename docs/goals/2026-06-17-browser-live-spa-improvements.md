@@ -5,7 +5,7 @@ Status: active
 Codex goal: not set
 Source spec: user-provided test report "Отчёт по тесту v2: OTS One Time Secrets" (2026-06-17 19:53–19:58 UTC+3)
 Goal doc owner: Codex
-Last updated: 2026-06-17 20:20
+Last updated: 2026-06-17 22:45
 
 ## Objective
 
@@ -69,8 +69,8 @@ None. All required evidence can be produced from the existing repo and the publi
 - Source: test report problem #3 — no `wait_for_selector` or `wait_for_text` mechanism.
 - Acceptance: `BrowserDecision` can emit `wait_for_selector` and `wait_for_text`; the sidecar executes them via `chrome-agent wait` and returns a successful `ActionResult` without a post-action screenshot.
 - Evidence required: parser tests, fake sidecar tests, live REST test waiting for a known selector/text.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-3 added `WaitForSelector` and `WaitForText` variants to `BrowserAction` and `BrowserDecisionAction` in `types.rs`, validated them in `parser.rs`, mapped them in `actions.rs` to `SidecarAction` with `capture_after: false`/`wait_for_stability: false`, updated `prompt.rs` schema and system prompt, and added `policy.rs`/`recovery.rs` cases. Fake sidecar supports the new waits; unit tests cover serialization and planning. `docker/chrome-agent-sidecar.py` maps `wait_for_selector` to `chrome-agent wait selector` and `wait_for_text` to `chrome-agent wait text`, passing `timeout_ms` through both single-action and script paths. Live REST tests on `https://example.com` showed `wait_for_selector h1` and `wait_for_text "Example Domain"` both return `technical_success: true`; a failing `wait_for_selector #missing-element` returned a structured `action_failed` error with `retryable: false`.
 
 ### G4: Debug network endpoint can optionally include response bodies
 - Source: test report problem #6 — network summary lacks response bodies.
@@ -220,6 +220,13 @@ None. All required evidence can be produced from the existing repo and the publi
   - Audit IDs updated: G2 verified (evidence strengthened), Q1 verified (extended).
   - Next: CP-3 — add `wait_for_selector` and `wait_for_text` actions.
 
+- 2026-06-17: CP-3 — DOM wait actions implemented.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` added `WaitForSelector` and `WaitForText` to `BrowserAction` and `BrowserDecisionAction`; `parser.rs` validates them and allows them inside scripts; `actions.rs` maps them to `SidecarAction` with `capture_after: false`/`wait_for_stability: false`; `prompt.rs` updated schema and system prompt; `policy.rs` and `recovery.rs` updated; `test_support.rs` added fake waits; `docker/chrome-agent-sidecar.py` maps waits to `chrome-agent wait selector/text` and wraps string errors in `SidecarErrorBody`.
+  - Evidence: `cargo test -p oxide-agent-core ...` 87 pass (up from 82), `cargo test -p oxide-agent-web-ui` 11 pass, `cargo test -p oxide-agent-web-contracts` 10 pass, `python3 -m py_compile`, `cargo fmt`, `cargo clippy`, sidecar self-test pass. Live REST test: `wait_for_selector h1` on `https://example.com` succeeded; `wait_for_text "Example Domain"` succeeded; `wait_for_selector #missing-element` failed with structured error.
+  - Commands: static checks + `curl` to `/sessions/{id}/action`.
+  - Audit IDs updated: G3 pending → verified, Q1 verified (extended).
+  - Next: CP-4 — capture network response bodies in the CDP listener.
+
 ## Risks and Blockers
 
 - CDP `Page.frameNavigated` may fire frequently or with `about:blank` frames.
@@ -248,9 +255,9 @@ Filled only when complete.
 
 ## User-Facing Progress Updates
 
-* Current checkpoint: CP-2 complete; starting CP-3.
-* What changed: sidecar hash navigation now waits for network idle and a rendered `body` element instead of a blind 0.5s sleep; full navigation can optionally wait for network idle.
-* What was verified: full OTS create-secret flow, then navigation to the generated share link completed in 385ms with `status: loaded` and correct URL.
-* Which audit IDs moved: G2 verified (stronger evidence), Q1 verified (extended).
-* What remains: CP-3 through CP-6.
+* Current checkpoint: CP-3 complete; starting CP-4.
+* What changed: added `wait_for_selector` and `wait_for_text` actions across the Rust provider and sidecar; the model can now ask the browser to wait for a DOM selector or visible text before the next step.
+* What was verified: live REST tests on `https://example.com` showed both waits succeed on real elements and fail with a structured error on missing elements; 87 Rust browser_live tests pass.
+* Which audit IDs moved: G3 pending → verified, Q1 verified (extended).
+* What remains: CP-4 through CP-6.
 * Whether anything is blocked: not blocked.

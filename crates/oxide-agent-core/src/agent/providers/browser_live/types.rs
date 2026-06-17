@@ -367,6 +367,14 @@ pub enum BrowserAction {
     Wait {
         timeout_ms: u64,
     },
+    WaitForSelector {
+        selector: String,
+        timeout_ms: u64,
+    },
+    WaitForText {
+        text: String,
+        timeout_ms: u64,
+    },
     Script {
         steps: Vec<BrowserAction>,
     },
@@ -423,6 +431,14 @@ pub enum BrowserDecisionAction {
         expression: String,
     },
     Wait {
+        timeout_ms: u64,
+    },
+    WaitForSelector {
+        selector: String,
+        timeout_ms: u64,
+    },
+    WaitForText {
+        text: String,
         timeout_ms: u64,
     },
     Script {
@@ -788,6 +804,24 @@ mod tests {
         let value = serde_json::to_value(press).expect("serialize press");
         assert_eq!(value["kind"], "press");
         assert_eq!(value["key"], "ctrl+a");
+
+        let wait_selector = BrowserAction::WaitForSelector {
+            selector: "#ready".to_string(),
+            timeout_ms: 3_000,
+        };
+        let value = serde_json::to_value(wait_selector).expect("serialize wait_for_selector");
+        assert_eq!(value["kind"], "wait_for_selector");
+        assert_eq!(value["selector"], "#ready");
+        assert_eq!(value["timeout_ms"], 3_000);
+
+        let wait_text = BrowserAction::WaitForText {
+            text: "Loaded".to_string(),
+            timeout_ms: 5_000,
+        };
+        let value = serde_json::to_value(wait_text).expect("serialize wait_for_text");
+        assert_eq!(value["kind"], "wait_for_text");
+        assert_eq!(value["text"], "Loaded");
+        assert_eq!(value["timeout_ms"], 5_000);
 
         let event = BrowserStreamEvent::Heartbeat {
             session_id: "br_1".to_string(),

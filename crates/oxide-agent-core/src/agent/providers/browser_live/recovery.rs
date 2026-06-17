@@ -309,6 +309,12 @@ fn decision_action_signature(action: &BrowserDecisionAction) -> String {
             )
         }
         BrowserDecisionAction::Wait { timeout_ms } => format!("wait:{timeout_ms}"),
+        BrowserDecisionAction::WaitForSelector { selector, .. } => {
+            format!("wait_for_selector:{}", normalize_signature_text(selector))
+        }
+        BrowserDecisionAction::WaitForText { text, .. } => {
+            format!("wait_for_text:{}", normalize_signature_text(text))
+        }
         BrowserDecisionAction::Navigate { url } => {
             format!("navigate:{}", normalize_signature_text(url))
         }

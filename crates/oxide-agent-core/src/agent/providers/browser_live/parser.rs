@@ -6,6 +6,7 @@ use thiserror::Error;
 
 const MAX_TEXT_INPUT_CHARS: usize = 4096;
 const MAX_WAIT_MS: u64 = 10_000;
+const MAX_WAIT_CONDITION_MS: u64 = 30_000;
 const MAX_SCROLL_DELTA: i32 = 3_000;
 
 #[derive(Debug, Error)]
@@ -135,6 +136,23 @@ fn validate_action(
                 return invalid_action("wait timeout_ms must be between 100 and 10000");
             }
         }
+        BrowserDecisionAction::WaitForSelector {
+            selector,
+            timeout_ms,
+        } => {
+            non_empty("selector", selector)?;
+            if !(100..=MAX_WAIT_CONDITION_MS).contains(timeout_ms) {
+                return invalid_action(
+                    "wait_for_selector timeout_ms must be between 100 and 30000",
+                );
+            }
+        }
+        BrowserDecisionAction::WaitForText { text, timeout_ms } => {
+            non_empty("text", text)?;
+            if !(100..=MAX_WAIT_CONDITION_MS).contains(timeout_ms) {
+                return invalid_action("wait_for_text timeout_ms must be between 100 and 30000");
+            }
+        }
         BrowserDecisionAction::Script { steps } => {
             let len = steps.len();
             if len == 0 || len > 10 {
@@ -185,6 +203,8 @@ fn is_script_step(action: &BrowserDecisionAction) -> bool {
             | BrowserDecisionAction::GetElementValue { .. }
             | BrowserDecisionAction::ExecuteJavaScript { .. }
             | BrowserDecisionAction::Wait { .. }
+            | BrowserDecisionAction::WaitForSelector { .. }
+            | BrowserDecisionAction::WaitForText { .. }
     )
 }
 
@@ -201,6 +221,8 @@ fn is_executable_action(action: &BrowserDecisionAction) -> bool {
             | BrowserDecisionAction::GetElementValue { .. }
             | BrowserDecisionAction::ExecuteJavaScript { .. }
             | BrowserDecisionAction::Wait { .. }
+            | BrowserDecisionAction::WaitForSelector { .. }
+            | BrowserDecisionAction::WaitForText { .. }
             | BrowserDecisionAction::Script { .. }
             | BrowserDecisionAction::Navigate { .. }
     )
@@ -218,6 +240,8 @@ fn action_kind(action: &BrowserDecisionAction) -> &'static str {
         BrowserDecisionAction::GetElementValue { .. } => "get_element_value",
         BrowserDecisionAction::ExecuteJavaScript { .. } => "execute_javascript",
         BrowserDecisionAction::Wait { .. } => "wait",
+        BrowserDecisionAction::WaitForSelector { .. } => "wait_for_selector",
+        BrowserDecisionAction::WaitForText { .. } => "wait_for_text",
         BrowserDecisionAction::Script { .. } => "script",
         BrowserDecisionAction::Navigate { .. } => "navigate",
         BrowserDecisionAction::Debug { .. } => "debug",
@@ -401,6 +425,48 @@ mod tests {
             decision.action,
             BrowserDecisionAction::Press { ref key } if key == "ctrl+a"
         ));
+    }
+
+    #[test]
+    fn parses_wait_for_selector_decision() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"wait_for_selector\", \"selector\": \"button.success\", \"timeout_ms\": 5000}",
+        );
+
+        let decision = parse_browser_decision(&output, validation()).expect("valid decision");
+
+        assert!(matches!(
+            decision.action,
+            BrowserDecisionAction::WaitForSelector { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_wait_for_text_decision() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"wait_for_text\", \"text\": \"Secret created\", \"timeout_ms\": 7000}",
+        );
+
+        let decision = parse_browser_decision(&output, validation()).expect("valid decision");
+
+        assert!(matches!(
+            decision.action,
+            BrowserDecisionAction::WaitForText { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_wait_for_selector_timeout_out_of_range() {
+        let output = valid_click().replace(
+            "\"action\": {\"kind\": \"click_xy\", \"x\": 10, \"y\": 20, \"target_description\": \"Login\"}",
+            "\"action\": {\"kind\": \"wait_for_selector\", \"selector\": \"button\", \"timeout_ms\": 60000}",
+        );
+
+        let error = parse_browser_decision(&output, validation()).expect_err("timeout too large");
+
+        assert!(matches!(error, BrowserDecisionParseError::InvalidAction(_)));
     }
 
     #[test]
