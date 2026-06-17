@@ -77,7 +77,7 @@ fn action_kind(action: &super::types::BrowserAction) -> &'static str {
 }
 
 fn url_scheme(action: &super::types::BrowserAction) -> Option<String> {
-    let super::types::BrowserAction::Navigate { url } = action else {
+    let super::types::BrowserAction::Navigate { url, .. } = action else {
         return None;
     };
     url.trim()

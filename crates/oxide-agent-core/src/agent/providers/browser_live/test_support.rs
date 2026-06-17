@@ -6,11 +6,11 @@ use super::types::{
     ActionRequest, ActionResponse, ActionResult, ActionStatus, BrowserDescriptor,
     BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleDebugPayload,
     ConsoleDebugQuery, ConsoleDebugResponse, ConsoleItem, ConsoleLevel, ConsoleSummary,
-    CreateSessionRequest, CreateSessionResponse, DebugLevel, GotoRequest, GotoResponse,
-    LoadingState, NavigationResult, NavigationStatus, NetworkDebugPayload, NetworkDebugQuery,
-    NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary, ObserveQuery,
-    ObserveResponse, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, ScreenshotResponse,
-    Viewport,
+    CreateSessionRequest, CreateSessionResponse, DebugLevel, DomSnapshotNode, GotoRequest,
+    GotoResponse, LoadingState, NavigationResult, NavigationStatus, NetworkDebugPayload,
+    NetworkDebugQuery, NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary,
+    ObserveQuery, ObserveResponse, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery,
+    ScreenshotResponse, Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -280,6 +280,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
                 status: NavigationStatus::Loaded,
                 http_status: Some(200),
                 redirect_count: 0,
+                force_reload: request.force_reload,
             },
             observation: Some(observation),
             error: None,
@@ -590,7 +591,14 @@ impl FakeSession {
             loading_state: LoadingState::Idle,
             screenshot: self.screenshot(session_id),
             a11y_summary: Vec::new(),
-            dom_snapshot: Vec::new(),
+            dom_snapshot: vec![DomSnapshotNode {
+                selector: format!("body[data-url=\"{}\"]", self.url),
+                tag: "body".to_string(),
+                text: Some(self.title.clone()),
+                value: None,
+                href: None,
+                attributes: Default::default(),
+            }],
             network_summary: Some(NetworkSummary {
                 failed_count,
                 recent_failures: network_items.to_vec(),
@@ -699,6 +707,7 @@ mod tests {
                     wait_until: WaitUntil::DomContentLoaded,
                     timeout_ms: 5_000,
                     capture_after: true,
+                    force_reload: false,
                 },
                 &key,
             )

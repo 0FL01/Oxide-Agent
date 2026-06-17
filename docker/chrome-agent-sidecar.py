@@ -1328,6 +1328,7 @@ def action_to_pipe_cmd(
         selector = action.get("selector")
         value = action.get("value", action.get("text", ""))
         return [
+            {"cmd": "fill", "selector": selector, "value": value},
             {"cmd": "eval", "expression": _input_dispatch_script(selector, value, fill=False)},
         ]
     if kind == "press":
@@ -1610,6 +1611,7 @@ class Handler(BaseHTTPRequestHandler):
 
         body = self.read_json()
         url = str(body.get("url", ""))
+        force_reload = bool(body.get("force_reload", False))
         if not url:
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
@@ -1637,6 +1639,19 @@ class Handler(BaseHTTPRequestHandler):
             and parsed_current.path == parsed_target.path
             and (parsed_current.fragment != parsed_target.fragment or parsed_target.fragment)
         ):
+            if force_reload:
+                # Some SPAs cache state in memory and only a real reload guarantees a
+                # clean slate (e.g. one-time secret pages). Reload before changing the hash.
+                pipe.send({"cmd": "eval", "expression": "window.location.reload(true); true"}, timeout=15)
+                listener = pipe._cdp_listener if pipe is not None else None
+                if listener is not None and listener._connected.is_set():
+                    listener.wait_for_network_idle(timeout=2.0)
+                else:
+                    time.sleep(0.5)
+                try:
+                    pipe.send({"cmd": "wait", "what": "selector", "pattern": "body", "timeout": 5}, timeout=10)
+                except Exception:
+                    pass
             hash_value = parsed_target.fragment
             script = f"window.location.hash = {json.dumps('#' + hash_value)}; true"
             pipe.send({"cmd": "eval", "expression": script}, timeout=15)
@@ -1657,7 +1672,15 @@ class Handler(BaseHTTPRequestHandler):
             # Prefer the real location from the browser over the requested URL.
             final_url = self._refresh_session_url_from_location(session_id, session) or url
             session["url"] = final_url
-            observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
+            dom_snapshot = capture_dom_snapshot(pipe)
+            observation = build_observation(
+                session_id,
+                chrome_output,
+                action_seq=action_seq,
+                include_dom=True,
+                dom_snapshot=dom_snapshot,
+                max_debug_items=20,
+            )
             self.write_json(HTTPStatus.OK, {
                 "request_id": request_id(),
                 "session_id": session_id,
@@ -1668,6 +1691,7 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "loaded",
                     "http_status": None,
                     "redirect_count": 0,
+                    "force_reload": force_reload,
                 },
                 "observation": observation,
                 "error": None,
@@ -1699,7 +1723,15 @@ class Handler(BaseHTTPRequestHandler):
         final_url = chrome_output.get("url") or result.get("url") or url
         session["url"] = final_url
         session["title"] = chrome_output.get("title") or result.get("title") or session.get("title", "")
-        observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
+        dom_snapshot = capture_dom_snapshot(pipe)
+        observation = build_observation(
+            session_id,
+            chrome_output,
+            action_seq=action_seq,
+            include_dom=True,
+            dom_snapshot=dom_snapshot,
+            max_debug_items=20,
+        )
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),
             "session_id": session_id,
@@ -1710,6 +1742,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "loaded",
                 "http_status": None,
                 "redirect_count": 0,
+                "force_reload": force_reload,
             },
             "observation": observation,
             "error": None,
@@ -1922,7 +1955,15 @@ class Handler(BaseHTTPRequestHandler):
                 if listener is not None and listener._connected.is_set():
                     time.sleep(0.2)
                     listener.wait_for_network_idle(timeout=2.0)
-            post_observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
+            dom_snapshot = capture_dom_snapshot(pipe)
+            post_observation = build_observation(
+                session_id,
+                chrome_output,
+                action_seq=action_seq,
+                include_dom=True,
+                dom_snapshot=dom_snapshot,
+                max_debug_items=20,
+            )
 
         result_value = None
         if success:

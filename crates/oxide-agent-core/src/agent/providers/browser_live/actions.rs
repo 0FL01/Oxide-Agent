@@ -27,12 +27,15 @@ pub fn plan_browser_action(
 ) -> BrowserExecutePlan {
     let request_timeout_ms = bounded_timeout_ms(request_timeout_ms);
     match action {
-        BrowserAction::Navigate { url } => BrowserExecutePlan::Navigate(GotoRequest {
-            url,
-            wait_until: WaitUntil::DomContentLoaded,
-            timeout_ms: request_timeout_ms,
-            capture_after: true,
-        }),
+        BrowserAction::Navigate { url, force_reload } => {
+            BrowserExecutePlan::Navigate(GotoRequest {
+                url,
+                wait_until: WaitUntil::DomContentLoaded,
+                timeout_ms: request_timeout_ms,
+                capture_after: true,
+                force_reload,
+            })
+        }
         action => BrowserExecutePlan::SidecarAction(build_action_request(
             action,
             action_seq,
@@ -322,6 +325,7 @@ mod tests {
         let plan = plan_browser_action(
             BrowserAction::Navigate {
                 url: "https://example.test/dashboard".to_string(),
+                force_reload: false,
             },
             1,
             10_000,
@@ -332,6 +336,25 @@ mod tests {
         };
         assert_eq!(request.url, "https://example.test/dashboard");
         assert!(request.capture_after);
+        assert!(!request.force_reload);
+    }
+
+    #[test]
+    fn maps_forced_reload_navigation_to_goto_request() {
+        let plan = plan_browser_action(
+            BrowserAction::Navigate {
+                url: "https://example.test/#hash".to_string(),
+                force_reload: true,
+            },
+            1,
+            10_000,
+            "navigated".to_string(),
+        );
+        let BrowserExecutePlan::Navigate(request) = plan else {
+            panic!("expected navigation");
+        };
+        assert_eq!(request.url, "https://example.test/#hash");
+        assert!(request.force_reload);
     }
 
     #[test]
@@ -339,6 +362,7 @@ mod tests {
         let plan = plan_browser_action(
             BrowserAction::Navigate {
                 url: "file:///etc/passwd".to_string(),
+                force_reload: false,
             },
             1,
             10_000,

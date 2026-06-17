@@ -168,6 +168,12 @@ pub struct GotoRequest {
     pub timeout_ms: u64,
     #[serde(default)]
     pub capture_after: bool,
+    /// Force a full page reload before navigating to the target URL.
+    ///
+    /// Useful for SPA hash-based routes that cache state in memory and do not
+    /// re-initialize when only the hash changes.
+    #[serde(default)]
+    pub force_reload: bool,
 }
 
 /// Response from `POST /sessions/{id}/goto`.
@@ -192,6 +198,9 @@ pub struct NavigationResult {
     pub http_status: Option<u16>,
     #[serde(default)]
     pub redirect_count: u32,
+    /// Whether the sidecar performed a forced reload before navigating.
+    #[serde(default)]
+    pub force_reload: bool,
 }
 
 /// Navigation terminal status.
@@ -402,6 +411,8 @@ pub enum BrowserAction {
     },
     Navigate {
         url: String,
+        #[serde(default)]
+        force_reload: bool,
     },
 }
 
@@ -754,10 +765,12 @@ mod tests {
 
         let navigate = BrowserAction::Navigate {
             url: "https://example.com/login".to_string(),
+            force_reload: false,
         };
         let value = serde_json::to_value(navigate).expect("serialize navigate");
         assert_eq!(value["kind"], "navigate");
         assert_eq!(value["url"], "https://example.com/login");
+        assert_eq!(value["force_reload"], false);
 
         let event = BrowserStreamEvent::Heartbeat {
             session_id: "br_1".to_string(),

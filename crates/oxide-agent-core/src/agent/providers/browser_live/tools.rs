@@ -1051,7 +1051,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXECUTE => (
-            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot and DOM snapshot, then call this tool with exactly one action (click, fill, type_text, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values.",
+            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot and DOM snapshot, then call this tool with exactly one action (click, fill, type_text, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values. For SPA hash-based URLs (e.g. one-time secret pages) use `navigate` with `force_reload: true` to guarantee a clean page state.",
             json!({
                 "type": "object",
                 "required": ["session_id", "action"],
@@ -1059,7 +1059,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "session_id": {"type": "string"},
                     "action": {
                         "type": "object",
-                        "description": "BrowserAction schema: one of click_xy, click_selector, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate"
+                        "description": "BrowserAction schema: one of click_xy, click_selector, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate(url, force_reload=false)"
                     },
                     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
                     "expected_result": {"type": "string"}
@@ -1575,6 +1575,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_execute_post_observation_includes_dom_snapshot() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20}},"expected_result":"button clicked"}}"#
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        let post_observation = payload["post_observation"]
+            .as_object()
+            .expect("post_observation");
+        let dom_snapshot = post_observation["dom_snapshot"]
+            .as_array()
+            .expect("dom_snapshot");
+        assert!(!dom_snapshot.is_empty());
+    }
+
+    #[tokio::test]
     async fn browser_execute_direct_click_returns_executed_and_screenshot_attachment() {
         let provider = test_provider();
         let executors = provider.tool_runtime_executors();
@@ -1631,6 +1656,34 @@ mod tests {
             Some("https://example.test/dashboard")
         );
         assert!(payload["post_observation"].is_object());
+    }
+
+    #[tokio::test]
+    async fn browser_execute_navigate_with_force_reload_passes_flag() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"navigate","url":"https://example.test/#secret","force_reload":true}},"expected_result":"navigated"}}"#
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        assert_eq!(payload["status"], "executed");
+        let action_result = payload["action_result"].as_object().expect("action_result");
+        assert_eq!(
+            action_result.get("force_reload").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            action_result.get("final_url").and_then(|v| v.as_str()),
+            Some("https://example.test/#secret")
+        );
     }
 
     #[tokio::test]
