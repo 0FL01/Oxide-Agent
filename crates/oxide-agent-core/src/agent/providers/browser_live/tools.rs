@@ -31,6 +31,7 @@ use crate::llm::ToolDefinition;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc::Sender};
@@ -262,7 +263,7 @@ impl BrowserLiveProvider {
             .measure_sidecar(self.sidecar.observe(&args.session_id, &query))
             .await
             .map_err(sidecar_runtime_error)?;
-        let frame = {
+        let mut frame = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(&args.session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
@@ -283,10 +284,12 @@ impl BrowserLiveProvider {
             args.session_id, frame.action_seq
         ))
         .await;
+        self.persist_latest_screenshot(&args.session_id, &mut frame)
+            .await?;
 
         Ok(observation_payload(
             &args.session_id,
-            &response.observation.screenshot,
+            &frame.screenshot,
             &frame,
         ))
     }
@@ -314,7 +317,7 @@ impl BrowserLiveProvider {
             .measure_sidecar(self.sidecar.observe(&args.session_id, &query))
             .await
             .map_err(sidecar_runtime_error)?;
-        let (frame, history_summary, action_seq) = {
+        let (mut frame, history_summary, action_seq) = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(&args.session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
@@ -331,8 +334,10 @@ impl BrowserLiveProvider {
         };
         tracing::Span::current().record("action_seq", action_seq);
         self.record_observation_metrics(&frame);
-        let observe =
-            observation_payload(&args.session_id, &response.observation.screenshot, &frame);
+        let screenshot_bytes = self
+            .persist_latest_screenshot(&args.session_id, &mut frame)
+            .await?;
+        let observe = observation_payload(&args.session_id, &frame.screenshot, &frame);
 
         let Some(decision_engine) = &self.decision_engine else {
             return Ok(json!({
@@ -342,17 +347,6 @@ impl BrowserLiveProvider {
             }));
         };
 
-        let screenshot_bytes = self
-            .measure_sidecar(self.sidecar.latest_screenshot_bytes(
-                &args.session_id,
-                &ScreenshotQuery {
-                    format: ScreenshotFormat::Binary,
-                    max_width: Some(response.observation.viewport.width),
-                    redacted: true,
-                },
-            ))
-            .await
-            .map_err(sidecar_runtime_error)?;
         let task = args
             .task
             .as_deref()
@@ -634,7 +628,7 @@ impl BrowserLiveProvider {
         session_id: &str,
         observation: &BrowserObservation,
     ) -> Result<(BrowserFrame, Value), ToolRuntimeError> {
-        let frame = {
+        let mut frame = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
@@ -645,7 +639,9 @@ impl BrowserLiveProvider {
                 .clone()
         };
         self.record_observation_metrics(&frame);
-        let payload = observation_payload(session_id, &observation.screenshot, &frame);
+        self.persist_latest_screenshot(session_id, &mut frame)
+            .await?;
+        let payload = observation_payload(session_id, &frame.screenshot, &frame);
         Ok((frame, payload))
     }
 
@@ -654,7 +650,7 @@ impl BrowserLiveProvider {
         session_id: &str,
         observation: &BrowserObservation,
     ) -> Result<(), ToolRuntimeError> {
-        let frame = {
+        let mut frame = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(session_id).ok_or_else(|| {
                 ToolRuntimeError::Failure("browser session is not started".to_string())
@@ -665,7 +661,58 @@ impl BrowserLiveProvider {
                 .clone()
         };
         self.record_observation_metrics(&frame);
+        self.persist_latest_screenshot(session_id, &mut frame)
+            .await?;
         Ok(())
+    }
+
+    async fn persist_latest_screenshot(
+        &self,
+        session_id: &str,
+        frame: &mut BrowserFrame,
+    ) -> Result<Vec<u8>, ToolRuntimeError> {
+        let bytes = self
+            .measure_sidecar(self.sidecar.latest_screenshot_bytes(
+                session_id,
+                &ScreenshotQuery {
+                    format: ScreenshotFormat::Binary,
+                    max_width: None,
+                    redacted: false,
+                },
+            ))
+            .await
+            .map_err(sidecar_runtime_error)?;
+        if let Some(parent) = frame.artifact.local_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                ToolRuntimeError::Failure(format!(
+                    "failed to create screenshot artifact directory: {error}"
+                ))
+            })?;
+        }
+        tokio::fs::write(&frame.artifact.local_path, &bytes)
+            .await
+            .map_err(|error| {
+                ToolRuntimeError::Failure(format!(
+                    "failed to write screenshot artifact {}: {error}",
+                    frame.artifact.local_path.display()
+                ))
+            })?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let byte_size = bytes.len() as u64;
+        {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(session_id).ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+            state
+                .update_latest_artifact_bytes(&bytes, sha256.clone())
+                .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
+        }
+        frame.screenshot.byte_size = byte_size;
+        frame.screenshot.sha256 = sha256.clone();
+        frame.artifact.bytes = byte_size;
+        frame.artifact.sha256 = Some(sha256);
+        Ok(bytes)
     }
 
     async fn recover_after_verification_failure(

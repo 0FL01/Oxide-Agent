@@ -36,6 +36,30 @@ pub enum BrowserMimoError {
     EmptyResponse(String),
     #[error("browser MiMo decision parse failed: {0}")]
     Parse(#[from] BrowserDecisionParseError),
+    #[error("browser MiMo image bytes failed validation: {0}")]
+    InvalidImage(String),
+}
+
+/// Validates that `bytes` begin with a supported image magic signature.
+/// Returns the MIME type on success, or an error describing the mismatch.
+fn validate_image_bytes(bytes: &[u8]) -> Result<&'static str, BrowserMimoError> {
+    if bytes.len() < 8 {
+        return Err(BrowserMimoError::InvalidImage(format!(
+            "image too small: {} bytes",
+            bytes.len()
+        )));
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok("image/png");
+    }
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        return Ok("image/jpeg");
+    }
+    let prefix = std::cmp::min(bytes.len(), 8);
+    Err(BrowserMimoError::InvalidImage(format!(
+        "unsupported image signature: {:?}",
+        &bytes[..prefix]
+    )))
 }
 
 #[async_trait]
@@ -76,6 +100,7 @@ impl BrowserMimoDecider {
         context: &BrowserDecisionPromptContext<'_>,
         viewport: Viewport,
     ) -> Result<BrowserDecision, BrowserMimoError> {
+        let _mime = validate_image_bytes(&image_bytes)?;
         let model = self
             .llm_client
             .resolve_browser_vision_model_for_image()
@@ -85,6 +110,7 @@ impl BrowserMimoDecider {
         let (raw, usage) = self
             .analyze(image_bytes.clone(), &dynamic_prompt, &model.id)
             .await?;
+
         match parse_browser_decision(&raw, validation) {
             Ok(decision) => Ok(decision),
             Err(error) => {
@@ -206,6 +232,9 @@ mod tests {
     use crate::llm::{LlmClient, LlmError, MockLlmProvider, TokenUsage};
     use mockall::predicate::always;
 
+    /// Valid PNG magic bytes followed by placeholder payload for unit tests.
+    const FAKE_PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfake_png_bytes";
+
     #[tokio::test]
     async fn mimo_decider_uses_browser_vision_image_route() {
         let mut provider = MockLlmProvider::new();
@@ -213,7 +242,7 @@ mod tests {
             .expect_analyze_image_with_usage()
             .with(always(), always(), always(), always())
             .return_once(|image, text_prompt, system_prompt, model_id| {
-                assert_eq!(image, b"png".to_vec());
+                assert_eq!(image, FAKE_PNG_BYTES.to_vec());
                 assert!(text_prompt.contains("Task: click login"));
                 assert!(system_prompt.contains("Browser Live visual decision planner"));
                 assert_eq!(model_id, "mimo-v2.5");
@@ -223,7 +252,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm));
         let decision = decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )
@@ -257,7 +286,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
         decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )
@@ -294,7 +323,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
         let _ = decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )
@@ -316,7 +345,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
         let _ = decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )
@@ -351,7 +380,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
         let decision = decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )
@@ -382,7 +411,7 @@ mod tests {
         let decider = BrowserMimoDecider::new(Arc::clone(&llm)).with_metrics(Arc::clone(&metrics));
         let result = decider
             .decide(
-                b"png".to_vec(),
+                FAKE_PNG_BYTES.to_vec(),
                 &test_context("click login"),
                 Viewport::default(),
             )

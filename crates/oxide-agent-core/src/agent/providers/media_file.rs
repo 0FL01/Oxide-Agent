@@ -904,8 +904,9 @@ mod tests {
         tokio::fs::create_dir_all(&inner)
             .await
             .expect("create artifact test dirs");
-        let artifact_path = inner.join("step-0001-milestone.jpg");
-        tokio::fs::write(&artifact_path, b"fake-image-bytes")
+        let artifact_path = inner.join("step-0001-milestone.png");
+        let fake_png = b"\x89PNG\r\n\x1a\nfake-image-bytes";
+        tokio::fs::write(&artifact_path, fake_png)
             .await
             .expect("write artifact test file");
 
@@ -913,7 +914,7 @@ mod tests {
             MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
         let (resolved_path, bytes, cleanup_path) = provider
             .read_media_source(
-                "artifact://browser/task-1/session-1/step-0001-milestone.jpg",
+                "artifact://browser/task-1/session-1/step-0001-milestone.png",
                 Some(MediaKind::Image),
                 Some(&artifact_dir),
             )
@@ -921,7 +922,7 @@ mod tests {
             .expect("resolve artifact URI");
 
         assert_eq!(resolved_path, artifact_path.to_string_lossy());
-        assert_eq!(bytes, b"fake-image-bytes");
+        assert_eq!(bytes, fake_png);
         assert!(cleanup_path.is_none());
 
         let _ = tokio::fs::remove_dir_all(&artifact_dir).await;

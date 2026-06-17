@@ -167,6 +167,32 @@ impl BrowserSessionState {
         self.latest.as_ref().ok_or(BrowserStateError::EmptyState)
     }
 
+    /// Update the latest frame's screenshot byte size and hash after the
+    /// corresponding artifact file has been written to disk.
+    pub fn update_latest_artifact_bytes(
+        &mut self,
+        bytes: &[u8],
+        sha256: String,
+    ) -> Result<(), BrowserStateError> {
+        let byte_size = bytes.len() as u64;
+        let latest = self.latest.as_mut().ok_or(BrowserStateError::EmptyState)?;
+        latest.screenshot.byte_size = byte_size;
+        latest.screenshot.sha256 = sha256.clone();
+        latest.artifact.bytes = byte_size;
+        latest.artifact.sha256 = Some(sha256.clone());
+        if let Some(frame) = self
+            .ring
+            .iter_mut()
+            .find(|frame| frame.observation_id == latest.observation_id)
+        {
+            frame.screenshot.byte_size = byte_size;
+            frame.screenshot.sha256 = sha256.clone();
+            frame.artifact.bytes = byte_size;
+            frame.artifact.sha256 = Some(sha256);
+        }
+        Ok(())
+    }
+
     /// Emit a compact summary safe for durable text history.
     #[must_use]
     pub fn compact_history_summary(&self) -> String {
@@ -292,7 +318,7 @@ mod tests {
         assert_eq!(state.retained_artifacts().len(), 1);
         assert_eq!(
             state.retained_artifacts()[0].uri,
-            "artifact://browser/task-1/session-1/step-0004-final.jpg"
+            "artifact://browser/task-1/session-1/step-0004-final.png"
         );
         assert_eq!(state.live_bytes(), 200);
     }
@@ -351,7 +377,7 @@ mod tests {
             .expect("record milestone");
 
         let summary = state.compact_history_summary();
-        assert!(summary.contains("artifact://browser/task-1/session-1/step-0001-milestone.jpg"));
+        assert!(summary.contains("artifact://browser/task-1/session-1/step-0001-milestone.png"));
         assert!(summary.contains("latest_screenshot_id=shot-1"));
         assert!(!summary.contains("base64"));
         assert!(!summary.contains("data:image"));

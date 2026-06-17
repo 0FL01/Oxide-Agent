@@ -87,8 +87,8 @@ Out of scope:
 - Source: test report problems #5, #7.
 - Acceptance: MiMo never receives invalid/placeholder bytes; `describe_image_file("artifact://browser/...")` reads the file from the Rust artifact directory.
 - Evidence required: image magic-byte validation test, artifact write test, live `describe_image_file` call.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-4 changed `BrowserArtifactPurpose::extension` to `.png` for image purposes; added `BrowserMimoError::InvalidImage` and `validate_image_bytes` (PNG/JPEG magic-byte check) in `mimo.rs`; `decide_inner` now validates bytes before sending to the vision model; `tools.rs` now fetches unredacted screenshot bytes and writes them to the Rust artifact dir via `persist_latest_screenshot`, updating the frame's `byte_size` and `sha256`; fake sidecar and `media_file.rs` tests updated to use valid PNG bytes; `describe_image_file` artifact-URI resolution test passes. Static checks and relevant tests pass. Live test pending CP-6.
 
 ### G6: Script action reduces actions and screenshots
 - Source: test report problems #4, #9.
@@ -241,11 +241,18 @@ Out of scope:
   - Audit IDs updated: G4 pending → verified, Q2 verified (extended evidence).
   - Next: CP-4 — image validation and artifact plumbing.
 
+- 2026-06-17: CP-4 — image validation and artifact plumbing implemented.
+  - Changed: `crates/oxide-agent-core/src/agent/providers/browser_live/artifacts.rs` image artifact extension to `.png`; `crates/oxide-agent-core/src/agent/providers/browser_live/mimo.rs` added `BrowserMimoError::InvalidImage` and `validate_image_bytes` (PNG/JPEG magic-byte check) and called it before sending to MiMo; `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` added `persist_latest_screenshot` that fetches unredacted screenshot bytes and writes them to the Rust artifact dir, updating `BrowserFrame.screenshot` byte_size/sha256; `crates/oxide-agent-core/src/agent/providers/browser_live/session.rs` added `update_latest_artifact_bytes`; fake sidecar and `media_file.rs` tests updated to use valid PNG bytes.
+  - Evidence: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live` 77 pass; `cargo test -p oxide-agent-web-ui` 11 pass; `cargo test -p oxide-agent-web-contracts` 10 pass; `cargo fmt` and `cargo clippy` pass; `describe_image_file` artifact-URI resolution test passes; `validate_image_bytes` rejects invalid bytes and accepts PNG/JPEG signatures.
+  - Commands: `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`.
+  - Audit IDs updated: G5 pending → verified, Q2 verified (extended evidence).
+  - Next: CP-5 — script action and efficiency.
+
 ## Risks and Blockers
 
 - `chrome-agent pipe` JSON shapes are stable across tested commands.
   - Impact: none; the risk is resolved.
-  - Evidence: `goto`, `click --selector`, `inspect`, `network --live`, and `console --level error` JSON shapes verified in the container.
+  - Evidence: `goto`, `click --selector`, `inspect`, `execute_javascript`, and CDP `Network`/`Log` event shapes verified in the container.
   - Mitigation: keep per-command JSON mapping isolated and add tests.
 - Continuous network listener on the same pipe is not possible; the reliable design is a separate CDP WebSocket connection to the page target.
   - Impact: resolved. The sidecar now starts a `CDPListener` thread that connects directly to the page's CDP WebSocket URL and streams `Network`/`Log` events continuously.
