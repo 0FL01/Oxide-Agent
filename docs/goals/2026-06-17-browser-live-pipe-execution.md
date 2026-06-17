@@ -79,9 +79,9 @@ Out of scope:
 ### G4: Network summary captures XHR/fetch
 - Source: test report problem #6.
 - Acceptance: `network_summary` shows the actual POST/GET requests made during page actions; `NetworkSummary` includes `request_count` and `recent_requests`, not only `failed_count`.
-- Evidence required: fake sidecar test, live test showing XHR/fetch requests.
+- Evidence required: fake sidecar test, live test showing the form POST.
 - Status: verified
-- Evidence collected: CP-3 changed `build_observation` to use `network --live` via the pipe and normalized chrome-agent live-network items into `NetworkItem` shape with `resource_type` mapped from `contentType`; `NetworkSummary` expanded with `request_count` and `recent_requests`; fake sidecar test updated; web UI `BrowserLiveDebugBadges` and `BrowserLiveState` gained `network_request_count`; live REST test on `https://ots.bash.md/` after fill+click showed `request_count: 8` and an `xhr` entry for `https://ots.bash.md/api/isWritable`.
+- Evidence collected: CP-3 added `CDPListener` in the sidecar: a background thread connects to the page-target CDP WebSocket, enables `Network`/`Log`/`Runtime`, and queues completed requests. `NetworkSummary` was expanded with `request_count` and `recent_requests`; fake sidecar test updated; web UI `BrowserLiveDebugBadges` and `BrowserLiveState` gained `network_request_count`; live REST test on `https://ots.bash.md/` created a session, filled `#createSecretData`, clicked `button[type="submit"]`, and the post-action observation reported `request_count: 5` with a `POST https://ots.bash.md/api/create` 201 entry (resource_type `xhr`).
 
 ### G5: Screenshot bytes are valid and accessible to describe_image_file
 - Source: test report problems #5, #7.
@@ -153,12 +153,13 @@ Out of scope:
 ### CP-3: Network and console streaming
 - Audit IDs: G4, Q2.
 - Expected changes:
-  - In pipe session, start `network --live` and `console --level error` listeners and accumulate events in session history.
+  - Add a background `CDPListener` that connects to the page-target CDP WebSocket, enables `Network`/`Log`/`Runtime`, and accumulates events in session history.
   - Expand `NetworkSummary` in `types.rs` to include `request_count` and `recent_requests`.
   - Update `summarize_network` in sidecar and `state.rs` in web UI.
+  - After mutating actions, wait briefly for async XHR to start and then wait for network idle before building the post-action observation.
 - Validation:
   - Fake sidecar test that captures a synthetic XHR.
-  - Live test: after form submit on `ots.bash.md`, `network_summary` contains the POST request.
+  - Live test: after form submit on `ots.bash.md`, the post-action `network_summary` contains the `POST /api/create` request.
 - Exit condition: Network and console events are streamed and reported.
 
 ### CP-4: Image validation and artifact plumbing
@@ -233,9 +234,9 @@ Out of scope:
   - Audit IDs updated: G1 in_progress → verified, G2 pending → verified, G3 pending → verified, Q2 pending → verified, N2 pending → verified.
   - Next: CP-3 — network and console streaming.
 
-- 2026-06-17: CP-3 — network and console streaming implemented.
-  - Changed: `docker/chrome-agent-sidecar.py` now uses `network --live` via the pipe to capture real XHR/fetch after actions; added `normalize_network_item` and `_resource_type_from_content_type`; `summarize_network` now returns `request_count` and `recent_requests`; `build_network_debug_payload` filters `xhr`/`fetch` by substring; `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` expanded `NetworkSummary`; `crates/oxide-agent-core/src/agent/providers/browser_live/prompt.rs` includes network request count and recent requests; `crates/oxide-agent-web-contracts/src/events.rs` and `crates/oxide-agent-web-ui/src/tasks/state.rs`/`workspace.rs` display `network_request_count`.
-  - Evidence: Fixed invalid `ONE_PIXEL_PNG` base64 padding (Python 3.13 strict); sidecar self-test passes; rebuilt and restarted sidecar; live REST test on `https://ots.bash.md/` showed `request_count: 8` and an `xhr` entry for `https://ots.bash.md/api/isWritable` after fill+click; `cargo test` passes.
+- 2026-06-17: CP-3 — network and console streaming implemented via direct CDP listener.
+  - Changed: `docker/chrome-agent-sidecar.py` now runs a background `CDPListener` thread per session that connects to the page-target CDP WebSocket, enables `Network`/`Log`/`Runtime`, and queues completed requests and console entries. `build_observation` drains the queue into `network_history`/`console_history`. After mutating actions the sidecar waits briefly for async XHR to start and then waits for network idle before building the post-action observation. `Dockerfile.chrome-agent-sidecar` adds `python3-websockets`. `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` expanded `NetworkSummary`; `crates/oxide-agent-web-contracts/src/events.rs` and `crates/oxide-agent-web-ui/src/tasks/state.rs`/`workspace.rs` display `network_request_count`.
+  - Evidence: Fixed invalid `ONE_PIXEL_PNG` base64 padding (Python 3.13 strict); `python -m py_compile docker/chrome-agent-sidecar.py` passes; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` passes; `cargo fmt`, `cargo clippy`, `cargo test` for core/web-ui/contracts pass; live REST test on `https://ots.bash.md/` created session `br-8b6917eab64e`, filled `#createSecretData`, clicked `button[type="submit"]`, and the post-action observation showed `request_count: 5` including `POST https://ots.bash.md/api/create` 201 (resource_type `xhr`).
   - Commands: `python -m py_compile docker/chrome-agent-sidecar.py`, `docker compose -f docker-compose.web.yml up -d --build chrome-agent-sidecar`, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`, `cargo fmt`, `cargo clippy`, `cargo test -p oxide-agent-core ...`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-contracts`.
   - Audit IDs updated: G4 pending → verified, Q2 verified (extended evidence).
   - Next: CP-4 — image validation and artifact plumbing.
@@ -246,10 +247,10 @@ Out of scope:
   - Impact: none; the risk is resolved.
   - Evidence: `goto`, `click --selector`, `inspect`, `network --live`, and `console --level error` JSON shapes verified in the container.
   - Mitigation: keep per-command JSON mapping isolated and add tests.
-- Continuous network listener on the same pipe is not possible (chrome-agent pipe is synchronous request/response; a second pipe to the same browser shares stdout and is unreliable; direct CDP port is blocked by host SELinux on Fedora 44).
-  - Impact: traffic that completes before the post-action `network --live` window starts may be missed.
-  - Evidence: live test captured `/api/isWritable` XHR; form submit POST may require an explicit wait or longer `BROWSER_AGENT_NETWORK_LIVE_SECONDS`.
-  - Mitigation: use `BROWSER_AGENT_NETWORK_LIVE_SECONDS` to tune the window; CP-5 `script` action will reduce the number of observation windows per task.
+- Continuous network listener on the same pipe is not possible; the reliable design is a separate CDP WebSocket connection to the page target.
+  - Impact: resolved. The sidecar now starts a `CDPListener` thread that connects directly to the page's CDP WebSocket URL and streams `Network`/`Log` events continuously.
+  - Evidence: verified in the running container: a CDP listener captured `Network.requestWillBeSent`/`responseReceived` for the OTS page navigation and the `POST https://ots.bash.md/api/create` 201 response inside the post-action observation.
+  - Mitigation: none; the listener is inside the sidecar container so it does not depend on host SELinux or exposed ports.
 - Persistent pipe process may leak if not cleaned up on close/error.
   - Impact: resource leak or zombie Chrome processes.
   - Evidence: not yet observed.

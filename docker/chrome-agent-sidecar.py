@@ -9,6 +9,7 @@ to the pipe, and the JSON-line response is returned to the caller.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -21,12 +22,15 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+import websockets
 
 
 ONE_PIXEL_PNG = base64.b64decode(
@@ -35,10 +39,9 @@ ONE_PIXEL_PNG = base64.b64decode(
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
-# Seconds to run chrome-agent ``network --live`` when capturing traffic after an
-# action. 2 seconds is enough for most SPA form submissions while keeping the
-# per-action latency bounded.  Increase via ``BROWSER_AGENT_NETWORK_LIVE_SECONDS``.
-NETWORK_LIVE_SECONDS = int(os.getenv("BROWSER_AGENT_NETWORK_LIVE_SECONDS", "2"))
+# Short pause before draining the CDP listener queue so that any late
+# ``Network.loadingFinished`` events from the just-completed action arrive.
+CDP_DRAIN_DELAY_SECONDS = float(os.getenv("BROWSER_AGENT_CDP_DRAIN_DELAY_SECONDS", "0.2"))
 
 
 class SidecarState:
@@ -118,6 +121,7 @@ class ChromeAgentPipe:
         self._proc: subprocess.Popen | None = None
         self._reader_thread: threading.Thread | None = None
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._cdp_listener: CDPListener | None = None
         self._closed = False
         self._start()
 
@@ -138,6 +142,24 @@ class ChromeAgentPipe:
             raise RuntimeError("chrome-agent binary not found") from exc
         self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
         self._reader_thread.start()
+        self._start_cdp_listener()
+
+    def _start_cdp_listener(self) -> None:
+        """Start a background CDP listener once the browser is reachable."""
+        def worker() -> None:
+            browser_ws_url: str | None = None
+            for _ in range(20):
+                browser_ws_url = _find_browser_ws_url(self.session_id)
+                if browser_ws_url:
+                    break
+                time.sleep(0.5)
+            if not browser_ws_url:
+                print(f"CDP listener: failed to discover browser URL for {self.session_id}", file=sys.stderr)
+                return
+            listener = CDPListener(self.session_id, browser_ws_url)
+            listener.start()
+            self._cdp_listener = listener
+        threading.Thread(target=worker, daemon=True).start()
 
     def _read_stdout(self) -> None:
         try:
@@ -205,6 +227,13 @@ class ChromeAgentPipe:
 
     def close(self, purge: bool = True) -> dict[str, Any]:
         self._closed = True
+        listener = self._cdp_listener
+        self._cdp_listener = None
+        if listener is not None:
+            try:
+                listener.close()
+            except Exception:
+                pass
         # Ask chrome-agent to close the browser and purge the profile via the
         # standalone CLI, then terminate the pipe process itself.
         result = {"ok": True, "closed": True}
@@ -301,6 +330,248 @@ def run_chrome_agent(browser: str, args: list[str], timeout: int = 60) -> dict[s
 
 def chrome_agent_available() -> bool:
     return shutil.which("chrome-agent") is not None
+
+
+def _find_browser_ws_url(session_id: str) -> str | None:
+    """Return the browser-level CDP WebSocket URL from chrome-agent status."""
+    status = run_chrome_agent(session_id, ["status"], timeout=5)
+    if not status.get("ok"):
+        return None
+    for browser in status.get("browsers", []):
+        if browser.get("name") == session_id:
+            return browser.get("ws")
+    return None
+
+
+def _find_page_ws_url(browser_ws_url: str) -> str | None:
+    """Discover the first page target WS URL from the browser HTTP endpoint."""
+    try:
+        parsed = urlparse(browser_ws_url)
+        port = parsed.port or 9222
+        host = parsed.hostname or "127.0.0.1"
+        with urllib.request.urlopen(f"http://{host}:{port}/json/list", timeout=10) as resp:
+            targets = json.loads(resp.read())
+        for target in targets:
+            if target.get("type") == "page":
+                return target.get("webSocketDebuggerUrl")
+    except Exception:
+        return None
+    return None
+
+
+def _resource_type_from_cdp(type_name: str) -> str:
+    """Map CDP request type to the sidecar NetworkItem resource_type."""
+    value = (type_name or "").lower()
+    if value in ("xhr", "fetch"):
+        return "xhr"
+    if value in ("script", "javascript"):
+        return "script"
+    if value in ("stylesheet", "css"):
+        return "stylesheet"
+    if value in ("image", "png", "jpeg", "jpg", "webp", "gif", "svg"):
+        return "image"
+    if value in ("document", "html"):
+        return "document"
+    return value or "other"
+
+
+class CDPListener:
+    """Continuous CDP listener for a single browser session.
+
+    Runs in a background thread with its own asyncio event loop. It connects to
+    the page target CDP WebSocket, enables Network/Log/Runtime domains, and
+    queues completed network requests and console entries for the sidecar to
+    drain when it builds an observation.
+    """
+
+    def __init__(self, session_id: str, browser_ws_url: str) -> None:
+        self.session_id = session_id
+        self.browser_ws_url = browser_ws_url
+        self._page_ws_url: str | None = None
+        self._ws = None
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._pending_requests: dict[str, dict[str, Any]] = {}
+        self._pending_lock = threading.Lock()
+        self._closed = False
+        self._connected = threading.Event()
+        self._next_id = 1
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def wait_connected(self, timeout: float = 5.0) -> bool:
+        return self._connected.wait(timeout)
+
+    def close(self) -> None:
+        self._closed = True
+        if self._ws is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop).result(timeout=2)
+            except Exception:
+                pass
+        if self._loop.is_running():
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception:
+                pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    def drain_events(self) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        try:
+            while True:
+                events.append(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+        return events
+
+    def wait_for_network_idle(self, timeout: float = 2.0, idle_ms: int = 100) -> None:
+        """Wait until no network requests are pending or timeout expires."""
+        if not self._connected.is_set():
+            return
+        deadline = time.time() + timeout
+        last_pending = None
+        last_change = time.time()
+        while time.time() < deadline:
+            with self._pending_lock:
+                pending = len(self._pending_requests)
+            if pending == 0:
+                break
+            if pending != last_pending:
+                last_pending = pending
+                last_change = time.time()
+            if (time.time() - last_change) * 1000 >= idle_ms:
+                # Requests have been stuck for idle_ms; stop waiting.
+                break
+            time.sleep(0.05)
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._listen())
+
+    async def _send(self, ws: websockets.WebSocketClientProtocol, method: str, params: dict[str, Any] | None = None) -> int:
+        cmd_id = self._next_id
+        self._next_id += 1
+        msg = {"id": cmd_id, "method": method, "params": params or {}}
+        await ws.send(json.dumps(msg))
+        return cmd_id
+
+    async def _listen(self) -> None:
+        try:
+            self._page_ws_url = await self._loop.run_in_executor(
+                None, _find_page_ws_url, self.browser_ws_url
+            )
+            if not self._page_ws_url:
+                print(f"CDP listener: no page target for {self.session_id}", file=sys.stderr)
+                return
+            async with websockets.connect(self._page_ws_url) as ws:
+                self._ws = ws
+                await self._send(ws, "Network.enable", {})
+                await self._send(ws, "Log.enable", {})
+                await self._send(ws, "Runtime.enable", {})
+                self._connected.set()
+                async for message in ws:
+                    try:
+                        data = json.loads(message)
+                    except json.JSONDecodeError:
+                        continue
+                    self._on_message(data)
+        except Exception as exc:
+            if not self._closed:
+                print(f"CDP listener error for {self.session_id}: {exc}", file=sys.stderr)
+
+    def _on_message(self, data: dict[str, Any]) -> None:
+        method = data.get("method")
+        if not method:
+            return
+        params = data.get("params", {})
+        if method == "Network.requestWillBeSent":
+            self._on_request_will_be_sent(params)
+        elif method == "Network.responseReceived":
+            self._on_response_received(params)
+        elif method == "Network.loadingFinished":
+            self._on_loading_finished(params)
+        elif method == "Network.loadingFailed":
+            self._on_loading_failed(params)
+        elif method == "Log.entryAdded":
+            self._on_log_entry(params)
+        elif method == "Runtime.consoleAPICalled":
+            self._on_console_api_called(params)
+
+    def _on_request_will_be_sent(self, params: dict[str, Any]) -> None:
+        rid = params.get("requestId")
+        req = params.get("request", {})
+        if not rid:
+            return
+        with self._pending_lock:
+            self._pending_requests[rid] = {
+                "requestId": rid,
+                "timestamp": params.get("timestamp"),
+                "method": req.get("method", "GET"),
+                "url": req.get("url", ""),
+                "resource_type": _resource_type_from_cdp(params.get("type", "")),
+                "status": None,
+                "error_text": None,
+            }
+
+    def _on_response_received(self, params: dict[str, Any]) -> None:
+        rid = params.get("requestId")
+        with self._pending_lock:
+            entry = self._pending_requests.get(rid)
+            if not entry:
+                return
+            response = params.get("response", {})
+            entry["status"] = response.get("status")
+            entry["url"] = entry.get("url") or response.get("url")
+
+    def _on_loading_finished(self, params: dict[str, Any]) -> None:
+        rid = params.get("requestId")
+        with self._pending_lock:
+            entry = self._pending_requests.pop(rid, None)
+        if entry:
+            self._queue.put(entry)
+
+    def _on_loading_failed(self, params: dict[str, Any]) -> None:
+        rid = params.get("requestId")
+        with self._pending_lock:
+            entry = self._pending_requests.pop(rid, None)
+        if entry:
+            entry["error_text"] = params.get("errorText") or params.get("type")
+            self._queue.put(entry)
+
+    def _on_log_entry(self, params: dict[str, Any]) -> None:
+        entry = params.get("entry", {})
+        self._queue.put({
+            "type": "console",
+            "level": entry.get("level", "info").lower(),
+            "text": entry.get("text", ""),
+            "source": entry.get("source"),
+            "line": entry.get("lineNumber"),
+            "timestamp": entry.get("timestamp"),
+        })
+
+    def _on_console_api_called(self, params: dict[str, Any]) -> None:
+        level = params.get("type", "log").lower()
+        if level == "warning":
+            level = "warning"
+        elif level == "error":
+            level = "error"
+        elif level in ("debug", "verbose"):
+            level = "verbose"
+        else:
+            level = "info"
+        text = " ".join(str(arg.get("value", arg)) for arg in params.get("args", []))
+        self._queue.put({
+            "type": "console",
+            "level": level,
+            "text": text,
+            "source": "console-api",
+            "line": None,
+            "timestamp": params.get("timestamp"),
+        })
 
 
 def get_pipe(session_id: str) -> ChromeAgentPipe:
@@ -624,29 +895,48 @@ def build_observation(
     network_summary = None
     console_summary = None
     pipe = get_pipe(session_id)
+    listener = pipe._cdp_listener if pipe is not None else None
+    raw_events: list[dict[str, Any]] = []
+    if listener is not None:
+        if not listener._connected.is_set():
+            listener.wait_connected(timeout=2.0)
+        if CDP_DRAIN_DELAY_SECONDS > 0:
+            time.sleep(CDP_DRAIN_DELAY_SECONDS)
+        raw_events = listener.drain_events()
+
+    network_items: list[dict[str, Any]] = []
+    console_items: list[dict[str, Any]] = []
+    for event in raw_events:
+        if event.get("type") == "console":
+            console_items.append({
+                "timestamp": now_iso(),
+                "level": event.get("level", "info"),
+                "text": event.get("text", ""),
+                "source": event.get("source"),
+                "line": event.get("line"),
+            })
+        else:
+            network_items.append({
+                "timestamp": now_iso(),
+                "method": event.get("method", "GET"),
+                "url_redacted": event.get("url", ""),
+                "status": event.get("status"),
+                "resource_type": event.get("resource_type", "other"),
+                "error_text": event.get("error_text"),
+            })
+
     if include_network:
-        # Live capture for a bounded window to catch XHR/fetch triggered by the
-        # latest action.  A subprocess-pipe cannot run a continuous listener and
-        # actions on the same stdin/stdout, so we sample after the action instead.
-        network = pipe.send(
-            {"cmd": "network", "live": NETWORK_LIVE_SECONDS},
-            timeout=NETWORK_LIVE_SECONDS + 5,
+        _merge_history(session, "network_history", network_items, action_seq)
+        network_summary = summarize_network(
+            [entry["item"] for entry in session.get("network_history", [])],
+            limit=max_debug_items,
         )
-        if network.get("ok"):
-            normalized = [normalize_network_item(req) for req in network.get("requests", [])]
-            _merge_history(session, "network_history", normalized, action_seq)
-            network_summary = summarize_network(
-                [entry["item"] for entry in session.get("network_history", [])],
-                limit=max_debug_items,
-            )
     if include_console:
-        console = pipe.send({"cmd": "console", "level": "error"}, timeout=10)
-        if console.get("ok"):
-            _merge_history(session, "console_history", console.get("messages", []), action_seq)
-            console_summary = summarize_console(
-                [entry["item"] for entry in session.get("console_history", [])],
-                limit=max_debug_items,
-            )
+        _merge_history(session, "console_history", console_items, action_seq)
+        console_summary = summarize_console(
+            [entry["item"] for entry in session.get("console_history", [])],
+            limit=max_debug_items,
+        )
 
     observation_seq = session.get("observation_seq", 0) + 1
     session["observation_seq"] = observation_seq
@@ -1164,7 +1454,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        mutating_kinds = {"click_xy", "click_selector", "click_target_id", "fill", "type_text", "press", "scroll"}
+        mutating_kinds = {"click_xy", "click_selector", "click_target_id", "fill", "type_text", "press", "scroll", "execute_javascript"}
         is_mutating = action.get("kind") in mutating_kinds
 
         pipe = get_pipe(session_id)
@@ -1186,6 +1476,14 @@ class Handler(BaseHTTPRequestHandler):
                 # post-action page state for verification.
                 inspect_result = pipe.send({"cmd": "inspect"}, timeout=15)
                 chrome_output = inspect_result if inspect_result.get("ok") else result
+                # Give in-flight network requests a moment to complete so the
+                # post-action observation reflects the real result of the action.
+                # JS-driven actions may dispatch async XHR shortly after the
+                # command returns; wait briefly so the listener sees them.
+                listener = pipe._cdp_listener if pipe is not None else None
+                if listener is not None and listener._connected.is_set():
+                    time.sleep(0.2)
+                    listener.wait_for_network_idle(timeout=2.0)
             post_observation = build_observation(session_id, chrome_output, action_seq=action_seq, max_debug_items=20)
 
         result_value = None
