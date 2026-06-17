@@ -5,7 +5,7 @@ Status: active
 Codex goal: Iterate on Browser Live according to the RECON plan: verify live contracts, fix SPA input, fresh navigation, strict action schema, DOM extraction, docs, validate every checkpoint, and create a separate git commit after each completed checkpoint.
 Source spec: user-provided v6 OTS evidence report and RECON review request
 Goal doc owner: Codex
-Last updated: 2026-06-18 01:40
+Last updated: 2026-06-18 02:05
 
 ## Objective
 
@@ -90,8 +90,8 @@ Out of scope:
 - Source: v6 problem: `wait` requires `timeout_ms`, but loose schema permits/encourages wrong `ms` field.
 - Acceptance: `browser_execute` exposes a strict nested `oneOf`/equivalent schema for all public `BrowserAction` variants with required fields, ranges, and `additionalProperties:false`; no `ms` alias is added.
 - Evidence required: unit tests inspecting tool schema for representative variants and absence of legacy/alias fields.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-3 replaced the prose-only `browser_execute.action` schema with a strict `oneOf` schema covering all public `BrowserAction` variants. Each variant requires a literal `kind`, declares its required fields, bounds numeric fields, and sets `additionalProperties:false`; `wait` exposes only `timeout_ms` with range `1..60000` and has no `ms` property or alias. `script.steps` now has an item schema for direct action steps. Rust deserialization for `BrowserAction` now uses `deny_unknown_fields`, so providers that do not enforce the schema still cannot silently drop unknown nested fields. Tests inspect representative schema variants (`wait`, `navigate`, `fill`, `script`) and verify that `BrowserAction` rejects `wait.ms`/unexpected fields.
 
 ### G5: Deterministic DOM value/attribute extraction
 - Source: v6 problem: share URL requires JS `querySelector(...).value` workaround.
@@ -119,7 +119,7 @@ Out of scope:
 - Acceptance: relevant targeted checks pass before each checkpoint commit; final gate includes broad static/test commands listed in Validation Contract.
 - Evidence required: command outputs per checkpoint.
 - Status: in_progress
-- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed). CP-1 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/contract check for `action_to_pipe_cmd` (pass after documenting the local `/var/lib/oxide-browser` permission issue), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), and the live OTS semantic input probe (pass). CP-2 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/source contract check asserting no reload JS remains and hash-navigation classification works (pass), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), refreshed the live sidecar with an executable script, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), a raw chrome-agent close/reopen contract probe (pass), and a live OTS force-reload reveal probe (pass).
+- Evidence collected: CP-0 docs-only checkpoint ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass) and `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed). CP-1 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/contract check for `action_to_pipe_cmd` (pass after documenting the local `/var/lib/oxide-browser` permission issue), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), and the live OTS semantic input probe (pass). CP-2 ran `python3 -m py_compile docker/chrome-agent-sidecar.py` (pass), a temp-dir Python import/source contract check asserting no reload JS remains and hash-navigation classification works (pass), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (65 passed, 0 failed), refreshed the live sidecar with an executable script, `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test` (pass), a raw chrome-agent close/reopen contract probe (pass), and a live OTS force-reload reveal probe (pass). CP-3 ran `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet` (67 passed, 0 failed), `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib --quiet` (1305 passed, 8 ignored, 0 failed), and `cargo fmt --all -- --check` (pass after applying `cargo fmt --all`).
 
 ### Q2: One commit per completed checkpoint
 - Source: user instruction.
@@ -238,6 +238,7 @@ Out of scope:
 ## Decisions
 
 - 2026-06-18: Do not add compatibility aliases like `wait.ms`; wrong nested action fields are a schema-contract bug and should be rejected by strict schema.
+- 2026-06-18: Make strictness two-layered for BrowserAction inputs: public tool schema prevents malformed LLM calls where the provider enforces schemas, and Rust `deny_unknown_fields` prevents silent drift where the provider does not.
 - 2026-06-18: Treat `force_reload` as an intent for fresh document state owned by sidecar, not permission for the LLM or page JS to choose `reload()`/`about:blank` workarounds.
 - 2026-06-18: Keep `fill` and `type_text` public, but make them share the same semantic value-setting primitive so SPA correctness cannot diverge by action name.
 - 2026-06-18: Implement `force_reload` as browser-process replacement without profile purge. This is stronger than same-document reload for SPA memory freshness, preserves cookies/local storage better than purge/new session, and keeps the target URL/hash owned by the sidecar rather than by page JavaScript.
@@ -278,6 +279,13 @@ Out of scope:
   - Commands: `docker exec oxide_chrome_agent_sidecar sh -lc 'chrome-agent --help | sed -n "1,160p"'`; `docker exec oxide_chrome_agent_sidecar sh -lc 'chrome-agent close --help | sed -n "1,120p"'`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...` (raw close/reopen contract); `python3 -m py_compile docker/chrome-agent-sidecar.py`; `BROWSER_AGENT_ARTIFACT_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-artifacts-test BROWSER_AGENT_PROFILE_DIR=/home/stfu/ai/Oxide-Agent/target/sidecar-profiles-test python3 - <<'PY' ...`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `install -m 0755 docker/chrome-agent-sidecar.py target/chrome-agent-sidecar-live`; `docker cp target/chrome-agent-sidecar-live oxide_chrome_agent_sidecar:/usr/local/bin/chrome-agent-sidecar`; `docker restart oxide_chrome_agent_sidecar`; `docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test`; `docker exec -i oxide_chrome_agent_sidecar python3 - <<'PY' ...` (live OTS force-reload reveal).
   - Audit IDs updated: G3 verified; G7 partial evidence; Q1/Q2 in progress.
   - Next: review CP-2 diff/status, commit checkpoint, then start CP-3 strict public action schema.
+
+- 2026-06-18 02:05: CP-3 strict public action schema completed.
+  - Changed: `browser_execute.action` now exposes a strict per-variant `oneOf` schema with literal `kind` values, required fields, numeric bounds, and `additionalProperties:false`; `BrowserAction` deserialization now rejects unknown variant fields so bad aliases are not silently ignored.
+  - Evidence: schema tests inspect `wait`, `navigate`, `fill`, and `script` variants; deserialization tests reject `wait.ms` and unexpected fields. Commit hash will be recorded in the follow-up ledger entry after the checkpoint commit exists.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- agent::providers::browser_live --quiet`; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib --quiet`; `cargo fmt --all`; `cargo fmt --all -- --check`; `git diff -- crates/oxide-agent-core/src/agent/providers/browser_live/types.rs crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs`; `git status --short`.
+  - Audit IDs updated: G4 verified; Q1/Q2 in progress.
+  - Next: commit CP-3, record the finalized commit hash, then start CP-4 deterministic DOM extraction.
 
 ## Risks and Blockers
 

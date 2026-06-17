@@ -362,7 +362,7 @@ pub struct ActionRequest {
 
 /// Browser action contract accepted by the sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserAction {
     ClickXy {
         x: u32,
@@ -778,5 +778,23 @@ mod tests {
         };
         let value = serde_json::to_value(event).expect("serialize event");
         assert_eq!(value["type"], "heartbeat");
+    }
+
+    #[test]
+    fn browser_action_rejects_unknown_variant_fields() {
+        let wait_with_alias = serde_json::from_value::<BrowserAction>(json!({
+            "kind": "wait",
+            "timeout_ms": 1_000,
+            "ms": 1_000
+        }));
+        assert!(wait_with_alias.is_err());
+
+        let fill_with_extra = serde_json::from_value::<BrowserAction>(json!({
+            "kind": "fill",
+            "selector": "#secret",
+            "value": "hello",
+            "unexpected": true
+        }));
+        assert!(fill_with_extra.is_err());
     }
 }

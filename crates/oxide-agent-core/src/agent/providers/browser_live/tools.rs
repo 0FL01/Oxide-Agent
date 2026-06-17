@@ -1020,6 +1020,186 @@ fn execute_payload(
     }
 }
 
+fn string_schema(description: &str) -> Value {
+    json!({"type": "string", "minLength": 1, "description": description})
+}
+
+fn action_kind_schema(kind: &str) -> Value {
+    json!({"type": "string", "enum": [kind]})
+}
+
+fn browser_action_variant_schema(
+    kind: &str,
+    required_fields: &[&str],
+    properties: serde_json::Map<String, Value>,
+) -> Value {
+    let mut required = Vec::with_capacity(required_fields.len() + 1);
+    required.push(json!("kind"));
+    required.extend(required_fields.iter().map(|field| json!(field)));
+
+    let mut all_properties = serde_json::Map::with_capacity(properties.len() + 1);
+    all_properties.insert("kind".to_string(), action_kind_schema(kind));
+    all_properties.extend(properties);
+
+    json!({
+        "type": "object",
+        "required": required,
+        "properties": all_properties,
+        "additionalProperties": false
+    })
+}
+
+fn browser_action_schema(include_script: bool) -> Value {
+    let mut variants = Vec::new();
+
+    variants.push(browser_action_variant_schema(
+        "click_xy",
+        &["x", "y"],
+        serde_json::Map::from_iter([
+            (
+                "x".to_string(),
+                json!({"type": "integer", "minimum": 0, "maximum": 4_294_967_295_u64}),
+            ),
+            (
+                "y".to_string(),
+                json!({"type": "integer", "minimum": 0, "maximum": 4_294_967_295_u64}),
+            ),
+            ("target_description".to_string(), json!({"type": "string"})),
+        ]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "click_selector",
+        &["selector"],
+        serde_json::Map::from_iter([(
+            "selector".to_string(),
+            string_schema("CSS selector to click"),
+        )]),
+    ));
+    for kind in ["fill", "type_text"] {
+        variants.push(browser_action_variant_schema(
+            kind,
+            &["selector", "value"],
+            serde_json::Map::from_iter([
+                (
+                    "selector".to_string(),
+                    string_schema("CSS selector for the input element"),
+                ),
+                (
+                    "value".to_string(),
+                    json!({"type": "string", "description": "Text value to set"}),
+                ),
+            ]),
+        ));
+    }
+    variants.push(browser_action_variant_schema(
+        "press",
+        &["key"],
+        serde_json::Map::from_iter([("key".to_string(), string_schema("Key name to press"))]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "scroll",
+        &["delta_x", "delta_y"],
+        serde_json::Map::from_iter([
+            (
+                "delta_x".to_string(),
+                json!({"type": "integer", "minimum": -2_147_483_648_i64, "maximum": 2_147_483_647_i64}),
+            ),
+            (
+                "delta_y".to_string(),
+                json!({"type": "integer", "minimum": -2_147_483_648_i64, "maximum": 2_147_483_647_i64}),
+            ),
+        ]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "get_element_value",
+        &["selector"],
+        serde_json::Map::from_iter([(
+            "selector".to_string(),
+            string_schema("CSS selector whose value should be read"),
+        )]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "execute_javascript",
+        &["expression"],
+        serde_json::Map::from_iter([(
+            "expression".to_string(),
+            string_schema("JavaScript expression to evaluate"),
+        )]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "wait",
+        &["timeout_ms"],
+        serde_json::Map::from_iter([(
+            "timeout_ms".to_string(),
+            json!({"type": "integer", "minimum": 1, "maximum": 60_000}),
+        )]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "wait_for_selector",
+        &["selector", "timeout_ms"],
+        serde_json::Map::from_iter([
+            (
+                "selector".to_string(),
+                string_schema("CSS selector to wait for"),
+            ),
+            (
+                "timeout_ms".to_string(),
+                json!({"type": "integer", "minimum": 1, "maximum": 60_000}),
+            ),
+        ]),
+    ));
+    variants.push(browser_action_variant_schema(
+        "wait_for_text",
+        &["text", "timeout_ms"],
+        serde_json::Map::from_iter([
+            (
+                "text".to_string(),
+                string_schema("Visible text to wait for"),
+            ),
+            (
+                "timeout_ms".to_string(),
+                json!({"type": "integer", "minimum": 1, "maximum": 60_000}),
+            ),
+        ]),
+    ));
+    if include_script {
+        variants.push(browser_action_variant_schema(
+            "script",
+            &["steps"],
+            serde_json::Map::from_iter([(
+                "steps".to_string(),
+                json!({
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": browser_action_schema(false)
+                }),
+            )]),
+        ));
+    }
+    variants.push(browser_action_variant_schema(
+        "navigate",
+        &["url"],
+        serde_json::Map::from_iter([
+            ("url".to_string(), string_schema("Absolute URL to open")),
+            (
+                "force_reload".to_string(),
+                json!({
+                    "type": "boolean",
+                    "default": false,
+                    "description": "restart the managed browser before opening the URL to guarantee a fresh page heap"
+                }),
+            ),
+        ]),
+    ));
+
+    json!({
+        "type": "object",
+        "description": "Strict BrowserAction schema. Choose exactly one action variant by its kind.",
+        "oneOf": variants
+    })
+}
+
 fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
     let (description, parameters) = match name {
         TOOL_BROWSER_START => (
@@ -1057,10 +1237,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                 "required": ["session_id", "action"],
                 "properties": {
                     "session_id": {"type": "string"},
-                    "action": {
-                        "type": "object",
-                        "description": "BrowserAction schema: one of click_xy, click_selector, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate(url, force_reload=false)"
-                    },
+                    "action": browser_action_schema(true),
                     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
                     "expected_result": {"type": "string"}
                 },
@@ -1342,6 +1519,49 @@ mod tests {
         assert!(params["properties"].get("action").is_some());
         assert!(params["properties"].get("timeout_ms").is_some());
         assert!(params["properties"].get("expected_result").is_some());
+    }
+
+    #[tokio::test]
+    async fn browser_execute_spec_has_strict_action_variants() {
+        let spec = browser_tool_definition(TOOL_BROWSER_EXECUTE);
+        let action = &spec.parameters["properties"]["action"];
+        assert_eq!(action["type"], "object");
+        let variants = action["oneOf"].as_array().expect("action oneOf");
+        let find_variant = |kind: &str| {
+            variants
+                .iter()
+                .find(|variant| variant["properties"]["kind"]["enum"] == json!([kind]))
+                .unwrap_or_else(|| panic!("missing {kind} variant"))
+        };
+
+        assert_eq!(variants.len(), 13);
+
+        let wait = find_variant("wait");
+        assert_eq!(wait["required"], json!(["kind", "timeout_ms"]));
+        assert_eq!(wait["additionalProperties"], false);
+        assert!(wait["properties"].get("ms").is_none());
+        assert_eq!(wait["properties"]["timeout_ms"]["minimum"], 1);
+        assert_eq!(wait["properties"]["timeout_ms"]["maximum"], 60_000);
+
+        let navigate = find_variant("navigate");
+        assert_eq!(navigate["required"], json!(["kind", "url"]));
+        assert_eq!(navigate["properties"]["force_reload"]["type"], "boolean");
+        assert_eq!(navigate["additionalProperties"], false);
+
+        let fill = find_variant("fill");
+        assert_eq!(fill["required"], json!(["kind", "selector", "value"]));
+        assert_eq!(fill["additionalProperties"], false);
+
+        let script = find_variant("script");
+        assert_eq!(script["required"], json!(["kind", "steps"]));
+        assert_eq!(
+            script["properties"]["steps"]["items"]["oneOf"]
+                .as_array()
+                .expect("step oneOf")
+                .len(),
+            12
+        );
+        assert_eq!(script["additionalProperties"], false);
     }
 
     #[tokio::test]
