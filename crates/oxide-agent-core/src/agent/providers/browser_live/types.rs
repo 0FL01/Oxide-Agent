@@ -299,6 +299,9 @@ pub struct BrowserObservation {
     pub a11y_summary: Vec<Value>,
     #[serde(default)]
     pub dom_snapshot: Vec<DomSnapshotNode>,
+    /// Structured failure when a DOM snapshot was requested but could not be captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dom_snapshot_error: Option<SidecarErrorBody>,
     #[serde(default)]
     pub network_summary: Option<NetworkSummary>,
     #[serde(default)]

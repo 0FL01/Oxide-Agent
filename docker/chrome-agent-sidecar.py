@@ -912,21 +912,65 @@ DOM_SNAPSHOT_SCRIPT = """
 """
 
 
-def capture_dom_snapshot(pipe: ChromeAgentPipe) -> list[dict[str, Any]] | None:
+def _dom_snapshot_error(
+    code: str,
+    message: str,
+    hint: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "retryable": True,
+    }
+    if hint:
+        error["hint"] = hint
+    if details is not None:
+        error["details"] = details
+    return error
+
+
+def capture_dom_snapshot(pipe: ChromeAgentPipe | None) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
     """Capture a compact DOM snapshot with resolved URLs and data-* attributes."""
+    if pipe is None:
+        return None, _dom_snapshot_error(
+            "dom_snapshot_unavailable",
+            "browser pipe is not available for DOM snapshot capture",
+            "restart the browser session before retrying",
+        )
     result = pipe.send({"cmd": "eval", "expression": DOM_SNAPSHOT_SCRIPT}, timeout=15)
     if not result.get("ok"):
-        return None
+        return None, _dom_snapshot_error(
+            "dom_snapshot_failed",
+            "chrome-agent failed to evaluate the DOM snapshot script",
+            "inspect action_result and browser_debug output before retrying",
+            {"error": result.get("error")},
+        )
     raw = result.get("result") or result.get("value")
     if not raw or not isinstance(raw, str):
-        return None
+        return None, _dom_snapshot_error(
+            "dom_snapshot_empty_result",
+            "DOM snapshot script returned no JSON string",
+            "retry after the page has finished rendering",
+            {"result_type": type(raw).__name__},
+        )
     try:
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
-            return None
-        return parsed
-    except json.JSONDecodeError:
-        return None
+            return None, _dom_snapshot_error(
+                "dom_snapshot_invalid_shape",
+                "DOM snapshot script returned JSON that is not an array",
+                "inspect browser_debug output before retrying",
+                {"parsed_type": type(parsed).__name__},
+            )
+        return parsed, None
+    except json.JSONDecodeError as exc:
+        return None, _dom_snapshot_error(
+            "dom_snapshot_invalid_json",
+            "DOM snapshot script returned invalid JSON",
+            "inspect browser_debug output before retrying",
+            {"error": str(exc)},
+        )
 
 
 def _resource_type_from_content_type(content_type: str | None) -> str:
@@ -1156,6 +1200,7 @@ def build_observation(
     fresh: bool = True,
     max_debug_items: int = 20,
     dom_snapshot: list[dict[str, Any]] | None = None,
+    dom_snapshot_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a full BrowserObservation from chrome-agent output."""
     session = STATE.sessions.setdefault(session_id, {})
@@ -1240,8 +1285,11 @@ def build_observation(
         "network_summary": network_summary,
         "console_summary": console_summary,
     }
-    if include_dom and dom_snapshot is not None:
-        observation["dom_snapshot"] = dom_snapshot
+    if include_dom:
+        if dom_snapshot is not None:
+            observation["dom_snapshot"] = dom_snapshot
+        if dom_snapshot_error is not None:
+            observation["dom_snapshot_error"] = dom_snapshot_error
     session["last_observation"] = observation
     return observation
 
@@ -1759,13 +1807,14 @@ class Handler(BaseHTTPRequestHandler):
             # Prefer the real location from the browser over the requested URL.
             final_url = self._refresh_session_url_from_location(session_id, session) or url
             session["url"] = final_url
-            dom_snapshot = capture_dom_snapshot(pipe)
+            dom_snapshot, dom_snapshot_error = capture_dom_snapshot(pipe)
             observation = build_observation(
                 session_id,
                 chrome_output,
                 action_seq=action_seq,
                 include_dom=True,
                 dom_snapshot=dom_snapshot,
+                dom_snapshot_error=dom_snapshot_error,
                 max_debug_items=20,
             )
             self.write_json(HTTPStatus.OK, {
@@ -1810,13 +1859,14 @@ class Handler(BaseHTTPRequestHandler):
         final_url = chrome_output.get("url") or result.get("url") or url
         session["url"] = final_url
         session["title"] = chrome_output.get("title") or result.get("title") or session.get("title", "")
-        dom_snapshot = capture_dom_snapshot(pipe)
+        dom_snapshot, dom_snapshot_error = capture_dom_snapshot(pipe)
         observation = build_observation(
             session_id,
             chrome_output,
             action_seq=action_seq,
             include_dom=True,
             dom_snapshot=dom_snapshot,
+            dom_snapshot_error=dom_snapshot_error,
             max_debug_items=20,
         )
         self.write_json(HTTPStatus.OK, {
@@ -1873,8 +1923,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         dom_snapshot = None
+        dom_snapshot_error = None
         if include_dom:
-            dom_snapshot = capture_dom_snapshot(pipe)
+            dom_snapshot, dom_snapshot_error = capture_dom_snapshot(pipe)
 
         observation = build_observation(
             session_id,
@@ -1886,6 +1937,7 @@ class Handler(BaseHTTPRequestHandler):
             fresh=fresh,
             max_debug_items=max_debug_items,
             dom_snapshot=dom_snapshot,
+            dom_snapshot_error=dom_snapshot_error,
         )
         self.write_json(HTTPStatus.OK, {
             "request_id": request_id(),
@@ -2042,13 +2094,14 @@ class Handler(BaseHTTPRequestHandler):
                 if listener is not None and listener._connected.is_set():
                     time.sleep(0.2)
                     listener.wait_for_network_idle(timeout=2.0)
-            dom_snapshot = capture_dom_snapshot(pipe)
+            dom_snapshot, dom_snapshot_error = capture_dom_snapshot(pipe)
             post_observation = build_observation(
                 session_id,
                 chrome_output,
                 action_seq=action_seq,
                 include_dom=True,
                 dom_snapshot=dom_snapshot,
+                dom_snapshot_error=dom_snapshot_error,
                 max_debug_items=20,
             )
 
@@ -2326,6 +2379,16 @@ def self_test() -> int:
         fresh_value = fresh_marker.get("result") if fresh_marker.get("ok") else None
         if not isinstance(fresh_value, dict) or fresh_value.get("href") != fresh_url or fresh_value.get("marker") is not None:
             print(f"chrome-agent-sidecar self-test: fresh navigation contract failed: {fresh_marker}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
+        dom_snapshot, dom_snapshot_error = capture_dom_snapshot(pipe)
+        if dom_snapshot_error is not None or not isinstance(dom_snapshot, list):
+            print(f"chrome-agent-sidecar self-test: DOM snapshot capture failed: {dom_snapshot_error}", file=sys.stderr)
+            pipe.close(purge=True)
+            return 1
+        missing_snapshot, missing_error = capture_dom_snapshot(None)
+        if missing_snapshot is not None or not isinstance(missing_error, dict) or missing_error.get("code") != "dom_snapshot_unavailable":
+            print(f"chrome-agent-sidecar self-test: DOM snapshot failure contract failed: {missing_error}", file=sys.stderr)
             pipe.close(purge=True)
             return 1
         pipe.close(purge=True)

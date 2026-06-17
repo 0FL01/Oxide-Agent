@@ -32,6 +32,8 @@ pub struct BrowserFrame {
     pub console_summary: Option<ConsoleSummary>,
     /// DOM snapshot of interactive elements (links, buttons, inputs, data-*).
     pub dom_snapshot: Vec<DomSnapshotNode>,
+    /// Structured DOM snapshot capture failure, when the sidecar requested a snapshot.
+    pub dom_snapshot_error: Option<super::types::SidecarErrorBody>,
     /// Internal artifact reference resolvable by UI/reporting layers.
     pub artifact: ArtifactRef,
     /// Whether this artifact must survive ring-buffer eviction.
@@ -156,6 +158,7 @@ impl BrowserSessionState {
             network_summary: observation.network_summary.clone(),
             console_summary: observation.console_summary.clone(),
             dom_snapshot: observation.dom_snapshot.clone(),
+            dom_snapshot_error: observation.dom_snapshot_error.clone(),
             retained: purpose.is_retained(),
             artifact,
         };
@@ -485,6 +488,7 @@ mod tests {
             },
             a11y_summary: Vec::new(),
             dom_snapshot: Vec::new(),
+            dom_snapshot_error: None,
             network_summary: None,
             console_summary: None,
         }

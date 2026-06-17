@@ -599,6 +599,7 @@ impl FakeSession {
                 href: None,
                 attributes: Default::default(),
             }],
+            dom_snapshot_error: None,
             network_summary: Some(NetworkSummary {
                 failed_count,
                 recent_failures: network_items.to_vec(),

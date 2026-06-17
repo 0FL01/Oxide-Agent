@@ -386,20 +386,29 @@ impl BrowserLiveProvider {
                             action_seq,
                             None,
                             None,
+                            None,
                             verification,
                             None,
                         ));
                     }
                 };
                 ensure_not_cancelled(invocation)?;
-                let after = response
-                    .observation
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(self.observe_for_timeout(&args.session_id).await?);
+                let (after, post_observation_source) = match response.observation.as_ref() {
+                    Some(observation) => (observation.clone(), "sidecar"),
+                    None => (
+                        self.observe_for_timeout(&args.session_id).await?,
+                        "fallback_observe",
+                    ),
+                };
                 let (after_frame, after_payload) = self
                     .record_after_observation(&args.session_id, &after)
                     .await?;
+                let post_observation_diagnostics = post_observation_diagnostics(
+                    post_observation_source,
+                    action_seq,
+                    &before,
+                    &after,
+                );
                 let image_attachment = screenshot_image_attachment(&after_frame);
                 let verification =
                     verify_navigation(expected_result, &before, &response.navigation, &after);
@@ -411,6 +420,7 @@ impl BrowserLiveProvider {
                     action_seq,
                     action_result,
                     Some(after_payload),
+                    Some(post_observation_diagnostics),
                     verification,
                     image_attachment,
                 ))
@@ -448,6 +458,7 @@ impl BrowserLiveProvider {
                             action_seq,
                             None,
                             None,
+                            None,
                             verification,
                             None,
                         ));
@@ -455,14 +466,23 @@ impl BrowserLiveProvider {
                 };
                 ensure_not_cancelled(invocation)?;
                 if request.capture_after {
-                    let after = response
-                        .post_observation
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(self.observe_for_timeout(&args.session_id).await?);
+                    let (after, post_observation_source) = match response.post_observation.as_ref()
+                    {
+                        Some(observation) => (observation.clone(), "sidecar"),
+                        None => (
+                            self.observe_for_timeout(&args.session_id).await?,
+                            "fallback_observe",
+                        ),
+                    };
                     let (after_frame, after_payload) = self
                         .record_after_observation(&args.session_id, &after)
                         .await?;
+                    let post_observation_diagnostics = post_observation_diagnostics(
+                        post_observation_source,
+                        action_seq,
+                        &before,
+                        &after,
+                    );
                     let image_attachment = screenshot_image_attachment(&after_frame);
                     let verification = verify_sidecar_action(
                         expected_result,
@@ -477,6 +497,7 @@ impl BrowserLiveProvider {
                         action_seq,
                         serde_json::to_value(response.action_result).ok(),
                         Some(after_payload),
+                        Some(post_observation_diagnostics),
                         verification,
                         image_attachment,
                     ))
@@ -485,11 +506,13 @@ impl BrowserLiveProvider {
                         verify_by_result(expected_result, &before, &response.action_result);
                     self.emit_verification(&args.session_id, action_seq, &verification)
                         .await;
+                    let action_kind = response.action_result.kind.clone();
                     Ok(execute_payload(
                         &args.session_id,
                         action_seq,
                         serde_json::to_value(response.action_result).ok(),
                         None,
+                        Some(result_only_observation_diagnostics(&action_kind)),
                         verification,
                         None,
                     ))
@@ -980,6 +1003,7 @@ fn observation_payload(
         "network_summary": frame.network_summary,
         "console_summary": frame.console_summary,
         "dom_snapshot": frame.dom_snapshot,
+        "dom_snapshot_error": frame.dom_snapshot_error,
         "screenshot": {
             "screenshot_id": screenshot.screenshot_id,
             "artifact_uri": frame.artifact.uri,
@@ -997,6 +1021,7 @@ fn execute_payload(
     action_seq: u64,
     action_result: Option<Value>,
     post_observation: Option<Value>,
+    post_observation_diagnostics: Option<Value>,
     verification: BrowserActionVerification,
     image_attachment: Option<ToolOutputImageAttachment>,
 ) -> ExecuteToolResult {
@@ -1012,12 +1037,51 @@ fn execute_payload(
         "action_seq": action_seq,
         "action_result": action_result,
         "post_observation": post_observation,
+        "post_observation_diagnostics": post_observation_diagnostics,
         "verification": verification,
     });
     ExecuteToolResult {
         payload,
         image_attachment,
     }
+}
+
+fn post_observation_diagnostics(
+    source: &str,
+    action_seq: u64,
+    before: &BrowserObservation,
+    after: &BrowserObservation,
+) -> Value {
+    let dom_snapshot = match &after.dom_snapshot_error {
+        Some(error) => json!({
+            "status": "error",
+            "node_count": after.dom_snapshot.len(),
+            "error": error,
+        }),
+        None => json!({
+            "status": if after.dom_snapshot.is_empty() { "captured_empty" } else { "captured" },
+            "node_count": after.dom_snapshot.len(),
+            "error": null,
+        }),
+    };
+
+    json!({
+        "mode": "post_observation",
+        "source": source,
+        "fresh_observation": before.observation_id != after.observation_id,
+        "fresh_screenshot": before.screenshot.screenshot_id != after.screenshot.screenshot_id,
+        "action_seq_current": after.action_seq >= action_seq,
+        "dom_snapshot": dom_snapshot,
+    })
+}
+
+fn result_only_observation_diagnostics(action_kind: &str) -> Value {
+    json!({
+        "mode": "result_only",
+        "source": null,
+        "action_kind": action_kind,
+        "reason": "action contract returns a scalar result without post-action visual evidence",
+    })
 }
 
 fn string_schema(description: &str) -> Value {
@@ -1522,6 +1586,9 @@ mod tests {
     use crate::agent::providers::browser_live::test_support::{
         FakeActionOutcome, FakeBrowserSidecar,
     };
+    use crate::agent::providers::browser_live::types::{
+        LoadingState, ScreenshotArtifact, SidecarErrorBody,
+    };
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolTimeoutConfig, TurnId,
@@ -1885,6 +1952,7 @@ mod tests {
             network_summary: None,
             console_summary: None,
             dom_snapshot: Vec::new(),
+            dom_snapshot_error: None,
             artifact: ArtifactRef::internal(
                 "artifact://browser/task/session/step-0001-live.png",
                 std::path::PathBuf::from("/tmp/step-0001-live.png"),
@@ -1967,6 +2035,135 @@ mod tests {
             .as_array()
             .expect("dom_snapshot");
         assert!(!dom_snapshot.is_empty());
+    }
+
+    #[tokio::test]
+    async fn browser_execute_execute_javascript_has_freshness_diagnostics() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"execute_javascript","expression":"document.body.dataset.cp5 = '1'; true"}},"expected_result":"dom mutated"}}"#
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        assert!(payload["post_observation"].is_object());
+        let diagnostics = payload["post_observation_diagnostics"]
+            .as_object()
+            .expect("post_observation_diagnostics");
+        assert_eq!(diagnostics.get("mode"), Some(&json!("post_observation")));
+        assert_eq!(diagnostics.get("source"), Some(&json!("sidecar")));
+        assert_eq!(diagnostics.get("fresh_observation"), Some(&json!(true)));
+        assert_eq!(diagnostics.get("fresh_screenshot"), Some(&json!(true)));
+        assert_eq!(diagnostics["dom_snapshot"]["status"], json!("captured"));
+    }
+
+    #[tokio::test]
+    async fn browser_execute_get_element_value_is_result_only() {
+        let fake = FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::JsResult(
+            "secret-value".to_string(),
+        )]);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r##"{{"session_id":"{session_id}","action":{{"kind":"get_element_value","selector":"#secret"}},"expected_result":"value read"}}"##
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        assert_eq!(payload["action_result"]["result"], json!("secret-value"));
+        assert!(payload["post_observation"].is_null());
+        assert_eq!(
+            payload["post_observation_diagnostics"]["mode"],
+            json!("result_only")
+        );
+        assert!(
+            payload["verification"]["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("result returned without post-action screenshot")
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_execute_stale_post_observation_is_diagnosed() {
+        let fake =
+            FakeBrowserSidecar::new().with_action_script(vec![FakeActionOutcome::StaleFrame]);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let execute_args = format!(
+            r#"{{"session_id":"{session_id}","action":{{"kind":"click_xy","x":10,"y":20}},"expected_result":"click"}}"#
+        );
+
+        let result = execute(&executors, TOOL_BROWSER_EXECUTE, &execute_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+
+        assert!(result.success);
+        assert_eq!(payload["status"], json!("verification_failed"));
+        assert_eq!(
+            payload["post_observation_diagnostics"]["fresh_observation"],
+            json!(false)
+        );
+        assert_eq!(
+            payload["post_observation_diagnostics"]["fresh_screenshot"],
+            json!(false)
+        );
+        assert!(
+            payload["verification"]["reason"]
+                .as_str()
+                .expect("reason")
+                .contains("not fresh")
+        );
+    }
+
+    #[test]
+    fn post_observation_diagnostics_reports_dom_snapshot_error() {
+        let before = diagnostic_observation("obs-1", "shot-1", 0, None);
+        let after = diagnostic_observation(
+            "obs-2",
+            "shot-2",
+            1,
+            Some(SidecarErrorBody {
+                code: "dom_snapshot_failed".to_string(),
+                message: "failed".to_string(),
+                retryable: true,
+                hint: Some("retry".to_string()),
+                details: json!({"source":"test"}),
+            }),
+        );
+
+        let diagnostics = post_observation_diagnostics("sidecar", 1, &before, &after);
+
+        assert_eq!(diagnostics["mode"], json!("post_observation"));
+        assert_eq!(diagnostics["dom_snapshot"]["status"], json!("error"));
+        assert_eq!(
+            diagnostics["dom_snapshot"]["error"]["code"],
+            json!("dom_snapshot_failed")
+        );
     }
 
     #[tokio::test]
@@ -2312,6 +2509,39 @@ mod tests {
 
         let close_args = json!({"session_id": session_id, "keep_artifacts": false}).to_string();
         let _ = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;
+    }
+
+    fn diagnostic_observation(
+        observation_id: &str,
+        screenshot_id: &str,
+        action_seq: u64,
+        dom_snapshot_error: Option<SidecarErrorBody>,
+    ) -> BrowserObservation {
+        BrowserObservation {
+            observation_id: observation_id.to_string(),
+            action_seq,
+            captured_at: "2026-06-18T00:00:00Z".to_string(),
+            url: "https://example.test".to_string(),
+            title: "Example".to_string(),
+            viewport: Viewport::default(),
+            loading_state: LoadingState::Idle,
+            screenshot: ScreenshotArtifact {
+                screenshot_id: screenshot_id.to_string(),
+                artifact_uri: format!("artifact://browser/task/br/{screenshot_id}.jpg"),
+                mime_type: "image/jpeg".to_string(),
+                width: 1365,
+                height: 768,
+                sha256: screenshot_id.to_string(),
+                captured_at: Some("2026-06-18T00:00:00Z".to_string()),
+                redacted: false,
+                byte_size: 0,
+            },
+            a11y_summary: Vec::new(),
+            dom_snapshot: Vec::new(),
+            dom_snapshot_error,
+            network_summary: None,
+            console_summary: None,
+        }
     }
 
     fn test_provider() -> Arc<BrowserLiveProvider> {

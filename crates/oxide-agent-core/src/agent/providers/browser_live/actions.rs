@@ -64,12 +64,17 @@ fn build_action_request(
 }
 
 fn action_metadata(action: &BrowserAction) -> (bool, bool) {
+    let capture_after = needs_post_action_observation(action);
+    (capture_after, false)
+}
+
+fn needs_post_action_observation(action: &BrowserAction) -> bool {
     match action {
-        // Wait action: do not capture a fresh screenshot; no stability wait needed.
-        BrowserAction::Wait { .. } => (false, false),
-        // All other direct actions (including reads, waits, and mutating actions)
-        // capture a fresh screenshot so the main agent can see the result.
-        _ => (true, false),
+        BrowserAction::GetElementValue { .. } | BrowserAction::Wait { .. } => false,
+        BrowserAction::Script { steps } => steps.iter().any(needs_post_action_observation),
+        // `execute_javascript` is intentionally treated as observable/mutating:
+        // the receiver cannot prove an arbitrary expression is read-only.
+        _ => true,
     }
 }
 
@@ -128,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_get_element_value_to_sidecar_action_request() {
+    fn maps_get_element_value_to_result_only_sidecar_action_request() {
         let plan = plan_browser_action(
             BrowserAction::GetElementValue {
                 selector: "input[name=secret]".to_string(),
@@ -145,7 +150,7 @@ mod tests {
             request.action,
             BrowserAction::GetElementValue { ref selector } if selector == "input[name=secret]"
         ));
-        assert!(request.capture_after);
+        assert!(!request.capture_after);
         assert!(!request.wait_for_stability);
     }
 
@@ -299,6 +304,25 @@ mod tests {
             steps[1],
             BrowserAction::ClickSelector { selector: ref s } if s == "button[type=submit]"
         ));
+    }
+
+    #[test]
+    fn result_only_script_skips_post_action_observation() {
+        let plan = plan_browser_action(
+            BrowserAction::Script {
+                steps: vec![BrowserAction::GetElementValue {
+                    selector: "#secret".to_string(),
+                }],
+            },
+            9,
+            20_000,
+            "value read".to_string(),
+        );
+        let BrowserExecutePlan::SidecarAction(request) = plan else {
+            panic!("expected sidecar action");
+        };
+        assert!(!request.capture_after);
+        assert!(!request.wait_for_stability);
     }
 
     #[test]

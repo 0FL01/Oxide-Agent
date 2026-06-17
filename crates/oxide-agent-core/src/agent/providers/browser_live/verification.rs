@@ -311,6 +311,7 @@ mod tests {
             },
             a11y_summary: Vec::new(),
             dom_snapshot: Vec::new(),
+            dom_snapshot_error: None,
             network_summary: None,
             console_summary: None,
         }
