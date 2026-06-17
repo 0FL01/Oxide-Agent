@@ -1089,8 +1089,6 @@ def _merge_history(
         item = entry["item"]
         seen.add(_network_item_key(item) if key == "network_history" else _console_item_key(item))
     for item in fresh_items:
-        if _is_noise_event(item):
-            continue
         item_key = _network_item_key(item) if key == "network_history" else _console_item_key(item)
         if item_key in seen:
             continue
@@ -1233,6 +1231,15 @@ def build_observation(
         if CDP_DRAIN_DELAY_SECONDS > 0:
             time.sleep(CDP_DRAIN_DELAY_SECONDS)
         raw_events = listener.drain_events()
+
+    # Noise filtering happens on the unified raw-event shape (url, type, text)
+    # before normalization into network/console items.  Filtering after
+    # normalization would require duplicating the predicate under each
+    # downstream field naming (url_redacted vs url, no type tag on network
+    # items), which is the bug this closes: the previous call in
+    # _merge_history silently matched nothing because normalized items use
+    # different keys.
+    raw_events = [event for event in raw_events if not _is_noise_event(event)]
 
     network_items: list[dict[str, Any]] = []
     console_items: list[dict[str, Any]] = []
