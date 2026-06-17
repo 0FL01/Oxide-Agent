@@ -76,8 +76,8 @@ None. All required evidence can be produced from the existing repo and the publi
 - Source: test report problem #6 — network summary lacks response bodies.
 - Acceptance: `GET /sessions/{id}/debug/network?include_bodies=true` returns `NetworkItem` entries with a `body` field for failed / XHR requests.
 - Evidence required: unit test for `build_network_debug_payload` and live test capturing the `POST /api/create` response body.
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: CP-4 extended `CDPListener` with command-response tracking (`_cmd_futures`, `_send_and_wait`) so it can call `Network.getResponseBody` after `Network.loadingFinished`/`Network.loadingFailed` for XHR/fetch/failed requests; decoded bodies are stored in the queued network entry; `build_network_debug_payload` now respects `include_bodies` and includes `body` only when requested; `NetworkItem` in `types.rs` gained optional `body` with `serde(default, skip_serializing_if = "Option::is_none")`; self-test asserts body inclusion/exclusion. Live REST test on `https://ots.bash.md/`: submitted the form and extracted the share link; `GET /sessions/{id}/debug/network?include_bodies=true&filter=xhr` returned `POST https://ots.bash.md/api/create` 201 with body `{"success":true,"expires_at":"...","secret_id":"..."}`; `include_bodies=false` returned the same entries with no `body` field.
 
 ### G5: Retained screenshot artifact descriptors are not duplicated
 - Source: test report low priority — "Дескрипторы скриншотов дублируются".
@@ -226,6 +226,13 @@ None. All required evidence can be produced from the existing repo and the publi
   - Commands: static checks + `curl` to `/sessions/{id}/action`.
   - Audit IDs updated: G3 pending → verified, Q1 verified (extended).
   - Next: CP-4 — capture network response bodies in the CDP listener.
+
+- 2026-06-17: CP-4 — Network response bodies captured in CDP listener.
+  - Changed: `docker/chrome-agent-sidecar.py` added CDP command-response tracking (`_cmd_futures`, `_send_and_wait`) in `CDPListener`; `_should_capture_body`, `_decode_response_body`, and `_fetch_body_and_queue` call `Network.getResponseBody` for XHR/fetch/failed requests after `loadingFinished`/`loadingFailed`; the decoded body is stored in the normalized network entry; `build_network_debug_payload` respects `include_bodies` and includes bodies only for XHR/fetch/failed; `NetworkItem` in `types.rs` gained optional `body`; `test_support.rs` updated.
+  - Evidence: `python3 -m py_compile`, `cargo fmt`, `cargo clippy`, `cargo test` (87/11/10), sidecar self-test pass. Live REST test on `https://ots.bash.md/`: filled the secret, clicked submit, extracted the share link; `GET /debug/network?include_bodies=true&filter=xhr` returned `POST https://ots.bash.md/api/create` 201 with body `{"success":true,"expires_at":"...","secret_id":"..."}`; `include_bodies=false` returned the same entries without `body` fields.
+  - Commands: static checks + `curl` to `/debug/network`.
+  - Audit IDs updated: G4 pending → verified, Q1 verified (extended).
+  - Next: CP-5 — deduplicate retained screenshot artifact descriptors.
 
 ## Risks and Blockers
 

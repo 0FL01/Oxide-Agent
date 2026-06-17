@@ -375,6 +375,35 @@ def _resource_type_from_cdp(type_name: str) -> str:
     return value or "other"
 
 
+MAX_BODY_CHARS = 4096
+
+
+def _should_capture_body(entry: dict[str, Any]) -> bool:
+    """Decide whether to fetch the response body for a completed request."""
+    rt = (entry.get("resource_type") or "").lower()
+    if rt in ("xhr", "fetch"):
+        return True
+    status = entry.get("status")
+    if isinstance(status, int) and status >= 400:
+        return True
+    return False
+
+
+def _decode_response_body(result: dict[str, Any] | None) -> str | None:
+    """Decode a CDP Network.getResponseBody result into a UTF-8 string."""
+    if not result:
+        return None
+    body = result.get("body", "")
+    if not body:
+        return None
+    if result.get("base64Encoded"):
+        try:
+            body = base64.b64decode(body, validate=False).decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    return body[:MAX_BODY_CHARS]
+
+
 class CDPListener:
     """Continuous CDP listener for a single browser session.
 
@@ -394,6 +423,8 @@ class CDPListener:
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._pending_requests: dict[str, dict[str, Any]] = {}
         self._pending_lock = threading.Lock()
+        self._cmd_futures: dict[int, asyncio.Future] = {}
+        self._cmd_lock = threading.Lock()
         self._closed = False
         self._connected = threading.Event()
         self._next_id = 1
@@ -459,6 +490,25 @@ class CDPListener:
         await ws.send(json.dumps(msg))
         return cmd_id
 
+    async def _send_and_wait(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = 2.0,
+    ) -> dict[str, Any] | None:
+        cmd_id = await self._send(ws, method, params)
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        with self._cmd_lock:
+            self._cmd_futures[cmd_id] = future
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            with self._cmd_lock:
+                self._cmd_futures.pop(cmd_id, None)
+            return None
+
     async def _listen(self) -> None:
         try:
             self._page_ws_url = await self._loop.run_in_executor(
@@ -485,6 +535,12 @@ class CDPListener:
                 print(f"CDP listener error for {self.session_id}: {exc}", file=sys.stderr)
 
     def _on_message(self, data: dict[str, Any]) -> None:
+        if "id" in data:
+            with self._cmd_lock:
+                future = self._cmd_futures.pop(data["id"], None)
+            if future is not None:
+                future.set_result(data.get("result"))
+                return
         method = data.get("method")
         if not method:
             return
@@ -539,6 +595,7 @@ class CDPListener:
                 "resource_type": _resource_type_from_cdp(params.get("type", "")),
                 "status": None,
                 "error_text": None,
+                "body": None,
             }
 
     def _on_response_received(self, params: dict[str, Any]) -> None:
@@ -555,16 +612,30 @@ class CDPListener:
         rid = params.get("requestId")
         with self._pending_lock:
             entry = self._pending_requests.pop(rid, None)
-        if entry:
-            self._queue.put(entry)
+        if not entry:
+            return
+        if _should_capture_body(entry):
+            try:
+                asyncio.run_coroutine_threadsafe(self._fetch_body_and_queue(entry), self._loop)
+                return
+            except Exception:
+                pass
+        self._queue.put(entry)
 
     def _on_loading_failed(self, params: dict[str, Any]) -> None:
         rid = params.get("requestId")
         with self._pending_lock:
             entry = self._pending_requests.pop(rid, None)
-        if entry:
-            entry["error_text"] = params.get("errorText") or params.get("type")
-            self._queue.put(entry)
+        if not entry:
+            return
+        entry["error_text"] = params.get("errorText") or params.get("type")
+        if _should_capture_body(entry):
+            try:
+                asyncio.run_coroutine_threadsafe(self._fetch_body_and_queue(entry), self._loop)
+                return
+            except Exception:
+                pass
+        self._queue.put(entry)
 
     def _on_log_entry(self, params: dict[str, Any]) -> None:
         entry = params.get("entry", {})
@@ -596,6 +667,20 @@ class CDPListener:
             "line": None,
             "timestamp": params.get("timestamp"),
         })
+
+    async def _fetch_body_and_queue(self, entry: dict[str, Any]) -> None:
+        """Fetch the response body for a completed request and queue it."""
+        rid = entry.get("requestId")
+        ws = self._ws
+        if ws is not None and self._connected.is_set() and rid:
+            try:
+                result = await self._send_and_wait(ws, "Network.getResponseBody", {"requestId": rid}, timeout=2.0)
+                body = _decode_response_body(result)
+                if body:
+                    entry["body"] = body
+            except Exception:
+                pass
+        self._queue.put(entry)
 
 
 def get_pipe(session_id: str) -> ChromeAgentPipe:
@@ -831,7 +916,6 @@ def build_network_debug_payload(
 ) -> dict[str, Any]:
     """Build the NetworkDebugPayload shape from accumulated network history."""
     del level  # only summary is supported by the chrome-agent wrapper contract
-    del include_bodies  # chrome-agent wrapper does not expose response bodies
     items = [entry["item"] for entry in history if entry["action_seq"] >= since_action_seq]
     if filter_value == "failed":
         items = [
@@ -847,11 +931,36 @@ def build_network_debug_payload(
         items = [item for item in items if (item.get("resource_type") or "").lower() == "document"]
     failures = [item for item in items if isinstance(item.get("status"), int) and item["status"] >= 400]
     items = items[-limit:]
+    # Body capture is optional and expensive; only expose it when explicitly requested.
+    if include_bodies:
+        items = [_network_item_with_body(item) for item in items]
+    else:
+        items = [_network_item_without_body(item) for item in items]
     return {
         "failed_count": len(failures),
         "items": items,
         "artifact_uri": None,
     }
+
+
+def _network_item_without_body(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a network item without the response body field."""
+    copy = dict(item)
+    copy.pop("body", None)
+    return copy
+
+
+def _network_item_with_body(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a network item with body only for XHR/fetch/failed requests."""
+    copy = dict(item)
+    rt = (copy.get("resource_type") or "").lower()
+    status = copy.get("status")
+    if rt in ("xhr", "fetch") or (isinstance(status, int) and status >= 400):
+        if not copy.get("body"):
+            copy["body"] = None
+    else:
+        copy.pop("body", None)
+    return copy
 
 
 def build_console_debug_payload(
@@ -947,6 +1056,7 @@ def build_observation(
                 "status": event.get("status"),
                 "resource_type": event.get("resource_type", "other"),
                 "error_text": event.get("error_text"),
+                "body": event.get("body"),
             })
 
     if include_network:
@@ -1909,6 +2019,20 @@ def self_test() -> int:
     except Exception as exc:
         print(f"chrome-agent-sidecar self-test: pipe smoke failed: {exc}", file=sys.stderr)
         return 1
+    # Unit test: build_network_debug_payload respects include_bodies and only
+    # exposes bodies for XHR/fetch/failed requests.
+    _history = [
+        {"action_seq": 1, "item": {"timestamp": "t1", "method": "POST", "url_redacted": "https://example.test/api", "status": 201, "resource_type": "xhr", "error_text": None, "body": "xhr-body"}},
+        {"action_seq": 1, "item": {"timestamp": "t2", "method": "GET", "url_redacted": "https://example.test/img.png", "status": 200, "resource_type": "image", "error_text": None, "body": "image-body"}},
+        {"action_seq": 1, "item": {"timestamp": "t3", "method": "GET", "url_redacted": "https://example.test/bad", "status": 500, "resource_type": "document", "error_text": None, "body": "error-body"}},
+    ]
+    _with = build_network_debug_payload(_history, 0, "all", "summary", True, 10)
+    assert _with["items"][0].get("body") == "xhr-body", "missing XHR body"
+    assert "body" not in _with["items"][1], "body leaked for non-XHR success"
+    assert _with["items"][2].get("body") == "error-body", "missing failed body"
+    _without = build_network_debug_payload(_history, 0, "all", "summary", False, 10)
+    assert not any("body" in item for item in _without["items"]), "body present when disabled"
+
     print("chrome-agent-sidecar self-test ok")
     return 0
 

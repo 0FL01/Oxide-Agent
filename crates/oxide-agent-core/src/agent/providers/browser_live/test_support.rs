@@ -92,6 +92,7 @@ impl FakeBrowserSidecar {
             status: None,
             resource_type: "xhr".to_string(),
             error_text: Some(error_text.to_string()),
+            body: None,
         });
     }
 
@@ -123,6 +124,7 @@ impl FakeBrowserSidecar {
                 status: None,
                 resource_type: "xhr".to_string(),
                 error_text: Some(error_text.to_string()),
+                body: None,
             },
         ));
     }

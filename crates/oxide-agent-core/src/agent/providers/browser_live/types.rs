@@ -650,6 +650,8 @@ pub struct NetworkItem {
     pub resource_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// One redacted console event.
