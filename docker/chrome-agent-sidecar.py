@@ -58,6 +58,14 @@ class SidecarState:
         self.chrome_bin = shutil.which("chromium") or os.getenv("CHROME_BIN", "/usr/bin/chromium")
         self.sessions: dict[str, dict[str, Any]] = {}
         self.pipes: dict[str, ChromeAgentPipe] = {}
+
+    def ensure_dirs(self) -> None:
+        """Create artifact and profile directories.
+
+        Called from ``main``/``self_test`` before the server or browser is
+        used.  Kept out of ``__init__`` so the module can be imported and
+        pure functions unit-tested without container-only paths.
+        """
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2343,6 +2351,137 @@ class Handler(BaseHTTPRequestHandler):
         print(f"sidecar {self.address_string()} {fmt % args}", flush=True)
 
 
+def run_unit_tests() -> int:
+    """Run pure-function unit tests without a browser.
+
+    These tests verify that sidecar functions produce the exact JSON shapes the
+    Rust provider expects (NetworkSummary, NetworkItem, ConsoleSummary,
+    NetworkDebugPayload).  Without them, the Rust mock in ``test_support.rs``
+    can diverge from the real sidecar implementation and all Rust tests stay
+    green while production breaks — exactly the class of bug seen in CP-A
+    (noise filter on wrong shape) and CP-B (failure criterion mismatch).
+    """
+    passed = 0
+    failed = 0
+
+    def check(label: str, got: Any, expected: Any) -> None:
+        nonlocal passed, failed
+        if got == expected:
+            passed += 1
+        else:
+            failed += 1
+            print(f"FAIL {label}\n  got      = {got!r}\n  expected = {expected!r}", file=sys.stderr)
+
+    # --- _is_noise_event: filter works on raw CDP event shape (url/type),
+    #     NOT on normalized NetworkItem shape (url_redacted).  This is the
+    #     CP-A invariant: if this test breaks, the filter was moved back to
+    #     a post-normalization call site where it silently matches nothing.
+    check("noise.favicon_404",
+          _is_noise_event({"url": "https://x.com/favicon.ico", "status": 404}),
+          True)
+    check("noise.favicon_no_status",
+          _is_noise_event({"url": "https://x.com/favicon.ico", "status": None}),
+          True)
+    check("noise.favicon_200",
+          _is_noise_event({"url": "https://x.com/favicon.ico", "status": 200}),
+          False)
+    check("noise.console_favicon_info",
+          _is_noise_event({"type": "console", "text": "GET /favicon.ico 404", "level": "info"}),
+          True)
+    # Normalized items use url_redacted and lack type → filter must reject.
+    # If this returns True, the filter was called on the wrong shape.
+    check("noise.normalized_item_rejected",
+          _is_noise_event({"url_redacted": "https://x.com/favicon.ico", "status": 404}),
+          False)
+    check("noise.regular_404",
+          _is_noise_event({"url": "https://x.com/api/data", "status": 404}),
+          False)
+
+    # --- _is_network_failure: CP-B criterion — error_text OR status >= 400.
+    #     Must match Rust test_support.rs: error_text.is_some() || status >= 400.
+    check("fail.http_500",
+          _is_network_failure({"status": 500}),
+          True)
+    check("fail.aborted_204",
+          _is_network_failure({"status": 204, "error_text": "net::ERR_ABORTED"}),
+          True)
+    check("fail.dns_fail_no_status",
+          _is_network_failure({"status": None, "error_text": "net::ERR_NAME_NOT_RESOLVED"}),
+          True)
+    check("fail.success_200",
+          _is_network_failure({"status": 200}),
+          False)
+    check("fail.success_204_no_error",
+          _is_network_failure({"status": 204}),
+          False)
+    check("fail.empty_item",
+          _is_network_failure({}),
+          False)
+
+    # --- summarize_network: failures classified, url_redacted preserved,
+    #     request_count counts all.  Uses NetworkItem shape (url_redacted).
+    net_items = [
+        {"timestamp": "t1", "method": "GET", "url_redacted": "https://x/api/isWritable",
+         "status": 204, "resource_type": "xhr", "error_text": "net::ERR_ABORTED", "body": None},
+        {"timestamp": "t2", "method": "GET", "url_redacted": "https://x/ok",
+         "status": 200, "resource_type": "xhr", "error_text": None, "body": None},
+    ]
+    net_summary = summarize_network(net_items)
+    check("sum_net.failed_count", net_summary["failed_count"], 1)
+    check("sum_net.request_count", net_summary["request_count"], 2)
+    check("sum_net.failure_url", net_summary["recent_failures"][0]["url_redacted"],
+          "https://x/api/isWritable")
+    check("sum_net.failure_error", net_summary["recent_failures"][0]["error_text"],
+          "net::ERR_ABORTED")
+    check("sum_net.failure_has_no_empty_url",
+          bool(net_summary["recent_failures"][0]["url_redacted"]),
+          True)
+
+    # --- summarize_console: error/warning classification.
+    console_msgs = [
+        {"level": "error", "text": "boom", "source": "console-api", "line": 1},
+        {"level": "warning", "text": "careful", "source": None, "line": None},
+        {"level": "info", "text": "hi", "source": None, "line": None},
+    ]
+    console_summary = summarize_console(console_msgs)
+    check("sum_console.error_count", console_summary["error_count"], 1)
+    check("sum_console.warning_count", console_summary["warning_count"], 1)
+    check("sum_console.error_text", console_summary["recent_errors"][0]["text_redacted"], "boom")
+
+    # --- normalize_network_item: status 0 → None, url → url_redacted.
+    norm = normalize_network_item({"url": "https://x/api", "status": 0, "method": "POST"})
+    check("norm.status_zero_to_none", norm["status"], None)
+    check("norm.url_to_redacted", norm["url_redacted"], "https://x/api")
+    norm2 = normalize_network_item({"url": "https://x/api", "status": 200, "method": "GET"})
+    check("norm.status_preserved", norm2["status"], 200)
+
+    # --- build_network_debug_payload: filter=failed includes error_text items,
+    #     failed_count consistent with filter (CP-B internal consistency).
+    history = [
+        {"item": {"timestamp": "t1", "method": "GET", "url_redacted": "https://x/aborted",
+                  "status": 204, "resource_type": "xhr", "error_text": "net::ERR_ABORTED",
+                  "body": None}, "action_seq": 0},
+        {"item": {"timestamp": "t2", "method": "GET", "url_redacted": "https://x/ok",
+                  "status": 200, "resource_type": "xhr", "error_text": None,
+                  "body": None}, "action_seq": 0},
+    ]
+    dbg_failed = build_network_debug_payload(
+        history, since_action_seq=0, filter_value="failed",
+        level="", include_bodies=False, limit=10,
+    )
+    check("dbg_failed.count", dbg_failed["failed_count"], 1)
+    check("dbg_failed.item_url", dbg_failed["items"][0]["url_redacted"], "https://x/aborted")
+    dbg_all = build_network_debug_payload(
+        history, since_action_seq=0, filter_value="",
+        level="", include_bodies=False, limit=10,
+    )
+    check("dbg_all.count", dbg_all["failed_count"], 1)
+    check("dbg_all.total_items", len(dbg_all["items"]), 2)
+
+    print(f"unit-test: {passed} passed, {failed} failed")
+    return 1 if failed else 0
+
+
 def self_test() -> int:
     if not chrome_agent_available():
         print("chrome-agent-sidecar self-test: chrome-agent binary not found", file=sys.stderr)
@@ -2439,8 +2578,12 @@ def self_test() -> int:
 
 
 def main() -> int:
+    if "--unit-test" in sys.argv:
+        return run_unit_tests()
     if "--self-test" in sys.argv:
+        STATE.ensure_dirs()
         return self_test()
+    STATE.ensure_dirs()
     STATE.reset()
     server = ThreadingHTTPServer((STATE.addr, STATE.port), Handler)
 
