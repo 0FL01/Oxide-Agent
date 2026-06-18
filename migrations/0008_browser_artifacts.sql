@@ -3,7 +3,7 @@
 -- Replaces the filesystem-only pipeline (raw PNG on disk).
 -- Screenshots are JPEG (CDP Page.captureScreenshot format=jpeg,quality=80).
 
-CREATE TABLE browser_artifacts (
+CREATE TABLE IF NOT EXISTS browser_artifacts (
     artifact_uri TEXT PRIMARY KEY,
     user_id BIGINT NOT NULL,
     session_id TEXT NOT NULL,
@@ -18,8 +18,8 @@ CREATE TABLE browser_artifacts (
         ON DELETE CASCADE
 );
 
-CREATE INDEX browser_artifacts_session_idx
+CREATE INDEX IF NOT EXISTS browser_artifacts_session_idx
     ON browser_artifacts (session_id);
 
-CREATE INDEX browser_artifacts_created_idx
+CREATE INDEX IF NOT EXISTS browser_artifacts_created_idx
     ON browser_artifacts (created_at);
