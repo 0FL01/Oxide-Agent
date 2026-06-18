@@ -51,7 +51,7 @@ services:
         condition: service_healthy
       crw:
         condition: service_healthy
-      chrome-agent-sidecar:
+      browser-sidecar:
         condition: service_healthy
     logging:
       driver: json-file
@@ -111,12 +111,12 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  chrome-agent-sidecar:
+  browser-sidecar:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.chrome-agent-sidecar
-    image: oxide-chrome-agent-sidecar:dev
-    container_name: oxide_chrome_agent_sidecar_dev
+      dockerfile: docker/Dockerfile.browser-sidecar
+    image: oxide-browser-sidecar:dev
+    container_name: oxide_browser_sidecar_dev
     restart: unless-stopped
     environment:
       TZ: Europe/Moscow

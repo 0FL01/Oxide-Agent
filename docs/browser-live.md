@@ -3,7 +3,7 @@
 Oxide Browser Live is an autonomous headless-browser capability. The agent has
 full control over a browser session: it can open any URL, observe pages, execute
 actions, fill forms, submit data, extract structured data, and close the session.
-The browser is controlled by a local `chrome-agent-sidecar` container rather than
+The browser is controlled by a local `browser-sidecar` container rather than
 an external service. The sidecar is a native Rust binary (`oxide-browser-sidecar`)
 that talks CDP directly to Chromium over a single WebSocket — no Python runtime,
 no `chrome-agent` subprocess.
@@ -33,7 +33,7 @@ no `chrome-agent` subprocess.
 ## Requirements
 
 - Docker with Compose
-- The `chrome-agent-sidecar` service built from `docker/Dockerfile.chrome-agent-sidecar` (native Rust binary + Chromium only)
+- The `browser-sidecar` service built from `docker/Dockerfile.browser-sidecar` (native Rust binary + Chromium only)
 
 ## Configuration
 
@@ -212,7 +212,7 @@ Tool output includes `post_observation_diagnostics` with:
 - **Browser tool calls fail with `Browser sidecar request was rejected`**
   Verify the sidecar is running, the token is correct, and the REST URL is
   reachable at the configured `BROWSER_AGENT_SIDECAR_BASE_URL`. Check the
-  sidecar logs with `docker compose -f docker-compose.web.yml logs -f chrome-agent-sidecar`.
+  sidecar logs with `docker compose -f docker-compose.web.yml logs -f browser-sidecar`.
 
 - **Browser starts but actions fail with timeout**
   Some sites require longer waits or use anti-bot measures. Increase
@@ -275,5 +275,5 @@ docker compose -f docker-compose.web.yml up -d --force-recreate
 Or stop the sidecar service while leaving the web app running:
 
 ```bash
-docker compose -f docker-compose.web.yml stop chrome-agent-sidecar
+docker compose -f docker-compose.web.yml stop browser-sidecar
 ```

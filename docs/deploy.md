@@ -71,7 +71,7 @@ docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.ym
 
 External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first and CRW scrape fallback; set it to `false` to expose split lightweight `web_markdown` fetches.
 
-Browser Live sidecar: the `chrome-agent-sidecar` service is included in the web and telegram Compose files but is disabled by default. To enable it, set `BROWSER_AGENT_ENABLED=true` and a non-empty `BROWSER_AGENT_SIDECAR_TOKEN` in `.env`, then verify health at `http://127.0.0.1:8787/healthz`. See `docs/browser-live.md` for the full setup checklist and troubleshooting.
+Browser Live sidecar: the `browser-sidecar` service is included in the web and telegram Compose files but is disabled by default. To enable it, set `BROWSER_AGENT_ENABLED=true` and a non-empty `BROWSER_AGENT_SIDECAR_TOKEN` in `.env`, then verify health at `http://127.0.0.1:8787/healthz`. See `docs/browser-live.md` for the full setup checklist and troubleshooting.
 
 ## 5. Sandbox
 

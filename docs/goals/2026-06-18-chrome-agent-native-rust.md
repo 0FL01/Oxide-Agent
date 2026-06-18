@@ -1,11 +1,11 @@
 # Goal: Chrome-agent sidecar → native Rust (Option B)
 
 Date started: 2026-06-18
-Status: active
+Status: complete
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — `docker/chrome-agent-sidecar.py` rewrite feasibility study; plan approved by user
 Goal doc owner: Codex
-Last updated: 2026-06-18 21:00
+Last updated: 2026-06-18 21:30
 
 ## Objective
 
@@ -70,8 +70,8 @@ Out of scope:
   - Source: RECON — `docker/chrome-agent-sidecar.py` spawns `chrome-agent --json pipe` subprocess per session; chrome-agent is binary-only.
   - Acceptance: a Rust binary launches Chromium directly and speaks CDP over a single WebSocket per session; no `chrome-agent` subprocess; no Python process; `docker/chrome-agent-sidecar.py` deleted.
   - Evidence required: `git grep -n 'chrome-agent' docker/` returns nothing (except historical references in docs); `ls docker/chrome-agent-sidecar.py` → not found; new binary `cargo build --release` succeeds; running binary launches Chromium and serves the REST API.
-  - Status: in_progress
-  - Evidence collected: CP2 — native Rust binary launches Chromium directly via `tokio::process::Command` with `--headless=new --no-sandbox --remote-debugging-port=0`, reads `DevToolsActivePort` file for port, discovers page target via `/json/list`, connects CDP WebSocket via `tokio-tungstenite`. No `chrome-agent` subprocess, no Python process. POST /sessions and DELETE /sessions are functional. Remaining endpoints (goto, observe, action, screenshot, debug) are stubs for CP3-CP6. `docker/chrome-agent-sidecar.py` not yet deleted (CP8).
+  - Status: verified
+  - Evidence collected: CP2 — native Rust binary launches Chromium directly via `tokio::process::Command` with `--headless=new --no-sandbox --remote-debugging-port=0`, reads `DevToolsActivePort` file for port, discovers page target via `/json/list`, connects CDP WebSocket via `tokio-tungstenite`. No `chrome-agent` subprocess, no Python process. CP8 — `docker/chrome-agent-sidecar.py` deleted (`git rm`). `git grep -n 'chrome-agent' docker/` returns nothing (exit 1). `ls docker/chrome-agent-sidecar.py` → "No such file or directory" (exit 2). Dockerfile renamed to `docker/Dockerfile.browser-sidecar`. Compose service renamed from `chrome-agent-sidecar` to `browser-sidecar` in all 5 compose files. Image renamed to `oxide-browser-sidecar`, container to `oxide_browser_sidecar`. `docker build -f docker/Dockerfile.browser-sidecar -t oxide-browser-sidecar:test .` succeeds. `docker run` serves `/healthz` → `{"native":true,"ok":true}` and `POST /sessions` → `{"ok":true,"cdp_connected":true}`. Historical attribution comments in sidecar source ("ported from chrome-agent's snapshot.rs") preserved for provenance. PRD (`docs/prd/chrome-agent.md`) kept as historical design document. `cargo build --release -p oxide-browser-sidecar` succeeds (verified via Docker build).
 
 - G2: Shared types between sidecar and Oxide client — contract drift architecturally impossible.
   - Source: RECON — sidecar `run_unit_tests()` comment: "Rust mock in test_support.rs can diverge from the real sidecar implementation and all Rust tests stay green while production breaks — exactly the class of bug seen in CP-A (noise filter on wrong shape) and CP-B (failure criterion mismatch)."
@@ -182,7 +182,7 @@ Out of scope:
   - Must preserve: no `.py` files in the sidecar image; no `python3` in the Dockerfile.
   - Evidence required: `git grep -n 'python' docker/Dockerfile.chrome-agent-sidecar` returns nothing (after rename); no `.py` files in the new sidecar source.
   - Status: verified
-  - Evidence collected: CP7 — `grep -n 'python\|chrome-agent\|pip\|websockets' docker/Dockerfile.chrome-agent-sidecar` returns nothing (exit 1). `docker run --rm oxide-browser-sidecar:test sh -c 'which python3; which chrome-agent'` → both not found. `docker run --rm oxide-browser-sidecar:test sh -c 'ls /usr/local/bin/'` → only `oxide-browser-sidecar`. The Python sidecar file (`docker/chrome-agent-sidecar.py`) still exists but will be deleted in CP8.
+  - Evidence collected: CP7 — `grep -n 'python\|chrome-agent\|pip\|websockets' docker/Dockerfile.chrome-agent-sidecar` returns nothing (exit 1). `docker run --rm oxide-browser-sidecar:test sh -c 'which python3; which chrome-agent'` → both not found. `docker run --rm oxide-browser-sidecar:test sh -c 'ls /usr/local/bin/'` → only `oxide-browser-sidecar`. CP8 — `docker/chrome-agent-sidecar.py` deleted. Dockerfile renamed to `docker/Dockerfile.browser-sidecar`. `grep -n 'python' docker/Dockerfile.browser-sidecar` returns nothing. No `.py` files in `crates/oxide-browser-sidecar/`. The Python sidecar file (`docker/chrome-agent-sidecar.py`) is deleted from the repository.
 
 ## Implementation Plan
 
@@ -335,6 +335,13 @@ Out of scope:
   - Audit IDs updated: G8→verified, V2→verified, Q1→verified, Q3→verified, Q4→verified, N2→verified, N3→verified.
   - Next: CP8 — Cleanup: delete Python sidecar + chrome-agent references.
 
+- 2026-06-18 21:30: CP8 complete — Cleanup: delete Python sidecar + chrome-agent references.
+  - Changed: `docker/chrome-agent-sidecar.py` (deleted via `git rm`); `docker/Dockerfile.chrome-agent-sidecar` → `docker/Dockerfile.browser-sidecar` (renamed via `git mv`); `docker/compose.full.yml` (service `chrome-agent-sidecar` → `browser-sidecar`, image `oxide-chrome-agent-sidecar:latest` → `oxide-browser-sidecar:latest`, container `oxide_chrome_agent_sidecar` → `oxide_browser_sidecar`, Dockerfile path updated, `depends_on` updated); `docker/compose.dev.yml` (same); `docker-compose.web.yml` (same); `docker-compose.yml` (same); `docker-compose.telegram.yml` (same); `docs/browser-live.md` (service name references updated to `browser-sidecar`); `docs/deploy.md` (service name updated); `.env.example` (service name updated); `README.md` (Browser Live section updated for native Rust binary); `crates/oxide-agent-core/src/agent/providers/browser_live/client.rs` (comment updated); `crates/oxide-agent-core/src/agent/providers/browser_live/tools.rs` (test comment updated); `crates/oxide-agent-core/src/config.rs` (test values updated from `chrome-agent-sidecar` to `browser-sidecar`); `docs/goals/2026-06-18-chrome-agent-native-rust.md` (this file).
+  - Evidence: `git grep -n 'chrome-agent' docker/` → nothing (exit 1) ✓; `ls docker/chrome-agent-sidecar.py` → "No such file or directory" (exit 2) ✓; `docker build -f docker/Dockerfile.browser-sidecar -t oxide-browser-sidecar:test .` succeeds ✓; `cargo fmt --all -- --check` ✓; `cargo clippy -p oxide-browser-contracts -p oxide-browser-sidecar --all-targets -- -D warnings` ✓; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓; `cargo test -p oxide-browser-contracts --lib` — 4 passed ✓; `cargo test -p oxide-browser-sidecar --lib` — 93 passed ✓; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- browser_live` — 72 passed, 1 ignored ✓. Historical attribution comments in sidecar source ("ported from chrome-agent's snapshot.rs/setup.rs") preserved for provenance. PRD (`docs/prd/chrome-agent.md`) kept as historical design document.
+  - Commands: see above.
+  - Audit IDs updated: G1→verified (final), N3→verified (final).
+  - Next: Completion Audit.
+
 ## Risks and Blockers
 
 - R1: CP0 requires a running Chromium for CDP verification.
@@ -357,4 +364,50 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
+Completion Audit result: ALL 17 items verified (G1-G8, Q1-Q4, V1-V2, N1-N3).
+
+- G1: verified — Python sidecar deleted, chrome-agent subprocess eliminated, native Rust binary talks CDP directly
+- G2: verified — shared types in `oxide-browser-contracts`, contract drift impossible
+- G3: verified — single CDP WebSocket per session (control + capture)
+- G4: verified — `Runtime.enable` never sent, stealth-safe console capture via JS interceptor
+- G5: verified — all 9 REST endpoints, `client.rs` unchanged (N1)
+- G6: verified — all 13 BrowserAction variants + post-action observation
+- G7: verified — 4 a11y noise rules, stable UIDs, structured+text output
+- G8: verified — Docker build succeeds, binary + chromium only, no Python
+- Q1: verified — observe=61ms (concurrent) vs 30ms raw CDP; HTTP overhead ~31ms (vs ~30-50ms Python pipe)
+- Q2: verified — two new crates (`oxide-browser-contracts` + `oxide-browser-sidecar`), both justified
+- Q3: verified — `cargo fmt --all -- --check` + `cargo clippy` clean across all profiles
+- Q4: verified — 4 contract tests + 93 sidecar tests + 72 browser_live tests + 6 integration tests all green
+- V1: verified — CDP behavior verified on real Chromium (Chrome/149) before code
+- V2: verified — smoke test simulating BrowserSidecarClient with shared types passes (13-step browser task)
+- N1: verified — `client.rs` byte-identical (no trait/method/signature changes)
+- N2: verified — no `chromiumoxide` crate
+- N3: verified — no Python in Dockerfile, no .py files in sidecar source
+
+Commands run:
+- `cargo fmt --all -- --check` ✓
+- `cargo clippy -p oxide-browser-contracts -p oxide-browser-sidecar --all-targets -- -D warnings` ✓
+- `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓
+- `cargo test -p oxide-browser-contracts --lib` — 4 passed ✓
+- `cargo test -p oxide-browser-sidecar --lib` — 93 passed ✓
+- `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- browser_live` — 72 passed, 1 ignored ✓
+- `cargo test -p oxide-browser-sidecar --test smoke_client -- --ignored --nocapture` — 1 passed ✓
+- `cargo test -p oxide-browser-sidecar --test rest_contract -- --ignored --nocapture` — 3 passed ✓
+- `docker build -f docker/Dockerfile.browser-sidecar -t oxide-browser-sidecar:test .` ✓
+- `docker run` → `/healthz` returns `{"native":true,"ok":true}` ✓
+- `docker run` → `POST /sessions` returns `{"ok":true,"cdp_connected":true}` ✓
+- `git grep -n 'chrome-agent' docker/` → nothing ✓
+- `ls docker/chrome-agent-sidecar.py` → not found ✓
+- `git grep 'chromiumoxide'` → nothing ✓
+
+Artifacts inspected:
+- `crates/oxide-browser-contracts/src/types.rs` — 803+ lines of shared REST types
+- `crates/oxide-browser-sidecar/src/` — 8 modules (cdp, browser, session, snapshot, stealth, actions, capture, dom, screenshot, observe, lib, main)
+- `docker/Dockerfile.browser-sidecar` — cargo-chef build + slim runtime
+- `docker/compose.full.yml`, `docker/compose.dev.yml`, `docker-compose.web.yml`, `docker-compose.yml`, `docker-compose.telegram.yml` — all updated
+- `docs/browser-live.md` — deployment section updated
+- `.cp0-verify/CP0-VERIFICATION-RESULTS.md` — CDP verification artifact
+
+Remaining gaps: none.
+User-accepted exceptions: none.
+Final status: COMPLETE.

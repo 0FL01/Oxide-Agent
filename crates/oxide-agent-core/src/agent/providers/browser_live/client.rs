@@ -97,7 +97,7 @@ impl IdempotencyKey {
     }
 }
 
-/// Typed REST client for `chrome-agent-sidecar`.
+/// Typed REST client for the browser sidecar (`oxide-browser-sidecar`).
 #[derive(Debug, Clone)]
 pub struct BrowserSidecarClient {
     base_url: String,

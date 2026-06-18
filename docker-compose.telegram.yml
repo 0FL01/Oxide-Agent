@@ -11,7 +11,7 @@ x-oxide-app-build: &oxide_app_build
 
 x-browser-sidecar-build: &browser_sidecar_build
   context: .
-  dockerfile: docker/Dockerfile.chrome-agent-sidecar
+  dockerfile: docker/Dockerfile.browser-sidecar
 
 services:
   sandbox_image:
@@ -53,7 +53,7 @@ services:
         condition: service_healthy
       crw:
         condition: service_healthy
-      chrome-agent-sidecar:
+      browser-sidecar:
         condition: service_healthy
     logging:
       driver: json-file
@@ -112,10 +112,10 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  chrome-agent-sidecar:
+  browser-sidecar:
     build: *browser_sidecar_build
-    image: oxide-chrome-agent-sidecar:latest
-    container_name: oxide_chrome_agent_sidecar
+    image: oxide-browser-sidecar:latest
+    container_name: oxide_browser_sidecar
     restart: unless-stopped
     environment:
       - TZ=Europe/Moscow

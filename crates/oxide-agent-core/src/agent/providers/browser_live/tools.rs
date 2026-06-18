@@ -2417,7 +2417,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires live chrome-agent-sidecar and public https://ots.bash.md/"]
+    #[ignore = "requires live browser-sidecar and public https://ots.bash.md/"]
     async fn live_ots_browser_extract_returns_share_url_value_attribute() {
         if std::env::var("OXIDE_BROWSER_LIVE_E2E").ok().as_deref() != Some("1") {
             eprintln!("set OXIDE_BROWSER_LIVE_E2E=1 to run the live Browser Live OTS test");

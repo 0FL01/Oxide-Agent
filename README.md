@@ -721,8 +721,9 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 
 ### Browser Live sidecar in Compose
 
-The `chrome-agent-sidecar` service runs a Chromium-based headless browser
-controlled by the `chrome-agent` CLI. It is wired into the web/telegram Compose
+The `browser-sidecar` service runs a Chromium-based headless browser
+controlled by a native Rust binary (`oxide-browser-sidecar`) that talks CDP
+directly. It is wired into the web/telegram Compose
 files but is not started until you enable it and set a token.
 
 Enable for the Web UI:

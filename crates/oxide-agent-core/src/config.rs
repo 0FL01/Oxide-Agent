@@ -1741,7 +1741,7 @@ mod tests {
         test_set_env("BROWSER_AGENT_ENABLED", "true");
         test_set_env(
             "BROWSER_AGENT_SIDECAR_BASE_URL",
-            "http://chrome-agent-sidecar:8787",
+            "http://browser-sidecar:8787",
         );
         test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
 
@@ -1751,7 +1751,7 @@ mod tests {
         assert!(browser.enabled);
         assert_eq!(
             browser.sidecar_base_url.as_deref(),
-            Some("http://chrome-agent-sidecar:8787")
+            Some("http://browser-sidecar:8787")
         );
         assert_eq!(browser.sidecar_token.as_deref(), Some("test-browser-token"));
 
