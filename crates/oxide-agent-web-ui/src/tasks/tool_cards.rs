@@ -1116,7 +1116,7 @@ fn BrowserToolCard(
                     }.into_any())
                 }).unwrap_or_else(|| ().into_any())
             }}
-            {title.as_ref().map(|t| view! { <div class="browser-tool-meta"><span>"Title"</span><strong>{t.clone()}</strong></div> })}
+            {title.as_ref().map(|t| view! { <div class="browser-tool-title">{t.clone()}</div> })}
         </ToolDetails>
     }
 }

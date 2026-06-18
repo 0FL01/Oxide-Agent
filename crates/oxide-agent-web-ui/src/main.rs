@@ -71,5 +71,7 @@ mod css_contract_tests {
         assert!(!TOOL_CARDS_RS.contains("<span>\"Session\"</span>"));
         assert!(!TOOL_CARDS_RS.contains("<span>\"Debug\"</span>"));
         assert!(!TOOL_CARDS_RS.contains("<span>\"Console\"</span>"));
+        assert!(!TOOL_CARDS_RS.contains("<span>\"Title\"</span>"));
+        assert!(TOOL_CARDS_RS.contains("browser-tool-title"));
     }
 }

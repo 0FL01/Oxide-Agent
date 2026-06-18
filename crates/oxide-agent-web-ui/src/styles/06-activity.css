@@ -92,25 +92,11 @@
   background: var(--bg-panel);
 }
 
-.browser-tool-meta {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  margin-bottom: var(--space-1);
-}
-
-.browser-tool-meta span {
-  color: var(--text-faint);
-  font: 700 10px/1.2 var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.browser-tool-meta code,
-.browser-tool-meta strong {
+.browser-tool-title {
   color: var(--text-main);
   font: 600 12px/1.35 var(--font-mono);
   overflow-wrap: anywhere;
+  margin-bottom: var(--space-1);
 }
 
 .agent-event-card,
