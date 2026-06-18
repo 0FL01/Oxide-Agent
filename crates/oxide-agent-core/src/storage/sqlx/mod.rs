@@ -778,6 +778,58 @@ impl StorageProvider for SqlxStorage {
         Ok(result.rows_affected())
     }
 
+    async fn delete_browser_artifacts_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError> {
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM browser_artifacts
+            WHERE created_at < $1
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_browser_artifacts_oldest_until_cap(
+        &self,
+        max_bytes: i64,
+    ) -> Result<u64, StorageError> {
+        // Keep the newest artifacts (highest created_at) whose cumulative
+        // bytes fit within max_bytes. Delete everything older.
+        //
+        // Window function computes cumulative bytes ordered by created_at
+        // DESC (newest first). Rows whose cumulative exceeds max_bytes are
+        // deleted. If total <= max_bytes, no rows match and nothing is
+        // deleted.
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM browser_artifacts
+            WHERE artifact_uri IN (
+                SELECT artifact_uri FROM (
+                    SELECT
+                        artifact_uri,
+                        SUM(bytes) OVER (
+                            ORDER BY created_at DESC
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                        ) AS keep_cumulative
+                    FROM browser_artifacts
+                ) ranked
+                WHERE keep_cumulative > $1
+            )
+            "#,
+        )
+        .bind(max_bytes)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
+    }
+
     async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
         let address = parse_wiki_storage_key(&storage_key)?;
         query::<Postgres>(

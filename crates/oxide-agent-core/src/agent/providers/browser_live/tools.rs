@@ -832,6 +832,25 @@ impl BrowserLiveProvider {
             profile_purged = response.profile_purged,
             "browser session closed"
         );
+
+        // Retention sweep: delete browser artifacts older than the retention
+        // period. Runs on every session close as a lightweight periodic
+        // cleanup. The `keep_artifacts=false` flag is handled by CP7's
+        // `delete_browser_artifacts_by_context_key` on web session deletion.
+        if let Some(storage) = &self.storage {
+            let cutoff = chrono::Utc::now()
+                - chrono::Duration::from_std(self.artifact_settings.retention)
+                    .unwrap_or(chrono::Duration::days(7));
+            match storage.delete_browser_artifacts_before(cutoff).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    expired_artifacts = n,
+                    "retention sweep deleted old browser artifacts"
+                ),
+                Err(error) => tracing::warn!(error = %error, "retention sweep failed"),
+            }
+        }
+
         self.emit_progress(format!("Browser session {} closed", args.session_id))
             .await;
         let metrics = self.metrics.snapshot();

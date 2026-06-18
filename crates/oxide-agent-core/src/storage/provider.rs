@@ -157,6 +157,27 @@ pub trait StorageProvider: Send + Sync {
         let _ = context_key;
         Ok(0)
     }
+    /// Delete all browser artifacts older than `cutoff`.
+    /// Used by the periodic retention sweep to enforce the retention period.
+    /// Returns the number of rows deleted.
+    async fn delete_browser_artifacts_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError> {
+        let _ = cutoff;
+        Ok(0)
+    }
+    /// Delete oldest browser artifacts until total bytes is at or below
+    /// `max_bytes`. Keeps the newest artifacts first (highest `created_at`).
+    /// Used by the periodic retention sweep to enforce the soft byte cap.
+    /// Returns the number of rows deleted.
+    async fn delete_browser_artifacts_oldest_until_cap(
+        &self,
+        max_bytes: i64,
+    ) -> Result<u64, StorageError> {
+        let _ = max_bytes;
+        Ok(0)
+    }
     /// Load a durable LLM Wiki Markdown object by deterministic storage key.
     async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
         let _ = storage_key;

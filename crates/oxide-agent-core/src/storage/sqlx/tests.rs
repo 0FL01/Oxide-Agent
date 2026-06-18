@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sha2::Digest;
 use sqlx_core::query::query;
@@ -1162,6 +1163,220 @@ async fn sqlx_browser_artifact_isolation_by_context_key() {
         .delete_browser_artifacts_by_context_key(user_id, &context_key_b)
         .await
         .expect("cleanup context_key_b");
+
+    cleanup_browser_artifact_scope(&storage, user_id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Browser artifact retention tests
+// ---------------------------------------------------------------------------
+
+/// Helper: insert an artifact, then set its `created_at` to a known value.
+async fn insert_artifact_at(
+    storage: &SqlxStorage,
+    user_id: i64,
+    context_key: &str,
+    uri: &str,
+    data: Vec<u8>,
+    created_at: DateTime<Utc>,
+) {
+    let len = data.len() as i64;
+    storage
+        .save_browser_artifact(BrowserArtifactRecord {
+            artifact_uri: uri.to_string(),
+            user_id,
+            context_key: context_key.to_string(),
+            session_id: "br-test".to_string(),
+            task_id: "task-test".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            data,
+            bytes: len,
+            sha256: None,
+        })
+        .await
+        .expect("save artifact");
+
+    query::<Postgres>("UPDATE browser_artifacts SET created_at = $1 WHERE artifact_uri = $2")
+        .bind(created_at)
+        .bind(uri)
+        .execute(storage.pool())
+        .await
+        .expect("update created_at");
+}
+
+#[tokio::test]
+async fn sqlx_browser_artifact_retention_delete_before() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let (user_id, context_key) = setup_browser_artifact_scope(&storage).await;
+
+    let now = Utc::now();
+    let old = now - chrono::Duration::days(10);
+    let medium = now - chrono::Duration::days(5);
+    let recent = now - chrono::Duration::days(1);
+
+    let uri_old = format!("artifact://browser/task-{user_id}/br/step-0001-old.jpg");
+    let uri_med = format!("artifact://browser/task-{user_id}/br/step-0002-med.jpg");
+    let uri_new = format!("artifact://browser/task-{user_id}/br/step-0003-new.jpg");
+
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_old,
+        vec![0xff; 50],
+        old,
+    )
+    .await;
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_med,
+        vec![0xff; 50],
+        medium,
+    )
+    .await;
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_new,
+        vec![0xff; 50],
+        recent,
+    )
+    .await;
+
+    // Cutoff = 7 days ago → only the 10-day-old artifact should be deleted.
+    let cutoff = now - chrono::Duration::days(7);
+    let deleted = storage
+        .delete_browser_artifacts_before(cutoff)
+        .await
+        .expect("delete_browser_artifacts_before");
+    assert_eq!(deleted, 1, "only the oldest artifact should be deleted");
+
+    // Verify medium and recent survive.
+    let med = storage
+        .load_browser_artifact(user_id, &uri_med)
+        .await
+        .expect("load med");
+    assert!(med.is_some(), "medium-age artifact should survive");
+
+    let new = storage
+        .load_browser_artifact(user_id, &uri_new)
+        .await
+        .expect("load new");
+    assert!(new.is_some(), "recent artifact should survive");
+
+    // Verify old is gone.
+    let old_loaded = storage
+        .load_browser_artifact(user_id, &uri_old)
+        .await
+        .expect("load old");
+    assert!(old_loaded.is_none(), "old artifact should be deleted");
+
+    cleanup_browser_artifact_scope(&storage, user_id).await;
+}
+
+#[tokio::test]
+async fn sqlx_browser_artifact_retention_soft_cap() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let (user_id, context_key) = setup_browser_artifact_scope(&storage).await;
+
+    let now = Utc::now();
+    let base = now - chrono::Duration::days(10);
+
+    // Insert 3 artifacts: A=100B (oldest), B=200B, C=150B (newest).
+    // Total = 450B. Cap = 250B.
+    // Keep newest first: C=150, C+B=350 → B and A exceed cap → deleted.
+    // After: only C remains (150B ≤ 250B).
+    let uri_a = format!("artifact://browser/task-{user_id}/br/step-0001-a.jpg");
+    let uri_b = format!("artifact://browser/task-{user_id}/br/step-0002-b.jpg");
+    let uri_c = format!("artifact://browser/task-{user_id}/br/step-0003-c.jpg");
+
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_a,
+        vec![0xff; 100],
+        base,
+    )
+    .await;
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_b,
+        vec![0xff; 200],
+        base + chrono::Duration::days(1),
+    )
+    .await;
+    insert_artifact_at(
+        &storage,
+        user_id,
+        &context_key,
+        &uri_c,
+        vec![0xff; 150],
+        base + chrono::Duration::days(2),
+    )
+    .await;
+
+    let deleted = storage
+        .delete_browser_artifacts_oldest_until_cap(250)
+        .await
+        .expect("delete_browser_artifacts_oldest_until_cap");
+    assert_eq!(deleted, 2, "should delete 2 oldest artifacts to fit cap");
+
+    // Verify only C (newest, 150B) survives.
+    let a = storage
+        .load_browser_artifact(user_id, &uri_a)
+        .await
+        .expect("load a");
+    assert!(a.is_none(), "artifact A (oldest) should be deleted");
+
+    let b = storage
+        .load_browser_artifact(user_id, &uri_b)
+        .await
+        .expect("load b");
+    assert!(b.is_none(), "artifact B (middle) should be deleted");
+
+    let c = storage
+        .load_browser_artifact(user_id, &uri_c)
+        .await
+        .expect("load c");
+    assert!(c.is_some(), "artifact C (newest) should survive");
+
+    cleanup_browser_artifact_scope(&storage, user_id).await;
+}
+
+#[tokio::test]
+async fn sqlx_browser_artifact_retention_soft_cap_under_cap_noop() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let (user_id, context_key) = setup_browser_artifact_scope(&storage).await;
+
+    let now = Utc::now();
+
+    // Insert 1 artifact: 100B. Cap = 1000B. Total (100B) ≤ cap → no deletion.
+    let uri = format!("artifact://browser/task-{user_id}/br/step-0001.jpg");
+    insert_artifact_at(&storage, user_id, &context_key, &uri, vec![0xff; 100], now).await;
+
+    let deleted = storage
+        .delete_browser_artifacts_oldest_until_cap(1000)
+        .await
+        .expect("delete under cap");
+    assert_eq!(deleted, 0, "should not delete anything when under cap");
+
+    let loaded = storage
+        .load_browser_artifact(user_id, &uri)
+        .await
+        .expect("load");
+    assert!(loaded.is_some(), "artifact should survive when under cap");
 
     cleanup_browser_artifact_scope(&storage, user_id).await;
 }
