@@ -8,6 +8,8 @@ members = [
     "crates/oxide-agent-web-ui",
     "crates/oxide-agent-telegram-bot",
     "crates/oxide-agent-sandboxd",
+    "crates/oxide-browser-contracts",
+    "crates/oxide-browser-sidecar",
 ]
 resolver = "2"
 

@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — `docker/chrome-agent-sidecar.py` rewrite feasibility study; plan approved by user
 Goal doc owner: Codex
-Last updated: 2026-06-18 14:00
+Last updated: 2026-06-18 15:30
 
 ## Objective
 
@@ -77,8 +77,8 @@ Out of scope:
   - Source: RECON — sidecar `run_unit_tests()` comment: "Rust mock in test_support.rs can diverge from the real sidecar implementation and all Rust tests stay green while production breaks — exactly the class of bug seen in CP-A (noise filter on wrong shape) and CP-B (failure criterion mismatch)."
   - Acceptance: REST types (`BrowserAction`, `BrowserObservation`, `CreateSessionRequest/Response`, `GotoRequest/Response`, `ActionRequest/Response`, `NetworkDebug*`, `ConsoleDebug*`, etc.) defined in one location imported by both the sidecar binary and `oxide-agent-core` browser_live client; renaming a field in either → compile error in both.
   - Evidence required: `git grep` shows single source of each type; `cargo check` of both the sidecar and `oxide-agent-core` succeeds with shared import; no duplicate struct/enum definitions of REST contract types.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1 — all browser REST types moved to `crates/oxide-browser-contracts/src/types.rs` (803 lines, verbatim from `types.rs` including serde attributes, impls, tests). `oxide-agent-core/src/agent/providers/browser_live/types.rs` is now a 8-line re-export: `pub use oxide_browser_contracts::*;`. `git grep` confirms no duplicate browser REST type definitions (the `CreateSessionRequest` in `oxide-agent-web-contracts` is a different struct for web console sessions, not browser). Both `oxide-browser-sidecar` and `oxide-agent-core --features profile-full` compile against the shared types. 4 contract tests in `oxide-browser-contracts` pass; 71 browser_live tests in `oxide-agent-core` pass.
 
 - G3: Single CDP WebSocket connection per session (no redundant CDPListener).
   - Source: RECON — sidecar `CDPListener` opens a SEPARATE WebSocket for network/console capture, duplicating chrome-agent's own connection.
@@ -133,8 +133,8 @@ Out of scope:
   - Source: AGENTS.md — "No new crates ... unless clearly required."
   - Acceptance: `tokio-tungstenite` added as a justified dependency (CDP WebSocket — no alternative); if a new crate `oxide-browser-sidecar` is created, it is justified as a binary (not a library) and follows workspace conventions; shared types location decided with rationale in Decisions.
   - Evidence required: `Cargo.toml` diff reviewed; decision recorded in Decisions.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1 — two new workspace crates, both justified: (1) `oxide-browser-contracts` — shared REST types, mirrors `oxide-agent-web-contracts` pattern; both sidecar binary and core depend on it, neither depends on the other (correct dependency direction). (2) `oxide-browser-sidecar` — native sidecar binary, separate process, cannot be part of core (library) or telegram bot. `tokio-tungstenite` not yet added (CP2). `Cargo.toml` diff reviewed: 2 workspace members added, 1 optional dep + feature in core.
 
 - Q3: cargo fmt + clippy clean across relevant profiles.
   - Source: AGENTS.md — CI enforces both.
@@ -168,8 +168,8 @@ Out of scope:
   - Source: RECON — Oxide-side consumer code is out of scope.
   - Must preserve: trait method signatures, endpoint paths/methods, request/response schemas, `BrowserAction` enum variants and serde tags.
   - Evidence required: `git diff crates/oxide-agent-core/src/agent/providers/browser_live/client.rs` shows no signature changes.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1 — `git diff --stat HEAD` shows `client.rs` is NOT in the diff (zero changes). Only `types.rs` was modified (803 lines → 8-line re-export), `Cargo.toml` (new optional dep), and root `Cargo.toml` (workspace members). 71 browser_live tests pass unchanged.
 
 - N2: No `chromiumoxide` crate.
   - Source: AGENTS.md + RECON — raw `tokio-tungstenite` + `serde_json` matches chrome-agent's own approach.
@@ -257,6 +257,7 @@ Out of scope:
 - 2026-06-18 (CP0): `DOM.requestNode` takes `objectId`, NOT `backendNodeId`. Correct click-by-uid path: `DOM.getDocument({depth:0})` (once per navigation, document invalidated on `DOM.documentUpdated` event) → `DOM.pushNodesByBackendIdsToFrontend({backendNodeIds:[N]})` → `nodeIds[0]` → `DOM.getBoxModel({nodeId})` → content quad center → `Input.dispatchMouseEvent`. P0.5 caught this before any production code.
 - 2026-06-18 (CP0): AX `role.type` can be `"role"` or `"internalRole"` — noise filter checks `role.value` only. `ignored:true` nodes have `role.value:"none"`. `name.value` can be empty string. All confirmed on real Chromium.
 - 2026-06-18 (CP0): Stealth-safe capture confirmed: console interceptor via `Runtime.evaluate` (no `Runtime.enable`) + `Page.addScriptToEvaluateOnNewDocument`; network via `Network.enable`. Both work on real Chromium.
+- 2026-06-18 (CP1): Two new workspace crates created: `oxide-browser-contracts` (library, shared REST types) and `oxide-browser-sidecar` (binary, native sidecar). Rationale: (1) Contracts crate mirrors the established `oxide-agent-web-contracts` pattern — sidecar binary and core both depend on it, neither depends on the other. (2) Sidecar binary is a separate process, cannot be part of core (library) or telegram bot. Alternative considered: single crate with both lib+bin targets (sidecar exports types as lib, core depends on sidecar lib) — rejected because it creates a backwards dependency from core to a binary crate and allows sidecar-specific code to leak into the shared types. (3) `types.rs` in oxide-agent-core becomes a thin re-export (`pub use oxide_browser_contracts::*;`) preserving all internal import paths — zero churn in `client.rs`, `tools.rs`, `test_support.rs`, etc.
 
 ## Progress Log
 
@@ -267,6 +268,14 @@ Out of scope:
   - Commands: `chromium --headless=new --remote-debugging-port=9222`; `curl /json/list`; `node .cp0-verify/cdp-verify.mjs`; `node .cp0-verify/cdp-verify-click-uid.mjs`.
   - Audit IDs updated: V1→verified, Q1→in_progress (baseline done, new pending CP7).
   - Next: CP1 — shared types extraction + new crate/binary scaffold.
+
+- 2026-06-18 15:30: CP1 complete — shared types extraction + new crate/binary scaffold.
+  - Changed: `crates/oxide-browser-contracts/` (new crate: Cargo.toml, clippy.toml, src/lib.rs, src/types.rs — 803 lines of REST types moved verbatim from oxide-agent-core); `crates/oxide-browser-sidecar/` (new crate: Cargo.toml, clippy.toml, src/main.rs — axum scaffold with /healthz + bearer auth middleware); `Cargo.toml` (2 workspace members added); `crates/oxide-agent-core/Cargo.toml` (oxide-browser-contracts optional dep + tool-browser-live feature); `crates/oxide-agent-core/src/agent/providers/browser_live/types.rs` (803 lines → 8-line re-export `pub use oxide_browser_contracts::*;`); `docs/goals/2026-06-18-chrome-agent-native-rust.md` (this file).
+  - Evidence: `cargo check -p oxide-browser-contracts` ✓; `cargo check -p oxide-browser-sidecar` ✓; `cargo check -p oxide-agent-core --no-default-features --features profile-full` ✓; `cargo fmt --all -- --check` ✓; `cargo clippy -p oxide-browser-contracts -p oxide-browser-sidecar -- -D warnings` ✓; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓; `cargo test -p oxide-browser-contracts` — 4 passed ✓; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- browser_live` — 71 passed, 1 ignored ✓; sidecar binary smoke test: /healthz → `{"native":true,"ok":true}` (200, no auth), POST /sessions correct token → 501, wrong/no token → 401 ✓; `git grep` confirms single source of browser REST types ✓; `client.rs` NOT in diff (N1 preserved) ✓. Pre-existing `cargo check --workspace` default-features failure (reqwest in llm/error.rs) verified identical with/without my changes.
+  - Commands: see above.
+  - Audit IDs updated: G2→verified, N1→verified, Q2→verified.
+  - Next: CP2 — CDP client + Chromium lifecycle + session management.
+  - Commit: `2591d38a`.
 
 ## Risks and Blockers
 

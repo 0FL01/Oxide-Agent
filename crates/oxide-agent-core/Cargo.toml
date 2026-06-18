@@ -26,6 +26,7 @@ serde_json = "1.0"
 thiserror = "2.0.17"
 regex = "1.10"
 reqwest = { version = "0.13.4", features = ["cookies", "form", "json", "multipart", "rustls", "stream"], default-features = false, optional = true }
+oxide-browser-contracts = { path = "../oxide-browser-contracts", optional = true }
 base64 = "0.22.1"
 async-trait = "0.1.89"
 html-escape = "0.2.13"
@@ -189,7 +190,7 @@ tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:reqwest"]
 tool-brave-search = ["dep:reqwest"]
 tool-crw = ["dep:reqwest"]
-tool-browser-live = ["dep:reqwest"]
+tool-browser-live = ["dep:reqwest", "dep:oxide-browser-contracts"]
 tool-sandbox-fileops = []
 tool-sandbox-exec = []
 tool-sandbox-recreate = []

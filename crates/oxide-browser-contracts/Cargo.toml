@@ -1,0 +1,18 @@
+[package]
+name = "oxide-browser-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "forbid"
+too_many_lines = "forbid"
+too_many_arguments = "forbid"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

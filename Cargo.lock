@@ -2688,6 +2688,7 @@ dependencies = [
  "lazy-regex",
  "mockall",
  "moka",
+ "oxide-browser-contracts",
  "proptest",
  "regex",
  "reqwest 0.13.4",
@@ -2836,6 +2837,28 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "oxide-browser-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oxide-browser-sidecar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "oxide-browser-contracts",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
