@@ -1,15 +1,24 @@
 //! Browser session management — one CDP connection per session, stored in
 //! a shared map keyed by session ID.
+//!
+//! The replaceable parts (Chromium process, CDP client, capture collector,
+//! page ID) live inside `BrowserInner` behind a `tokio::sync::Mutex` so
+//! `force_reload` can swap them atomically. Session state (URL, title,
+//! observation/screenshot counters, network/console history, last screenshot)
+//! lives directly on `BrowserSession` behind `std::sync::Mutex` / `AtomicU64`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use oxide_browser_contracts::{
-    CloseSessionRequest, CloseSessionResponse, CreateSessionRequest, CreateSessionResponse,
-    SidecarErrorBody, Viewport,
+    BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleItem,
+    CreateSessionRequest, CreateSessionResponse, NetworkItem, ScreenshotArtifact, SidecarErrorBody,
+    Viewport,
 };
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -21,18 +30,35 @@ use crate::cdp::CdpClient;
 /// Default navigation timeout (matches Python sidecar's 60s goto).
 const NAV_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Replaceable browser connection state — swapped on `force_reload`.
+struct BrowserInner {
+    chromium: ChromiumProcess,
+    cdp: CdpClient,
+    capture: Arc<CaptureCollector>,
+    page_id: String,
+}
+
 /// One browser session: Chromium process + CDP client + capture collector + metadata.
-#[allow(dead_code)]
+///
+/// The connection (`BrowserInner`) is behind a `tokio::sync::Mutex` so it can be
+/// replaced atomically during `force_reload`. Session state (URL, title, history,
+/// counters) is separate and survives across reloads.
 pub struct BrowserSession {
     pub id: String,
     pub task_id: String,
     pub viewport: Viewport,
-    chromium: Mutex<ChromiumProcess>,
-    cdp: CdpClient,
-    pub page_id: String,
     pub artifact_root: String,
+    pub artifact_dir: PathBuf,
+    inner: Mutex<BrowserInner>,
     action_seq: AtomicU64,
-    pub capture: Arc<CaptureCollector>,
+    observation_seq: AtomicU64,
+    screenshot_seq: AtomicU64,
+    url: StdMutex<String>,
+    title: StdMutex<String>,
+    last_screenshot: StdMutex<Option<ScreenshotArtifact>>,
+    last_observation: StdMutex<Option<BrowserObservation>>,
+    network_history: StdMutex<Vec<(NetworkItem, u64)>>,
+    console_history: StdMutex<Vec<(ConsoleItem, u64)>>,
 }
 
 impl BrowserSession {
@@ -71,42 +97,211 @@ impl BrowserSession {
             safe(session_id)
         );
 
+        let artifact_dir = crate::screenshot::session_artifact_dir(&req.task_id, session_id);
+
         info!(session_id, task_id = %req.task_id, page_id = %page_id, url = %start_url, "session created");
 
         Ok(Self {
             id: session_id.to_string(),
             task_id: req.task_id.clone(),
             viewport: req.viewport,
-            chromium: Mutex::new(chromium),
-            cdp,
-            page_id,
             artifact_root,
+            artifact_dir,
+            inner: Mutex::new(BrowserInner {
+                chromium,
+                cdp,
+                capture,
+                page_id,
+            }),
             action_seq: AtomicU64::new(0),
-            capture,
+            observation_seq: AtomicU64::new(0),
+            screenshot_seq: AtomicU64::new(0),
+            url: StdMutex::new(String::new()),
+            title: StdMutex::new(String::new()),
+            last_screenshot: StdMutex::new(None),
+            last_observation: StdMutex::new(None),
+            network_history: StdMutex::new(Vec::new()),
+            console_history: StdMutex::new(Vec::new()),
         })
     }
 
-    /// Navigate to a URL via `Page.navigate` and wait for load event.
-    #[allow(dead_code)]
-    pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<()> {
-        navigate_to(&self.cdp, url, timeout, false).await
+    /// Clone the CDP client out of the inner connection (cheap — `CdpClient` is `Arc`-backed).
+    pub async fn cdp(&self) -> CdpClient {
+        self.inner.lock().await.cdp.clone()
     }
 
-    /// Get the CDP client for this session (used by action execution in CP4).
-    pub fn cdp(&self) -> &CdpClient {
-        &self.cdp
+    /// Clone the capture collector out of the inner connection.
+    pub async fn capture(&self) -> Arc<CaptureCollector> {
+        self.inner.lock().await.capture.clone()
+    }
+
+    /// Get the current page target ID.
+    pub async fn page_id(&self) -> String {
+        self.inner.lock().await.page_id.clone()
+    }
+
+    /// Navigate to a URL via `Page.navigate` and wait for load event.
+    pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<()> {
+        let cdp = self.cdp().await;
+        navigate_to(&cdp, url, timeout, false).await
+    }
+
+    /// Force a full browser reload: shut down Chromium, relaunch, reconnect CDP,
+    /// restart capture, navigate to `url`. Preserves session state (history,
+    /// counters) but drops the JS heap and in-memory SPA state.
+    ///
+    /// Matches the Python sidecar's `restart_pipe_with_fresh_browser` — closes
+    /// the managed browser without purging the profile, then navigates to the
+    /// target URL including its hash.
+    pub async fn force_reload(&self, url: &str) -> Result<()> {
+        let mut inner = self.inner.lock().await;
+
+        // Shut down old Chromium (preserves profile data — no purge).
+        if let Err(e) = inner.chromium.shutdown().await {
+            warn!("force_reload: old Chromium shutdown error: {e:#}");
+        }
+
+        // Launch fresh Chromium.
+        let (new_chromium, new_cdp) = ChromiumProcess::launch(&self.viewport)
+            .await
+            .context("force_reload: launch Chromium")?;
+
+        let new_page_id = new_chromium.page_target_id().to_string();
+
+        // Start fresh capture collector.
+        let new_capture = Arc::new(CaptureCollector::new());
+        CaptureCollector::start(&new_cdp, new_capture.clone())
+            .await
+            .context("force_reload: start capture collector")?;
+
+        // Navigate to the target URL (with stealth patches — fresh browser).
+        navigate_to(&new_cdp, url, NAV_TIMEOUT, true)
+            .await
+            .context("force_reload: navigate")?;
+
+        // Reset transient state.
+        *self.url.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        *self.title.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        *self
+            .last_screenshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+
+        // Swap inner connection.
+        inner.chromium = new_chromium;
+        inner.cdp = new_cdp;
+        inner.capture = new_capture;
+        inner.page_id = new_page_id;
+
+        info!(session_id = %self.id, url, "force_reload complete");
+        Ok(())
     }
 
     /// Increment and return the action sequence number.
-    #[allow(dead_code)]
     pub fn next_action_seq(&self) -> u64 {
         self.action_seq.fetch_add(1, Ordering::Relaxed) + 1
     }
 
+    /// Increment and return the observation sequence number.
+    pub fn next_observation_seq(&self) -> u64 {
+        self.observation_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Increment and return the screenshot sequence number.
+    pub fn next_screenshot_seq(&self) -> u64 {
+        self.screenshot_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Get the current page URL.
+    pub fn url(&self) -> String {
+        self.url.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Set the current page URL.
+    pub fn set_url(&self, url: impl Into<String>) {
+        *self.url.lock().unwrap_or_else(|e| e.into_inner()) = url.into();
+    }
+
+    /// Get the current page title.
+    pub fn title(&self) -> String {
+        self.title.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Set the current page title.
+    pub fn set_title(&self, title: impl Into<String>) {
+        *self.title.lock().unwrap_or_else(|e| e.into_inner()) = title.into();
+    }
+
+    /// Get the last screenshot artifact (for non-fresh observe / screenshot/latest).
+    pub fn last_screenshot(&self) -> Option<ScreenshotArtifact> {
+        self.last_screenshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Set the last screenshot artifact.
+    pub fn set_last_screenshot(&self, screenshot: ScreenshotArtifact) {
+        *self
+            .last_screenshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(screenshot);
+    }
+
+    /// Get the last observation (for `fresh=false` observe requests).
+    pub fn last_observation(&self) -> Option<BrowserObservation> {
+        self.last_observation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Set the last observation.
+    pub fn set_last_observation(&self, observation: BrowserObservation) {
+        *self
+            .last_observation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(observation);
+    }
+
+    /// Merge fresh network items into history (dedup by key, tag with action_seq).
+    pub fn merge_network_history(&self, fresh: Vec<NetworkItem>, action_seq: u64) {
+        let mut history = self
+            .network_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::capture::merge_network_history(&mut history, fresh, action_seq);
+    }
+
+    /// Merge fresh console items into history (dedup by key, tag with action_seq).
+    pub fn merge_console_history(&self, fresh: Vec<ConsoleItem>, action_seq: u64) {
+        let mut history = self
+            .console_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::capture::merge_console_history(&mut history, fresh, action_seq);
+    }
+
+    /// Get a snapshot of the network history (cloned for building debug payloads).
+    pub fn network_history(&self) -> Vec<(NetworkItem, u64)> {
+        self.network_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Get a snapshot of the console history (cloned for building debug payloads).
+    pub fn console_history(&self) -> Vec<(ConsoleItem, u64)> {
+        self.console_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Shut down the Chromium process.
     pub async fn shutdown(&self) -> Result<()> {
-        let mut chromium = self.chromium.lock().await;
-        chromium.shutdown().await
+        let mut inner = self.inner.lock().await;
+        inner.chromium.shutdown().await
     }
 }
 
@@ -173,7 +368,6 @@ impl SessionManager {
         match BrowserSession::new(&req, &session_id).await {
             Ok(session) => {
                 let viewport = session.viewport;
-                let page_id = session.page_id.clone();
                 let artifact_root = session.artifact_root.clone();
 
                 self.sessions
@@ -187,7 +381,7 @@ impl SessionManager {
                     ok: true,
                     browser: oxide_browser_contracts::BrowserDescriptor {
                         browser_id: "chromium".to_string(),
-                        page_id,
+                        page_id: String::new(), // set by client via observe
                         cdp_connected: true,
                     },
                     viewport,
@@ -221,7 +415,6 @@ impl SessionManager {
     }
 
     /// Get a session by ID.
-    #[allow(dead_code)]
     pub async fn get(&self, id: &str) -> Option<Arc<BrowserSession>> {
         self.sessions.lock().await.get(id).cloned()
     }
@@ -264,7 +457,7 @@ impl SessionManager {
         };
 
         // `req.reason` is informational (done/cancelled/error/timeout/user);
-        // no special handling needed for CP2 — the session is always closed.
+        // no special handling needed — the session is always closed.
 
         CloseSessionResponse {
             request_id,
@@ -281,7 +474,7 @@ impl SessionManager {
 // ── Utilities ──────────────────────────────────────────────────────────
 
 /// Generate a request ID: `req-{12 hex chars}`.
-fn new_request_id() -> String {
+pub fn new_request_id() -> String {
     format!("req-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
 }
 
@@ -291,7 +484,7 @@ fn new_session_id() -> String {
 }
 
 /// Sanitize a string for use in filesystem paths (alphanumeric + `-_`).
-fn safe(value: &str) -> String {
+pub fn safe(value: &str) -> String {
     let sanitized: String = value
         .trim()
         .chars()

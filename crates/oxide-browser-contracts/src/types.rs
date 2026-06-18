@@ -234,6 +234,7 @@ pub struct ObserveQuery {
     pub include_network_summary: bool,
     #[serde(default)]
     pub include_console_summary: bool,
+    #[serde(default = "default_limit")]
     pub max_debug_items: u32,
 }
 
@@ -457,6 +458,7 @@ pub enum ActionStatus {
 /// Query for `GET /sessions/{id}/screenshot/latest`.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ScreenshotQuery {
+    #[serde(default)]
     pub format: ScreenshotFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_width: Option<u32>,
@@ -465,9 +467,10 @@ pub struct ScreenshotQuery {
 }
 
 /// Screenshot response format.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenshotFormat {
+    #[default]
     Metadata,
     Binary,
 }
@@ -488,10 +491,13 @@ pub struct ScreenshotResponse {
 pub struct NetworkDebugQuery {
     #[serde(default)]
     pub since_action_seq: u64,
+    #[serde(default)]
     pub level: DebugLevel,
     #[serde(default)]
     pub include_bodies: bool,
+    #[serde(default)]
     pub filter: NetworkFilter,
+    #[serde(default = "default_limit")]
     pub limit: u32,
 }
 
@@ -500,23 +506,28 @@ pub struct NetworkDebugQuery {
 pub struct ConsoleDebugQuery {
     #[serde(default)]
     pub since_action_seq: u64,
+    #[serde(default)]
     pub level: DebugLevel,
+    #[serde(default)]
     pub min_level: ConsoleLevel,
+    #[serde(default = "default_limit")]
     pub limit: u32,
 }
 
 /// Debug output verbosity.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DebugLevel {
+    #[default]
     Summary,
     Full,
 }
 
 /// Network filter.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkFilter {
+    #[default]
     Failed,
     All,
     Xhr,
@@ -525,10 +536,11 @@ pub enum NetworkFilter {
 }
 
 /// Console minimum level.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsoleLevel {
     Warning,
+    #[default]
     Error,
 }
 
@@ -648,6 +660,11 @@ pub enum BrowserStreamEvent {
 
 const fn default_true() -> bool {
     true
+}
+
+/// Default for `ObserveQuery::max_debug_items` and `*DebugQuery::limit`.
+const fn default_limit() -> u32 {
+    20
 }
 
 #[cfg(test)]

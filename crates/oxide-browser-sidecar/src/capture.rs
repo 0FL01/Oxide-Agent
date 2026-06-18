@@ -430,6 +430,11 @@ impl CaptureCollector {
     pub fn current_url(&self) -> Option<String> {
         self.current_url.lock_guard().clone()
     }
+
+    /// Number of in-flight network requests (for `wait_until=networkidle`).
+    pub fn pending_request_count(&self) -> usize {
+        self.pending_requests.lock_guard().len()
+    }
 }
 
 impl Default for CaptureCollector {
@@ -841,7 +846,7 @@ fn console_item_key(item: &ConsoleItem) -> String {
 ///
 /// Implemented without external dependencies using the civil-from-days
 /// algorithm (Howard Hinnant). Matches the Python sidecar's `now_iso()`.
-fn now_iso() -> String {
+pub fn now_iso() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
