@@ -701,6 +701,27 @@ pub(crate) async fn confirm_destructive_action(
     Ok(())
 }
 
+/// User reply to a destructive-action confirmation prompt. Parsing rejects
+/// unknown text (Telegram callback/button text is foreign input), so the
+/// exhaustive match in [`handle_agent_confirmation`] is verified by the
+/// compiler — unrecognised input maps to `None` and gets a safe UX fallback
+/// instead of an `unreachable!` panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmationReply {
+    Yes,
+    Cancel,
+}
+
+impl ConfirmationReply {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "✅ Yes" => Some(Self::Yes),
+            "❌ Cancel" => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_agent_confirmation(
     bot: Bot,
@@ -721,7 +742,7 @@ pub(crate) async fn handle_agent_confirmation(
     let chat_id = msg.chat.id;
     let outbound_thread = build_outbound_thread_params(thread_spec);
 
-    if text != "✅ Yes" && text != "❌ Cancel" {
+    let Some(reply) = ConfirmationReply::parse(text) else {
         send_agent_message(
             &bot,
             chat_id,
@@ -730,7 +751,7 @@ pub(crate) async fn handle_agent_confirmation(
         )
         .await?;
         return Ok(());
-    }
+    };
 
     dialogue.update(crate::bot::state::State::AgentMode).await?;
     let reply_markup = automatic_agent_control_markup(thread_spec);
@@ -745,8 +766,8 @@ pub(crate) async fn handle_agent_confirmation(
         outbound_thread,
     };
 
-    match text {
-        "✅ Yes" => match action {
+    match reply {
+        ConfirmationReply::Yes => match action {
             ConfirmationType::ClearMemory => {
                 handle_clear_memory_confirmation(
                     user_id,
@@ -772,7 +793,7 @@ pub(crate) async fn handle_agent_confirmation(
                 .await?;
             }
         },
-        "❌ Cancel" => {
+        ConfirmationReply::Cancel => {
             info!(user_id = user_id, action = ?action, "User cancelled destructive action");
             send_agent_message_with_optional_keyboard(
                 &bot,
@@ -783,7 +804,6 @@ pub(crate) async fn handle_agent_confirmation(
             )
             .await?;
         }
-        _ => unreachable!(),
     }
 
     Ok(())

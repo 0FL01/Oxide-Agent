@@ -58,8 +58,8 @@ None. RECON provided enough evidence to design all fixes.
   - Source: RECON Class A — `controls.rs:786`, `progress_render.rs:180`, `web_transport.rs:55`.
   - Acceptance: each site either replaced with a safe fallback (warn + no-op / default view) or refactored so the invariant is enforced by types (exhaustive enum match), making panic architecturally impossible.
   - Evidence required: `git grep -n 'unreachable!' crates/oxide-agent-transport-telegram/src/bot/agent_handlers/controls.rs crates/oxide-agent-transport-telegram/src/bot/progress_render.rs crates/oxide-agent-transport-web/src/web_transport.rs` shows no reachable-from-foreign-input `unreachable!`; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings` clean; targeted tests pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1 — A1 `controls.rs`: introduced `ConfirmationReply` enum with `parse`, replaced guard+`_ => unreachable!()` with `let-else` + exhaustive enum match (foreign input → `None` → UX fallback). A2 `progress_render.rs`: introduced `BrowserMilestoneKind` enum, `parse` returns `Option<BrowserMilestoneKind>`, `summary()`/`blocked_reason()` match exhaustive (adding a variant → compile error, not panic). A3 `web_transport.rs:55`: `unreachable!()` replaced with `"sub_agent".to_string()` safe fallback (SubAgent is our type, `effective_agent_event` already called in same function — defense-in-depth). Remaining `unreachable!` in `web_transport.rs` (`_event_parts` functions) are internal invariant markers, not reachable from foreign input — outside CP1 scope. Remaining `panic!` in `web_transport.rs:2272+` are in `#[cfg(test)] mod tests` (N2). Gates: `cargo fmt --all -- --check` exit 0; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings` exit 0; profile-embedded-opencode-local exit 0; profile-web-embedded-opencode-local exit 0; profile-search-only exit 0. Tests: `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local` green; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` green (23 ignored require local TCP listener — pre-existing).
 
 - G2: No string-match heuristic over provider error messages to reconstruct HTTP status or retryability.
   - Source: RECON Class B — `backoff.rs:57` (`contains("builder")`), `:84` (`contains("429")`), `:41-54` (`contains("500"/"502"/...)`).
@@ -201,6 +201,13 @@ None. RECON provided enough evidence to design all fixes.
   - Commands: (RECON only — see report)
   - Audit IDs updated: none yet
   - Next: CP1 — Stage 1 foreign-input panic class.
+
+- 2026-06-18 11:25: CP1 complete — Stage 1 foreign-input panic class closed.
+  - Changed: `controls.rs` (A1: `ConfirmationReply` enum + `let-else`), `progress_render.rs` (A2: `BrowserMilestoneKind` enum + exhaustive match), `web_transport.rs` (A3: safe fallback for SubAgent arm).
+  - Evidence: G1 verified — `git grep` confirms no reachable-from-foreign-input `unreachable!` in the three target files; `cargo fmt` exit 0; `cargo clippy` exit 0 on all four profiles; targeted tests green.
+  - Commands: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G1 → verified; Q1 → verified (clippy ×4); Q2 → verified (fmt); Q3 → pending (cargo check not re-run, covered by clippy); N1 → preserved (no Class C edits); N2 → preserved (test panics untouched).
+  - Next: CP2 — Stage 2 typify LlmError, remove string-match in backoff.rs.
 
 ## Risks and Blockers
 

@@ -113,9 +113,32 @@ fn is_browser_live_progress(summary: &str) -> bool {
     summary.starts_with("Browser")
 }
 
+/// Typed browser milestone kind. Parsing rejects unknown kinds, so the
+/// exhaustive matches in [`BrowserMilestone::summary`] and
+/// [`BrowserMilestone::blocked_reason`] are verified by the compiler — adding
+/// a variant here is a compile-time prompt to update every consumer, instead
+/// of a runtime `unreachable!` panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserMilestoneKind {
+    Action,
+    Verification,
+    Recovery,
+}
+
+impl BrowserMilestoneKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "BrowserAction" => Some(Self::Action),
+            "BrowserVerification" => Some(Self::Verification),
+            "BrowserRecovery" => Some(Self::Recovery),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserMilestone<'a> {
-    kind: &'a str,
+    kind: BrowserMilestoneKind,
     session_id: Option<&'a str>,
     action_seq: Option<&'a str>,
     status: Option<&'a str>,
@@ -124,13 +147,8 @@ struct BrowserMilestone<'a> {
 
 impl<'a> BrowserMilestone<'a> {
     fn parse(summary: &'a str) -> Option<Self> {
-        let (kind, rest) = summary.split_once(' ')?;
-        if !matches!(
-            kind,
-            "BrowserAction" | "BrowserVerification" | "BrowserRecovery"
-        ) {
-            return None;
-        }
+        let (kind_str, rest) = summary.split_once(' ')?;
+        let kind = BrowserMilestoneKind::parse(kind_str)?;
 
         let mut milestone = Self {
             kind,
@@ -164,26 +182,25 @@ impl<'a> BrowserMilestone<'a> {
             .map(|value| format!(" ({value})"))
             .unwrap_or_default();
         match self.kind {
-            "BrowserAction" => format!(
+            BrowserMilestoneKind::Action => format!(
                 "Action{seq}: {}{session}",
                 self.action_kind.unwrap_or("planned")
             ),
-            "BrowserVerification" => format!(
+            BrowserMilestoneKind::Verification => format!(
                 "Verification{seq}: {}{session}",
                 self.status.unwrap_or("unknown")
             ),
-            "BrowserRecovery" => format!(
+            BrowserMilestoneKind::Recovery => format!(
                 "Recovery{seq}: {} {}{session}",
                 self.status.unwrap_or("unknown"),
                 self.action_kind.unwrap_or("unknown")
             ),
-            _ => unreachable!("browser milestone kind is validated by parse"),
         }
     }
 
     fn blocked_reason(&self) -> Option<&'static str> {
         match self.kind {
-            "BrowserVerification"
+            BrowserMilestoneKind::Verification
                 if matches!(
                     self.status,
                     Some("NeedsUser" | "VerificationFailed" | "Timeout")
@@ -193,7 +210,7 @@ impl<'a> BrowserMilestone<'a> {
                     "autonomous browser progress stopped for safety; user input or diagnostics are required",
                 )
             }
-            "BrowserRecovery"
+            BrowserMilestoneKind::Recovery
                 if matches!(self.status, Some("SafeStopped" | "RepeatedLoopStopped")) =>
             {
                 Some("bounded recovery could not continue safely")

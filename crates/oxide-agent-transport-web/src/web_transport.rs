@@ -51,9 +51,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
-        AgentEvent::SubAgent { .. } => {
-            unreachable!("effective_agent_event unwraps sub-agent events")
-        }
+        AgentEvent::SubAgent { .. } => "sub_agent".to_string(),
     }
 }
 
