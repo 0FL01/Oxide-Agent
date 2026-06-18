@@ -406,7 +406,7 @@ impl AgentRunner {
             )
         };
         if let Some(image) = output.image_attachment {
-            let attachment = if let Some(data) = image.data {
+            let mut attachment = if let Some(data) = image.data {
                 AgentMessageAttachment::image_with_data(
                     image.file_name,
                     image.mime_type,
@@ -422,6 +422,9 @@ impl AgentRunner {
                     image.sandbox_path,
                 )
             };
+            if let Some(uri) = image.artifact_uri {
+                attachment = attachment.with_artifact_uri(uri);
+            }
             memory_message.attachments.push(attachment);
         }
         ctx.agent.memory_mut().add_message(memory_message);

@@ -94,21 +94,28 @@ fn screenshot_image_attachment(
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| format!("screenshot-{}.jpg", frame.screenshot.screenshot_id));
     let sandbox_path = frame.artifact.local_path.to_string_lossy().to_string();
+    let artifact_uri = &frame.artifact.uri;
     if let Some(bytes) = screenshot_bytes {
-        Some(ToolOutputImageAttachment::image_with_data(
-            file_name,
-            Some(frame.screenshot.mime_type.clone()),
-            frame.screenshot.byte_size,
-            sandbox_path,
-            bytes.to_vec(),
-        ))
+        Some(
+            ToolOutputImageAttachment::image_with_data(
+                file_name,
+                Some(frame.screenshot.mime_type.clone()),
+                frame.screenshot.byte_size,
+                sandbox_path,
+                bytes.to_vec(),
+            )
+            .with_artifact_uri(artifact_uri.clone()),
+        )
     } else {
-        Some(ToolOutputImageAttachment::image(
-            file_name,
-            Some(frame.screenshot.mime_type.clone()),
-            frame.screenshot.byte_size,
-            sandbox_path,
-        ))
+        Some(
+            ToolOutputImageAttachment::image(
+                file_name,
+                Some(frame.screenshot.mime_type.clone()),
+                frame.screenshot.byte_size,
+                sandbox_path,
+            )
+            .with_artifact_uri(artifact_uri.clone()),
+        )
     }
 }
 
@@ -2009,6 +2016,17 @@ mod tests {
             image.data.is_some(),
             "image attachment should carry inline bytes"
         );
+        assert!(
+            image.artifact_uri.is_some(),
+            "image attachment should carry artifact_uri for Postgres resolution"
+        );
+        assert!(
+            image
+                .artifact_uri
+                .as_ref()
+                .is_some_and(|uri| uri.starts_with("artifact://browser/")),
+            "artifact_uri should be a canonical artifact://browser/ URI"
+        );
         assert_eq!(
             close.structured_payload.as_ref().expect("payload")["status"],
             "closed"
@@ -2049,6 +2067,12 @@ mod tests {
             retained: false,
         };
         assert!(screenshot_image_attachment(&base, None).is_some());
+        let with_uri = screenshot_image_attachment(&base, None).expect("attachment");
+        assert_eq!(
+            with_uri.artifact_uri.as_deref(),
+            Some("artifact://browser/task/session/step-0001-live.jpg"),
+            "artifact_uri should come from frame.artifact.uri"
+        );
 
         let mut redacted = base.clone();
         redacted.screenshot.redacted = true;
