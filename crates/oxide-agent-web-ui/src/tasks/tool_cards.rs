@@ -7,6 +7,7 @@ use super::payload::{
     field_i64, field_str, input_preview_field_str, input_preview_json, is_sub_agent_event,
     parse_output_json, payload_str_event, raw_output_preview, stream_text, sub_agent_event_name,
 };
+use super::state::{artifact_filename, artifact_image_url};
 
 // ── Tool Card (groups call + result) ─────────────────────────────────────
 
@@ -53,6 +54,11 @@ pub(super) fn ToolCard(
         }
         "write_todos" => {
             view! { <WriteTodosToolCard call=call result=result output=output_json /> }.into_any()
+        }
+        "browser_start" | "browser_observe" | "browser_execute" | "browser_extract"
+        | "browser_debug" | "browser_close" => {
+            view! { <BrowserToolCard name=tool_name call=call result=result output=output_json /> }
+                .into_any()
         }
         _ => {
             view! { <GenericToolCard name=tool_name call=call result=result output=output_json /> }
@@ -960,6 +966,153 @@ fn WriteTodosToolCard(
                 {raw_output.map(tool_raw_details)}
             </ToolDetails>
         })}
+    }
+}
+
+// ── Browser Tool Card (browser_start/observe/execute/extract/debug/close) ─
+
+#[component]
+fn BrowserToolCard(
+    name: String,
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
+
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
+    let icon = outcome.icon();
+    let raw_output = raw_output_preview(result.as_ref());
+
+    // The structured payload lives inside output.structured_payload for browser
+    // tools. Some older events may carry fields directly on the output object.
+    // Extract all needed fields as owned strings upfront — Leptos CSR closures
+    // require 'static lifetimes.
+    let payload = output
+        .as_ref()
+        .and_then(|v| v.get("structured_payload"))
+        .filter(|v| v.is_object())
+        .or(output.as_ref())
+        .filter(|v| v.is_object());
+
+    // Observation: browser_execute has post_observation, browser_observe has
+    // fields directly on the payload.
+    let observation = payload
+        .and_then(|p| {
+            p.get("post_observation")
+                .or_else(|| p.get("observation"))
+                .filter(|v| v.is_object())
+        })
+        .or(payload);
+
+    let screenshot_uri = observation
+        .and_then(|obs| obs.get("screenshot"))
+        .and_then(|s| s.get("artifact_uri"))
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+        .map(String::from);
+
+    let url = observation
+        .and_then(|obs| obs.get("url"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let title = observation
+        .and_then(|obs| obs.get("title"))
+        .and_then(Value::as_str)
+        .map(String::from);
+
+    let action_kind = payload
+        .and_then(|p| p.get("action_result"))
+        .and_then(|ar| ar.get("kind"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let action_status = payload
+        .and_then(|p| p.get("action_result"))
+        .and_then(|ar| ar.get("status"))
+        .and_then(Value::as_str)
+        .map(String::from);
+
+    let network_label = observation
+        .and_then(|obs| obs.get("network_summary"))
+        .map(|ns| {
+            let failed = ns.get("failed_count").and_then(Value::as_u64).unwrap_or(0);
+            let total = ns.get("request_count").and_then(Value::as_u64).unwrap_or(0);
+            format!("network {failed}/{total}")
+        });
+    let console_label = observation
+        .and_then(|obs| obs.get("console_summary"))
+        .map(|cs| {
+            let errors = cs.get("error_count").and_then(Value::as_u64).unwrap_or(0);
+            let warnings = cs.get("warning_count").and_then(Value::as_u64).unwrap_or(0);
+            format!("console {errors}/{warnings}")
+        });
+
+    let session_id = payload
+        .and_then(|p| p.get("session_id"))
+        .and_then(Value::as_str)
+        .map(String::from);
+
+    // Preview text: URL or action kind or status.
+    let preview_text = url.clone().or_else(|| action_kind.clone()).or_else(|| {
+        output
+            .as_ref()
+            .and_then(|v| field_str(v, "status"))
+            .filter(|s| !s.is_empty())
+    });
+
+    // Default open: running, failed, or has a screenshot (visual feedback).
+    let has_screenshot = screenshot_uri.is_some();
+    let default_open = is_running || !success || has_screenshot;
+
+    // Build header metas.
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if !success && let Some(status) = output.as_ref().and_then(|v| field_str(v, "status")) {
+        header_metas.push(tool_meta_danger(status));
+    }
+
+    // Session/task ID for the artifact URL.
+    let session_id_for_artifact = call
+        .as_ref()
+        .or(result.as_ref())
+        .map(|e| e.session_id.clone());
+    let task_id_for_artifact = call.as_ref().or(result.as_ref()).map(|e| e.task_id.clone());
+
+    view! {
+        {tool_card_header(icon, &name, header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
+            {move || {
+                screenshot_uri.as_ref().and_then(|uri| {
+                    let sid = session_id_for_artifact.as_deref()?;
+                    let tid = task_id_for_artifact.as_deref()?;
+                    let image_url = artifact_image_url(sid, tid, uri);
+                    let filename = artifact_filename(uri);
+                    Some(view! {
+                        <a class="browser-tool-shot-link" href=image_url.clone() target="_blank">
+                            <img class="browser-tool-shot-image" src=image_url.clone() alt=format!("Screenshot {filename}") />
+                        </a>
+                    }.into_any())
+                }).unwrap_or_else(|| ().into_any())
+            }}
+            {url.as_ref().map(|u| view! { <div class="browser-tool-meta"><span>"URL"</span><code>{u.clone()}</code></div> })}
+            {title.as_ref().map(|t| view! { <div class="browser-tool-meta"><span>"Title"</span><strong>{t.clone()}</strong></div> })}
+            {action_kind.as_ref().map(|kind| {
+                let label = action_status
+                    .as_ref()
+                    .map(|status| format!("{kind} → {status}"))
+                    .unwrap_or_else(|| kind.clone());
+                view! { <div class="browser-tool-meta"><span>"Action"</span><strong>{label}</strong></div> }
+            })}
+            {session_id.as_ref().map(|sid| view! { <div class="browser-tool-meta"><span>"Session"</span><code>{sid.clone()}</code></div> })}
+            {network_label.as_ref().map(|label| view! { <div class="browser-tool-meta"><span>"Debug"</span><strong>{label.clone()}</strong></div> })}
+            {console_label.as_ref().map(|label| view! { <div class="browser-tool-meta"><span>"Console"</span><strong>{label.clone()}</strong></div> })}
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
