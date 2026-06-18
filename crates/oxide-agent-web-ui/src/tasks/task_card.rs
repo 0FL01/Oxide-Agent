@@ -8,13 +8,13 @@ use oxide_agent_web_contracts::{
 };
 use std::collections::HashMap;
 
-use super::activity::{ThinkingButton, thought_label};
+use super::activity::ThinkingButton;
 use super::composer::MessageAttachments;
 use super::delivered_files::{
     DeliveredFilesMessage, delivered_files_for_task, linkify_delivered_files_in_markdown,
 };
 use super::payload::payload_str_event;
-use super::state::{summary_to_detail, upsert_task_summary};
+use super::state::{activity_button_label, summary_to_detail, upsert_task_summary};
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::versions::selected_version_index;
 
@@ -123,7 +123,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                 _ => "",
             };
             let card_class = format!("task-card {card_status_class}");
-            let thought_label = thought_label(&task);
+            let activity_label = activity_button_label(&task);
             let original_input = task.input_markdown.clone();
             let input_markdown = task.input_markdown.clone();
             let attachments = task.attachments.clone();
@@ -177,7 +177,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                     <ResumeUserMessages messages=resume_messages />
                     <SearchProbeMessages messages=search_probe_messages />
                     <div class="task-action-row">
-                        <ThinkingButton label=thought_label open=activity_open on_click=open_activity />
+                        <ThinkingButton label=activity_label open=activity_open on_click=open_activity />
                     </div>
 
                     {final_response_markdown.map(|answer| view! {

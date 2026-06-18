@@ -31,7 +31,7 @@ use super::state::{
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
-use super::versions::group_task_versions;
+use super::versions::{group_task_versions, selected_visible_activity_task_ids};
 
 const TASK_EVENTS_INITIAL_LIMIT: usize = 100;
 const TASK_EVENTS_OLDER_LIMIT: usize = 500;
@@ -1069,6 +1069,9 @@ fn SessionWorkspace(
                     <ActivityStatusChip
                         tasks=tasks
                         active_task=active_task
+                        visible_task_ids=Signal::derive(move || {
+                            selected_visible_activity_task_ids(&tasks.get(), &selected_versions.get())
+                        })
                         open=drawer_open
                         set_open=set_drawer_open
                         activity_task_id=activity_task_id

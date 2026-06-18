@@ -1,5 +1,7 @@
 use leptos::prelude::*;
-use oxide_agent_web_contracts::{SessionDetail, SessionSummary, TaskDetail, TaskSummary};
+use oxide_agent_web_contracts::{
+    SessionDetail, SessionSummary, TaskDetail, TaskStatus, TaskSummary,
+};
 
 pub(super) fn artifact_image_url(session_id: &str, task_id: &str, artifact_uri: &str) -> String {
     let path = artifact_uri
@@ -97,6 +99,55 @@ pub(super) fn latest_editable_task_id(tasks: &[TaskSummary]) -> Option<String> {
         .and_then(|task| task.status.is_terminal().then(|| task.task_id.clone()))
 }
 
+pub(super) fn activity_button_label(task: &TaskSummary) -> String {
+    match task.status {
+        TaskStatus::Queued | TaskStatus::Running => {
+            format!(
+                "Thinking for {}",
+                format_duration(task_duration_seconds(task))
+            )
+        }
+        TaskStatus::WaitingForUserInput => "Waiting for your input".to_string(),
+        TaskStatus::Completed
+        | TaskStatus::Failed
+        | TaskStatus::Cancelled
+        | TaskStatus::Interrupted => {
+            format!(
+                "Thought for {}",
+                format_duration(task_duration_seconds(task))
+            )
+        }
+    }
+}
+
+pub(super) fn should_render_global_activity_chip(
+    task_id: Option<&str>,
+    visible_task_ids: &[String],
+) -> bool {
+    task_id.is_some_and(|task_id| !visible_task_ids.iter().any(|visible| visible == task_id))
+}
+
+pub(super) fn format_duration(total_seconds: i64) -> String {
+    let seconds = total_seconds.max(0);
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        return format!("{hours}h {minutes}m {seconds}s");
+    }
+    if minutes > 0 {
+        return format!("{minutes}m {seconds}s");
+    }
+    format!("{seconds}s")
+}
+
+fn task_duration_seconds(task: &TaskSummary) -> i64 {
+    let start = task.started_at.as_ref().unwrap_or(&task.created_at);
+    let end = task.finished_at.as_ref().unwrap_or(&task.updated_at);
+    let seconds = end.signed_duration_since(start.to_owned()).num_seconds();
+    seconds.max(0)
+}
+
 pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
     if let Some(existing) = items.iter_mut().find(|item| item.task_id == task.task_id) {
         *existing = task;
@@ -112,6 +163,28 @@ pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummar
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn task(status: TaskStatus, finished_at: Option<&str>) -> TaskSummary {
+        serde_json::from_value(serde_json::json!({
+            "task_id": "task-1",
+            "version_group_id": "group-1",
+            "version_index": 0,
+            "parent_task_id": null,
+            "status": status,
+            "input_markdown": "input",
+            "attachments": [],
+            "input_edited_at": null,
+            "final_response_markdown": null,
+            "error_message": null,
+            "pending_user_input": null,
+            "last_event_seq": 0,
+            "created_at": "2026-06-11T00:00:00Z",
+            "started_at": "2026-06-11T00:00:00Z",
+            "updated_at": "2026-06-11T00:00:05Z",
+            "finished_at": finished_at,
+        }))
+        .expect("task summary is valid")
+    }
 
     #[test]
     fn artifact_image_url_strips_artifact_scheme() {
@@ -139,5 +212,33 @@ mod tests {
             artifact_filename("artifact://browser/owner/br/step-0001-milestone.jpg"),
             "step-0001-milestone.jpg"
         );
+    }
+
+    #[test]
+    fn activity_button_label_is_status_aware() {
+        assert_eq!(
+            activity_button_label(&task(TaskStatus::Running, None)),
+            "Thinking for 5s"
+        );
+        assert_eq!(
+            activity_button_label(&task(TaskStatus::WaitingForUserInput, None)),
+            "Waiting for your input"
+        );
+        assert_eq!(
+            activity_button_label(&task(TaskStatus::Completed, Some("2026-06-11T00:00:05Z"))),
+            "Thought for 5s"
+        );
+    }
+
+    #[test]
+    fn global_activity_chip_only_renders_for_non_visible_task() {
+        let visible = vec!["task-1".to_string(), "task-2".to_string()];
+
+        assert!(!should_render_global_activity_chip(None, &visible));
+        assert!(!should_render_global_activity_chip(
+            Some("task-1"),
+            &visible
+        ));
+        assert!(should_render_global_activity_chip(Some("task-3"), &visible));
     }
 }

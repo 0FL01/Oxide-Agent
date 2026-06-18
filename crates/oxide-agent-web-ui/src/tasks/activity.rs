@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
+use super::state::{format_duration, should_render_global_activity_chip};
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
     tool_card_header_with_icon_class, tool_meta, tool_meta_danger, tool_pre_stream,
@@ -17,6 +18,7 @@ use super::tool_cards::{
 pub(super) fn ActivityStatusChip(
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
+    visible_task_ids: Signal<Vec<String>>,
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
     activity_task_id: ReadSignal<Option<String>>,
@@ -27,6 +29,10 @@ pub(super) fn ActivityStatusChip(
             let Some(status) = latest_activity_status(active_task, tasks) else {
                 return ().into_any();
             };
+            let task_id = latest_activity_task_id(active_task, tasks);
+            if !should_render_global_activity_chip(task_id.as_deref(), &visible_task_ids.get()) {
+                return ().into_any();
+            }
             if status == TaskStatus::Completed {
                 return ().into_any();
             }
@@ -45,7 +51,6 @@ pub(super) fn ActivityStatusChip(
                 TaskStatus::Interrupted => "Interrupted",
                 TaskStatus::Completed => "Completed",
             };
-            let task_id = latest_activity_task_id(active_task, tasks);
             view! {
                 <div class="status-wrap">
                     <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
@@ -318,34 +323,6 @@ fn browser_now_millis() -> Option<i64> {
     let performance = web_sys::window()?.performance()?;
     let millis = performance.time_origin() + performance.now();
     millis.is_finite().then_some(millis.round() as i64)
-}
-
-pub(super) fn thought_label(task: &TaskSummary) -> String {
-    format!(
-        "Thought for {}",
-        format_duration(task_duration_seconds(task))
-    )
-}
-
-fn task_duration_seconds(task: &TaskSummary) -> i64 {
-    let start = task.started_at.as_ref().unwrap_or(&task.created_at);
-    let end = task.finished_at.as_ref().unwrap_or(&task.updated_at);
-    let seconds = end.signed_duration_since(start.to_owned()).num_seconds();
-    seconds.max(0)
-}
-
-fn format_duration(total_seconds: i64) -> String {
-    let seconds = total_seconds.max(0);
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let seconds = seconds % 60;
-    if hours > 0 {
-        return format!("{hours}h {minutes}m {seconds}s");
-    }
-    if minutes > 0 {
-        return format!("{minutes}m {seconds}s");
-    }
-    format!("{seconds}s")
 }
 
 enum ActivityItem {
