@@ -65,7 +65,9 @@
 
 /* Browser tool card — screenshot + metadata inside tool details */
 .browser-tool-shot-link {
-  display: block;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border-subtle);
@@ -76,7 +78,7 @@
 .browser-tool-shot-image {
   display: block;
   width: 100%;
-  max-height: 360px;
+  height: 100%;
   object-fit: contain;
   background: var(--bg-panel);
 }

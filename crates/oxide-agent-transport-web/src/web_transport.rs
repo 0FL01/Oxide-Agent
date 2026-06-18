@@ -1387,6 +1387,19 @@ fn browser_display_payload(name: &str, output: &str) -> Option<Value> {
         .and_then(Value::as_str)
         .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
         .map(|s| s.to_string());
+    let screenshot_width = observation
+        .get("screenshot")
+        .and_then(|s| s.get("width"))
+        .and_then(Value::as_u64);
+    let screenshot_height = observation
+        .get("screenshot")
+        .and_then(|s| s.get("height"))
+        .and_then(Value::as_u64);
+    let screenshot_mime_type = observation
+        .get("screenshot")
+        .and_then(|s| s.get("mime_type"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
 
     let url = observation
         .get("url")
@@ -1442,6 +1455,9 @@ fn browser_display_payload(name: &str, output: &str) -> Option<Value> {
     Some(json!({
         "tool": name,
         "screenshot_uri": screenshot_uri,
+        "screenshot_width": screenshot_width,
+        "screenshot_height": screenshot_height,
+        "screenshot_mime_type": screenshot_mime_type,
         "url": url,
         "title": title,
         "action_kind": action_kind,
@@ -1599,7 +1615,8 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserEventScope, TaskEventLog, TaskEventLogMessage, collect_events, event_variant_name,
+        BrowserEventScope, TaskEventLog, TaskEventLogMessage, browser_display_payload,
+        collect_events, event_variant_name,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
@@ -1894,6 +1911,58 @@ mod tests {
                 .expect("markdown display payload should be a string")
                 .starts_with("# Title")
         );
+    }
+
+    #[test]
+    fn browser_display_payload_preserves_screenshot_metadata() {
+        let output = serde_json::json!({
+            "status": "success",
+            "structured_payload": {
+                "session_id": "br_1",
+                "action_result": {
+                    "kind": "navigate",
+                    "status": "ok"
+                },
+                "post_observation": {
+                    "url": "https://example.test/",
+                    "title": "Example",
+                    "screenshot": {
+                        "artifact_uri": "artifact://browser/task/br_1/step-0001.jpg",
+                        "mime_type": "image/jpeg",
+                        "width": 1365,
+                        "height": 768
+                    },
+                    "network_summary": {
+                        "failed_count": 1,
+                        "request_count": 3
+                    },
+                    "console_summary": {
+                        "error_count": 2,
+                        "warning_count": 5
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let display = browser_display_payload("browser_execute", &output)
+            .expect("browser display payload should be extracted");
+
+        assert_eq!(
+            display["screenshot_uri"],
+            "artifact://browser/task/br_1/step-0001.jpg"
+        );
+        assert_eq!(display["screenshot_width"], 1365);
+        assert_eq!(display["screenshot_height"], 768);
+        assert_eq!(display["screenshot_mime_type"], "image/jpeg");
+        assert_eq!(display["url"], "https://example.test/");
+        assert_eq!(display["title"], "Example");
+        assert_eq!(display["action_kind"], "navigate");
+        assert_eq!(display["action_status"], "ok");
+        assert_eq!(display["network_failed"], 1);
+        assert_eq!(display["network_total"], 3);
+        assert_eq!(display["console_errors"], 2);
+        assert_eq!(display["console_warnings"], 5);
     }
 
     #[tokio::test]

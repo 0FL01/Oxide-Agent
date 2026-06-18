@@ -1002,6 +1002,8 @@ fn BrowserToolCard(
 
     let (
         screenshot_uri,
+        screenshot_width,
+        screenshot_height,
         url,
         title,
         action_kind,
@@ -1015,6 +1017,8 @@ fn BrowserToolCard(
             dp.get("screenshot_uri")
                 .and_then(Value::as_str)
                 .map(String::from),
+            dp.get("screenshot_width").and_then(Value::as_u64),
+            dp.get("screenshot_height").and_then(Value::as_u64),
             dp.get("url").and_then(Value::as_str).map(String::from),
             dp.get("title").and_then(Value::as_str).map(String::from),
             dp.get("action_kind")
@@ -1061,6 +1065,14 @@ fn BrowserToolCard(
                 .and_then(Value::as_str)
                 .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
                 .map(String::from),
+            observation
+                .and_then(|obs| obs.get("screenshot"))
+                .and_then(|s| s.get("width"))
+                .and_then(Value::as_u64),
+            observation
+                .and_then(|obs| obs.get("screenshot"))
+                .and_then(|s| s.get("height"))
+                .and_then(Value::as_u64),
             observation
                 .and_then(|obs| obs.get("url"))
                 .and_then(Value::as_str)
@@ -1137,9 +1149,13 @@ fn BrowserToolCard(
                     let tid = task_id_for_artifact.as_deref()?;
                     let image_url = artifact_image_url(sid, tid, uri);
                     let filename = artifact_filename(uri);
+                    let dimensions = screenshot_width.zip(screenshot_height);
+                    let alt = dimensions
+                        .map(|(width, height)| format!("Screenshot {filename} ({width}×{height})"))
+                        .unwrap_or_else(|| format!("Screenshot {filename}"));
                     Some(view! {
                         <a class="browser-tool-shot-link" href=image_url.clone() target="_blank">
-                            <img class="browser-tool-shot-image" src=image_url.clone() alt=format!("Screenshot {filename}") />
+                            <img class="browser-tool-shot-image" src=image_url.clone() alt=alt />
                         </a>
                     }.into_any())
                 }).unwrap_or_else(|| ().into_any())
