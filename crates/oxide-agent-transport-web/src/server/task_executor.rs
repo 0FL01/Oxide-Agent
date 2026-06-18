@@ -534,6 +534,22 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 info!(task_id = %task_id, error = %e, "Task failed");
             }
         }
+
+        // Flush agent memory to durable storage after every task outcome.
+        // Without this, memory exists only in process RAM between turns;
+        // a server restart loses all uncheckpointed history. Mirrors the
+        // Telegram transport's `save_memory_after_task` forced checkpoint.
+        {
+            let executor = executor_arc.read().await;
+            if let Err(error) = executor.session().persist_memory_checkpoint().await {
+                warn!(
+                    task_id = %task_id,
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to flush agent memory checkpoint after task"
+                );
+            }
+        }
     });
 }
 
