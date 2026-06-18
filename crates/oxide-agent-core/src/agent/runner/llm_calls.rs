@@ -263,7 +263,7 @@ impl AgentRunner {
         let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
 
         if Self::json_mode_forbids_route(json_mode, &model_info) {
-            let error = LlmError::ApiError(format!(
+            let error = LlmError::api_error(format!(
                 "Structured-output agent calls are disabled for {} model `{}`; configure a non-ChatGPT route for json_mode",
                 model_info.provider, model_info.id
             ));
@@ -286,7 +286,7 @@ impl AgentRunner {
         if !capabilities.can_run_agent_tools()
             || !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode)
         {
-            let error = LlmError::ApiError(format!(
+            let error = LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
             ));
@@ -400,7 +400,7 @@ impl AgentRunner {
             if !capabilities.can_run_agent_tools()
                 || !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode)
             {
-                let error = LlmError::ApiError(format!(
+                let error = LlmError::api_error(format!(
                     "Tool-enabled agent calls are not supported for {} model `{}`",
                     route.provider, route.id
                 ));
@@ -735,31 +735,13 @@ impl AgentRunner {
 
     fn error_class(error: &LlmError) -> &'static str {
         match error {
-            LlmError::NetworkError(msg) => {
-                let m = msg.to_lowercase();
-                if m.contains("timeout") || m.contains("timed out") {
-                    "timeout"
-                } else if m.contains("connection") || m.contains("reset") {
-                    "connection"
-                } else {
-                    "network"
-                }
-            }
-            LlmError::ApiError(msg) => {
-                let m = msg.to_lowercase();
-                if m.contains("500")
-                    || m.contains("502")
-                    || m.contains("503")
-                    || m.contains("504")
-                    || m.contains("overloaded")
-                {
-                    "server_error"
-                } else if m.contains("timeout") {
-                    "timeout"
-                } else {
-                    "api"
-                }
-            }
+            LlmError::RequestBuilder(_) => "request_builder",
+            LlmError::NetworkError(_) => "network",
+            LlmError::ApiError {
+                status: Some(status),
+                ..
+            } if crate::llm::is_transient_server_status(*status) => "server_error",
+            LlmError::ApiError { .. } => "api",
             LlmError::EmptyResponse(_) => "empty_response",
             LlmError::JsonError(_) => "json_error",
             _ => "unknown",
@@ -1146,7 +1128,7 @@ mod tests {
             wait_secs: None,
             message: "too many requests".to_string(),
         };
-        let invalid_request = LlmError::ApiError("invalid API key".to_string());
+        let invalid_request = LlmError::api_error("invalid API key");
 
         assert!(AgentRunner::opencode_go_unbounded_retry_allowed(
             "opencode-go",

@@ -1553,7 +1553,7 @@ mod tests {
                 .lock()
                 .await
                 .pop_front()
-                .ok_or_else(|| LlmError::ApiError("No test response available".to_string()))
+                .ok_or_else(|| LlmError::api_error("No test response available"))
         }
 
         async fn transcribe_audio(

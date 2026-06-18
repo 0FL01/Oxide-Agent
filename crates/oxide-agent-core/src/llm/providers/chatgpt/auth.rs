@@ -299,10 +299,10 @@ impl ChatGptAuthManager {
         if session.expires_at_ms <= Utc::now().timestamp_millis() {
             let refreshed = refresh_access_token(&self.http_client, &session.refresh_token)
                 .await
-                .map_err(|error| LlmError::ApiError(error.to_string()))?;
+                .map_err(|error| LlmError::api_error(error.to_string()))?;
             persist_auth_record(&self.auth_path, &refreshed)
                 .await
-                .map_err(|error| LlmError::ApiError(error.to_string()))?;
+                .map_err(|error| LlmError::api_error(error.to_string()))?;
             session = ChatGptSession::from(refreshed);
             *state = Some(session.clone());
         }

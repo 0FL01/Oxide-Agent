@@ -80,11 +80,7 @@ pub(super) fn context_overflow_then_summary_then_final_provider() -> MockLlmProv
         .expect_chat_with_tools()
         .times(1)
         .in_sequence(&mut sequence)
-        .return_once(|_| {
-            Err(LlmError::ApiError(
-                "maximum context length exceeded".to_string(),
-            ))
-        });
+        .return_once(|_| Err(LlmError::api_error("maximum context length exceeded")));
     provider
         .expect_chat_with_tools()
         .times(1)

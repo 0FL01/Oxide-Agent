@@ -128,7 +128,7 @@ impl LlmProvider for SequencedLlmProvider {
             .lock()
             .await
             .pop_front()
-            .ok_or_else(|| LlmError::ApiError("No scripted LLM response available".to_string()))
+            .ok_or_else(|| LlmError::api_error("No scripted LLM response available"))
     }
 
     async fn transcribe_audio(

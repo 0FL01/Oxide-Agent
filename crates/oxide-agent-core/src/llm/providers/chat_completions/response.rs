@@ -42,21 +42,21 @@ pub(crate) fn parse_chat_response(
     id_resolver: Option<&dyn ChatToolCallIdResolver>,
 ) -> Result<ChatResponse, LlmError> {
     if let Some(error) = extract_error_response(profile, &response) {
-        return Err(LlmError::ApiError(error));
+        return Err(LlmError::api_error(error));
     }
 
     let choice = response
         .get("choices")
         .and_then(|choices| choices.get(0))
         .ok_or_else(|| {
-            LlmError::ApiError(format!(
+            LlmError::api_error(format!(
                 "Missing choices[0] in {} response{}",
                 response_label(profile),
                 response_shape_suffix(&response)
             ))
         })?;
     let message = choice.get("message").ok_or_else(|| {
-        LlmError::ApiError(format!(
+        LlmError::api_error(format!(
             "Missing message in {} response",
             response_label(profile)
         ))
@@ -83,7 +83,7 @@ pub(crate) fn parse_chat_response(
     };
 
     if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
-        return Err(LlmError::ApiError(format!(
+        return Err(LlmError::api_error(format!(
             "Empty {} response",
             response_label(profile)
         )));

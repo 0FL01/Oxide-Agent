@@ -118,7 +118,7 @@ impl LlmProvider for RetrySuccessMock {
     ) -> Result<ChatResponse, LlmError> {
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
         if count == 0 {
-            Err(LlmError::ApiError("500 Internal Server Error".to_string()))
+            Err(LlmError::api_error_status(500, "500 Internal Server Error"))
         } else {
             Ok(ChatResponse {
                 content: Some("Success".to_string()),
@@ -199,7 +199,7 @@ impl LlmProvider for AlwaysFailMock {
         _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
-        Err(LlmError::ApiError("500 Internal Server Error".to_string()))
+        Err(LlmError::api_error_status(500, "500 Internal Server Error"))
     }
 }
 

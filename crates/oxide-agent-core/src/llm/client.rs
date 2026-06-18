@@ -556,7 +556,7 @@ impl LlmClient {
         );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
             )));
@@ -641,7 +641,7 @@ impl LlmClient {
         );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
             )));
@@ -725,9 +725,7 @@ impl LlmClient {
             }
         }
 
-        Err(LlmError::ApiError(
-            "All retry attempts exhausted".to_string(),
-        ))
+        Err(LlmError::api_error("All retry attempts exhausted"))
     }
 
     /// Maximum number of retry attempts for LLM calls.
@@ -919,9 +917,7 @@ impl LlmClient {
             }
         }
 
-        Err(LlmError::ApiError(
-            "All retry attempts exhausted".to_string(),
-        ))
+        Err(LlmError::api_error("All retry attempts exhausted"))
     }
 }
 

@@ -508,7 +508,7 @@ impl LlmProvider for OpenCodeGoProvider {
             log_response_summary(self.profile, request_kind, model_id, &parsed);
 
             parsed.content.ok_or_else(|| {
-                LlmError::ApiError(format!(
+                LlmError::api_error(format!(
                     "{} returned no text content for {request_kind}",
                     self.profile.display_name
                 ))
@@ -551,7 +551,7 @@ impl LlmProvider for OpenCodeGoProvider {
         model_id: &str,
     ) -> Result<(String, Option<crate::llm::TokenUsage>), LlmError> {
         if !discovery::supports_image_input_for_model_id(model_id) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "{} model '{}' is not approved for image input",
                 self.profile.display_name,
                 normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
@@ -566,7 +566,7 @@ impl LlmProvider for OpenCodeGoProvider {
                 build_image_analysis_body(&image_bytes, text_prompt, system_prompt, model_id),
             ),
             ModelProtocol::AnthropicMessages => {
-                return Err(LlmError::ApiError(format!(
+                return Err(LlmError::api_error(format!(
                     "{} image analysis requires OpenAI Chat Completions protocol for model '{}'",
                     self.profile.display_name,
                     normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
@@ -711,22 +711,12 @@ impl LlmProvider for OpenCodeGoProvider {
 fn opencode_go_should_throttle(error: &LlmError) -> bool {
     match error {
         LlmError::RateLimit { .. } | LlmError::EmptyResponse(_) | LlmError::JsonError(_) => true,
-        LlmError::NetworkError(message) => !message.to_ascii_lowercase().contains("builder"),
-        LlmError::ApiError(message) => {
-            let message = message.to_ascii_lowercase();
-            message.contains("429")
-                || message.contains("500")
-                || message.contains("internal server error")
-                || message.contains("502")
-                || message.contains("bad gateway")
-                || message.contains("503")
-                || message.contains("service unavailable")
-                || message.contains("504")
-                || message.contains("gateway timeout")
-                || message.contains("temporarily unavailable")
-                || message.contains("timeout")
-                || message.contains("overloaded")
-        }
+        LlmError::RequestBuilder(_) => false,
+        LlmError::NetworkError(_) => true,
+        LlmError::ApiError {
+            status: Some(status),
+            ..
+        } if *status == 429 || crate::llm::is_transient_server_status(*status) => true,
         _ => false,
     }
 }
@@ -757,7 +747,7 @@ fn derive_messages_api_base(api_base: &str) -> String {
 }
 
 fn unsupported_protocol_error(model_id: &str, profile: OpenCodeProviderProfile) -> LlmError {
-    LlmError::ApiError(format!(
+    LlmError::api_error(format!(
         "{} model '{}' has unknown wire protocol; configure modules.{}.protocol_overrides for this model",
         profile.display_name,
         normalize_model_id_for_prefix(model_id, profile.model_prefix),
@@ -1714,8 +1704,9 @@ mod tests {
     fn adaptive_throttle_recovers_concurrency_after_success_streak() {
         let throttle = OpenCodeGoAdaptiveThrottle::new(3);
         for _ in 0..3 {
-            throttle.record_result::<()>(&Err(LlmError::ApiError(
-                "500 Internal Server Error".to_string(),
+            throttle.record_result::<()>(&Err(LlmError::api_error_status(
+                500,
+                "500 Internal Server Error",
             )));
         }
 
@@ -1730,14 +1721,15 @@ mod tests {
 
     #[test]
     fn opencode_go_throttle_classifies_retryable_provider_errors_only() {
-        assert!(opencode_go_should_throttle(&LlmError::ApiError(
-            "500 Internal Server Error".to_string()
+        assert!(opencode_go_should_throttle(&LlmError::api_error_status(
+            500,
+            "500 Internal Server Error"
         )));
         assert!(opencode_go_should_throttle(&LlmError::NetworkError(
             "connection reset".to_string()
         )));
-        assert!(!opencode_go_should_throttle(&LlmError::ApiError(
-            "invalid API key".to_string()
+        assert!(!opencode_go_should_throttle(&LlmError::api_error(
+            "invalid API key"
         )));
     }
 }

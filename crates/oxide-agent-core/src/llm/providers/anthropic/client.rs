@@ -54,7 +54,7 @@ impl LlmProvider for AnthropicProvider {
 
         response
             .content
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+            .ok_or_else(|| LlmError::api_error("Empty response"))
     }
 
     async fn transcribe_audio(

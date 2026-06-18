@@ -126,8 +126,8 @@ where
         }
     }
 
-    Err(LlmError::ApiError(
-        "All transcription retry attempts exhausted".to_string(),
+    Err(LlmError::api_error(
+        "All transcription retry attempts exhausted",
     ))
 }
 
@@ -147,29 +147,17 @@ fn get_retry_delay(
             Some(delay)
         }
 
-        LlmError::ApiError(msg) => {
-            let msg_lower = msg.to_lowercase();
-
-            if msg_lower.contains("429")
-                || msg_lower.contains("502")
-                || msg_lower.contains("503")
-                || msg_lower.contains("504")
-                || msg_lower.contains("gateway")
-                || msg_lower.contains("unavailable")
-                || msg_lower.contains("timeout")
-                || msg_lower.contains("timed out")
-            {
-                let backoff_ms = profile.initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-                return Some(Duration::from_millis(backoff_ms));
-            }
-
-            None
+        LlmError::ApiError {
+            status: Some(status),
+            ..
+        } if *status == 429 || crate::llm::is_transient_server_status(*status) => {
+            let backoff_ms = profile.initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
+            Some(Duration::from_millis(backoff_ms))
         }
 
-        LlmError::NetworkError(msg) => {
-            if msg.contains("builder") || msg.contains("configuration") {
-                return None;
-            }
+        LlmError::RequestBuilder(_) => None,
+
+        LlmError::NetworkError(_) => {
             let backoff_ms = profile.initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
             Some(Duration::from_millis(backoff_ms))
         }
@@ -198,7 +186,7 @@ async fn transcribe_audio_once(
     let part = Part::bytes(audio_bytes)
         .file_name(format!("audio.{extension}"))
         .mime_str(mime_type)
-        .map_err(|e| LlmError::NetworkError(format!("Invalid MIME type: {e}")))?;
+        .map_err(|e| LlmError::RequestBuilder(format!("Invalid MIME type: {e}")))?;
 
     let form = Form::new()
         .part("file", part)
@@ -216,7 +204,9 @@ async fn transcribe_audio_once(
         .send()
         .await
         .map_err(|e| {
-            if e.is_timeout() {
+            if e.is_builder() {
+                LlmError::RequestBuilder(e.to_string())
+            } else if e.is_timeout() {
                 LlmError::NetworkError(format!("Request timeout: {e}"))
             } else {
                 LlmError::NetworkError(e.to_string())
@@ -237,9 +227,10 @@ async fn transcribe_audio_once(
     // Handle other errors
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::ApiError(format!(
-            "Transcription error {status}: {error_text}"
-        )));
+        return Err(LlmError::api_error_status(
+            status.as_u16(),
+            format!("Transcription error {status}: {error_text}"),
+        ));
     }
 
     // Parse response
@@ -251,9 +242,7 @@ async fn transcribe_audio_once(
     json.get("text")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| {
-            LlmError::ApiError("Missing 'text' field in transcription response".to_string())
-        })
+        .ok_or_else(|| LlmError::api_error("Missing 'text' field in transcription response"))
 }
 
 #[cfg(test)]
@@ -301,7 +290,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 3000,
         };
-        let err = LlmError::ApiError("502 Bad Gateway".to_string());
+        let err = LlmError::api_error_status(502, "502 Bad Gateway");
         assert_eq!(
             get_retry_delay(&err, 1, &profile),
             Some(Duration::from_millis(3000))
@@ -363,7 +352,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 3000,
         };
-        let err = LlmError::ApiError("HTTP 429 Too Many Requests".to_string());
+        let err = LlmError::api_error_status(429, "HTTP 429 Too Many Requests");
         assert_eq!(
             get_retry_delay(&err, 1, &profile),
             Some(Duration::from_millis(3000))
@@ -383,7 +372,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 3000,
         };
-        let err = LlmError::ApiError("503 Service Unavailable".to_string());
+        let err = LlmError::api_error_status(503, "503 Service Unavailable");
         assert!(get_retry_delay(&err, 1, &profile).is_some());
     }
 
@@ -396,7 +385,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 3000,
         };
-        let err = LlmError::ApiError("400 Bad Request".to_string());
+        let err = LlmError::api_error_status(400, "400 Bad Request");
         assert!(get_retry_delay(&err, 1, &profile).is_none());
     }
 
@@ -409,7 +398,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 3000,
         };
-        let err = LlmError::NetworkError("builder configuration error".to_string());
+        let err = LlmError::RequestBuilder("builder configuration error".to_string());
         assert!(get_retry_delay(&err, 1, &profile).is_none());
     }
 
@@ -448,7 +437,7 @@ mod tests {
             max_retries: 5,
             initial_backoff_ms: 1000,
         };
-        let err = LlmError::ApiError("502 Bad Gateway".to_string());
+        let err = LlmError::api_error_status(502, "502 Bad Gateway");
         assert_eq!(
             get_retry_delay(&err, 1, &profile),
             Some(Duration::from_millis(1000))

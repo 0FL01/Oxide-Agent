@@ -252,10 +252,7 @@ async fn send_streaming_chat_request(
         request = request.header("Authorization", auth);
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|error| LlmError::NetworkError(error.to_string()))?;
+    let response = request.send().await.map_err(LlmError::from_reqwest_error)?;
     let status = response.status();
     if !status.is_success() {
         let retry_after_secs = (status == reqwest::StatusCode::TOO_MANY_REQUESTS)
@@ -268,9 +265,10 @@ async fn send_streaming_chat_request(
                 message: error_text,
             });
         }
-        return Err(LlmError::ApiError(format!(
-            "API error: {status} - {error_text}"
-        )));
+        return Err(LlmError::api_error_status(
+            status.as_u16(),
+            format!("API error: {status} - {error_text}"),
+        ));
     }
 
     parse_streaming_chat_response(response).await

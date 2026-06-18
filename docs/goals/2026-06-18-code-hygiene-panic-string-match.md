@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — static scan of warnings/errors/coffee-smells across the workspace
 Goal doc owner: Codex
-Last updated: 2026-06-18 11:10
+Last updated: 2026-06-18 12:30
 
 ## Objective
 
@@ -65,8 +65,8 @@ None. RECON provided enough evidence to design all fixes.
   - Source: RECON Class B — `backoff.rs:57` (`contains("builder")`), `:84` (`contains("429")`), `:41-54` (`contains("500"/"502"/...)`).
   - Acceptance: `LlmError` carries typed status/retryability information; `backoff.rs` matches on enum variants, not substrings; `git grep -nE 'msg.*contains\("(429|500|502|503|504|builder|internal server error)' crates/oxide-agent-core/src/llm/` returns nothing.
   - Evidence required: clippy clean across all profiles; `cargo test -p oxide-agent-core` green; every provider constructing the enriched `LlmError` variants verified via `git grep 'LlmError::ApiError\|LlmError::NetworkError\|LlmError::RateLimit'`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 — `LlmError::ApiError(String)` enriched to `ApiError { status: Option<u16>, message: String }` (struct variant); added `RequestBuilder(String)` variant for deterministic reqwest builder errors (NOT retryable); added `LlmError::api_error(msg)`, `api_error_status(status, msg)`, `from_reqwest_error(e)` helper constructors. `backoff.rs`: all `contains("429"/"500"/"builder"/...)` replaced with typed variant matching. `transcription.rs`: same typed patterns in local `get_retry_delay`. `opencode_go.rs`: `opencode_go_should_throttle` uses typed status checks. `llm_calls.rs`: `error_class` uses typed status. All provider construction sites updated across 17 files. `git grep -nE 'contains\("(429|500|502|503|504|builder|gateway|unavailable|overloaded)"\)'` returns 0 matches across all .rs files. `git grep 'LlmError::ApiError\('` returns 0 (no tuple construction remaining). `git grep 'ApiError\(msg\)|ApiError\(message\)'` returns 0.
 
 - G3: `too_many_arguments` anti-pattern collapsed into context structs where it reduces call-site fragility.
   - Source: RECON Class D — 7 sites.
@@ -86,43 +86,43 @@ None. RECON provided enough evidence to design all fixes.
   - Source: AGENTS.md lint requirement.
   - Acceptance: all four clippy invocations exit 0.
   - Evidence required: command outputs logged.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 — `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` exit 0 for all 4 profiles.
 
 - Q2: `cargo fmt --all -- --check` clean.
   - Source: AGENTS.md.
   - Acceptance: exit 0.
   - Evidence required: command output.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 — `cargo fmt --all -- --check` exit 0.
 
 - Q3: Workspace `cargo check` clean on `profile-full`.
   - Source: AGENTS.md.
   - Acceptance: exit 0.
   - Evidence required: command output.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 — `cargo check --workspace --all-targets --features profile-full` exit 0.
 
 - N1: Do not touch Class C `#[allow(dead_code)]` sites (feature gating, not in scope).
   - Source: RECON.
   - Must preserve: no edits to `compiled.rs`, `modules.rs`, `builders.rs`, `schema.rs`, `capabilities.rs` `allow(dead_code)` lines.
   - Evidence required: `git diff` shows no edits to those lines.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1+CP2 — `git diff` shows no edits to Class C `#[allow(dead_code)]` lines; no edits to `compiled.rs`, `modules.rs`, `builders.rs`, `schema.rs`, `capabilities.rs` allow lines.
 
 - N2: Do not touch test-only `expect()`/`panic()` (in `#[cfg(test)]` modules).
   - Source: RECON.
   - Must preserve: `composer.rs` tests, `tts/client.rs:24`, test mock `unimplemented!()`.
   - Evidence required: `git diff` shows no edits to those lines.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP1+CP2 — `git diff` shows no edits to `composer.rs` test `expect()`, `tts/client.rs:24`, or test mock `unimplemented!()`.
 
 - N3: Do not introduce new crates, services, queues, caches, storage backends, or abstraction layers.
   - Source: AGENTS.md scale principles.
   - Must preserve: `Cargo.toml` dependency list unchanged (no new crates); no new modules beyond what's needed for the typed error / context structs.
   - Evidence required: `git diff Cargo.toml crates/*/Cargo.toml` shows no new dependencies.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 — no new crates, services, or modules. `LlmError` enrichment is internal to existing `llm/error.rs`; `is_transient_server_status` re-exported from existing `llm/mod.rs`. No Cargo.toml changes.
 
 ## Implementation Plan
 
@@ -208,6 +208,13 @@ None. RECON provided enough evidence to design all fixes.
   - Commands: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: G1 → verified; Q1 → verified (clippy ×4); Q2 → verified (fmt); Q3 → pending (cargo check not re-run, covered by clippy); N1 → preserved (no Class C edits); N2 → preserved (test panics untouched).
   - Next: CP2 — Stage 2 typify LlmError, remove string-match in backoff.rs.
+
+- 2026-06-18 12:30: CP2 complete — Stage 2 typify LlmError, remove string-match class closed.
+  - Changed: `llm/error.rs` (ApiError struct variant + RequestBuilder + helper constructors), `llm/support/backoff.rs` (typed matching, `is_transient_server_status` pub(crate)), `llm/mod.rs` (re-export), `llm/support/http.rs` (5 sites), `llm/client.rs` (4 sites), `llm/providers/messages/response.rs` (3 sites), `llm/providers/chat_completions/response.rs` (4 sites), `llm/providers/anthropic/client.rs` (1 site), `llm/providers/openai_base/mod.rs` (2 sites), `llm/providers/openai_base/transcription.rs` (11 sites), `llm/providers/chatgpt/mod.rs` (5 sites), `llm/providers/chatgpt/auth.rs` (2 sites), `llm/providers/chat_completions/streaming.rs` (1 site), `llm/providers/opencode_go.rs` (8 sites), `agent/runner/llm_calls.rs` (5 sites), `agent/runner/test_support.rs` (1 site), `tests/hermetic_agent.rs` (2 sites), `tests/json_decode_error.rs` (1 site), `transport-web/src/server/search_probe.rs` (1 site), `transport-web/tests/e2e/providers.rs` (1 site).
+  - Evidence: G2 verified — 0 string-match patterns remaining (`git grep` confirms); all providers construct typed errors; `cargo test -p oxide-agent-core` 1370 passed 0 failed; `cargo test -p oxide-agent-transport-web` 151 passed 0 failed. Q1 verified (clippy ×4 exit 0). Q2 verified (fmt exit 0). Q3 verified (cargo check exit 0). N3 verified (no new deps/crates).
+  - Commands: `cargo check --workspace --all-targets --features profile-full`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features profile-full`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G2 → verified; Q1 → verified; Q2 → verified; Q3 → verified; N1 → verified; N2 → verified; N3 → verified.
+  - Next: CP3 — Stage 3 collapse too_many_arguments.
 
 ## Risks and Blockers
 

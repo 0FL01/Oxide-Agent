@@ -228,7 +228,7 @@ async fn test_json_error_distinguished_from_network_error() {
     // Verify that JSON errors are different from Network errors
     let json_error = LlmError::JsonError("error decoding response body".to_string());
     let network_error = LlmError::NetworkError("connection refused".to_string());
-    let api_error = LlmError::ApiError("500 Internal Server Error".to_string());
+    let api_error = LlmError::api_error_status(500, "500 Internal Server Error");
 
     // All should have different Display representations
     let json_str = json_error.to_string();

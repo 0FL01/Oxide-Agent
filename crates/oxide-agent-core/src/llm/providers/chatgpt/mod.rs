@@ -96,9 +96,10 @@ impl ChatGptProvider {
             } => {
                 let Some(retried_body) = remove_unsupported_parameter(request_body, &parameter)
                 else {
-                    return Err(LlmError::ApiError(format!(
-                        "ChatGPT API error: {status} - {response_body}"
-                    )));
+                    return Err(LlmError::api_error_status(
+                        status.as_u16(),
+                        format!("ChatGPT API error: {status} - {response_body}"),
+                    ));
                 };
 
                 match self.send_chat_request(&session, &retried_body).await? {
@@ -109,9 +110,10 @@ impl ChatGptProvider {
                         status,
                         response_body,
                         ..
-                    } => Err(LlmError::ApiError(format!(
-                        "ChatGPT API error: {status} - {response_body}"
-                    ))),
+                    } => Err(LlmError::api_error_status(
+                        status.as_u16(),
+                        format!("ChatGPT API error: {status} - {response_body}"),
+                    )),
                 }
             }
         }
@@ -136,7 +138,7 @@ impl ChatGptProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|error| LlmError::NetworkError(error.to_string()))?;
+            .map_err(LlmError::from_reqwest_error)?;
 
         let status = response.status();
         if !status.is_success() {
@@ -159,9 +161,10 @@ impl ChatGptProvider {
                 });
             }
 
-            return Err(LlmError::ApiError(format!(
-                "ChatGPT API error: {status} - {response_body}"
-            )));
+            return Err(LlmError::api_error_status(
+                status.as_u16(),
+                format!("ChatGPT API error: {status} - {response_body}"),
+            ));
         }
 
         Ok(ChatRequestOutcome::Success(response))
@@ -501,7 +504,7 @@ async fn parse_streaming_response(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
+        let chunk = chunk.map_err(LlmError::from_reqwest_error)?;
         pending_bytes.extend_from_slice(&chunk);
         if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
             buffer.push_str(&decoded);
@@ -659,7 +662,7 @@ fn process_sse_event(
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown ChatGPT stream error");
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "ChatGPT stream error: {message}"
             )));
         }

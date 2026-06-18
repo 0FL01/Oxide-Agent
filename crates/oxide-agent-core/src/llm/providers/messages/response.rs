@@ -16,14 +16,14 @@ pub(crate) fn parse_response(
     profile: MessagesProfile,
 ) -> Result<ChatResponse, LlmError> {
     if let Some(error) = extract_error_response(&response) {
-        return Err(LlmError::ApiError(error));
+        return Err(LlmError::api_error(error));
     }
 
     let blocks = response
         .get("content")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            LlmError::ApiError(format!(
+            LlmError::api_error(format!(
                 "Missing content blocks in {} messages response",
                 profile.label
             ))
@@ -99,7 +99,7 @@ pub(crate) fn parse_response(
     let content = (!content_parts.is_empty()).then(|| content_parts.join("\n"));
     let reasoning_content = (!reasoning_parts.is_empty()).then(|| reasoning_parts.join("\n"));
     if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
-        return Err(LlmError::ApiError(format!(
+        return Err(LlmError::api_error(format!(
             "Empty {} messages response",
             profile.label
         )));

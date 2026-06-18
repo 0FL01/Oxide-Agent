@@ -51,7 +51,7 @@ pub(crate) async fn parse_streaming_chat_response(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
+        let chunk = chunk.map_err(LlmError::from_reqwest_error)?;
         pending_bytes.extend_from_slice(&chunk);
         if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
             buffer.push_str(&decoded);
