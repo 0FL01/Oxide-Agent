@@ -121,7 +121,7 @@ Execute a single concrete browser action. The `action` field uses a strict
 | `type_text` | `selector`, `value` | Same semantic input primitive as `fill` |
 | `press` | `key` | Key press |
 | `scroll` | `delta_x`, `delta_y` | Scroll deltas |
-| `get_element_value` | `selector` | Read scalar value (result-only, no post-observation) |
+| `get_element_value` | `selector` | Read scalar value (result-only, no post-observation). For `input[type=checkbox|radio]` returns `"true"`/`"false"` (checked state), not the `value` attribute |
 | `execute_javascript` | `expression` | Expression eval; captures post-observation |
 | `wait` | `timeout_ms` | Wait (1–60000 ms; no `ms` alias) |
 | `wait_for_selector` | `selector`, `timeout_ms` | Wait for element |
@@ -150,7 +150,11 @@ diagnostics. Supports `since_action_seq` and `limit`.
 
 ### `browser_close`
 Close a browser session and finalize retained browser artifacts. `purge_profile`
-defaults to true. `keep_artifacts` defaults to true.
+defaults to true (clears the Chromium profile: cookies, localStorage, cache).
+`keep_artifacts` defaults to true (screenshot artifacts are preserved for
+debugging even when the profile is purged). These are independent: purging the
+profile does not delete artifacts, and keeping artifacts does not retain the
+profile.
 
 ## Post-action observations
 
@@ -166,6 +170,9 @@ Tool output includes `post_observation_diagnostics` with:
 - `fresh_observation` / `fresh_screenshot`: whether observation/screenshot changed
 - `action_seq_current`: latest action sequence number
 - `dom_snapshot.status`: `captured`, `captured_empty`, or `error`
+- DOM snapshot elements include `tag`, `selector`, `attributes`, `href`, `value`,
+  and `text`. For form inputs (`input`, `textarea`, `select`), `value` holds the
+  current runtime value; `text` is `innerText` and is empty for inputs.
 
 ## Web UI usage
 
@@ -229,6 +236,14 @@ Tool output includes `post_observation_diagnostics` with:
   Check `attribute_source` in the diagnostics. The selector may not match, or
   the requested attribute may not exist. Raw `properties` and `attributes` in
   each match entry show what the element actually has.
+
+- **DOM snapshot shows empty `text` for input/textarea fields**
+  This is expected. DOM snapshot `text` is `innerText` — always empty for form
+  inputs. The current runtime value is in the `value` field of each snapshot
+  element. Use `value` (not `text`) to verify form input state after `fill` or
+  `type_text`. Use `get_element_value` to read a single element's value; for
+  `input[type=checkbox|radio]` it returns the checked state (`"true"`/`"false"`)
+  rather than the `value` attribute.
 
 ## Staging checklist
 
