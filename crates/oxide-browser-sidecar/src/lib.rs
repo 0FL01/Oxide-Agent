@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod browser;
+pub mod capture;
 pub mod cdp;
 pub mod session;
 pub mod snapshot;

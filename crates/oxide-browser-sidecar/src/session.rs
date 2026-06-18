@@ -15,12 +15,13 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::browser::ChromiumProcess;
+use crate::capture::CaptureCollector;
 use crate::cdp::CdpClient;
 
 /// Default navigation timeout (matches Python sidecar's 60s goto).
 const NAV_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// One browser session: Chromium process + CDP client + metadata.
+/// One browser session: Chromium process + CDP client + capture collector + metadata.
 #[allow(dead_code)]
 pub struct BrowserSession {
     pub id: String,
@@ -31,16 +32,25 @@ pub struct BrowserSession {
     pub page_id: String,
     pub artifact_root: String,
     action_seq: AtomicU64,
+    pub capture: Arc<CaptureCollector>,
 }
 
 impl BrowserSession {
-    /// Launch Chromium, connect CDP, navigate to `start_url`.
+    /// Launch Chromium, connect CDP, start capture, navigate to `start_url`.
     pub async fn new(req: &CreateSessionRequest, session_id: &str) -> Result<Self> {
         let (chromium, cdp) = ChromiumProcess::launch(&req.viewport)
             .await
             .context("launch Chromium")?;
 
         let page_id = chromium.page_target_id().to_string();
+
+        // Start capture collector before navigation so we catch the initial
+        // page load's network events. Runs on the same CDP WebSocket (G3)
+        // and never sends Runtime.enable (G4).
+        let capture = Arc::new(CaptureCollector::new());
+        CaptureCollector::start(&cdp, capture.clone())
+            .await
+            .context("start capture collector")?;
 
         let mut start_url = req
             .start_url
@@ -72,6 +82,7 @@ impl BrowserSession {
             page_id,
             artifact_root,
             action_seq: AtomicU64::new(0),
+            capture,
         })
     }
 
