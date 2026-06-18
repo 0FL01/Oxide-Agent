@@ -38,3 +38,18 @@ fn main() {
         println!("oxide-agent-web-ui is a Leptos CSR frontend; build it for wasm32 with Trunk.");
     }
 }
+
+#[cfg(test)]
+mod css_contract_tests {
+    const ACTIVITY_CSS: &str = include_str!("styles/06-activity.css");
+
+    #[test]
+    fn browser_screenshot_thumbnail_uses_fixed_ratio_viewport() {
+        assert!(ACTIVITY_CSS.contains(".browser-tool-shot-link"));
+        assert!(ACTIVITY_CSS.contains("height: 0;"));
+        assert!(ACTIVITY_CSS.contains("padding-top: 56.25%;"));
+        assert!(ACTIVITY_CSS.contains(".browser-tool-shot-image"));
+        assert!(ACTIVITY_CSS.contains("position: absolute;"));
+        assert!(ACTIVITY_CSS.contains("object-fit: contain;"));
+    }
+}
