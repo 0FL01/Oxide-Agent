@@ -730,15 +730,17 @@ impl StorageProvider for SqlxStorage {
 
     async fn load_browser_artifact(
         &self,
+        user_id: i64,
         artifact_uri: &str,
     ) -> Result<Option<BrowserArtifactData>, StorageError> {
         let row = query::<Postgres>(
             r#"
             SELECT mime_type, data, bytes
             FROM browser_artifacts
-            WHERE artifact_uri = $1
+            WHERE user_id = $1 AND artifact_uri = $2
             "#,
         )
+        .bind(user_id)
         .bind(artifact_uri)
         .fetch_optional(&self.pool)
         .await

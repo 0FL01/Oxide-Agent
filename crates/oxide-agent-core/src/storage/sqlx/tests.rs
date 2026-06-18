@@ -1002,7 +1002,7 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
         .expect("save_browser_artifact should succeed");
 
     let loaded = storage
-        .load_browser_artifact(&artifact_uri)
+        .load_browser_artifact(user_id, &artifact_uri)
         .await
         .expect("load_browser_artifact should succeed")
         .expect("artifact should exist after save");
@@ -1030,7 +1030,7 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
         .expect("upsert should succeed");
 
     let loaded2 = storage
-        .load_browser_artifact(&artifact_uri)
+        .load_browser_artifact(user_id, &artifact_uri)
         .await
         .expect("load after upsert")
         .expect("artifact should exist after upsert");
@@ -1038,7 +1038,7 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
 
     // Load non-existent URI.
     let missing = storage
-        .load_browser_artifact("artifact://browser/nonexistent/test.jpg")
+        .load_browser_artifact(user_id, "artifact://browser/nonexistent/test.jpg")
         .await
         .expect("load non-existent should not error");
     assert!(missing.is_none());
@@ -1085,7 +1085,7 @@ async fn sqlx_browser_artifact_delete_by_context_key() {
     // Verify they're gone.
     let uri = format!("artifact://browser/{task_id}/{session_id}/step-0000-live.jpg");
     let loaded = storage
-        .load_browser_artifact(&uri)
+        .load_browser_artifact(user_id, &uri)
         .await
         .expect("load after delete should not error");
     assert!(loaded.is_none());
@@ -1145,13 +1145,13 @@ async fn sqlx_browser_artifact_isolation_by_context_key() {
     assert_eq!(deleted, 1);
 
     let loaded_a = storage
-        .load_browser_artifact(&uri_a)
+        .load_browser_artifact(user_id, &uri_a)
         .await
         .expect("load after delete should not error");
     assert!(loaded_a.is_none(), "artifact A should be deleted");
 
     let loaded_b = storage
-        .load_browser_artifact(&uri_b)
+        .load_browser_artifact(user_id, &uri_b)
         .await
         .expect("load survivor should not error")
         .expect("artifact B should still exist");

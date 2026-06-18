@@ -990,6 +990,44 @@ pub(crate) async fn api_download_artifact(
     let user = authenticated_user(&state, &headers).await?;
     let _task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
 
+    // Browser artifacts (JPEG screenshots) are stored in Postgres BYTEA.
+    // The path starts with `browser/` — reconstruct the `artifact://` URI
+    // and load from durable storage. Falls back to filesystem for legacy
+    // artifacts from before the Postgres migration.
+    if path.starts_with("browser/") {
+        let artifact_uri = format!("artifact://{path}");
+        if let Some(storage) = state.storage() {
+            match storage
+                .load_browser_artifact(user.user_id, &artifact_uri)
+                .await
+            {
+                Ok(Some(artifact)) => {
+                    let mut response = Response::new(Body::from(artifact.data));
+                    let hdrs = response.headers_mut();
+                    // Browser screenshots are immutable (unique URI with
+                    // sequence number). Allow browser caching for 1 hour.
+                    hdrs.insert(
+                        CACHE_CONTROL,
+                        HeaderValue::from_static("private, max-age=3600"),
+                    );
+                    hdrs.insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_str(&artifact.mime_type)
+                            .unwrap_or_else(|_| HeaderValue::from_static("image/jpeg")),
+                    );
+                    return Ok(response);
+                }
+                Ok(None) => {
+                    // Not in Postgres — fall through to filesystem (legacy).
+                }
+                Err(_) => {
+                    // Storage error — fall through to filesystem as fallback.
+                }
+            }
+        }
+    }
+
+    // Filesystem path (sandbox tool output, legacy browser artifacts).
     let relative_path = StdPath::new(&path);
     let cleaned = sanitize_artifact_path(relative_path).map_err(|_| {
         api_error(

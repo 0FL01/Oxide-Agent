@@ -132,10 +132,16 @@ pub trait StorageProvider: Send + Sync {
         ))
     }
     /// Load a browser screenshot artifact by its `artifact_uri` primary key.
+    ///
+    /// The `user_id` parameter enforces ownership at the storage layer —
+    /// only the artifact's owner can load it. This prevents cross-user
+    /// access via URI guessing.
     async fn load_browser_artifact(
         &self,
+        user_id: i64,
         artifact_uri: &str,
     ) -> Result<Option<BrowserArtifactData>, StorageError> {
+        let _ = user_id;
         let _ = artifact_uri;
         Ok(None)
     }

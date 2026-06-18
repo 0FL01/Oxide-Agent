@@ -9,10 +9,11 @@ use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope, sandbox_backend_available};
+use oxide_agent_core::storage::StorageProvider;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
-use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
+use oxide_agent_core::{config::AgentSettings, llm::LlmClient};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
@@ -206,6 +207,9 @@ pub struct AppState {
     large_input_attachments_supported: bool,
     /// Local directory where agent tool artifacts (e.g., browser-live screenshots) are stored.
     pub artifact_dir: PathBuf,
+    /// Durable storage handle for browser artifact BYTEA storage.
+    /// `Some` when `WebStoreKind::Sqlx`, `None` for in-memory/custom stores.
+    pub storage: Option<Arc<dyn StorageProvider>>,
 }
 
 impl AppState {
@@ -262,6 +266,7 @@ impl AppState {
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
             auto_title_enabled: true,
             large_input_attachments_supported: sandbox_backend_available(),
+            storage: None,
         }
     }
 
@@ -270,11 +275,15 @@ impl AppState {
         session_manager: Arc<WebSessionManager>,
         sqlx_storage: Arc<SqlxStorage>,
     ) -> Self {
-        Self::new_with_web_store_kind(
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::clone(&sqlx_storage) as Arc<dyn StorageProvider>;
+        let mut state = Self::new_with_web_store_kind(
             session_manager,
             Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
             WebStoreKind::Sqlx,
-        )
+        );
+        state.storage = Some(storage_provider);
+        state
     }
 
     #[must_use]
@@ -327,6 +336,13 @@ impl AppState {
     #[must_use]
     pub(crate) fn sandbox_control(&self) -> Arc<dyn WebSandboxControl> {
         self.sandbox_control.clone()
+    }
+
+    /// Durable storage handle for browser artifacts. `None` when using
+    /// in-memory or custom stores (browser artifacts fall back to filesystem).
+    #[must_use]
+    pub fn storage(&self) -> Option<Arc<dyn StorageProvider>> {
+        self.storage.clone()
     }
 
     #[must_use]
