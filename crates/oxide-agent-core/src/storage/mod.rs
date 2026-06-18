@@ -2,6 +2,7 @@
 //!
 //! Provides persistent storage implementations for durable runtime state.
 
+mod browser_artifacts;
 #[cfg(any(feature = "storage-sqlx", test))]
 mod builders;
 mod control_plane;
@@ -22,6 +23,7 @@ mod user;
 #[cfg(feature = "storage-sqlx")]
 mod utils;
 
+pub use browser_artifacts::{BrowserArtifactData, BrowserArtifactRecord};
 #[cfg(test)]
 pub(crate) use control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use control_plane::{

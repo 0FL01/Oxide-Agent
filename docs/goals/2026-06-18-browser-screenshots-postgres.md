@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: user request + RECON report (this session)
 Goal doc owner: Codex
-Last updated: 2026-06-18 23:55
+Last updated: 2026-06-19 00:15
 
 ## Objective
 
@@ -76,8 +76,8 @@ Out of scope:
   - Source: user request, RECON
   - Acceptance: New migration `0008_browser_artifacts.sql` creates table with `artifact_uri TEXT UNIQUE`, `data BYTEA`, `mime_type TEXT`, FK to `web_tasks` with `ON DELETE CASCADE`; storage trait has `save_browser_artifact` / `load_browser_artifact` / `delete_browser_artifacts_by_session`; SQLx impl working
   - Evidence required: migration applies cleanly; `cargo test` for storage methods passes; `\d browser_artifacts` shows table with FK CASCADE
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Migration `0008_browser_artifacts.sql` applied on real Postgres. `\d browser_artifacts` confirms schema. `cargo test -p oxide-agent-core -- profile-full --lib -- sqlx_browser` passes 3 tests: save/load round-trip (with upsert), delete by session, CASCADE on task delete. Storage trait methods in `provider.rs` with default implementations, SQLx impl in `sqlx/mod.rs`. Record types in `storage/browser_artifacts.rs`.
 
 - G3: Sidecar returns screenshot bytes in-memory, does not write to disk
   - Source: plan Phase 3
@@ -333,6 +333,11 @@ Out of scope:
   - Evidence: `git grep '"format": "png"'` = nothing; `git grep 'ONE_PIXEL_PNG'` = nothing; 93 sidecar tests + 8 core browser_live tests pass; clippy + fmt clean
   - Audit IDs updated: G1→verified
   - Next: CP3 — Storage facade methods (CP2 migration already done in CP0)
+- 2026-06-19 00:15: CP3 complete — Storage facade methods.
+  - Changed: `storage/browser_artifacts.rs` (new: `BrowserArtifactRecord`, `BrowserArtifactData`), `storage/mod.rs` (module + exports), `storage/provider.rs` (3 trait methods with defaults), `storage/sqlx/mod.rs` (SQLx impl: save/load/delete), `storage/sqlx/tests.rs` (3 integration tests)
+  - Evidence: 3 tests pass on real Postgres: save/load round-trip (with upsert), delete by session, CASCADE on task delete. Clippy + fmt clean.
+  - Audit IDs updated: G2→verified
+  - Next: CP4 — Sidecar returns bytes in-memory, no disk write
 
 ## Risks and Blockers
 

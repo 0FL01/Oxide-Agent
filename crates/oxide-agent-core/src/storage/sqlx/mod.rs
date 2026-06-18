@@ -12,12 +12,12 @@ use uuid::Uuid;
 
 use super::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind,
-    ReminderThreadKind, StorageError, StorageProvider, TopicAgentsMdRecord, TopicBindingKind,
-    TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
-    TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
-    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-    UserConfig, UserContextConfig,
+    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
+    ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
+    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+    UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
     builders::{
         build_agent_flow_record, build_agent_profile_record, build_audit_event_record,
         build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
@@ -691,6 +691,85 @@ impl StorageProvider for SqlxStorage {
         .await
         .map_err(db_error)?;
         Ok(())
+    }
+
+    async fn save_browser_artifact(
+        &self,
+        record: BrowserArtifactRecord,
+    ) -> Result<(), StorageError> {
+        let bytes_i64 = usize_to_i64(record.data.len(), "browser artifact bytes")?;
+        query::<Postgres>(
+            r#"
+            INSERT INTO browser_artifacts (
+                artifact_uri, user_id, session_id, task_id,
+                mime_type, data, bytes, sha256
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (artifact_uri) DO UPDATE
+            SET mime_type = EXCLUDED.mime_type,
+                data = EXCLUDED.data,
+                bytes = EXCLUDED.bytes,
+                sha256 = EXCLUDED.sha256
+            "#,
+        )
+        .bind(&record.artifact_uri)
+        .bind(record.user_id)
+        .bind(&record.session_id)
+        .bind(&record.task_id)
+        .bind(&record.mime_type)
+        .bind(&record.data)
+        .bind(bytes_i64)
+        .bind(&record.sha256)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn load_browser_artifact(
+        &self,
+        artifact_uri: &str,
+    ) -> Result<Option<BrowserArtifactData>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT mime_type, data, bytes
+            FROM browser_artifacts
+            WHERE artifact_uri = $1
+            "#,
+        )
+        .bind(artifact_uri)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| {
+            let mime_type = row_value::<String>(&row, "mime_type")?;
+            let bytes = row_value::<i64>(&row, "bytes")?;
+            let data = row_value::<Vec<u8>>(&row, "data")?;
+            Ok(BrowserArtifactData {
+                mime_type,
+                data,
+                bytes,
+            })
+        })
+        .transpose()
+    }
+
+    async fn delete_browser_artifacts_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<u64, StorageError> {
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM browser_artifacts
+            WHERE session_id = $1
+            "#,
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
     }
 
     async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
