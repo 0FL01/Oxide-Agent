@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — `docker/chrome-agent-sidecar.py` rewrite feasibility study; plan approved by user
 Goal doc owner: Codex
-Last updated: 2026-06-18 15:30
+Last updated: 2026-06-18 16:30
 
 ## Objective
 
@@ -70,8 +70,8 @@ Out of scope:
   - Source: RECON — `docker/chrome-agent-sidecar.py` spawns `chrome-agent --json pipe` subprocess per session; chrome-agent is binary-only.
   - Acceptance: a Rust binary launches Chromium directly and speaks CDP over a single WebSocket per session; no `chrome-agent` subprocess; no Python process; `docker/chrome-agent-sidecar.py` deleted.
   - Evidence required: `git grep -n 'chrome-agent' docker/` returns nothing (except historical references in docs); `ls docker/chrome-agent-sidecar.py` → not found; new binary `cargo build --release` succeeds; running binary launches Chromium and serves the REST API.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP2 — native Rust binary launches Chromium directly via `tokio::process::Command` with `--headless=new --no-sandbox --remote-debugging-port=0`, reads `DevToolsActivePort` file for port, discovers page target via `/json/list`, connects CDP WebSocket via `tokio-tungstenite`. No `chrome-agent` subprocess, no Python process. POST /sessions and DELETE /sessions are functional. Remaining endpoints (goto, observe, action, screenshot, debug) are stubs for CP3-CP6. `docker/chrome-agent-sidecar.py` not yet deleted (CP8).
 
 - G2: Shared types between sidecar and Oxide client — contract drift architecturally impossible.
   - Source: RECON — sidecar `run_unit_tests()` comment: "Rust mock in test_support.rs can diverge from the real sidecar implementation and all Rust tests stay green while production breaks — exactly the class of bug seen in CP-A (noise filter on wrong shape) and CP-B (failure criterion mismatch)."
@@ -84,10 +84,8 @@ Out of scope:
   - Source: RECON — sidecar `CDPListener` opens a SEPARATE WebSocket for network/console capture, duplicating chrome-agent's own connection.
   - Acceptance: exactly one WebSocket to the page target per session; network/console capture uses the same connection as control commands; no second CDP listener thread/task.
   - Evidence required: code review — one `tokio_tungstenite::WebSocketStream` per session struct; no separate listener struct; concurrent CDP commands multiplexed on the single stream.
-  - Status: pending
-  - Evidence collected:
-
-- G4: Stealth-safe capture — no `Runtime.enable` call.
+  - Status: verified
+  - Evidence collected: CP2 — `CdpClient` (cdp.rs) owns exactly one `tokio-tungstenite` WebSocket per session. `BrowserSession` holds one `CdpClient` (session.rs:27). Background reader task dispatches both command responses (by `id` correlation via `HashMap<u64, oneshot::Sender>`) and events (via `broadcast::channel<CdpEvent>`) on the same connection. No separate CDPListener struct, no second WebSocket. `CdpClient::send_command` is `&self` (concurrent-safe via `Arc<Mutex<HashMap>>` + `mpsc::Sender`), allowing multiple concurrent commands on the single stream. `navigate_to` demonstrates the pattern: `Page.enable` + `Page.navigate` + `Page.loadEventFired` event all on one connection. Integration test confirms single-session lifecycle works end-to-end.
   - Source: RECON — sidecar `CDPListener` line 602 calls `Runtime.enable`, which chrome-agent specifically avoids (detection vector).
   - Acceptance: `Runtime.enable` is never sent on the CDP connection; console capture uses an injected JS interceptor (via `Page.addScriptToEvaluateOnNewDocument` + `Runtime.evaluate` for current page, matching chrome-agent's `setup.rs` approach); network capture uses `Network.enable` without `Runtime.enable`.
   - Evidence required: `git grep -n 'Runtime.enable\|"Runtime"\s*,\s*"enable"' <sidecar source>` returns nothing; stealth patches JS ported from chrome-agent `setup.rs` (`STEALTH_PATCHES_JS`: navigator.webdriver, chrome.runtime mock, Permissions API fix, WebGL vendor/renderer mask, MouseEvent screenX/screenY fix); `Network.setUserAgentOverride` removes "HeadlessChrome".
@@ -276,6 +274,13 @@ Out of scope:
   - Audit IDs updated: G2→verified, N1→verified, Q2→verified.
   - Next: CP2 — CDP client + Chromium lifecycle + session management.
   - Commit: `2591d38a`.
+
+- 2026-06-18 16:30: CP2 complete — CDP client + Chromium lifecycle + session management.
+  - Changed: `crates/oxide-browser-sidecar/Cargo.toml` (added tokio-tungstenite 0.29, futures-util, reqwest 0.13, uuid, thiserror, tempfile); `crates/oxide-browser-sidecar/src/lib.rs` (new — module declarations, AppState, create_app, route handlers, bearer_auth); `crates/oxide-browser-sidecar/src/main.rs` (thinned to entry point, uses lib); `crates/oxide-browser-sidecar/src/cdp.rs` (new — CdpError, CdpEvent, CdpClient with WebSocket connect, send_command with id correlation + timeout, event broadcast, background reader/writer tasks); `crates/oxide-browser-sidecar/src/browser.rs` (new — ChromiumProcess: launch with --headless=new --no-sandbox --remote-debugging-port=0, DevToolsActivePort file polling, /json/list discovery with camelCase serde, page target polling, pipe draining, Drop kill safety); `crates/oxide-browser-sidecar/src/session.rs` (new — navigate_to free function with Page.enable + Page.navigate + Page.loadEventFired, BrowserSession struct, SessionManager with create/get/close, ID generation); `crates/oxide-browser-sidecar/tests/cdp_integration.rs` (new — integration test: healthz, create session with data URL, close session, auth check); `docs/goals/2026-06-18-chrome-agent-native-rust.md` (this file).
+  - Evidence: `cargo clippy -p oxide-browser-sidecar --all-targets -- -D warnings` ✓; `cargo fmt --all -- --check` ✓; `cargo test -p oxide-browser-sidecar` — 2 unit tests passed, 1 integration test ignored ✓; `cargo test -p oxide-browser-sidecar --test cdp_integration -- --ignored --nocapture` — session_lifecycle passed in 0.5s ✓ (launches Chromium, creates session via POST /sessions, navigates to data URL, closes via DELETE /sessions, verifies auth); `cargo check -p oxide-agent-core --no-default-features --features profile-full` ✓; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓. P0.5 bugs caught during CP2: (1) `/json/list` targets use camelCase (`webSocketDebuggerUrl`) not snake_case — fixed with `#[serde(rename_all = "camelCase")]`; (2) `Page.loadEventFired` event fires before subscription — fixed by subscribing BEFORE `Page.navigate` and calling `Page.enable` first; (3) page target may not have WebSocket URL immediately — fixed with polling loop; (4) `reqwest::get` truncates DevTools HTTP response — fixed with `Client::builder().http1_only()`.
+  - Commands: see above.
+  - Audit IDs updated: G1→in_progress (native launch+CDP+session works, remaining endpoints pending), G3→verified (single WebSocket per session, no separate listener).
+  - Next: CP3 — a11y snapshot (4 noise rules) + stealth patches.
 
 ## Risks and Blockers
 
