@@ -122,11 +122,9 @@ services:
     environment:
       - TZ=Europe/Moscow
       - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
-      - BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts
     ports:
       - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
     volumes:
-      - browser-artifacts:/var/lib/oxide-browser/artifacts
     shm_size: "1gb"
     cap_drop:
       - ALL
@@ -146,4 +144,3 @@ services:
 
 volumes:
   sandboxd-run:
-  browser-artifacts:

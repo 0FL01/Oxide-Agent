@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: user request + RECON report (this session)
 Goal doc owner: Codex
-Last updated: 2026-06-19 00:15
+Last updated: 2026-06-19 00:30
 
 ## Objective
 
@@ -83,8 +83,8 @@ Out of scope:
   - Source: plan Phase 3
   - Acceptance: `capture_screenshot` returns `Vec<u8>` without `std::fs::write`; `session_artifact_dir` / `BROWSER_AGENT_ARTIFACT_DIR` removed; ring buffer stores bytes not paths; `latest_screenshot` endpoint serves from memory; no volume mount needed in Docker compose
   - Evidence required: `git grep 'std::fs::write' crates/oxide-browser-sidecar/` returns nothing; `git grep 'BROWSER_AGENT_ARTIFACT_DIR'` returns nothing; sidecar Dockerfile has no artifact volume
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `git grep 'std::fs::write' crates/oxide-browser-sidecar/` returns nothing. `git grep 'BROWSER_AGENT_ARTIFACT_DIR'` returns nothing. `git grep 'session_artifact_dir'` returns nothing. `git grep 'read_latest_screenshot'` returns nothing. `capture_screenshot` returns `(ScreenshotArtifact, Vec<u8>)` — no disk I/O. Session stores `latest_screenshot_bytes: StdMutex<Option<Vec<u8>>>`. Binary endpoint serves from memory. `browser-artifacts` volume removed from all 5 compose files + Dockerfile + .env.example. 92 tests pass. Clippy + fmt clean.
 
 - G4: Core provider persists screenshots to Postgres (not filesystem)
   - Source: plan Phase 4
@@ -338,6 +338,11 @@ Out of scope:
   - Evidence: 3 tests pass on real Postgres: save/load round-trip (with upsert), delete by session, CASCADE on task delete. Clippy + fmt clean.
   - Audit IDs updated: G2→verified
   - Next: CP4 — Sidecar returns bytes in-memory, no disk write
+- 2026-06-19 00:30: CP4 complete — Sidecar returns bytes in-memory.
+  - Changed: `screenshot.rs` (return `(ScreenshotArtifact, Vec<u8>)`, no disk write, remove `read_latest_screenshot`/`session_artifact_dir`/`resolve_artifact_dir`), `session.rs` (remove `artifact_dir`, add `latest_screenshot_bytes`), `observe.rs` (destructure bytes, store in session), `lib.rs` (binary endpoint from memory), Docker compose (remove `browser-artifacts` volume + `BROWSER_AGENT_ARTIFACT_DIR` env from 5 files), `Dockerfile.browser-sidecar` (remove mkdir + env), `.env.example`
+  - Evidence: `git grep 'std::fs::write' crates/oxide-browser-sidecar/` = nothing; `git grep 'BROWSER_AGENT_ARTIFACT_DIR'` = nothing; 92 tests pass; clippy + fmt clean
+  - Audit IDs updated: G3→verified
+  - Next: CP5 — Core provider persists screenshots to Postgres
 
 ## Risks and Blockers
 

@@ -1,11 +1,10 @@
-//! Screenshot capture and artifact management.
+//! Screenshot capture via CDP `Page.captureScreenshot`.
 //!
-//! Uses `Page.captureScreenshot` directly via CDP (no chrome-agent pipe).
 //! Screenshots are captured as JPEG (quality 80) for ~4-10x smaller size vs
-//! PNG on photographic content. SHA-256 is computed on the captured bytes.
-//! On failure, a 1×1 white JPEG fallback is used.
+//! PNG on photographic content. The bytes are returned in-memory — no disk
+//! I/O. The caller is responsible for persisting them (Postgres BYTEA via
+//! the core provider). On failure, a 1×1 white JPEG fallback is used.
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine;
@@ -22,7 +21,7 @@ const JPEG_QUALITY: u64 = 80;
 
 /// 1×1 white JPEG used as fallback when screenshot capture fails.
 /// Generated via ImageMagick `convert -size 1x1 xc:white`.
-const ONE_PIXEL_JPEG: &[u8] = &[
+pub const ONE_PIXEL_JPEG: &[u8] = &[
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, // SOI + APP0 JFIF
     0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, // JFIF data
     0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, // DQT marker
@@ -40,17 +39,16 @@ const ONE_PIXEL_JPEG: &[u8] = &[
     0x00, 0x3f, 0x00, 0x54, 0xdf, 0xff, 0xd9, // Compressed data + EOI
 ];
 
-/// Capture a screenshot via `Page.captureScreenshot` and save to disk.
+/// Capture a screenshot via `Page.captureScreenshot` and return bytes in-memory.
 ///
-/// Returns a `ScreenshotArtifact` with metadata. On failure, saves the
-/// 1×1 fallback JPEG and returns `redacted: true`.
+/// Returns `(ScreenshotArtifact, Vec<u8>)` — metadata + raw JPEG bytes.
+/// No disk I/O. On failure, returns the 1×1 fallback JPEG and `redacted: true`.
 pub async fn capture_screenshot(
     cdp: &CdpClient,
     viewport: Viewport,
-    artifact_dir: &Path,
     artifact_root: &str,
     screenshot_id: &str,
-) -> ScreenshotArtifact {
+) -> (ScreenshotArtifact, Vec<u8>) {
     let result = cdp
         .send_command(
             "Page.captureScreenshot",
@@ -73,20 +71,13 @@ pub async fn capture_screenshot(
         Err(_) => (ONE_PIXEL_JPEG.to_vec(), true),
     };
 
-    // Save to disk: {artifact_dir}/latest.jpg
-    let dest = artifact_dir.join("latest.jpg");
-    if let Some(parent) = dest.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&dest, &jpeg_bytes);
-
     let sha256 = sha256_of_bytes(&jpeg_bytes);
     let byte_size = jpeg_bytes.len() as u64;
 
     // URI: {artifact_root}latest.jpg
     let artifact_uri = format!("{artifact_root}latest.jpg");
 
-    ScreenshotArtifact {
+    let artifact = ScreenshotArtifact {
         screenshot_id: screenshot_id.to_string(),
         artifact_uri,
         mime_type: "image/jpeg".to_string(),
@@ -96,18 +87,9 @@ pub async fn capture_screenshot(
         captured_at: Some(crate::capture::now_iso()),
         redacted,
         byte_size,
-    }
-}
+    };
 
-/// Read the raw bytes of the latest screenshot from disk.
-///
-/// Returns `ONE_PIXEL_JPEG` if the file does not exist.
-pub fn read_latest_screenshot(artifact_dir: &Path) -> Vec<u8> {
-    let path = artifact_dir.join("latest.jpg");
-    match std::fs::read(&path) {
-        Ok(data) if !data.is_empty() => data,
-        _ => ONE_PIXEL_JPEG.to_vec(),
-    }
+    (artifact, jpeg_bytes)
 }
 
 /// Compute the SHA-256 hex digest of a byte slice.
@@ -119,25 +101,6 @@ fn sha256_of_bytes(data: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-/// Resolve the session artifact directory on disk.
-///
-/// Reads `BROWSER_AGENT_ARTIFACT_DIR` env var (default
-/// `/var/lib/oxide-browser/artifacts`), then appends `safe(task_id)/safe(session_id)`.
-pub fn session_artifact_dir(task_id: &str, session_id: &str) -> PathBuf {
-    let root = std::env::var("BROWSER_AGENT_ARTIFACT_DIR")
-        .unwrap_or_else(|_| "/var/lib/oxide-browser/artifacts".to_string());
-    resolve_artifact_dir(&root, task_id, session_id)
-}
-
-/// Build the artifact directory path from a root, task_id, and session_id.
-fn resolve_artifact_dir(root: &str, task_id: &str, session_id: &str) -> PathBuf {
-    let dir = PathBuf::from(root)
-        .join(crate::session::safe(task_id))
-        .join(crate::session::safe(session_id));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
 }
 
 #[cfg(test)]
@@ -169,15 +132,5 @@ mod tests {
             hash,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
-    }
-
-    #[test]
-    fn resolve_artifact_dir_builds_correct_path() {
-        let dir = resolve_artifact_dir("/tmp/test-artifacts", "task-1", "br-abc");
-        assert!(dir.starts_with("/tmp/test-artifacts"));
-        assert!(dir.to_string_lossy().contains("task-1"));
-        assert!(dir.to_string_lossy().contains("br-abc"));
-        // Cleanup
-        let _ = std::fs::remove_dir_all("/tmp/test-artifacts");
     }
 }

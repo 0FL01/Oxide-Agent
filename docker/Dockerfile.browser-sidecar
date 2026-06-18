@@ -43,13 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN groupadd --system --gid 10002 browser \
     && useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/browser browser \
-    && mkdir -p /var/lib/oxide-browser/artifacts \
-    && chown -R browser:browser /var/lib/oxide-browser /home/browser
+    && chown -R browser:browser /home/browser
 
 COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
 
 ENV BROWSER_AGENT_SIDECAR_BIND=0.0.0.0:8787 \
-    BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts \
     CHROMIUM_BIN=/usr/bin/chromium
 
 USER browser

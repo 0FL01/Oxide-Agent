@@ -365,14 +365,15 @@ async fn screenshot_latest(
     } else {
         let cdp = session.cdp().await;
         let screenshot_id = format!("shot-{}-{}", session.id, session.next_screenshot_seq());
-        crate::screenshot::capture_screenshot(
+        let (artifact, bytes) = crate::screenshot::capture_screenshot(
             &cdp,
             session.viewport,
-            &session.artifact_dir,
             &session.artifact_root,
             &screenshot_id,
         )
-        .await
+        .await;
+        session.set_latest_screenshot_bytes(bytes);
+        artifact
     };
 
     if query.redacted {
@@ -380,7 +381,10 @@ async fn screenshot_latest(
     }
 
     if query.format == ScreenshotFormat::Binary {
-        let bytes = crate::screenshot::read_latest_screenshot(&session.artifact_dir);
+        let bytes = session.latest_screenshot_bytes().unwrap_or_else(|| {
+            // No screenshot captured yet — return the 1×1 fallback JPEG.
+            crate::screenshot::ONE_PIXEL_JPEG.to_vec()
+        });
         let mut headers = HeaderMap::new();
         headers.insert(
             "content-type",

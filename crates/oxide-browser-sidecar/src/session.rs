@@ -8,7 +8,6 @@
 //! lives directly on `BrowserSession` behind `std::sync::Mutex` / `AtomicU64`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,7 +47,6 @@ pub struct BrowserSession {
     pub task_id: String,
     pub viewport: Viewport,
     pub artifact_root: String,
-    pub artifact_dir: PathBuf,
     inner: Mutex<BrowserInner>,
     action_seq: AtomicU64,
     observation_seq: AtomicU64,
@@ -56,6 +54,7 @@ pub struct BrowserSession {
     url: StdMutex<String>,
     title: StdMutex<String>,
     last_screenshot: StdMutex<Option<ScreenshotArtifact>>,
+    last_screenshot_bytes: StdMutex<Option<Vec<u8>>>,
     last_observation: StdMutex<Option<BrowserObservation>>,
     network_history: StdMutex<Vec<(NetworkItem, u64)>>,
     console_history: StdMutex<Vec<(ConsoleItem, u64)>>,
@@ -97,8 +96,6 @@ impl BrowserSession {
             safe(session_id)
         );
 
-        let artifact_dir = crate::screenshot::session_artifact_dir(&req.task_id, session_id);
-
         info!(session_id, task_id = %req.task_id, page_id = %page_id, url = %start_url, "session created");
 
         Ok(Self {
@@ -106,7 +103,6 @@ impl BrowserSession {
             task_id: req.task_id.clone(),
             viewport: req.viewport,
             artifact_root,
-            artifact_dir,
             inner: Mutex::new(BrowserInner {
                 chromium,
                 cdp,
@@ -119,6 +115,7 @@ impl BrowserSession {
             url: StdMutex::new(String::new()),
             title: StdMutex::new(String::new()),
             last_screenshot: StdMutex::new(None),
+            last_screenshot_bytes: StdMutex::new(None),
             last_observation: StdMutex::new(None),
             network_history: StdMutex::new(Vec::new()),
             console_history: StdMutex::new(Vec::new()),
@@ -246,6 +243,22 @@ impl BrowserSession {
             .last_screenshot
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(screenshot);
+    }
+
+    /// Get the latest screenshot JPEG bytes (for the binary endpoint).
+    pub fn latest_screenshot_bytes(&self) -> Option<Vec<u8>> {
+        self.last_screenshot_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Set the latest screenshot JPEG bytes.
+    pub fn set_latest_screenshot_bytes(&self, bytes: Vec<u8>) {
+        *self
+            .last_screenshot_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(bytes);
     }
 
     /// Get the last observation (for `fresh=false` observe requests).

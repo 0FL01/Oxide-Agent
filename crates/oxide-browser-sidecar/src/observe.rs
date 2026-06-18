@@ -48,17 +48,16 @@ pub async fn build_observation(
     // Concurrent: a11y snapshot + screenshot + URL/title eval.
     let screenshot_id = format!("shot-{}-{}", session.id, session.next_screenshot_seq());
 
-    let (snapshot_result, screenshot_artifact, url_title) = tokio::join!(
+    let (snapshot_result, screenshot_result, url_title) = tokio::join!(
         snapshot::take_snapshot(&cdp),
-        screenshot::capture_screenshot(
-            &cdp,
-            viewport,
-            &session.artifact_dir,
-            &session.artifact_root,
-            &screenshot_id
-        ),
+        screenshot::capture_screenshot(&cdp, viewport, &session.artifact_root, &screenshot_id),
         get_url_title(&cdp),
     );
+
+    let (screenshot_artifact, screenshot_bytes) = screenshot_result;
+
+    // Store bytes in-memory for the binary screenshot endpoint (no disk I/O).
+    session.set_latest_screenshot_bytes(screenshot_bytes);
 
     // Update session URL/title.
     let (url, title) = url_title;
