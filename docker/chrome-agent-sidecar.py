@@ -1481,7 +1481,7 @@ def action_to_pipe_cmd(
         return [{"cmd": "eval", "expression": f"window.scrollBy({dx},{dy}); true", "inspect": inspect_after}]
     if kind == "get_element_value":
         selector = action["selector"]
-        return [{"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; return el.value !== undefined ? el.value : el.textContent; }})()"}]
+        return [{"cmd": "eval", "expression": f"(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'Error: element not found'; const tag = el.tagName.toLowerCase(); const type = (el.getAttribute('type') || '').toLowerCase(); if (tag === 'input' && (type === 'checkbox' || type === 'radio')) return String(el.checked); return el.value !== undefined ? el.value : el.textContent; }})()"}]
     if kind == "execute_javascript":
         expression = action["expression"]
         return [{"cmd": "eval", "expression": f"(() => {{ try {{ return ({expression}); }} catch (err) {{ return 'Error: ' + (err.message || err); }} }})()"}]
@@ -2564,6 +2564,14 @@ def self_test() -> int:
     assert "HTMLSelectElement.prototype" in fill_cmds[0]["expression"], "select native setter missing"
     assert "insertReplacementText" in fill_cmds[0]["expression"], "fill event intent missing"
     assert "insertText" in type_cmds[0]["expression"], "type_text event intent missing"
+
+    gev_checkbox = action_to_pipe_cmd({"kind": "get_element_value", "selector": "#agree"})
+    assert len(gev_checkbox) == 1 and gev_checkbox[0]["cmd"] == "eval", "get_element_value must use one eval"
+    assert "el.checked" in gev_checkbox[0]["expression"], "checkbox checked-state missing"
+    assert "checkbox" in gev_checkbox[0]["expression"] and "radio" in gev_checkbox[0]["expression"], "checkbox/radio type check missing"
+    gev_text = action_to_pipe_cmd({"kind": "get_element_value", "selector": "#name"})
+    assert "el.checked" not in gev_text[0]["expression"] or "type === 'checkbox'" in gev_text[0]["expression"], "checked logic must be gated on input type"
+
     assert _is_same_origin_path_hash_navigation(
         "https://example.test/app#old",
         "https://example.test/app#new",
