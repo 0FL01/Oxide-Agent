@@ -9,10 +9,11 @@ use serde_json::{Value, json};
 
 /// Image attachment returned by a tool executor.
 ///
-/// The actual bytes are either carried inline (`data`) or persisted at the
-/// referenced sandbox path. When `data` is `Some`, the runner uses the bytes
-/// directly; when `None`, it reads from `sandbox_path` (filesystem fallback
-/// for tools that still write to disk).
+/// The actual bytes are either carried inline (`data`), persisted in Postgres
+/// (looked up via `artifact_uri`), or at the referenced sandbox path. When
+/// `data` is `Some`, the runner uses the bytes directly; when `None` but
+/// `artifact_uri` is `Some`, the runner loads from Postgres; when both are
+/// `None`, it reads from `sandbox_path` (filesystem fallback).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutputImageAttachment {
     /// Original file name reported by the tool.
@@ -23,6 +24,11 @@ pub struct ToolOutputImageAttachment {
     pub size_bytes: u64,
     /// Absolute sandbox path where the image is stored (filesystem fallback).
     pub sandbox_path: String,
+    /// Canonical artifact URI for Postgres lookup (e.g.
+    /// `artifact://browser/{task}/{session}/step-0001-milestone.jpg`).
+    /// Set by browser tools so the runner can reload bytes from
+    /// `browser_artifacts` after inline `data` is lost on checkpoint.
+    pub artifact_uri: Option<String>,
     /// Inline image bytes when available (e.g. from Postgres, not filesystem).
     /// When `Some`, the runner uses these bytes directly instead of reading
     /// from `sandbox_path`.
@@ -43,6 +49,7 @@ impl ToolOutputImageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
             data: None,
         }
     }
@@ -61,8 +68,16 @@ impl ToolOutputImageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
             data: Some(data),
         }
+    }
+
+    /// Set the artifact URI for Postgres-based image resolution.
+    #[must_use]
+    pub fn with_artifact_uri(mut self, uri: impl Into<String>) -> Self {
+        self.artifact_uri = Some(uri.into());
+        self
     }
 }
 

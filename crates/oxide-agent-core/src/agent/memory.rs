@@ -84,10 +84,17 @@ pub struct AgentMessageAttachment {
     pub size_bytes: u64,
     /// Absolute sandbox path where the upload was staged.
     pub sandbox_path: String,
+    /// Canonical artifact URI for Postgres lookup (e.g.
+    /// `artifact://browser/{task}/{session}/step-0001-milestone.jpg`).
+    /// Serialized and persisted in checkpoints so the runner can reload
+    /// image bytes from `browser_artifacts` after inline `data` is lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_uri: Option<String>,
     /// Inline image bytes when available from the tool (e.g. browser screenshots
     /// stored in Postgres, not on filesystem). Transient: not serialized,
     /// not persisted. After deserialization this is always `None`, and the
-    /// runner falls back to reading from `sandbox_path`.
+    /// runner resolves bytes from Postgres via `artifact_uri` or falls back
+    /// to reading from `sandbox_path`.
     #[serde(skip, default)]
     pub data: Option<Vec<u8>>,
 }
@@ -107,6 +114,7 @@ impl AgentMessageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
             data: None,
         }
     }
@@ -126,8 +134,18 @@ impl AgentMessageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
             data: Some(data),
         }
+    }
+
+    /// Set the artifact URI for Postgres-based image resolution.
+    /// Used by browser tools to link the attachment to its `browser_artifacts`
+    /// row so the runner can reload bytes after checkpoint save/load.
+    #[must_use]
+    pub fn with_artifact_uri(mut self, uri: impl Into<String>) -> Self {
+        self.artifact_uri = Some(uri.into());
+        self
     }
 }
 
@@ -1080,6 +1098,46 @@ mod tests {
         );
         assert!(value["attachments"][0].get("bytes").is_none());
         assert!(value["attachments"][0].get("base64").is_none());
+    }
+
+    #[test]
+    fn attachment_artifact_uri_survives_checkpoint_roundtrip() {
+        let uri = "artifact://browser/task-1/br-abc/step-0001-milestone.jpg";
+        let attachment = AgentMessageAttachment::image_with_data(
+            "step-0001-milestone.jpg",
+            Some("image/jpeg".to_string()),
+            120_000,
+            "/workspace/.oxide/tool-artifacts/browser/task-1/br-abc/step-0001-milestone.jpg",
+            vec![0xFF, 0xD8, 0xFF, 0xE0],
+        )
+        .with_artifact_uri(uri);
+
+        let mut tool = AgentMessage::tool("call-1", "browser_observe", "result");
+        tool.attachments.push(attachment);
+
+        // Serialize → simulate checkpoint persist (data is #[serde(skip)])
+        let serialized = serde_json::to_vec(&tool).expect("message serializes");
+        let restored: AgentMessage =
+            serde_json::from_slice(&serialized).expect("message deserializes");
+
+        let restored_attachment = &restored.attachments[0];
+        // artifact_uri survives the roundtrip
+        assert_eq!(restored_attachment.artifact_uri.as_deref(), Some(uri));
+        // data is lost (#[serde(skip)]) — this is expected, runner resolves via artifact_uri
+        assert!(restored_attachment.data.is_none());
+    }
+
+    #[test]
+    fn attachment_without_artifact_uri_serializes_cleanly() {
+        let attachment = AgentMessageAttachment::image(
+            "screen.jpg",
+            Some("image/jpeg".to_string()),
+            128,
+            "/workspace/uploads/screen.jpg",
+        );
+        let value = serde_json::to_value(&attachment).expect("serializes");
+        // artifact_uri should be absent (skip_serializing_if = Option::is_none)
+        assert!(value.get("artifact_uri").is_none() || value["artifact_uri"].is_null());
     }
 
     #[test]
