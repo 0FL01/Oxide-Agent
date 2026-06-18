@@ -63,4 +63,13 @@ mod css_contract_tests {
         assert!(TOOL_CARDS_RS.contains("position:absolute;"));
         assert!(TOOL_CARDS_RS.contains("object-fit:contain;"));
     }
+
+    #[test]
+    fn browser_tool_card_hides_low_signal_metadata() {
+        assert!(!TOOL_CARDS_RS.contains("<span>\"URL\"</span>"));
+        assert!(!TOOL_CARDS_RS.contains("<span>\"Action\"</span>"));
+        assert!(!TOOL_CARDS_RS.contains("<span>\"Session\"</span>"));
+        assert!(!TOOL_CARDS_RS.contains("<span>\"Debug\"</span>"));
+        assert!(!TOOL_CARDS_RS.contains("<span>\"Console\"</span>"));
+    }
 }

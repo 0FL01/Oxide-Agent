@@ -1012,7 +1012,6 @@ fn BrowserToolCard(
 
     let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
     let icon = outcome.icon();
-    let raw_output = raw_output_preview(result.as_ref());
 
     // Primary source: `display_payload` on the event payload — a compact,
     // truncation-safe summary extracted by the web transport before
@@ -1028,124 +1027,54 @@ fn BrowserToolCard(
         .and_then(|e| e.payload.get("display_payload"))
         .filter(|v| v.is_object());
 
-    let (
-        screenshot_uri,
-        screenshot_width,
-        screenshot_height,
-        url,
-        title,
-        action_kind,
-        action_status,
-        session_id,
-        network_label,
-        console_label,
-        status_text,
-    ) = if let Some(dp) = display {
-        (
-            dp.get("screenshot_uri")
-                .and_then(Value::as_str)
-                .map(String::from),
-            dp.get("screenshot_width").and_then(Value::as_u64),
-            dp.get("screenshot_height").and_then(Value::as_u64),
-            dp.get("url").and_then(Value::as_str).map(String::from),
-            dp.get("title").and_then(Value::as_str).map(String::from),
-            dp.get("action_kind")
-                .and_then(Value::as_str)
-                .map(String::from),
-            dp.get("action_status")
-                .and_then(Value::as_str)
-                .map(String::from),
-            dp.get("session_id")
-                .and_then(Value::as_str)
-                .map(String::from),
-            dp.get("network_failed").and_then(Value::as_u64).map(|f| {
-                let t = dp.get("network_total").and_then(Value::as_u64).unwrap_or(0);
-                format!("network {f}/{t}")
-            }),
-            dp.get("console_errors").and_then(Value::as_u64).map(|e| {
-                let w = dp
-                    .get("console_warnings")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                format!("console {e}/{w}")
-            }),
-            dp.get("status").and_then(Value::as_str).map(String::from),
-        )
-    } else {
-        // Fallback: parse from output JSON (works for small/untruncated events).
-        let payload = output
-            .as_ref()
-            .and_then(|v| v.get("structured_payload"))
-            .filter(|v| v.is_object())
-            .or(output.as_ref())
-            .filter(|v| v.is_object());
-        let observation = payload
-            .and_then(|p| {
-                p.get("post_observation")
-                    .or_else(|| p.get("observation"))
-                    .filter(|v| v.is_object())
-            })
-            .or(payload);
-        (
-            observation
-                .and_then(|obs| obs.get("screenshot"))
-                .and_then(|s| s.get("artifact_uri"))
-                .and_then(Value::as_str)
-                .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
-                .map(String::from),
-            observation
-                .and_then(|obs| obs.get("screenshot"))
-                .and_then(|s| s.get("width"))
-                .and_then(Value::as_u64),
-            observation
-                .and_then(|obs| obs.get("screenshot"))
-                .and_then(|s| s.get("height"))
-                .and_then(Value::as_u64),
-            observation
-                .and_then(|obs| obs.get("url"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            observation
-                .and_then(|obs| obs.get("title"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            payload
-                .and_then(|p| p.get("action_result"))
-                .and_then(|ar| ar.get("kind"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            payload
-                .and_then(|p| p.get("action_result"))
-                .and_then(|ar| ar.get("status"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            payload
-                .and_then(|p| p.get("session_id"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            observation
-                .and_then(|obs| obs.get("network_summary"))
-                .map(|ns| {
-                    let failed = ns.get("failed_count").and_then(Value::as_u64).unwrap_or(0);
-                    let total = ns.get("request_count").and_then(Value::as_u64).unwrap_or(0);
-                    format!("network {failed}/{total}")
-                }),
-            observation
-                .and_then(|obs| obs.get("console_summary"))
-                .map(|cs| {
-                    let errors = cs.get("error_count").and_then(Value::as_u64).unwrap_or(0);
-                    let warnings = cs.get("warning_count").and_then(Value::as_u64).unwrap_or(0);
-                    format!("console {errors}/{warnings}")
-                }),
-            output.as_ref().and_then(|v| field_str(v, "status")),
-        )
-    };
-
-    // Preview text: URL or action kind or status.
-    let preview_text = url
-        .clone()
-        .or_else(|| action_kind.clone())
-        .or_else(|| status_text.clone());
+    let (screenshot_uri, screenshot_width, screenshot_height, title, status_text) =
+        if let Some(dp) = display {
+            (
+                dp.get("screenshot_uri")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                dp.get("screenshot_width").and_then(Value::as_u64),
+                dp.get("screenshot_height").and_then(Value::as_u64),
+                dp.get("title").and_then(Value::as_str).map(String::from),
+                dp.get("status").and_then(Value::as_str).map(String::from),
+            )
+        } else {
+            // Fallback: parse from output JSON (works for small/untruncated events).
+            let payload = output
+                .as_ref()
+                .and_then(|v| v.get("structured_payload"))
+                .filter(|v| v.is_object())
+                .or(output.as_ref())
+                .filter(|v| v.is_object());
+            let observation = payload
+                .and_then(|p| {
+                    p.get("post_observation")
+                        .or_else(|| p.get("observation"))
+                        .filter(|v| v.is_object())
+                })
+                .or(payload);
+            (
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("artifact_uri"))
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+                    .map(String::from),
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("width"))
+                    .and_then(Value::as_u64),
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("height"))
+                    .and_then(Value::as_u64),
+                observation
+                    .and_then(|obs| obs.get("title"))
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                output.as_ref().and_then(|v| field_str(v, "status")),
+            )
+        };
 
     // Default open: running, failed, or has a screenshot (visual feedback).
     let has_screenshot = screenshot_uri.is_some();
@@ -1169,7 +1098,6 @@ fn BrowserToolCard(
 
     view! {
         {tool_card_header(icon, &name, header_metas)}
-        {preview_text.map(tool_preview)}
         <ToolDetails open=default_open>
             {move || {
                 screenshot_uri.as_ref().and_then(|uri| {
@@ -1188,19 +1116,7 @@ fn BrowserToolCard(
                     }.into_any())
                 }).unwrap_or_else(|| ().into_any())
             }}
-            {url.as_ref().map(|u| view! { <div class="browser-tool-meta"><span>"URL"</span><code>{u.clone()}</code></div> })}
             {title.as_ref().map(|t| view! { <div class="browser-tool-meta"><span>"Title"</span><strong>{t.clone()}</strong></div> })}
-            {action_kind.as_ref().map(|kind| {
-                let label = action_status
-                    .as_ref()
-                    .map(|status| format!("{kind} → {status}"))
-                    .unwrap_or_else(|| kind.clone());
-                view! { <div class="browser-tool-meta"><span>"Action"</span><strong>{label}</strong></div> }
-            })}
-            {session_id.as_ref().map(|sid| view! { <div class="browser-tool-meta"><span>"Session"</span><code>{sid.clone()}</code></div> })}
-            {network_label.as_ref().map(|label| view! { <div class="browser-tool-meta"><span>"Debug"</span><strong>{label.clone()}</strong></div> })}
-            {console_label.as_ref().map(|label| view! { <div class="browser-tool-meta"><span>"Console"</span><strong>{label.clone()}</strong></div> })}
-            {raw_output.map(tool_raw_details)}
         </ToolDetails>
     }
 }
