@@ -81,6 +81,11 @@ impl BrowserSession {
         navigate_to(&self.cdp, url, timeout, false).await
     }
 
+    /// Get the CDP client for this session (used by action execution in CP4).
+    pub fn cdp(&self) -> &CdpClient {
+        &self.cdp
+    }
+
     /// Increment and return the action sequence number.
     #[allow(dead_code)]
     pub fn next_action_seq(&self) -> u64 {

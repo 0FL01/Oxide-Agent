@@ -3,6 +3,7 @@
 //! Replaces `chrome-agent-sidecar.py` + external `chrome-agent` subprocess
 //! with a single Rust binary speaking CDP directly.
 
+pub mod actions;
 pub mod browser;
 pub mod cdp;
 pub mod session;
