@@ -178,6 +178,12 @@ pub struct ChatCompletionsProfile {
     pub(crate) parallel_tool_calls_only_with_tools: bool,
     pub(crate) require_parameters_with_tools: bool,
     pub(crate) include_empty_system_message: bool,
+    /// When true, assistant messages carrying tool_calls must include a
+    /// `reasoning_content` field (even if empty string) on every subsequent
+    /// request. Some reasoning-capable providers (e.g. Xiaomi MiMo, DeepSeek)
+    /// reject tool-only assistant messages that omit this field with a
+    /// 400 "text is not set" / "Param Incorrect" error.
+    pub(crate) require_reasoning_content_on_tool_calls: bool,
     pub(crate) structured_output: StructuredOutputPolicy,
     pub(crate) audio_transcription: Option<AudioTranscriptionProfile>,
 }
@@ -235,6 +241,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: false,
             require_parameters_with_tools: false,
             include_empty_system_message: false,
+            require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::BaseCapability,
             audio_transcription: None,
         }
@@ -280,6 +287,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: false,
             require_parameters_with_tools: false,
             include_empty_system_message: true,
+            require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::BaseCapability,
             audio_transcription: Some(AudioTranscriptionProfile {
                 endpoint_path: "/audio/transcriptions",
@@ -328,6 +336,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: false,
             require_parameters_with_tools: false,
             include_empty_system_message: false,
+            require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::ZaiGlmToolModelsOnly,
             audio_transcription: None,
         }
@@ -370,6 +379,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: true,
             require_parameters_with_tools: true,
             include_empty_system_message: true,
+            require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::BaseCapability,
             audio_transcription: None,
         }
@@ -414,6 +424,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: true,
             require_parameters_with_tools: false,
             include_empty_system_message: false,
+            require_reasoning_content_on_tool_calls: true,
             structured_output: StructuredOutputPolicy::BaseCapability,
             audio_transcription: None,
         }
@@ -458,6 +469,7 @@ impl ChatCompletionsProfile {
             parallel_tool_calls_only_with_tools: true,
             require_parameters_with_tools: false,
             include_empty_system_message: false,
+            require_reasoning_content_on_tool_calls: true,
             structured_output: StructuredOutputPolicy::BaseCapability,
             audio_transcription: None,
         }
@@ -578,5 +590,9 @@ mod tests {
         assert!(p.capabilities.supports_tool_calling);
         assert!(!p.capabilities.supports_structured_output);
         assert!(p.media_capabilities.supports_image_understanding);
+        assert!(
+            p.require_reasoning_content_on_tool_calls,
+            "opencode_go must require reasoning_content on tool-call assistant messages for MiMo/DeepSeek compatibility"
+        );
     }
 }

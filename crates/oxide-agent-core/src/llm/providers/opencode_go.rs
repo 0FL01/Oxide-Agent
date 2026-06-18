@@ -794,6 +794,14 @@ fn log_request_summary(event: OpenCodeRequestLog<'_>) {
         request_body_bytes = json_body_len(event.body),
         "OpenCode request summary"
     );
+
+    trace!(
+        provider = event.profile.provider_id,
+        request_kind = event.request_kind,
+        model = normalize_model_id_for_prefix(event.model_id, event.profile.model_prefix),
+        request_body = %event.body,
+        "OpenCode request body"
+    );
 }
 
 fn log_response_summary(

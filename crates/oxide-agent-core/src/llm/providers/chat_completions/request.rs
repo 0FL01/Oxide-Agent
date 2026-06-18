@@ -283,12 +283,14 @@ pub(crate) fn prepare_messages(
             history,
             options.allow_native_image_parts,
             options.profile.include_empty_system_message,
+            options.profile.require_reasoning_content_on_tool_calls,
         ),
         ChatMessageLayoutPolicy::MistralStrict => prepare_mistral_messages(
             system_prompt,
             history,
             tool_id_mapper,
             options.allow_native_image_parts,
+            options.profile.require_reasoning_content_on_tool_calls,
         ),
     }
 }
@@ -344,6 +346,7 @@ fn prepare_generic_messages(
     history: &[Message],
     allow_native_image_parts: bool,
     include_empty_system_message: bool,
+    require_reasoning_content: bool,
 ) -> Vec<Value> {
     let mut messages = Vec::with_capacity(history.len() + 1);
 
@@ -366,7 +369,11 @@ fn prepare_generic_messages(
             }
             "assistant" => {
                 let mut mapper = None;
-                messages.push(assistant_message(msg, &mut mapper));
+                messages.push(assistant_message(
+                    msg,
+                    &mut mapper,
+                    require_reasoning_content,
+                ));
             }
             "tool" => {
                 let mut mapper = None;
@@ -391,6 +398,7 @@ fn prepare_mistral_messages(
     history: &[Message],
     mut mapper: Option<&mut dyn ChatToolCallIdMapper>,
     allow_native_image_parts: bool,
+    require_reasoning_content: bool,
 ) -> Vec<Value> {
     let mut history_systems = Vec::new();
     let mut other_messages = Vec::new();
@@ -401,7 +409,11 @@ fn prepare_mistral_messages(
                 "role": "system",
                 "content": msg.content,
             })),
-            "assistant" => other_messages.push(assistant_message(msg, &mut mapper)),
+            "assistant" => other_messages.push(assistant_message(
+                msg,
+                &mut mapper,
+                require_reasoning_content,
+            )),
             "tool" => {
                 if let Some(tool_message) =
                     tool_result_message(msg, &mut mapper, true, allow_native_image_parts)
@@ -426,7 +438,11 @@ fn prepare_mistral_messages(
     messages
 }
 
-fn assistant_message(msg: &Message, mapper: &mut Option<&mut dyn ChatToolCallIdMapper>) -> Value {
+fn assistant_message(
+    msg: &Message,
+    mapper: &mut Option<&mut dyn ChatToolCallIdMapper>,
+    require_reasoning_content: bool,
+) -> Value {
     // Per the OpenAI Chat Completions spec, assistant messages that carry
     // tool_calls should have `content: null` when there is no text. Some
     // providers (e.g. Xiaomi MiMo) reject `"content": ""` with a 400
@@ -447,7 +463,23 @@ fn assistant_message(msg: &Message, mapper: &mut Option<&mut dyn ChatToolCallIdM
         "role": "assistant",
         "content": content,
     });
-    if let Some(reasoning_content) = msg
+
+    // Some reasoning-capable providers (e.g. Xiaomi MiMo, DeepSeek) require
+    // a `reasoning_content` field on assistant messages that carry
+    // tool_calls, even when empty. Omitting it causes a 400 "text is not
+    // set" / "Param Incorrect" error on subsequent requests. When the
+    // profile requires it and the message has tool_calls, we always
+    // include the field — using the stored reasoning if non-empty, or an
+    // empty string otherwise. Providers that ignore unknown fields are not
+    // affected (the field is only emitted when the profile opts in).
+    if has_tool_calls && require_reasoning_content {
+        let reasoning = msg
+            .reasoning_content
+            .as_deref()
+            .filter(|reasoning| !reasoning.trim().is_empty())
+            .unwrap_or("");
+        message["reasoning_content"] = json!(reasoning);
+    } else if let Some(reasoning_content) = msg
         .reasoning_content
         .as_deref()
         .filter(|reasoning| !reasoning.trim().is_empty())
@@ -873,7 +905,7 @@ mod tests {
         // `"content": ""` for tool-only assistant messages with a 400
         // "text is not set". The spec says content should be null.
         let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None);
+        let message = assistant_message(&msg, &mut None, false);
         assert_eq!(message["role"], json!("assistant"));
         assert!(
             message["content"].is_null(),
@@ -885,7 +917,7 @@ mod tests {
     #[test]
     fn assistant_message_with_text_and_tool_calls_sends_string_content() {
         let msg = Message::assistant_with_tools("thinking...", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None);
+        let message = assistant_message(&msg, &mut None, false);
         assert_eq!(message["content"], json!("thinking..."));
         assert!(message["tool_calls"].is_array());
     }
@@ -893,8 +925,51 @@ mod tests {
     #[test]
     fn assistant_message_with_empty_content_and_no_tool_calls_keeps_empty_string() {
         let msg = Message::assistant("");
-        let message = assistant_message(&msg, &mut None);
+        let message = assistant_message(&msg, &mut None, false);
         assert_eq!(message["content"], json!(""));
         assert!(message.get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn assistant_message_requires_reasoning_content_with_empty_reasoning() {
+        // MiMo/DeepSeek require reasoning_content on tool-call assistant
+        // messages even when empty. When require_reasoning_content is true
+        // and the message has tool_calls, the field must be present.
+        let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
+        let message = assistant_message(&msg, &mut None, true);
+        assert_eq!(message["reasoning_content"], json!(""));
+        assert!(message["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn assistant_message_requires_reasoning_content_with_nonempty_reasoning() {
+        let msg = Message::assistant_with_tools_and_reasoning(
+            "",
+            Some("step-by-step analysis".to_string()),
+            vec![sample_tool_call("call_1")],
+        );
+        let message = assistant_message(&msg, &mut None, true);
+        assert_eq!(message["reasoning_content"], json!("step-by-step analysis"));
+    }
+
+    #[test]
+    fn assistant_message_without_requirement_omits_empty_reasoning_content() {
+        let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
+        let message = assistant_message(&msg, &mut None, false);
+        assert!(
+            message.get("reasoning_content").is_none(),
+            "reasoning_content should be absent when not required and empty"
+        );
+    }
+
+    #[test]
+    fn assistant_message_without_tool_calls_never_includes_reasoning_content_when_empty() {
+        let mut msg = Message::assistant("");
+        msg.reasoning_content = Some(String::new());
+        let message = assistant_message(&msg, &mut None, true);
+        assert!(
+            message.get("reasoning_content").is_none(),
+            "reasoning_content should not be force-included without tool_calls"
+        );
     }
 }
