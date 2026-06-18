@@ -1004,20 +1004,24 @@ def normalize_network_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_network_failure(item: dict[str, Any]) -> bool:
+    """Return True for failed network requests.
+
+    A request is a failure when it either returned an HTTP error (status >= 400)
+    or was aborted by the browser (CDP ``Network.loadingFailed`` sets
+    ``error_text`` without an error HTTP status).  This matches the Rust
+    ``NetworkSummary``/``NetworkDebugPayload`` contract — see
+    ``test_support.rs`` in the browser_live provider.
+    """
+    status = item.get("status")
+    if isinstance(status, int) and status >= 400:
+        return True
+    return bool(item.get("error_text"))
+
+
 def summarize_network(requests: list[dict[str, Any]], limit: int = 20) -> dict[str, Any]:
     """Map chrome-agent network requests to the expanded Rust NetworkSummary shape."""
-    failures: list[dict[str, Any]] = []
-    for req in requests:
-        status = req.get("status")
-        if isinstance(status, int) and status >= 400:
-            failures.append({
-                "timestamp": req.get("timestamp", now_iso()),
-                "method": req.get("method", "GET"),
-                "url_redacted": req.get("url", ""),
-                "status": status,
-                "resource_type": req.get("resource_type", "other"),
-                "error_text": req.get("error_text"),
-            })
+    failures = [req for req in requests if _is_network_failure(req)]
     return {
         "failed_count": len(failures),
         "recent_failures": failures[:limit],
@@ -1110,18 +1114,14 @@ def build_network_debug_payload(
     del level  # only summary is supported by the chrome-agent wrapper contract
     items = [entry["item"] for entry in history if entry["action_seq"] >= since_action_seq]
     if filter_value == "failed":
-        items = [
-            item for item in items
-            if (isinstance(item.get("status"), int) and item["status"] >= 400)
-            or item.get("error_text")
-        ]
+        items = [item for item in items if _is_network_failure(item)]
     elif filter_value == "xhr":
         items = [item for item in items if "xhr" in (item.get("resource_type") or "").lower()]
     elif filter_value == "fetch":
         items = [item for item in items if "fetch" in (item.get("resource_type") or "").lower()]
     elif filter_value == "document":
         items = [item for item in items if (item.get("resource_type") or "").lower() == "document"]
-    failures = [item for item in items if isinstance(item.get("status"), int) and item["status"] >= 400]
+    failures = [item for item in items if _is_network_failure(item)]
     items = items[-limit:]
     # Body capture is optional and expensive; only expose it when explicitly requested.
     if include_bodies:
