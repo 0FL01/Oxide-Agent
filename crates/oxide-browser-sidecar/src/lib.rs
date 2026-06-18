@@ -384,7 +384,7 @@ async fn screenshot_latest(
         let mut headers = HeaderMap::new();
         headers.insert(
             "content-type",
-            "image/png".parse().expect("valid header value"),
+            "image/jpeg".parse().expect("valid header value"),
         );
         return (StatusCode::OK, headers, bytes).into_response();
     }
@@ -584,7 +584,7 @@ fn empty_screenshot() -> oxide_browser_contracts::ScreenshotArtifact {
     oxide_browser_contracts::ScreenshotArtifact {
         screenshot_id: String::new(),
         artifact_uri: String::new(),
-        mime_type: "image/png".to_string(),
+        mime_type: "image/jpeg".to_string(),
         width: 0,
         height: 0,
         sha256: String::new(),

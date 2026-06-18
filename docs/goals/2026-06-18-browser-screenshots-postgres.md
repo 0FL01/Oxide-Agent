@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: user request + RECON report (this session)
 Goal doc owner: Codex
-Last updated: 2026-06-18 23:45
+Last updated: 2026-06-18 23:55
 
 ## Objective
 
@@ -69,8 +69,8 @@ Out of scope:
   - Source: user request, RECON `screenshot.rs:47`
   - Acceptance: `Page.captureScreenshot` called with `{"format": "jpeg", "quality": 80}`; sidecar returns JPEG bytes; `ONE_PIXEL_JPEG` fallback replaces `ONE_PIXEL_PNG`; all `.png` extensions in URI generation become `.jpg`; MIME detection serves `image/jpeg`
   - Evidence required: `git grep '"format": "png"' crates/oxide-browser-sidecar/` returns nothing; `git grep 'ONE_PIXEL_PNG'` returns nothing; test verifying JPEG magic bytes (`\xff\xd8\xff`) in screenshot output
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `git grep '"format": "png"' crates/oxide-browser-sidecar/` returns nothing. `git grep 'ONE_PIXEL_PNG'` returns nothing. `screenshot.rs` uses `{"format": "jpeg", "quality": 80}`. `ONE_PIXEL_JPEG` (160 bytes, valid SOI `\xff\xd8\xff` + EOI `\xff\xd9`). Extension `.png` → `.jpg` in `screenshot.rs`, `artifacts.rs:81`, `tools.rs:84`. MIME `image/png` → `image/jpeg` in `screenshot.rs:82`, `lib.rs:387`, `lib.rs:587`. `cargo test -p oxide-browser-sidecar --lib` passes (93 tests). `cargo test -p oxide-agent-core -- profile-full --lib -- browser_live` passes (8 tests). Clippy + fmt clean.
 
 - G2: Browser screenshots stored as BYTEA in Postgres `browser_artifacts` table
   - Source: user request, RECON
@@ -328,6 +328,11 @@ Out of scope:
   - Commands: `cargo test -p oxide-browser-sidecar --test cdp_jpeg_verification -- --ignored --nocapture` (pass); `psql` migration apply + `\d` + CASCADE test (pass)
   - Audit IDs updated: V1→verified, V2→verified, Q1→verified
   - Next: CP1 — CDP JPEG capture in sidecar (format change + MIME + extensions)
+- 2026-06-18 23:55: CP1 complete — CDP JPEG capture in sidecar.
+  - Changed: `screenshot.rs` (format PNG→JPEG, ONE_PIXEL_PNG→ONE_PIXEL_JPEG, `.png`→`.jpg`, `image/png`→`image/jpeg`), `lib.rs` (2x MIME), `artifacts.rs` (extension), `tools.rs` (download filename), `cdp_jpeg_verification.rs` (cleanup)
+  - Evidence: `git grep '"format": "png"'` = nothing; `git grep 'ONE_PIXEL_PNG'` = nothing; 93 sidecar tests + 8 core browser_live tests pass; clippy + fmt clean
+  - Audit IDs updated: G1→verified
+  - Next: CP3 — Storage facade methods (CP2 migration already done in CP0)
 
 ## Risks and Blockers
 

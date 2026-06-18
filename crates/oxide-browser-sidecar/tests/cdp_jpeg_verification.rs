@@ -12,35 +12,8 @@ use std::time::Duration;
 use base64::Engine;
 use oxide_browser_contracts::Viewport;
 use oxide_browser_sidecar::browser::ChromiumProcess;
-use oxide_browser_sidecar::cdp::CdpClient;
 
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(30);
-
-const PAGE_HTML: &str = "data:text/html,\
-<html><head><title>JPEG vs PNG</title>\
-<style>body{font-family:sans-serif;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);\
-color:#e94560;margin:0;padding:20px}\
-h1{font-size:48px;text-shadow:2px 2px 4px rgba(0,0,0,0.5)}\
-p{font-size:18px;line-height:1.6;max-width:800px}\
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:20px 0}\
-.box{height:100px;border-radius:8px;display:flex;align-items:center;justify-content:center;\
-color:white;font-weight:bold}\
-.box:nth-child(1){background:#e94560}.box:nth-child(2){background:#0f3460}\
-.box:nth-child(3){background:#16213e}.box:nth-child(4){background:#533483}\
-.box:nth-child(5){background:#e94560}.box:nth-child(6){background:#0f3460}\
-</style></head><body>\
-<h1>JPEG vs PNG Quality Test</h1>\
-<p>This page has gradients, text, colors, and layout complexity to produce a \
-realistic screenshot size comparison between PNG and JPEG encoding via CDP.</p>\
-<div class=\"grid\">\
-<div class=\"box\">Box 1</div><div class=\"box\">Box 2</div><div class=\"box\">Box 3</div>\
-<div class=\"box\">Box 4</div><div class=\"box\">Box 5</div><div class=\"box\">Box 6</div>\
-</div>\
-<p>Paragraph with lots of text to fill the viewport. Lorem ipsum dolor sit amet, \
-consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore \
-magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris \
-nisi ut aliquip ex ea commodo consequat.</p>\
-</body></html>";
 
 /// JPEG magic bytes: SOI marker `\xff\xd8` followed by a JFIF/EXIF marker `\xff\xe0` or `\xff\xe1`.
 const JPEG_MAGIC: &[u8] = &[0xff, 0xd8, 0xff];
@@ -157,13 +130,41 @@ async fn cdp_jpeg_screenshot_verification() {
     println!("╔══════════════════════════════════════════════════╗");
     println!("║  CP0: CDP JPEG vs PNG Screenshot Verification    ║");
     println!("╠══════════════════════════════════════════════════╣");
-    println!("║  Viewport:    {}x{} @ {}x                        ║", viewport.width, viewport.height, viewport.device_scale_factor);
-    println!("║  PNG size:    {:>8} bytes ({:>6.1} KB)           ║", png_size, png_size as f64 / 1024.0);
-    println!("║  JPEG q80:    {:>8} bytes ({:>6.1} KB)           ║", jpeg_size, jpeg_size as f64 / 1024.0);
-    println!("║  JPEG q90:    {:>8} bytes ({:>6.1} KB)           ║", jpeg90_size, jpeg90_size as f64 / 1024.0);
-    println!("║  JPEG/PNG:    {:>6.1}% (q80)                     ║", ratio);
-    println!("║  Savings:     {:>6.1}% smaller (q80)             ║", 100.0 - ratio);
-    println!("║  JPEG magic:  {}                            ║", if jpeg_bytes.starts_with(JPEG_MAGIC) { "VERIFIED" } else { "FAILED" });
+    println!(
+        "║  Viewport:    {}x{} @ {}x                        ║",
+        viewport.width, viewport.height, viewport.device_scale_factor
+    );
+    println!(
+        "║  PNG size:    {:>8} bytes ({:>6.1} KB)           ║",
+        png_size,
+        png_size as f64 / 1024.0
+    );
+    println!(
+        "║  JPEG q80:    {:>8} bytes ({:>6.1} KB)           ║",
+        jpeg_size,
+        jpeg_size as f64 / 1024.0
+    );
+    println!(
+        "║  JPEG q90:    {:>8} bytes ({:>6.1} KB)           ║",
+        jpeg90_size,
+        jpeg90_size as f64 / 1024.0
+    );
+    println!(
+        "║  JPEG/PNG:    {:>6.1}% (q80)                     ║",
+        ratio
+    );
+    println!(
+        "║  Savings:     {:>6.1}% smaller (q80)             ║",
+        100.0 - ratio
+    );
+    println!(
+        "║  JPEG magic:  {}                            ║",
+        if jpeg_bytes.starts_with(JPEG_MAGIC) {
+            "VERIFIED"
+        } else {
+            "FAILED"
+        }
+    );
     println!("╚══════════════════════════════════════════════════╝");
 
     // --- Assertions (V1 evidence) ---
@@ -189,5 +190,9 @@ async fn cdp_jpeg_screenshot_verification() {
     chromium.shutdown().await.expect("Chromium shutdown");
 
     println!("\nCP0 V1: CDP Page.captureScreenshot with format=jpeg,quality=80 — VERIFIED");
-    println!("CP0 Q1: JPEG q80 size {} bytes ({:.1} KB) — under 200KB target — VERIFIED", jpeg_size, jpeg_size as f64 / 1024.0);
+    println!(
+        "CP0 Q1: JPEG q80 size {} bytes ({:.1} KB) — under 200KB target — VERIFIED",
+        jpeg_size,
+        jpeg_size as f64 / 1024.0
+    );
 }

@@ -78,7 +78,7 @@ impl BrowserArtifactPurpose {
 
     const fn extension(self) -> &'static str {
         match self {
-            Self::LiveFrame | Self::Milestone | Self::Final => "png",
+            Self::LiveFrame | Self::Milestone | Self::Final => "jpg",
             Self::ObserveJson | Self::NetworkJson | Self::ConsoleJson => "json",
         }
     }
@@ -173,7 +173,7 @@ mod tests {
 
         assert_eq!(
             artifact.uri,
-            "artifact://browser/task-1/session-1/step-0008-milestone.png"
+            "artifact://browser/task-1/session-1/step-0008-milestone.jpg"
         );
         assert_eq!(artifact.sha256.as_deref(), Some("abc"));
         assert!(path_is_under_root(&settings.root_dir, &artifact.local_path));

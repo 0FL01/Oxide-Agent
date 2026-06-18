@@ -81,7 +81,7 @@ fn screenshot_image_attachment(frame: &BrowserFrame) -> Option<ToolOutputImageAt
         .local_path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("screenshot-{}.png", frame.screenshot.screenshot_id));
+        .unwrap_or_else(|| format!("screenshot-{}.jpg", frame.screenshot.screenshot_id));
     Some(ToolOutputImageAttachment::image(
         file_name,
         Some(frame.screenshot.mime_type.clone()),
@@ -1954,8 +1954,8 @@ mod tests {
             dom_snapshot: Vec::new(),
             dom_snapshot_error: None,
             artifact: ArtifactRef::internal(
-                "artifact://browser/task/session/step-0001-live.png",
-                std::path::PathBuf::from("/tmp/step-0001-live.png"),
+                "artifact://browser/task/session/step-0001-live.jpg",
+                std::path::PathBuf::from("/tmp/step-0001-live.jpg"),
                 ArtifactKind::File,
                 42,
             ),

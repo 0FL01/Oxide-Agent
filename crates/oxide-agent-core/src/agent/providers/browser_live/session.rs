@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(state.retained_artifacts().len(), 1);
         assert_eq!(
             state.retained_artifacts()[0].uri,
-            "artifact://browser/task-1/session-1/step-0004-final.png"
+            "artifact://browser/task-1/session-1/step-0004-final.jpg"
         );
         assert_eq!(state.live_bytes(), 200);
     }
@@ -401,7 +401,7 @@ mod tests {
             .expect("record milestone");
 
         let summary = state.compact_history_summary();
-        assert!(summary.contains("artifact://browser/task-1/session-1/step-0001-milestone.png"));
+        assert!(summary.contains("artifact://browser/task-1/session-1/step-0001-milestone.jpg"));
         assert!(summary.contains("latest_screenshot_id=shot-1"));
         assert!(!summary.contains("base64"));
         assert!(!summary.contains("data:image"));
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(state.retained_artifacts().len(), 1);
         assert_eq!(
             state.retained_artifacts()[0].uri,
-            "artifact://browser/task-1/session-1/step-0001-milestone.png"
+            "artifact://browser/task-1/session-1/step-0001-milestone.jpg"
         );
         assert_eq!(
             state.retained_artifacts()[0].sha256.as_deref(),
