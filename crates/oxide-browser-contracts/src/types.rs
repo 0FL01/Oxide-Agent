@@ -456,7 +456,7 @@ pub enum ActionStatus {
 }
 
 /// Query for `GET /sessions/{id}/screenshot/latest`.
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ScreenshotQuery {
     #[serde(default)]
     pub format: ScreenshotFormat,

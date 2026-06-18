@@ -4,7 +4,9 @@ Oxide Browser Live is an autonomous headless-browser capability. The agent has
 full control over a browser session: it can open any URL, observe pages, execute
 actions, fill forms, submit data, extract structured data, and close the session.
 The browser is controlled by a local `chrome-agent-sidecar` container rather than
-an external service.
+an external service. The sidecar is a native Rust binary (`oxide-browser-sidecar`)
+that talks CDP directly to Chromium over a single WebSocket — no Python runtime,
+no `chrome-agent` subprocess.
 
 > **Warning:** Browser Live runs in Yolo mode. The agent is allowed to type
 > passwords, secrets, and other sensitive data into web pages, and to submit
@@ -31,7 +33,7 @@ an external service.
 ## Requirements
 
 - Docker with Compose
-- The `chrome-agent-sidecar` service built from `docker/Dockerfile.chrome-agent-sidecar`
+- The `chrome-agent-sidecar` service built from `docker/Dockerfile.chrome-agent-sidecar` (native Rust binary + Chromium only)
 
 ## Configuration
 
@@ -45,11 +47,10 @@ BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:8787
 BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:8787
 ```
 
-Optional internal sidecar directories (overridden by Docker Compose volumes):
+Optional internal sidecar artifact directory (overridden by Docker Compose volumes):
 
 ```bash
 # BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts
-# BROWSER_AGENT_PROFILE_DIR=/tmp/oxide-browser-profiles
 ```
 
 ## Deployment
@@ -79,10 +80,10 @@ curl -fsS http://127.0.0.1:8787/healthz \
   -H "Authorization: Bearer ${BROWSER_AGENT_SIDECAR_TOKEN}"
 ```
 
-Sidecar self-test (inside the container):
+Sidecar self-test (integration tests, requires Chromium):
 
 ```bash
-docker exec oxide_chrome_agent_sidecar chrome-agent-sidecar --self-test
+cargo test -p oxide-browser-sidecar --test rest_contract -- --ignored --nocapture
 ```
 
 Web app health:
@@ -94,7 +95,7 @@ curl -fsS http://127.0.0.1:8080/health
 Expected sidecar response:
 
 ```json
-{"ok": true, "chrome_agent_available": true, "chrome_agent_status": "stopped"}
+{"ok": true, "native": true}
 ```
 
 ## Tools
@@ -149,12 +150,12 @@ Fetch browser console/network debug summaries as compact artifact-backed
 diagnostics. Supports `since_action_seq` and `limit`.
 
 ### `browser_close`
-Close a browser session and finalize retained browser artifacts. `purge_profile`
-defaults to true (clears the Chromium profile: cookies, localStorage, cache).
+Close a browser session and finalize retained browser artifacts. The Chromium
+profile lives in a per-session temp directory that is always cleaned up on
+close (the `purge_profile` flag is accepted for contract compatibility and
+echoed in the response, but profiles are ephemeral by design).
 `keep_artifacts` defaults to true (screenshot artifacts are preserved for
-debugging even when the profile is purged). These are independent: purging the
-profile does not delete artifacts, and keeping artifacts does not retain the
-profile.
+debugging).
 
 ## Post-action observations
 
@@ -186,8 +187,9 @@ Tool output includes `post_observation_diagnostics` with:
 
 ## Limits and warnings
 
-- Browser sessions are ephemeral; the profile is purged on `browser_close`
-  unless `purge_profile: false`.
+- Browser sessions are ephemeral; the Chromium profile (cookies, localStorage,
+  cache) lives in a per-session temp directory that is cleaned up on
+  `browser_close`. Artifacts are preserved when `keep_artifacts` is true.
 - The sidecar requires a shared bearer token; keep it secret and out of logs.
 - The app and sidecar communicate over loopback only.
 - Screenshots are stored as artifact refs; bytes are not persisted in durable
@@ -250,11 +252,11 @@ Tool output includes `post_observation_diagnostics` with:
 - [ ] `BROWSER_AGENT_SIDECAR_TOKEN` set in `.env` for both app and sidecar
 - [ ] `BROWSER_AGENT_ENABLED=true` set in `.env`
 - [ ] `BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:8787`
-- [ ] Sidecar health returns `ok: true`
-- [ ] Sidecar self-test passes (`chrome-agent-sidecar --self-test`)
+- [ ] Sidecar health returns `{"ok": true, "native": true}`
+- [ ] Sidecar integration tests pass (`cargo test -p oxide-browser-sidecar --test rest_contract -- --ignored`)
 - [ ] Web app health returns `{"status":"ok"}`
 - [ ] A test task can open a browser and observe `https://example.com`
-- [ ] `browser_close` purges the profile and returns `sidecar_errors: 0`
+- [ ] `browser_close` returns `sidecar_errors: 0`
 - [ ] No browser token is present in logs or chat history
 
 ## Rollback

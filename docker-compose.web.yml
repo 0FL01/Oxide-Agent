@@ -110,12 +110,10 @@ services:
       - TZ=Europe/Moscow
       - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
       - BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts
-      - BROWSER_AGENT_PROFILE_DIR=/tmp/oxide-browser-profiles
     ports:
       - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
     volumes:
       - browser-artifacts:/var/lib/oxide-browser/artifacts
-      - browser-profiles:/tmp/oxide-browser-profiles
     shm_size: "1gb"
     cap_drop:
       - ALL
@@ -126,7 +124,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-      start_period: 10s
+      start_period: 5s
     logging:
       driver: json-file
       options:
@@ -136,4 +134,3 @@ services:
 volumes:
   sandboxd-run:
   browser-artifacts:
-  browser-profiles:

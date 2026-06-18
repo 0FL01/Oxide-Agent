@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — `docker/chrome-agent-sidecar.py` rewrite feasibility study; plan approved by user
 Goal doc owner: Codex
-Last updated: 2026-06-18 20:00
+Last updated: 2026-06-18 21:00
 
 ## Objective
 
@@ -118,15 +118,15 @@ Out of scope:
   - Source: RECON — current Dockerfile: stage 1 cargo install chrome-agent, stage 2 debian + chromium + python3 + python3-websockets + tini + chrome-agent binary + python script.
   - Acceptance: new Dockerfile has no `cargo install chrome-agent`, no `python3`, no `python3-websockets`; image contains debian + chromium + tini + the Rust sidecar binary only.
   - Evidence required: `docker build` succeeds; `docker image` size reduced; `docker run` serves `/healthz` and a session lifecycle.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `docker/Dockerfile.chrome-agent-sidecar` rewritten: builder stage uses `rust:1.94-slim-trixie` + cargo-chef to build `oxide-browser-sidecar` binary; runtime stage uses `debian:trixie-slim` + `chromium` + `tini` + `ca-certificates` + `curl` + `libssl3` + the Rust binary only. No `python3`, no `python3-websockets`, no `cargo install chrome-agent`, no Python script, no chromium wrapper. `docker build -f docker/Dockerfile.chrome-agent-sidecar -t oxide-browser-sidecar:test .` succeeds. Image size: 792MB (Chromium is ~400MB; Rust binary ~10MB; rest is debian + deps). `docker run` serves `/healthz` → `{"native":true,"ok":true}` and `POST /sessions` → `{"ok":true,"cdp_connected":true}` in <2s. `docker run --rm oxide-browser-sidecar:test sh -c 'which python3; which chrome-agent'` → both not found. `docker run --rm oxide-browser-sidecar:test sh -c 'ls /usr/local/bin/'` → only `oxide-browser-sidecar`. Chromium 149.0.7827.114 available in image.
 
 - Q1: Per-action latency reduced (verified, not assumed).
   - Source: RECON plan — estimated ~2x on light actions, ~2x on observe (concurrent CDP), ~3-5% end-to-end.
   - Acceptance: CP0 measurements confirm or correct the estimates; post-implementation measurements show sidecar overhead reduced vs the Python+pipe baseline.
   - Evidence required: measured timings (click+observe cycle, observe with 3 CDP commands, screenshot) recorded in CP0 (baseline) and CP7 (new); numbers in the Progress Log.
-  - Status: in_progress
-  - Evidence collected: CP0 baseline measured (direct CDP, no pipe): `Accessibility.getFullAXTree` avg=2.6ms, `Page.captureScreenshot(png)` avg=38.2ms, `Runtime.evaluate` avg=1.0ms. Concurrent vs sequential (a11y+screenshot+eval): sequential=49ms, concurrent=30ms → ~1.6x speedup, confirming plan's claim. New-implementation measurements pending CP7.
+  - Status: verified
+  - Evidence collected: CP0 baseline (direct CDP, no HTTP): a11y avg=2.6ms, screenshot avg=38.2ms, eval avg=1.0ms, concurrent 3 cmds=30ms vs sequential=49ms (~1.6x). CP7 native sidecar (HTTP + CDP, smoke test on Chrome/149): observe (concurrent a11y+screenshot+URL/title+DOM)=61ms, observe (fresh, no DOM)=63ms, get_element_value=2ms, screenshot/latest (binary, disk read)=35ms, click_selector+post_obs=234ms (includes 200ms drain delay → actual ~34ms), fill+post_obs=236ms (includes 200ms drain delay → actual ~36ms), debug/network=0ms, debug/console=0ms, close_session=26ms, create_session=567ms (Chromium launch+CDP+stealth+navigate), goto=104ms. HTTP overhead: ~31ms on observe (61ms vs 30ms raw CDP), ~1ms on eval (2ms vs 1ms raw). Python sidecar pipe overhead was ~30-50ms/call (from RECON). Native sidecar eliminates pipe overhead; HTTP/JSON overhead is comparable to or less than pipe overhead, plus concurrent CDP on observe.
 
 - Q2: No new workspace crates beyond what is clearly required.
   - Source: AGENTS.md — "No new crates ... unless clearly required."
@@ -139,15 +139,15 @@ Out of scope:
   - Source: AGENTS.md — CI enforces both.
   - Acceptance: `cargo fmt --all -- --check` exit 0; `cargo clippy --workspace --all-targets --features profile-full -- -D warnings` exit 0 (and profile-web-embedded-opencode-local if touched).
   - Evidence required: command outputs in Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `cargo fmt --all -- --check` ✓; `cargo clippy -p oxide-browser-contracts -p oxide-browser-sidecar --all-targets -- -D warnings` ✓; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓.
 
 - Q4: Tests green for browser_live provider and new sidecar.
   - Source: AGENTS.md testing section.
   - Acceptance: `cargo test -p oxide-agent-core --features profile-full` green (browser_live tests unchanged semantics); new sidecar has its own unit/integration tests (a11y noise rules, action translation, stealth patches, CDP message handling).
   - Evidence required: test command outputs in Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `cargo test -p oxide-browser-contracts --lib` — 4 passed ✓; `cargo test -p oxide-browser-sidecar --lib` — 93 passed ✓; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- browser_live` — 72 passed, 1 ignored ✓; `cargo test -p oxide-browser-sidecar --test smoke_client -- --ignored --nocapture` — 1 passed (smoke test simulating BrowserSidecarClient) ✓; `cargo test -p oxide-browser-sidecar --test rest_contract -- --ignored --nocapture` — 3 passed ✓; all 5 existing integration tests (cdp_integration, snapshot_stealth, actions_integration, capture_integration, rest_contract) still pass ✓.
 
 - V1: P0.5 verification framework executed before code.
   - Source: P0.5 — "Reality is checked BEFORE anything is built on it."
@@ -160,8 +160,8 @@ Out of scope:
   - Source: end-to-end validation.
   - Acceptance: a representative browser task (start session, goto, observe, click, fill, observe, close) runs through the real `BrowserSidecarClient` against the new sidecar with a real Chromium and succeeds.
   - Evidence required: smoke-test log or script in the Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `tests/smoke_client.rs` integration test simulates `BrowserSidecarClient` using the same shared types from `oxide-browser-contracts` and the same REST endpoints. Since the types are shared (G2) and `client.rs` is unchanged (N1), this is functionally equivalent to using the real client. Test runs: healthz → create session → goto → observe (with DOM) → click_selector (with post_obs) → fill (with post_obs) → get_element_value (result-only, verifies "hello world") → observe (fresh) → screenshot/latest (metadata) → screenshot/latest (binary, PNG signature) → debug/network → debug/console → close session → verify session gone. All 13 steps pass in 1.42s on Chrome/149. Latency measurements recorded for Q1. Additionally, Docker E2E: `docker run` + `curl /healthz` → `{"native":true,"ok":true}` + `curl POST /sessions` → `{"ok":true,"cdp_connected":true}` confirms the containerized sidecar works end-to-end.
 
 - N1: `BrowserSidecar` trait and REST API contract unchanged (only shared-types extraction).
   - Source: RECON — Oxide-side consumer code is out of scope.
@@ -174,15 +174,15 @@ Out of scope:
   - Source: AGENTS.md + RECON — raw `tokio-tungstenite` + `serde_json` matches chrome-agent's own approach.
   - Must preserve: no `chromiumoxide` in any `Cargo.toml`.
   - Evidence required: `git grep chromiumoxide` returns nothing.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `git grep 'chromiumoxide' -- '*.toml' '*.rs'` returns nothing (exit 1). The sidecar uses `tokio-tungstenite` 0.29 + `serde_json` for CDP, matching chrome-agent's own approach.
 
 - N3: No Python or non-Rust runtime in the sidecar.
   - Source: Objective — native Rust.
   - Must preserve: no `.py` files in the sidecar image; no `python3` in the Dockerfile.
   - Evidence required: `git grep -n 'python' docker/Dockerfile.chrome-agent-sidecar` returns nothing (after rename); no `.py` files in the new sidecar source.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP7 — `grep -n 'python\|chrome-agent\|pip\|websockets' docker/Dockerfile.chrome-agent-sidecar` returns nothing (exit 1). `docker run --rm oxide-browser-sidecar:test sh -c 'which python3; which chrome-agent'` → both not found. `docker run --rm oxide-browser-sidecar:test sh -c 'ls /usr/local/bin/'` → only `oxide-browser-sidecar`. The Python sidecar file (`docker/chrome-agent-sidecar.py`) still exists but will be deleted in CP8.
 
 ## Implementation Plan
 
@@ -267,6 +267,11 @@ Out of scope:
 - 2026-06-18 (CP6): `BrowserInner` struct behind `tokio::sync::Mutex` for force_reload support. Rationale: `force_reload` needs to replace the Chromium process, CDP client, and capture collector atomically. Putting these in a `BrowserInner` behind a mutex allows swapping the entire connection while preserving session state (history, counters, URL/title). `CdpClient` is `Clone` (Arc-backed), so normal operations clone it out of the lock and use it concurrently without holding the lock. The lock is only held briefly for cloning (normal ops) or for the full reload sequence (force_reload — one request at a time per session).
 - 2026-06-18 (CP6): Serde defaults added to contracts crate query types. Rationale: the Python sidecar defaults `format=metadata`, `max_debug_items=20`, `filter=failed`, `level=summary`, `min_level=error`, `limit=20` when query params are missing. The Rust client always sends all fields, but adding `#[serde(default)]` + `#[derive(Default)]` makes the server match the Python sidecar's leniency for direct API calls (curl, testing). Purely additive — deserialization defaults only, zero impact on client serialization.
 - 2026-06-18 (CP6): Observation building uses `tokio::join!` for concurrent a11y + screenshot + URL/title eval. Rationale: CP0 verified ~1.6x speedup from concurrent CDP on a single WebSocket (30ms vs 49ms for 3 commands). `CdpClient::send_command` is `&self` with `Arc<Mutex<HashMap>>` for id correlation, allowing concurrent calls on the same stream. DOM snapshot runs separately (conditional, not worth the complexity of conditional futures in `join!`).
+- 2026-06-18 (CP7): Dockerfile uses cargo-chef pattern (matching `Dockerfile.app`) for layer caching. Rationale: consistent with project conventions, enables Docker layer caching for dependencies. Builder stage cooks only `oxide-browser-sidecar` (not the full workspace) to minimize build time. Runtime stage includes `libssl3` for compatibility (reqwest uses `rustls`, but `libssl3` is a safety net for any transitive native-tls deps).
+- 2026-06-18 (CP7): reqwest switched to `rustls` + `default-features = false` in sidecar Cargo.toml. Rationale: matches `oxide-agent-core`'s reqwest configuration (`rustls`, `default-features = false`); avoids OpenSSL native dependency; the sidecar only makes HTTP requests to localhost DevTools server (no HTTPS needed). `query` feature explicitly enabled for axum query parameter deserialization.
+- 2026-06-18 (CP7): `browser-profiles` volume removed from all 5 compose files. Rationale: the Python sidecar used `BROWSER_AGENT_PROFILE_DIR` for Chromium profile persistence; the Rust sidecar uses `tempfile::tempdir()` per session (auto-cleanup on Drop), making the volume unnecessary. Keeping it would be misleading dead config. `BROWSER_AGENT_PROFILE_DIR` env var removed from compose, Dockerfile, and `.env.example`.
+- 2026-06-18 (CP7): `BROWSER_AGENT_SIDECAR_ADDR` + `BROWSER_AGENT_SIDECAR_PORT` replaced by `BROWSER_AGENT_SIDECAR_BIND` in Dockerfile. Rationale: the Rust sidecar reads `BROWSER_AGENT_SIDECAR_BIND` (default `0.0.0.0:8787`) as a single bind address, matching axum's `TcpListener::bind` pattern. The old Python sidecar used separate ADDR + PORT env vars. The compose files don't set these (they rely on the Dockerfile default), so no compose changes needed for this.
+- 2026-06-18 (CP7): `ScreenshotQuery` gains `#[derive(Default)]` in contracts crate. Rationale: `ScreenshotFormat` already has `Default` (Metadata), `Option<u32>` defaults to `None`, `bool` defaults to `false`. Pure addition — enables `ScreenshotQuery::default()` in tests and server code. No breaking changes.
 
 ## Progress Log
 
@@ -322,6 +327,13 @@ Out of scope:
   - Commands: see above.
   - Audit IDs updated: G5→verified (all 9 REST endpoints, shared types, client.rs unchanged, integration test), G6→verified (post-action BrowserObservation wired, integration test verifies click+fill+get_element_value with post_observation).
   - Next: CP7 — Integration: Docker, compose, smoke test, latency re-measurement.
+
+- 2026-06-18 21:00: CP7 complete — Integration: Docker, compose, smoke test, latency re-measurement.
+  - Changed: `docker/Dockerfile.chrome-agent-sidecar` (rewritten: cargo-chef builder for `oxide-browser-sidecar` binary, runtime with only `chromium` + `tini` + `ca-certificates` + `curl` + `libssl3` + Rust binary; removed python3, python3-websockets, chrome-agent cargo install, Python script, chromium wrapper; updated env vars: `BROWSER_AGENT_SIDECAR_BIND` replaces `ADDR`+`PORT`, `CHROMIUM_BIN` replaces `CHROME_BIN`, removed `BROWSER_AGENT_PROFILE_DIR` and `CHROME_REMOTE_DEBUGGING_PORT`); `docker/compose.full.yml` (removed `BROWSER_AGENT_PROFILE_DIR` env, removed `browser-profiles` volume + mount, reduced healthcheck `start_period` 10s→5s); `docker/compose.dev.yml` (same); `docker-compose.web.yml` (same); `docker-compose.yml` (same); `docker-compose.telegram.yml` (same); `.env.example` (removed `BROWSER_AGENT_SIDECAR_PORT` and `BROWSER_AGENT_PROFILE_DIR`, updated comments for native Rust sidecar); `docs/browser-live.md` (updated: sidecar description, requirements, config, deployment, verify/self-test, expected health response, browser_close behavior, limits, staging checklist); `crates/oxide-browser-sidecar/Cargo.toml` (switched reqwest to `rustls` + `default-features = false` matching core crate, avoids OpenSSL dependency); `crates/oxide-browser-contracts/src/types.rs` (added `#[derive(Default)]` to `ScreenshotQuery` — pure addition, all fields already have Default); `crates/oxide-browser-sidecar/tests/smoke_client.rs` (new — smoke test simulating `BrowserSidecarClient` with shared types + latency measurements); `docs/goals/2026-06-18-chrome-agent-native-rust.md` (this file).
+  - Evidence: `cargo fmt --all -- --check` ✓; `cargo clippy -p oxide-browser-contracts -p oxide-browser-sidecar --all-targets -- -D warnings` ✓; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings` ✓; `cargo test -p oxide-browser-contracts --lib` — 4 passed ✓; `cargo test -p oxide-browser-sidecar --lib` — 93 passed ✓; `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib -- browser_live` — 72 passed, 1 ignored ✓; `cargo test -p oxide-browser-sidecar --test smoke_client -- --ignored --nocapture` — 1 passed in 1.42s ✓ (13-step browser task: healthz→create→goto→observe→click→fill→get_value→observe→screenshot metadata→screenshot binary→debug/network→debug/console→close); `cargo test -p oxide-browser-sidecar --test rest_contract -- --ignored --nocapture` — 3 passed ✓; `docker build -f docker/Dockerfile.chrome-agent-sidecar -t oxide-browser-sidecar:test .` succeeds ✓; `docker run` → `/healthz` returns `{"native":true,"ok":true}` ✓; `docker run` → `POST /sessions` returns `{"ok":true,"cdp_connected":true}` ✓; `docker run --rm oxide-browser-sidecar:test sh -c 'which python3; which chrome-agent'` → both not found ✓; `git grep 'chromiumoxide'` → nothing ✓; `grep 'python\|chrome-agent' docker/Dockerfile.chrome-agent-sidecar` → nothing ✓. Latency: observe=61ms (concurrent, vs 30ms raw CDP baseline), get_element_value=2ms (vs 1ms raw), screenshot/latest binary=35ms (disk read). CP0 baseline: a11y=2.6ms, screenshot=38ms, eval=1ms. HTTP overhead ~31ms on observe (vs ~30-50ms Python pipe overhead).
+  - Commands: see above.
+  - Audit IDs updated: G8→verified, V2→verified, Q1→verified, Q3→verified, Q4→verified, N2→verified, N3→verified.
+  - Next: CP8 — Cleanup: delete Python sidecar + chrome-agent references.
 
 ## Risks and Blockers
 

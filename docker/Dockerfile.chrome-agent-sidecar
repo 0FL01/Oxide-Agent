@@ -1,18 +1,35 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.94-slim-trixie AS chrome-agent-builder
-
-ARG CHROME_AGENT_VERSION=0.4.3
+FROM rust:1.94-slim-trixie AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install chrome-agent --version "${CHROME_AGENT_VERSION}" --locked --root /opt/chrome-agent
+    cargo install cargo-chef
+
+FROM chef AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+WORKDIR /app
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo chef cook --release -p oxide-browser-sidecar --recipe-path recipe.json
+
+COPY . .
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    set -eux; \
+    cargo build --release -p oxide-browser-sidecar; \
+    mkdir -p /runtime/bin; \
+    cp /app/target/release/oxide-browser-sidecar /runtime/bin/
 
 FROM debian:trixie-slim
 
@@ -20,33 +37,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
     curl \
-    python3 \
-    python3-websockets \
+    libssl3 \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 10002 browser \
     && useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/browser browser \
-    && mkdir -p /var/lib/oxide-browser/artifacts /tmp/oxide-browser-profiles /home/browser/bin \
-    && chown -R browser:browser /var/lib/oxide-browser /tmp/oxide-browser-profiles /home/browser
+    && mkdir -p /var/lib/oxide-browser/artifacts \
+    && chown -R browser:browser /var/lib/oxide-browser /home/browser
 
-COPY docker/chrome-agent-sidecar.py /usr/local/bin/chrome-agent-sidecar
-COPY --from=chrome-agent-builder /opt/chrome-agent/bin/chrome-agent /usr/local/bin/chrome-agent
-RUN chmod 0755 /usr/local/bin/chrome-agent-sidecar
+COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
 
-# chrome-agent launches Chromium directly and needs --no-sandbox inside the
-# container. We provide a wrapper that prepends the required flags while
-# preserving any additional arguments passed by chrome-agent.
-RUN printf '%s\n' '#!/bin/sh' 'exec /usr/bin/chromium --no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage "$@"' > /home/browser/bin/chromium \
-    && chmod 0755 /home/browser/bin/chromium
-
-ENV BROWSER_AGENT_SIDECAR_ADDR=0.0.0.0 \
-    BROWSER_AGENT_SIDECAR_PORT=8787 \
+ENV BROWSER_AGENT_SIDECAR_BIND=0.0.0.0:8787 \
     BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts \
-    BROWSER_AGENT_PROFILE_DIR=/tmp/oxide-browser-profiles \
-    CHROME_BIN=/usr/bin/chromium \
-    CHROME_REMOTE_DEBUGGING_PORT=9222 \
-    PATH=/home/browser/bin:$PATH
+    CHROMIUM_BIN=/usr/bin/chromium
 
 USER browser
 WORKDIR /home/browser
@@ -54,4 +58,4 @@ WORKDIR /home/browser
 EXPOSE 8787
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["/usr/local/bin/chrome-agent-sidecar"]
+CMD ["/usr/local/bin/oxide-browser-sidecar"]
