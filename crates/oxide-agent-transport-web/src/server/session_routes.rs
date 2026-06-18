@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     GetSessionResponse, ListSessionsResponse, OkResponse, TaskAttachment,
     UpdateSessionProfileRequest, UpdateSessionRequest, UpdateSessionResponse,
     UploadLargeInputRequest, UploadLargeInputResponse, UploadTaskAttachmentsResponse,
-    WebSessionRecord,
+    WebSessionRecord, WebTaskRecord,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -577,6 +577,15 @@ pub(crate) async fn api_delete_session(
             .await;
         abort_task_handle(&state, active_task_id).await;
     }
+
+    // List tasks before session deletion — needed for legacy filesystem
+    // browser artifact cleanup (artifact_dir/browser/{task_id}/).
+    let tasks: Vec<WebTaskRecord> = state
+        .web_store
+        .list_tasks(user.user_id, &session_id)
+        .await
+        .map_err(store_error_response)?;
+
     for context_key in record.tracked_context_keys() {
         state
             .sandbox_control()
@@ -586,10 +595,35 @@ pub(crate) async fn api_delete_session(
         state
             .session_manager
             .storage()
-            .clear_agent_memory_for_flow(user.user_id, context_key, record.agent_flow_id.clone())
+            .clear_agent_memory_for_flow(
+                user.user_id,
+                context_key.clone(),
+                record.agent_flow_id.clone(),
+            )
+            .await
+            .map_err(|error| backend_unavailable_response(error.to_string()))?;
+        // Delete browser screenshot artifacts from Postgres BYTEA.
+        state
+            .session_manager
+            .storage()
+            .delete_browser_artifacts_by_context_key(user.user_id, &context_key)
             .await
             .map_err(|error| backend_unavailable_response(error.to_string()))?;
     }
+
+    // Clean up legacy filesystem browser artifacts (pre-Postgres PNGs).
+    // Best-effort: directory may not exist on fresh deployments.
+    for task in &tasks {
+        let dir = state.artifact_dir.join("browser").join(&task.task_id);
+        if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::debug!(
+                dir = %dir.display(),
+                error = %error,
+                "No legacy browser artifact dir to clean"
+            );
+        }
+    }
+
     state
         .web_store
         .delete_session(user.user_id, &session_id)
