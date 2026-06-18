@@ -6,6 +6,8 @@
 pub mod browser;
 pub mod cdp;
 pub mod session;
+pub mod snapshot;
+pub mod stealth;
 
 use axum::{
     Router,

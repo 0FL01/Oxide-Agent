@@ -50,8 +50,8 @@ impl BrowserSession {
             start_url = "https://www.google.com".to_string();
         }
 
-        // Navigate to the start URL.
-        navigate_to(&cdp, &start_url, NAV_TIMEOUT)
+        // Navigate to the start URL (with stealth patches on first navigation).
+        navigate_to(&cdp, &start_url, NAV_TIMEOUT, true)
             .await
             .context("initial navigation")?;
 
@@ -78,7 +78,7 @@ impl BrowserSession {
     /// Navigate to a URL via `Page.navigate` and wait for load event.
     #[allow(dead_code)]
     pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<()> {
-        navigate_to(&self.cdp, url, timeout).await
+        navigate_to(&self.cdp, url, timeout, false).await
     }
 
     /// Increment and return the action sequence number.
@@ -97,8 +97,15 @@ impl BrowserSession {
 /// Navigate to a URL via `Page.navigate` and wait for `Page.loadEventFired`.
 ///
 /// Free function so it can be called during session construction before
-/// `BrowserSession` is fully assembled.
-async fn navigate_to(cdp: &CdpClient, url: &str, timeout: Duration) -> Result<()> {
+/// `BrowserSession` is fully assembled. When `stealth` is true, anti-detection
+/// patches are applied between `Page.enable` and `Page.navigate` (once per
+/// session — `Page.addScriptToEvaluateOnNewDocument` survives navigations).
+pub async fn navigate_to(
+    cdp: &CdpClient,
+    url: &str,
+    timeout: Duration,
+    stealth: bool,
+) -> Result<()> {
     // Subscribe BEFORE sending commands to avoid missing the load event.
     let mut events = cdp.subscribe();
 
@@ -106,6 +113,11 @@ async fn navigate_to(cdp: &CdpClient, url: &str, timeout: Duration) -> Result<()
     cdp.send_command("Page.enable", serde_json::Value::Null, timeout)
         .await
         .map_err(|e| anyhow::anyhow!("Page.enable: {e}"))?;
+
+    // Apply stealth patches on first navigation (survives subsequent navigations).
+    if stealth {
+        crate::stealth::apply_stealth(cdp).await;
+    }
 
     let params = serde_json::json!({"url": url});
     let result = cdp
