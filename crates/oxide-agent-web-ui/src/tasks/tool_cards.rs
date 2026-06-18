@@ -986,81 +986,126 @@ fn BrowserToolCard(
     let icon = outcome.icon();
     let raw_output = raw_output_preview(result.as_ref());
 
-    // The structured payload lives inside output.structured_payload for browser
-    // tools. Some older events may carry fields directly on the output object.
-    // Extract all needed fields as owned strings upfront — Leptos CSR closures
-    // require 'static lifetimes.
-    let payload = output
+    // Primary source: `display_payload` on the event payload — a compact,
+    // truncation-safe summary extracted by the web transport before
+    // `output_preview` is truncated. This is the only reliable source for
+    // browser tools because `output_preview` exceeds EVENT_PREVIEW_MAX_CHARS
+    // and becomes invalid JSON after truncation.
+    //
+    // Fallback: parse `output` (from `output_preview`) for older events that
+    // may not have `display_payload` yet, or when the output is small enough
+    // to not be truncated.
+    let display = result
         .as_ref()
-        .and_then(|v| v.get("structured_payload"))
-        .filter(|v| v.is_object())
-        .or(output.as_ref())
+        .and_then(|e| e.payload.get("display_payload"))
         .filter(|v| v.is_object());
 
-    // Observation: browser_execute has post_observation, browser_observe has
-    // fields directly on the payload.
-    let observation = payload
-        .and_then(|p| {
-            p.get("post_observation")
-                .or_else(|| p.get("observation"))
-                .filter(|v| v.is_object())
-        })
-        .or(payload);
-
-    let screenshot_uri = observation
-        .and_then(|obs| obs.get("screenshot"))
-        .and_then(|s| s.get("artifact_uri"))
-        .and_then(Value::as_str)
-        .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
-        .map(String::from);
-
-    let url = observation
-        .and_then(|obs| obs.get("url"))
-        .and_then(Value::as_str)
-        .map(String::from);
-    let title = observation
-        .and_then(|obs| obs.get("title"))
-        .and_then(Value::as_str)
-        .map(String::from);
-
-    let action_kind = payload
-        .and_then(|p| p.get("action_result"))
-        .and_then(|ar| ar.get("kind"))
-        .and_then(Value::as_str)
-        .map(String::from);
-    let action_status = payload
-        .and_then(|p| p.get("action_result"))
-        .and_then(|ar| ar.get("status"))
-        .and_then(Value::as_str)
-        .map(String::from);
-
-    let network_label = observation
-        .and_then(|obs| obs.get("network_summary"))
-        .map(|ns| {
-            let failed = ns.get("failed_count").and_then(Value::as_u64).unwrap_or(0);
-            let total = ns.get("request_count").and_then(Value::as_u64).unwrap_or(0);
-            format!("network {failed}/{total}")
-        });
-    let console_label = observation
-        .and_then(|obs| obs.get("console_summary"))
-        .map(|cs| {
-            let errors = cs.get("error_count").and_then(Value::as_u64).unwrap_or(0);
-            let warnings = cs.get("warning_count").and_then(Value::as_u64).unwrap_or(0);
-            format!("console {errors}/{warnings}")
-        });
-
-    let session_id = payload
-        .and_then(|p| p.get("session_id"))
-        .and_then(Value::as_str)
-        .map(String::from);
+    let (
+        screenshot_uri,
+        url,
+        title,
+        action_kind,
+        action_status,
+        session_id,
+        network_label,
+        console_label,
+        status_text,
+    ) = if let Some(dp) = display {
+        (
+            dp.get("screenshot_uri")
+                .and_then(Value::as_str)
+                .map(String::from),
+            dp.get("url").and_then(Value::as_str).map(String::from),
+            dp.get("title").and_then(Value::as_str).map(String::from),
+            dp.get("action_kind")
+                .and_then(Value::as_str)
+                .map(String::from),
+            dp.get("action_status")
+                .and_then(Value::as_str)
+                .map(String::from),
+            dp.get("session_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+            dp.get("network_failed").and_then(Value::as_u64).map(|f| {
+                let t = dp.get("network_total").and_then(Value::as_u64).unwrap_or(0);
+                format!("network {f}/{t}")
+            }),
+            dp.get("console_errors").and_then(Value::as_u64).map(|e| {
+                let w = dp
+                    .get("console_warnings")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                format!("console {e}/{w}")
+            }),
+            dp.get("status").and_then(Value::as_str).map(String::from),
+        )
+    } else {
+        // Fallback: parse from output JSON (works for small/untruncated events).
+        let payload = output
+            .as_ref()
+            .and_then(|v| v.get("structured_payload"))
+            .filter(|v| v.is_object())
+            .or(output.as_ref())
+            .filter(|v| v.is_object());
+        let observation = payload
+            .and_then(|p| {
+                p.get("post_observation")
+                    .or_else(|| p.get("observation"))
+                    .filter(|v| v.is_object())
+            })
+            .or(payload);
+        (
+            observation
+                .and_then(|obs| obs.get("screenshot"))
+                .and_then(|s| s.get("artifact_uri"))
+                .and_then(Value::as_str)
+                .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+                .map(String::from),
+            observation
+                .and_then(|obs| obs.get("url"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            observation
+                .and_then(|obs| obs.get("title"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            payload
+                .and_then(|p| p.get("action_result"))
+                .and_then(|ar| ar.get("kind"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            payload
+                .and_then(|p| p.get("action_result"))
+                .and_then(|ar| ar.get("status"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            payload
+                .and_then(|p| p.get("session_id"))
+                .and_then(Value::as_str)
+                .map(String::from),
+            observation
+                .and_then(|obs| obs.get("network_summary"))
+                .map(|ns| {
+                    let failed = ns.get("failed_count").and_then(Value::as_u64).unwrap_or(0);
+                    let total = ns.get("request_count").and_then(Value::as_u64).unwrap_or(0);
+                    format!("network {failed}/{total}")
+                }),
+            observation
+                .and_then(|obs| obs.get("console_summary"))
+                .map(|cs| {
+                    let errors = cs.get("error_count").and_then(Value::as_u64).unwrap_or(0);
+                    let warnings = cs.get("warning_count").and_then(Value::as_u64).unwrap_or(0);
+                    format!("console {errors}/{warnings}")
+                }),
+            output.as_ref().and_then(|v| field_str(v, "status")),
+        )
+    };
 
     // Preview text: URL or action kind or status.
-    let preview_text = url.clone().or_else(|| action_kind.clone()).or_else(|| {
-        output
-            .as_ref()
-            .and_then(|v| field_str(v, "status"))
-            .filter(|s| !s.is_empty())
-    });
+    let preview_text = url
+        .clone()
+        .or_else(|| action_kind.clone())
+        .or_else(|| status_text.clone());
 
     // Default open: running, failed, or has a screenshot (visual feedback).
     let has_screenshot = screenshot_uri.is_some();
@@ -1071,7 +1116,7 @@ fn BrowserToolCard(
     if let Some(duration) = duration_label {
         header_metas.push(tool_meta(duration));
     }
-    if !success && let Some(status) = output.as_ref().and_then(|v| field_str(v, "status")) {
+    if !success && let Some(status) = status_text {
         header_metas.push(tool_meta_danger(status));
     }
 

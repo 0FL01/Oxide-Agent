@@ -1318,10 +1318,16 @@ fn truncate_summary(value: &str) -> String {
 }
 
 fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value> {
-    if name != "web_crawler" || !success {
-        return None;
+    if name == "web_crawler" && success {
+        return web_crawler_display_payload(output);
     }
+    if name.starts_with("browser_") {
+        return browser_display_payload(name, output);
+    }
+    None
+}
 
+fn web_crawler_display_payload(output: &str) -> Option<Value> {
     let output = serde_json::from_str::<Value>(output).ok()?;
     let payload = output.get("structured_payload")?;
     let markdown = payload
@@ -1349,6 +1355,103 @@ fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value
             .and_then(Value::as_bool)
             .unwrap_or(false),
         "markdown_preview_truncated": markdown_preview_truncated,
+    }))
+}
+
+/// Extract a compact, truncation-safe summary of a browser tool result.
+///
+/// Browser tool outputs (browser_observe, browser_execute) are large JSON
+/// objects that exceed `EVENT_PREVIEW_MAX_CHARS` when serialized, so
+/// `output_preview` becomes invalid JSON after truncation. This function
+/// extracts the key display fields (screenshot URI, URL, title, action,
+/// network/console counts, session ID) from the **full** output before
+/// truncation, storing them as a structured `display_payload` in the event.
+fn browser_display_payload(name: &str, output: &str) -> Option<Value> {
+    let output = serde_json::from_str::<Value>(output).ok()?;
+    let payload = output
+        .get("structured_payload")
+        .filter(|v| v.is_object())
+        .unwrap_or(&output);
+
+    // Observation: browser_execute has post_observation, browser_observe has
+    // fields directly on the payload.
+    let observation = payload
+        .get("post_observation")
+        .or_else(|| payload.get("observation"))
+        .filter(|v| v.is_object())
+        .unwrap_or(payload);
+
+    let screenshot_uri = observation
+        .get("screenshot")
+        .and_then(|s| s.get("artifact_uri"))
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+        .map(|s| s.to_string());
+
+    let url = observation
+        .get("url")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let title = observation
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let action_kind = payload
+        .get("action_result")
+        .and_then(|ar| ar.get("kind"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let action_status = payload
+        .get("action_result")
+        .and_then(|ar| ar.get("status"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let network_failed = observation
+        .get("network_summary")
+        .and_then(|ns| ns.get("failed_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let network_total = observation
+        .get("network_summary")
+        .and_then(|ns| ns.get("request_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let console_errors = observation
+        .get("console_summary")
+        .and_then(|cs| cs.get("error_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let console_warnings = observation
+        .get("console_summary")
+        .and_then(|cs| cs.get("warning_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    Some(json!({
+        "tool": name,
+        "screenshot_uri": screenshot_uri,
+        "url": url,
+        "title": title,
+        "action_kind": action_kind,
+        "action_status": action_status,
+        "session_id": session_id,
+        "status": status,
+        "network_failed": network_failed,
+        "network_total": network_total,
+        "console_errors": console_errors,
+        "console_warnings": console_warnings,
     }))
 }
 
