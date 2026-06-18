@@ -927,6 +927,8 @@ fn opencode_chat_request_options<'a>(
 ) -> chat_completions_request::ChatRequestOptions<'a> {
     chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::opencode_go())
         .with_native_image_parts(discovery::supports_image_input_for_model_id(model_id))
+        .with_native_image_parts_for_tool_results(false)
+        .with_non_empty_tool_result_content(true)
         .with_model_supports_reasoning(messages::response::is_reasoning_model(normalize_model_id(
             model_id,
         )))
@@ -1416,16 +1418,8 @@ mod tests {
             vision_body["messages"][2]["content"],
             json!("Calling tools")
         );
-        let vision_tool_content = vision_body["messages"][3]["content"]
-            .as_array()
-            .expect("vision tool content should be an array");
-        assert_eq!(vision_tool_content[0]["type"], json!("text"));
-        assert_eq!(vision_tool_content[0]["text"], json!("contents"));
-        assert_eq!(vision_tool_content[1]["type"], json!("image_url"));
-        assert_eq!(
-            vision_tool_content[1]["image_url"]["url"],
-            json!("data:image/png;base64,aWdub3JlZA==")
-        );
+        assert_eq!(vision_body["messages"][3]["content"], json!("contents"));
+        assert!(vision_body["messages"][3]["content"].is_string());
 
         let text_only_body = build_tool_chat_body(
             "system",

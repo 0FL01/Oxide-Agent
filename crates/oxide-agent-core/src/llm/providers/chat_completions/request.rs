@@ -36,6 +36,8 @@ impl ChatToolCallIdMapper for crate::llm::providers::openai_base::ToolCallIdMapp
 pub(crate) struct ChatRequestOptions<'a> {
     pub(crate) profile: ChatCompletionsProfile,
     pub(crate) allow_native_image_parts: bool,
+    pub(crate) allow_native_image_parts_for_tool_results: bool,
+    pub(crate) require_non_empty_tool_result_content: bool,
     pub(crate) model_supports_reasoning: Option<bool>,
     pub(crate) reasoning_disabled: bool,
     pub(crate) reasoning_effort: Option<&'a str>,
@@ -47,6 +49,8 @@ impl<'a> ChatRequestOptions<'a> {
         Self {
             profile,
             allow_native_image_parts: true,
+            allow_native_image_parts_for_tool_results: true,
+            require_non_empty_tool_result_content: false,
             model_supports_reasoning: None,
             reasoning_disabled: false,
             reasoning_effort: None,
@@ -56,6 +60,19 @@ impl<'a> ChatRequestOptions<'a> {
     #[must_use]
     pub(crate) const fn with_native_image_parts(mut self, allow: bool) -> Self {
         self.allow_native_image_parts = allow;
+        self.allow_native_image_parts_for_tool_results = allow;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_native_image_parts_for_tool_results(mut self, allow: bool) -> Self {
+        self.allow_native_image_parts_for_tool_results = allow;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn with_non_empty_tool_result_content(mut self, require: bool) -> Self {
+        self.require_non_empty_tool_result_content = require;
         self
     }
 
@@ -282,15 +299,18 @@ pub(crate) fn prepare_messages(
             system_prompt,
             history,
             options.allow_native_image_parts,
+            options.allow_native_image_parts_for_tool_results,
             options.profile.include_empty_system_message,
             options.profile.require_reasoning_content_on_tool_calls,
+            options.require_non_empty_tool_result_content,
         ),
         ChatMessageLayoutPolicy::MistralStrict => prepare_mistral_messages(
             system_prompt,
             history,
             tool_id_mapper,
-            options.allow_native_image_parts,
+            options.allow_native_image_parts_for_tool_results,
             options.profile.require_reasoning_content_on_tool_calls,
+            options.require_non_empty_tool_result_content,
         ),
     }
 }
@@ -345,8 +365,10 @@ fn prepare_generic_messages(
     system_prompt: &str,
     history: &[Message],
     allow_native_image_parts: bool,
+    allow_native_image_parts_for_tool_results: bool,
     include_empty_system_message: bool,
     require_reasoning_content: bool,
+    require_non_empty_tool_result_content: bool,
 ) -> Vec<Value> {
     let mut messages = Vec::with_capacity(history.len() + 1);
 
@@ -377,9 +399,13 @@ fn prepare_generic_messages(
             }
             "tool" => {
                 let mut mapper = None;
-                if let Some(tool_message) =
-                    tool_result_message(msg, &mut mapper, false, allow_native_image_parts)
-                {
+                if let Some(tool_message) = tool_result_message(
+                    msg,
+                    &mut mapper,
+                    false,
+                    allow_native_image_parts_for_tool_results,
+                    require_non_empty_tool_result_content,
+                ) {
                     messages.push(tool_message);
                 }
             }
@@ -397,8 +423,9 @@ fn prepare_mistral_messages(
     system_prompt: &str,
     history: &[Message],
     mut mapper: Option<&mut dyn ChatToolCallIdMapper>,
-    allow_native_image_parts: bool,
+    allow_native_image_parts_for_tool_results: bool,
     require_reasoning_content: bool,
+    require_non_empty_tool_result_content: bool,
 ) -> Vec<Value> {
     let mut history_systems = Vec::new();
     let mut other_messages = Vec::new();
@@ -415,9 +442,13 @@ fn prepare_mistral_messages(
                 require_reasoning_content,
             )),
             "tool" => {
-                if let Some(tool_message) =
-                    tool_result_message(msg, &mut mapper, true, allow_native_image_parts)
-                {
+                if let Some(tool_message) = tool_result_message(
+                    msg,
+                    &mut mapper,
+                    true,
+                    allow_native_image_parts_for_tool_results,
+                    require_non_empty_tool_result_content,
+                ) {
                     other_messages.push(tool_message);
                 }
             }
@@ -519,17 +550,23 @@ fn tool_result_message(
     mapper: &mut Option<&mut dyn ChatToolCallIdMapper>,
     include_name: bool,
     allow_native_image_parts: bool,
+    require_non_empty_content: bool,
 ) -> Option<Value> {
     let result = CHAT_LIKE_TOOL_PROFILE
         .encode_tool_result(msg)
         .and_then(|result| result.into_chat_like())?;
     let id = map_id(mapper, &result.tool_call_id);
+    let text_content = tool_result_text_content(
+        &result.content,
+        &msg.content_parts,
+        require_non_empty_content,
+    );
     let content = if allow_native_image_parts && !msg.content_parts.is_empty() {
         let mut parts = Vec::new();
-        if !result.content.is_empty() {
+        if !text_content.is_empty() {
             parts.push(json!({
                 "type": "text",
-                "text": result.content,
+                "text": text_content,
             }));
         }
         for part in &msg.content_parts {
@@ -546,12 +583,12 @@ fn tool_result_message(
             }
         }
         if parts.is_empty() {
-            json!(result.content)
+            json!(text_content)
         } else {
             json!(parts)
         }
     } else {
-        json!(result.content)
+        json!(text_content)
     };
     let mut message = json!({
         "role": "tool",
@@ -562,6 +599,24 @@ fn tool_result_message(
         message["name"] = json!(name);
     }
     Some(message)
+}
+
+fn tool_result_text_content(
+    content: &str,
+    content_parts: &[MessageContentPart],
+    require_non_empty: bool,
+) -> String {
+    if !content.is_empty() || !require_non_empty {
+        return content.to_string();
+    }
+
+    if content_parts.iter().any(|part| match part {
+        MessageContentPart::Image { bytes, .. } => !bytes.is_empty(),
+    }) {
+        "Tool returned image attachment(s).".to_string()
+    } else {
+        "Tool returned no textual content.".to_string()
+    }
 }
 
 fn map_id(mapper: &mut Option<&mut dyn ChatToolCallIdMapper>, id: &str) -> String {
@@ -834,6 +889,77 @@ mod tests {
                 .as_str()
                 .expect("image_url url is a string")
                 .starts_with("data:image/png;base64,")
+        );
+    }
+
+    #[test]
+    fn chat_completions_can_keep_user_images_while_tool_results_are_text_only() {
+        let mut tool_message = Message::tool("call_123", "browser_observe", "");
+        tool_message.content_parts = vec![MessageContentPart::image(
+            "image/png",
+            vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'],
+        )];
+        let user =
+            Message::user("inspect this").with_user_content_parts(vec![MessageContentPart::image(
+                "image/png",
+                b"png".to_vec(),
+            )]);
+        let history = vec![
+            Message::assistant_with_tools("", vec![sample_tool_call("call_123")]),
+            tool_message,
+            user,
+        ];
+
+        let body = build_tool_body(
+            "System",
+            &history,
+            &[sample_tool()],
+            "strict-vision-model",
+            1024,
+            None,
+            false,
+            ChatRequestOptions::new(ChatCompletionsProfile::generic())
+                .with_native_image_parts(true)
+                .with_native_image_parts_for_tool_results(false)
+                .with_non_empty_tool_result_content(true),
+            None,
+        );
+
+        assert_eq!(
+            body["messages"][2]["content"],
+            json!("Tool returned image attachment(s).")
+        );
+        assert!(body["messages"][2]["content"].is_string());
+        let user_content = body["messages"][3]["content"]
+            .as_array()
+            .expect("user image content remains native");
+        assert_eq!(user_content[0]["type"], json!("text"));
+        assert_eq!(user_content[1]["type"], json!("image_url"));
+    }
+
+    #[test]
+    fn chat_completions_strict_tool_result_empty_text_gets_stable_projection() {
+        let history = vec![
+            Message::assistant_with_tools("", vec![sample_tool_call("call_123")]),
+            Message::tool("call_123", "noop", ""),
+        ];
+
+        let body = build_tool_body(
+            "System",
+            &history,
+            &[sample_tool()],
+            "strict-text-model",
+            1024,
+            None,
+            false,
+            ChatRequestOptions::new(ChatCompletionsProfile::generic())
+                .with_non_empty_tool_result_content(true),
+            None,
+        );
+
+        assert_eq!(
+            body["messages"][2]["content"],
+            json!("Tool returned no textual content.")
         );
     }
 
