@@ -673,6 +673,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -769,6 +770,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -857,6 +859,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -940,6 +943,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1033,6 +1037,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1125,6 +1130,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1225,6 +1231,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1314,6 +1321,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1395,6 +1403,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1494,6 +1503,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openrouter")
                 .with_model_routes(vec![ModelInfo {
@@ -1573,6 +1583,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openai-base:local")
                 .with_model_routes(vec![ModelInfo {
@@ -1690,6 +1701,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {

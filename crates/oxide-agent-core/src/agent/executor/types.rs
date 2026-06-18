@@ -61,6 +61,7 @@ impl PreparedExecution {
         progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
         session: &'a mut AgentSession,
         services: RunnerContextServices<'a>,
+        storage: Option<Arc<dyn crate::storage::StorageProvider>>,
     ) -> AgentRunnerContext<'a> {
         let session_id = Some(session.session_id.to_string());
         let memory_scope = Some(session.memory_scope().clone());
@@ -84,6 +85,7 @@ impl PreparedExecution {
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
+        ctx.storage = storage;
         ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
 
         ctx

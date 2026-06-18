@@ -229,6 +229,7 @@ impl AgentExecutor {
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
+            self.storage.clone(),
         );
         debug!(
             target: AGENT_LATENCY_TARGET,
