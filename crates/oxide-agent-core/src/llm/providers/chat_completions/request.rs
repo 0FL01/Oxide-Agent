@@ -427,9 +427,25 @@ fn prepare_mistral_messages(
 }
 
 fn assistant_message(msg: &Message, mapper: &mut Option<&mut dyn ChatToolCallIdMapper>) -> Value {
+    // Per the OpenAI Chat Completions spec, assistant messages that carry
+    // tool_calls should have `content: null` when there is no text. Some
+    // providers (e.g. Xiaomi MiMo) reject `"content": ""` with a 400
+    // "text is not set" error in this case. When content is non-empty, it
+    // is always sent as a string. When content is empty but there are no
+    // tool_calls, we keep the empty string (existing behavior for pure
+    // text assistant messages).
+    let has_tool_calls = msg
+        .tool_calls
+        .as_ref()
+        .is_some_and(|calls| !calls.is_empty());
+    let content = if msg.content.is_empty() && has_tool_calls {
+        Value::Null
+    } else {
+        json!(msg.content)
+    };
     let mut message = json!({
         "role": "assistant",
-        "content": msg.content,
+        "content": content,
     });
     if let Some(reasoning_content) = msg
         .reasoning_content
@@ -849,5 +865,36 @@ mod tests {
         assert_eq!(body["reasoning_effort"], json!("medium"));
         assert_eq!(body["parallel_tool_calls"], json!(true));
         assert_eq!(body["tool_choice"], json!("auto"));
+    }
+
+    #[test]
+    fn assistant_message_with_empty_content_and_tool_calls_sends_null_content() {
+        // MiMo and other strict OpenAI-compatible providers reject
+        // `"content": ""` for tool-only assistant messages with a 400
+        // "text is not set". The spec says content should be null.
+        let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
+        let message = assistant_message(&msg, &mut None);
+        assert_eq!(message["role"], json!("assistant"));
+        assert!(
+            message["content"].is_null(),
+            "content should be null for empty tool-only assistant message"
+        );
+        assert!(message["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn assistant_message_with_text_and_tool_calls_sends_string_content() {
+        let msg = Message::assistant_with_tools("thinking...", vec![sample_tool_call("call_1")]);
+        let message = assistant_message(&msg, &mut None);
+        assert_eq!(message["content"], json!("thinking..."));
+        assert!(message["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn assistant_message_with_empty_content_and_no_tool_calls_keeps_empty_string() {
+        let msg = Message::assistant("");
+        let message = assistant_message(&msg, &mut None);
+        assert_eq!(message["content"], json!(""));
+        assert!(message.get("tool_calls").is_none());
     }
 }
