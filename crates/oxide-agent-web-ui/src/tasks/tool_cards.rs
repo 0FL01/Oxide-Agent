@@ -9,6 +9,34 @@ use super::payload::{
 };
 use super::state::{artifact_filename, artifact_image_url};
 
+const BROWSER_TOOL_SHOT_LINK_STYLE: &str = concat!(
+    "display:block;",
+    "position:relative;",
+    "width:100%;",
+    "height:0;",
+    "padding-top:56.25%;",
+    "min-width:0;",
+    "max-width:100%;",
+    "overflow:hidden;",
+    "margin-bottom:8px;",
+    "line-height:0;",
+    "background:var(--bg-panel);",
+    "border:1px solid var(--border-subtle);",
+    "border-radius:var(--radius-md);",
+);
+
+const BROWSER_TOOL_SHOT_IMAGE_STYLE: &str = concat!(
+    "display:block;",
+    "position:absolute;",
+    "inset:0;",
+    "width:100%;",
+    "height:100%;",
+    "max-width:100%;",
+    "max-height:100%;",
+    "object-fit:contain;",
+    "background:var(--bg-panel);",
+);
+
 // ── Tool Card (groups call + result) ─────────────────────────────────────
 
 #[component]
@@ -1154,8 +1182,8 @@ fn BrowserToolCard(
                         .map(|(width, height)| format!("Screenshot {filename} ({width}×{height})"))
                         .unwrap_or_else(|| format!("Screenshot {filename}"));
                     Some(view! {
-                        <a class="browser-tool-shot-link" href=image_url.clone() target="_blank">
-                            <img class="browser-tool-shot-image" src=image_url.clone() alt=alt />
+                        <a class="browser-tool-shot-link" style=BROWSER_TOOL_SHOT_LINK_STYLE href=image_url.clone() target="_blank" rel="noopener noreferrer">
+                            <img class="browser-tool-shot-image" style=BROWSER_TOOL_SHOT_IMAGE_STYLE src=image_url.clone() alt=alt />
                         </a>
                     }.into_any())
                 }).unwrap_or_else(|| ().into_any())

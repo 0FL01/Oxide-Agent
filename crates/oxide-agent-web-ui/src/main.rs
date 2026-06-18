@@ -42,6 +42,7 @@ fn main() {
 #[cfg(test)]
 mod css_contract_tests {
     const ACTIVITY_CSS: &str = include_str!("styles/06-activity.css");
+    const TOOL_CARDS_RS: &str = include_str!("tasks/tool_cards.rs");
 
     #[test]
     fn browser_screenshot_thumbnail_uses_fixed_ratio_viewport() {
@@ -51,5 +52,15 @@ mod css_contract_tests {
         assert!(ACTIVITY_CSS.contains(".browser-tool-shot-image"));
         assert!(ACTIVITY_CSS.contains("position: absolute;"));
         assert!(ACTIVITY_CSS.contains("object-fit: contain;"));
+    }
+
+    #[test]
+    fn browser_screenshot_thumbnail_contract_is_inline_on_dom_nodes() {
+        assert!(TOOL_CARDS_RS.contains("BROWSER_TOOL_SHOT_LINK_STYLE"));
+        assert!(TOOL_CARDS_RS.contains("height:0;"));
+        assert!(TOOL_CARDS_RS.contains("padding-top:56.25%;"));
+        assert!(TOOL_CARDS_RS.contains("BROWSER_TOOL_SHOT_IMAGE_STYLE"));
+        assert!(TOOL_CARDS_RS.contains("position:absolute;"));
+        assert!(TOOL_CARDS_RS.contains("object-fit:contain;"));
     }
 }
