@@ -123,7 +123,6 @@ services:
       BROWSER_AGENT_SIDECAR_TOKEN: ${BROWSER_AGENT_SIDECAR_TOKEN:-}
     ports:
       - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
-    volumes:
     shm_size: "1gb"
     cap_drop:
       - ALL
