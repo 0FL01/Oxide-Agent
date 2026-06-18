@@ -129,7 +129,6 @@ fn prepare_structured_messages_mistral(
     chat_completions_request::prepare_messages(system_prompt, history, options, Some(id_mapper))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_tool_chat_body(
     system_prompt: &str,
     history: &[Message],
@@ -138,11 +137,9 @@ fn build_tool_chat_body(
     max_tokens: u32,
     temperature: Option<f32>,
     json_mode: bool,
-    reasoning_effort: Option<&str>,
-    profile: &OpenAICompatibleProfile,
+    options: chat_completions_request::ChatRequestOptions<'_>,
     tool_id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
-    let options = chat_request_options(profile).with_reasoning_effort(reasoning_effort);
     chat_completions_request::build_tool_body(
         system_prompt,
         history,
@@ -421,8 +418,7 @@ impl LlmProvider for OpenAIBaseProvider {
                 max_tokens,
                 temperature,
                 json_mode,
-                reasoning_effort,
-                &profile,
+                chat_request_options(&profile).with_reasoning_effort(reasoning_effort),
                 &mut mapper,
             );
             drop(mapper);
@@ -459,10 +455,11 @@ impl LlmProvider for OpenAIBaseProvider {
 mod tests {
     use super::{
         OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator, ToolCallIdMapper,
-        build_image_analysis_body, build_tool_chat_body, chat_completions_url, decode_utf8_prefix,
-        finalize_streaming_tool_calls, finish_streaming_chat_response, infer_image_mime_type,
-        normalize_newlines_in_place, normalize_tool_arguments_str, parse_chat_response,
-        parse_zai_flush_time, process_chat_sse_event, send_streaming_chat_request,
+        build_image_analysis_body, build_tool_chat_body, chat_completions_url,
+        chat_request_options, decode_utf8_prefix, finalize_streaming_tool_calls,
+        finish_streaming_chat_response, infer_image_mime_type, normalize_newlines_in_place,
+        normalize_tool_arguments_str, parse_chat_response, parse_zai_flush_time,
+        process_chat_sse_event, send_streaming_chat_request,
     };
     use crate::llm::{
         ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolCall,
@@ -590,8 +587,7 @@ mod tests {
             4096,
             None,
             true,
-            None,
-            &generic_profile(),
+            chat_request_options(&generic_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -613,8 +609,7 @@ mod tests {
             1024,
             None,
             true,
-            None,
-            &generic_profile(),
+            chat_request_options(&generic_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -635,8 +630,7 @@ mod tests {
             1024,
             None,
             false,
-            None,
-            &generic_profile(),
+            chat_request_options(&generic_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1076,8 +1070,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1097,8 +1090,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1119,8 +1111,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1142,8 +1133,7 @@ mod tests {
             4096,
             Some(0.23),
             false,
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1162,8 +1152,7 @@ mod tests {
             4096,
             None,
             false,
-            Some("none"),
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(Some("none")),
             &mut mapper,
         );
 
@@ -1181,8 +1170,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &generic_profile(),
+            chat_request_options(&generic_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1201,8 +1189,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &zai_profile(),
+            chat_request_options(&zai_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1224,8 +1211,7 @@ mod tests {
             1024,
             None,
             false,
-            None,
-            &zai_profile(),
+            chat_request_options(&zai_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1245,8 +1231,7 @@ mod tests {
             1024,
             None,
             true,
-            None,
-            &zai_profile(),
+            chat_request_options(&zai_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1266,8 +1251,7 @@ mod tests {
             1024,
             None,
             true,
-            None,
-            &zai_profile(),
+            chat_request_options(&zai_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1287,8 +1271,7 @@ mod tests {
             4096,
             None,
             false,
-            None,
-            &generic_profile(),
+            chat_request_options(&generic_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1618,8 +1601,7 @@ mod tests {
             1024,
             None,
             true, // json_mode = true
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 
@@ -1638,8 +1620,7 @@ mod tests {
             1024,
             None,
             true, // json_mode = true
-            None,
-            &mistral_profile(),
+            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
             &mut mapper,
         );
 

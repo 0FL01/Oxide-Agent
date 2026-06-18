@@ -47,7 +47,6 @@ struct PreSpawnAgentMessageContext<'a> {
 /// # Errors
 ///
 /// Returns an error if the user state cannot be updated or the welcome message cannot be sent.
-#[allow(clippy::too_many_arguments)]
 pub async fn activate_agent_mode(
     bot: Bot,
     msg: Message,

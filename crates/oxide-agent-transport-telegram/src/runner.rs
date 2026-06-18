@@ -386,7 +386,6 @@ async fn handle_callback(
     respond(())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(feature = "storage-sqlx")]
 async fn handle_agent_confirmation(
     bot: Bot,

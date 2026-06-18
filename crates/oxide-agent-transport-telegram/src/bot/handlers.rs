@@ -491,7 +491,6 @@ pub async fn handle_text(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_menu_commands(
     bot: &Bot,
     msg: &Message,

@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — static scan of warnings/errors/coffee-smells across the workspace
 Goal doc owner: Codex
-Last updated: 2026-06-18 12:30
+Last updated: 2026-06-18 13:05
 
 ## Objective
 
@@ -69,11 +69,11 @@ None. RECON provided enough evidence to design all fixes.
   - Evidence collected: CP2 — `LlmError::ApiError(String)` enriched to `ApiError { status: Option<u16>, message: String }` (struct variant); added `RequestBuilder(String)` variant for deterministic reqwest builder errors (NOT retryable); added `LlmError::api_error(msg)`, `api_error_status(status, msg)`, `from_reqwest_error(e)` helper constructors. `backoff.rs`: all `contains("429"/"500"/"builder"/...)` replaced with typed variant matching. `transcription.rs`: same typed patterns in local `get_retry_delay`. `opencode_go.rs`: `opencode_go_should_throttle` uses typed status checks. `llm_calls.rs`: `error_class` uses typed status. All provider construction sites updated across 17 files. `git grep -nE 'contains\("(429|500|502|503|504|builder|gateway|unavailable|overloaded)"\)'` returns 0 matches across all .rs files. `git grep 'LlmError::ApiError\('` returns 0 (no tuple construction remaining). `git grep 'ApiError\(msg\)|ApiError\(message\)'` returns 0.
 
 - G3: `too_many_arguments` anti-pattern collapsed into context structs where it reduces call-site fragility.
-  - Source: RECON Class D — 7 sites.
+  - Source: RECON Class D — 8 `#[allow(clippy::too_many_arguments)]` sites across 6 files.
   - Acceptance: `git grep -n 'clippy::too_many_arguments' crates/` count drops; no new clippy warnings; behavior unchanged (tests green).
   - Evidence required: clippy clean; targeted tests green; diff reviewed for behavior preservation.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP3 — Removed all 8 `#[allow(clippy::too_many_arguments)]`. 7 were stale (already under threshold after analysis: 4 transport-telegram free functions at 7 args with default threshold 7; 3 fetch.rs methods at or under threshold 9). 1 `build_tool_chat_body` in `openai_base/mod.rs` refactored: merged `profile: &OpenAICompatibleProfile` + `reasoning_effort: Option<&str>` into `chat_completions_request::ChatRequestOptions<'_>` (10→9 args), 17 call sites updated. Introduced `FetchOptions<'a>` struct in `webfetch_md/fetch.rs` (private, `#[derive(Clone, Copy)]`) collapsing `timeout_secs, output_window, cancellation_token` into one arg for 4 internal Habr fetchers (article_json 10→9, article_html_fallback 9→8, comments_json 10→9, comments_html_fallback 9→8). `git grep "too_many_arguments" -- '*.rs'` → 0 matches. Gates: `cargo fmt --all -- --check` exit 0; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` exit 0 for all 4 profiles; `cargo check --workspace --all-targets --features profile-full` exit 0. Tests: `cargo test -p oxide-agent-core --features profile-full` 1370 passed 0 failed 10 ignored; `cargo test -p oxide-agent-transport-telegram --features profile-embedded-opencode-local` 168 passed 0 failed 4 ignored.
 
 - G4: Reminder audit-event errors no longer silently discarded.
   - Source: RECON Stage 4 — `reminder.rs:247/328/495`.
@@ -215,6 +215,13 @@ None. RECON provided enough evidence to design all fixes.
   - Commands: `cargo check --workspace --all-targets --features profile-full`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features profile-full`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: G2 → verified; Q1 → verified; Q2 → verified; Q3 → verified; N1 → verified; N2 → verified; N3 → verified.
   - Next: CP3 — Stage 3 collapse too_many_arguments.
+
+- 2026-06-18 13:05: CP3 complete — Stage 3 too_many_arguments class closed.
+  - Changed: `agent/providers/webfetch_md/fetch.rs` (FetchOptions struct + 4 function refactors + 4 call sites), `llm/providers/openai_base/mod.rs` (build_tool_chat_body refactor + 17 call sites + test import fix), `transport-telegram/src/bot/agent_handlers/controls.rs`, `transport-telegram/src/bot/agent_handlers/lifecycle.rs`, `transport-telegram/src/bot/handlers.rs`, `transport-telegram/src/runner.rs` (stale `#[allow]` removal).
+  - Evidence: G3 verified — `git grep "too_many_arguments" -- '*.rs'` → 0 matches; all gates green; tests green (1370 + 168). N1/N2/N3 preserved (no Class C / test panic / new deps edits).
+  - Commands: `git grep "too_many_arguments" -- '*.rs'`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo check --workspace --all-targets --features profile-full`; `cargo test -p oxide-agent-core --features profile-full`; `cargo test -p oxide-agent-transport-telegram --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G3 → verified.
+  - Next: CP4 — Stage 4 reminder.rs audit logging.
 
 ## Risks and Blockers
 

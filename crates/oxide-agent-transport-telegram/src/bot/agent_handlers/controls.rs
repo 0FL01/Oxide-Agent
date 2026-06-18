@@ -722,7 +722,6 @@ impl ConfirmationReply {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,

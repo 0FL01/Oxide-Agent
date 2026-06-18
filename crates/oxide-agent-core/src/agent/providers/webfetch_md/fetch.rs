@@ -28,6 +28,13 @@ struct FetchResult {
     text: String,
 }
 
+#[derive(Clone, Copy)]
+struct FetchOptions<'a> {
+    timeout_secs: u64,
+    output_window: OutputWindow,
+    cancellation_token: Option<&'a CancellationToken>,
+}
+
 impl WebFetchMdProvider {
     pub(crate) async fn fetch_markdown(
         &self,
@@ -531,9 +538,11 @@ impl WebFetchMdProvider {
                 lang,
                 company,
                 mode,
-                timeout_secs,
-                output_window,
-                cancellation_token,
+                FetchOptions {
+                    timeout_secs,
+                    output_window,
+                    cancellation_token,
+                },
             )
             .await
         {
@@ -551,9 +560,11 @@ impl WebFetchMdProvider {
                     article_id,
                     lang,
                     company,
-                    timeout_secs,
-                    output_window,
-                    cancellation_token,
+                    FetchOptions {
+                        timeout_secs,
+                        output_window,
+                        cancellation_token,
+                    },
                 )
                 .await
                 .context("Habr article HTML fallback failed")
@@ -561,7 +572,6 @@ impl WebFetchMdProvider {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_article_json(
         &self,
         source_url: &Url,
@@ -570,18 +580,16 @@ impl WebFetchMdProvider {
         lang: &str,
         company: &Option<String>,
         mode: &'static str,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
+        opts: FetchOptions<'_>,
     ) -> Result<String> {
         let fetched = self
-            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(api_url.clone(), opts.timeout_secs, opts.cancellation_token)
             .await
             .context("Habr article API fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_habr_article_json(&fetched.text, article_id)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
+        let windowed = window_chars(markdown.trim().to_string(), opts.output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -598,12 +606,11 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            output_window,
+            opts.output_window,
             &windowed,
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_article_html_fallback(
         &self,
         source_url: &Url,
@@ -611,12 +618,14 @@ impl WebFetchMdProvider {
         article_id: &str,
         lang: &str,
         company: &Option<String>,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
+        opts: FetchOptions<'_>,
     ) -> Result<String> {
         let fetched = self
-            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(
+                fallback_url.clone(),
+                opts.timeout_secs,
+                opts.cancellation_token,
+            )
             .await
             .context("Habr article page fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
@@ -626,7 +635,7 @@ impl WebFetchMdProvider {
 
         let article_html = extract_habr_article_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
+        let windowed = window_chars(markdown.trim().to_string(), opts.output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -643,7 +652,7 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            output_window,
+            opts.output_window,
             &windowed,
         ))
     }
@@ -676,9 +685,11 @@ impl WebFetchMdProvider {
                 lang,
                 company,
                 mode,
-                timeout_secs,
-                output_window,
-                cancellation_token,
+                FetchOptions {
+                    timeout_secs,
+                    output_window,
+                    cancellation_token,
+                },
             )
             .await
         {
@@ -696,9 +707,11 @@ impl WebFetchMdProvider {
                     article_id,
                     lang,
                     company,
-                    timeout_secs,
-                    output_window,
-                    cancellation_token,
+                    FetchOptions {
+                        timeout_secs,
+                        output_window,
+                        cancellation_token,
+                    },
                 )
                 .await
                 .context("Habr comments HTML fallback failed")
@@ -706,7 +719,6 @@ impl WebFetchMdProvider {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_comments_json(
         &self,
         source_url: &Url,
@@ -715,18 +727,16 @@ impl WebFetchMdProvider {
         lang: &str,
         company: &Option<String>,
         mode: &'static str,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
+        opts: FetchOptions<'_>,
     ) -> Result<String> {
         let fetched = self
-            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(api_url.clone(), opts.timeout_secs, opts.cancellation_token)
             .await
             .context("Habr comments API fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_habr_comments_json(&fetched.text, article_id)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
+        let windowed = window_chars(markdown.trim().to_string(), opts.output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -743,7 +753,7 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            output_window,
+            opts.output_window,
             &windowed,
         ))
     }
@@ -755,12 +765,14 @@ impl WebFetchMdProvider {
         article_id: &str,
         lang: &str,
         company: &Option<String>,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
+        opts: FetchOptions<'_>,
     ) -> Result<String> {
         let fetched = self
-            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(
+                fallback_url.clone(),
+                opts.timeout_secs,
+                opts.cancellation_token,
+            )
             .await
             .context("Habr comments page fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
@@ -770,7 +782,7 @@ impl WebFetchMdProvider {
 
         let comments_html = extract_habr_comments_html(&fetched.text)?;
         let markdown = html_to_markdown(comments_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
+        let windowed = window_chars(markdown.trim().to_string(), opts.output_window);
 
         let mut metadata = vec![
             ("URL", fetched.final_url.as_str()),
@@ -787,7 +799,7 @@ impl WebFetchMdProvider {
         Ok(format_web_markdown_output(
             &metadata,
             Some(fetched.bytes_read),
-            output_window,
+            opts.output_window,
             &windowed,
         ))
     }
