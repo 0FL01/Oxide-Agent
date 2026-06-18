@@ -27,6 +27,7 @@ const ENV_PUBLIC_UPDATES: &str = "OXIDE_SEARCH_PROBE_PUBLIC_UPDATES";
 const ENV_FORWARD_TOOL_EVENTS: &str = "OXIDE_SEARCH_PROBE_FORWARD_TOOL_EVENTS";
 const ENV_TOOL_ALLOWLIST: &str = "OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST";
 const ENV_DOSSIER_MAX_CHARS: &str = "OXIDE_SEARCH_PROBE_DOSSIER_MAX_CHARS";
+const ENV_FIRST_TURN_ONLY: &str = "OXIDE_SEARCH_PROBE_FIRST_TURN_ONLY";
 
 const DEFAULT_MAX_GENERATIONS: u8 = 2;
 const DEFAULT_PER_GENERATION_TIMEOUT_SECS: u64 = 60;
@@ -37,6 +38,7 @@ const DEFAULT_SEARCH_LIMIT: usize = 3;
 const DEFAULT_PUBLIC_UPDATES: bool = true;
 const DEFAULT_FORWARD_TOOL_EVENTS: bool = true;
 const DEFAULT_DOSSIER_MAX_CHARS: usize = 80_000;
+const DEFAULT_FIRST_TURN_ONLY: bool = true;
 const PREVIOUS_FINAL_MESSAGE_MAX_CHARS: usize = 12_000;
 const DEFAULT_SPLIT_TOOL_ALLOWLIST: &[&str] = &["web_search", "web_markdown"];
 const DEFAULT_MERGED_TOOL_ALLOWLIST: &[&str] = &["web_search", "web_crawler"];
@@ -145,6 +147,7 @@ pub(crate) struct SearchProbeConfig {
     pub(crate) forward_tool_events: bool,
     pub(crate) tool_allowlist: Vec<String>,
     pub(crate) dossier_max_chars: usize,
+    pub(crate) first_turn_only: bool,
 }
 
 impl SearchProbeConfig {
@@ -176,6 +179,7 @@ impl SearchProbeConfig {
             ),
             tool_allowlist: env_tool_allowlist(ENV_TOOL_ALLOWLIST),
             dossier_max_chars: env_usize(ENV_DOSSIER_MAX_CHARS, DEFAULT_DOSSIER_MAX_CHARS),
+            first_turn_only: env_bool_default(ENV_FIRST_TURN_ONLY, DEFAULT_FIRST_TURN_ONLY),
         }
     }
 }
@@ -196,6 +200,7 @@ impl Default for SearchProbeConfig {
             forward_tool_events: DEFAULT_FORWARD_TOOL_EVENTS,
             tool_allowlist: default_tool_allowlist(),
             dossier_max_chars: DEFAULT_DOSSIER_MAX_CHARS,
+            first_turn_only: DEFAULT_FIRST_TURN_ONLY,
         }
     }
 }
@@ -257,6 +262,22 @@ async fn maybe_run_search_probe_with_runtime(
 
     match run_request {
         TaskRunRequest::Execute { input, effort } => {
+            if config.first_turn_only
+                && session_manager
+                    .last_main_agent_final_message(session_id)
+                    .await
+                    .is_some()
+            {
+                debug!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    "Search Probe skipped: first_turn_only and prior main agent final message exists"
+                );
+                return (
+                    TaskRunRequest::Execute { input, effort },
+                    SearchProbeRunOutcome::default(),
+                );
+            }
             debug!(
                 session_id = %session_id,
                 task_id = %task_id,
@@ -1458,6 +1479,7 @@ mod tests {
     #[cfg(feature = "profile-web-embedded-opencode-local")]
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMessageAttachment;
+    use oxide_agent_core::agent::memory::AgentMessage;
     use oxide_agent_core::config::AgentSettings;
     #[cfg(feature = "profile-web-embedded-opencode-local")]
     use oxide_agent_core::config::ModelInfo;
@@ -1489,6 +1511,7 @@ mod tests {
         ENV_FORWARD_TOOL_EVENTS,
         ENV_TOOL_ALLOWLIST,
         ENV_DOSSIER_MAX_CHARS,
+        ENV_FIRST_TURN_ONLY,
         "OXIDE_WEB_CRAWLER_MERGE",
     ];
 
@@ -1717,6 +1740,29 @@ mod tests {
             .collect()
     }
 
+    async fn inject_prior_assistant_message(manager: &WebSessionManager, session_id: &str) {
+        let meta = manager
+            .get_session(session_id)
+            .await
+            .expect("session must exist");
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        session_id.hash(&mut h);
+        meta.user_id.hash(&mut h);
+        let sid = oxide_agent_core::agent::SessionId::from(h.finish() as i64);
+        let executor_arc = manager
+            .session_registry()
+            .get(&sid)
+            .await
+            .expect("executor must exist");
+        let mut executor = executor_arc.write().await;
+        executor
+            .session_mut()
+            .memory
+            .add_message(AgentMessage::assistant("Previous final answer"));
+    }
+
     #[test]
     fn config_defaults_are_disabled_and_web_only() {
         let _guard = lock_env();
@@ -1736,6 +1782,7 @@ mod tests {
         assert!(config.forward_tool_events);
         assert_eq!(config.tool_allowlist, vec!["web_search", "web_markdown"]);
         assert_eq!(config.dossier_max_chars, 80_000);
+        assert!(config.first_turn_only);
     }
 
     #[test]
@@ -1813,6 +1860,7 @@ mod tests {
             " web_search, web_crawler ,, web_markdown ",
         );
         test_set_env(ENV_DOSSIER_MAX_CHARS, "12345");
+        test_set_env(ENV_FIRST_TURN_ONLY, "false");
 
         let config = SearchProbeConfig::from_env();
 
@@ -1832,6 +1880,7 @@ mod tests {
             vec!["web_search", "web_crawler", "web_markdown"]
         );
         assert_eq!(config.dossier_max_chars, 12_345);
+        assert!(!config.first_turn_only);
     }
 
     #[tokio::test]
@@ -1903,6 +1952,108 @@ mod tests {
         assert_eq!(request_content(&result), "resume prompt");
         assert!(outcome.handoffs.is_empty());
         assert!(!outcome.cancelled);
+    }
+
+    #[tokio::test]
+    async fn first_turn_only_skips_probe_when_prior_final_message_exists() {
+        let session_manager = test_session_manager();
+        create_parent_session(&session_manager).await;
+        inject_prior_assistant_message(&session_manager, "session").await;
+
+        let config = SearchProbeConfig {
+            enabled: true,
+            first_turn_only: true,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let (result, outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("follow-up prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        assert!(matches!(result, TaskRunRequest::Execute { .. }));
+        assert_eq!(request_content(&result), "follow-up prompt");
+        assert!(outcome.handoffs.is_empty());
+        assert!(!outcome.cancelled);
+        let milestones = milestone_names(&events);
+        assert!(
+            !milestones.contains(&"search_probe_started".to_string()),
+            "skip path must not emit search_probe_started, got: {milestones:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_turn_only_runs_probe_on_fresh_session() {
+        let session_manager = test_session_manager();
+        create_parent_session(&session_manager).await;
+
+        let config = SearchProbeConfig {
+            enabled: true,
+            first_turn_only: true,
+            max_generations: 1,
+            per_generation_timeout_secs: 1,
+            total_timeout_secs: 1,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let (_result, _outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("first prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        let milestones = milestone_names(&events);
+        assert!(
+            milestones.contains(&"search_probe_started".to_string()),
+            "fresh session must start probe, got: {milestones:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_turn_only_false_runs_probe_even_with_prior_final_message() {
+        let session_manager = test_session_manager();
+        create_parent_session(&session_manager).await;
+        inject_prior_assistant_message(&session_manager, "session").await;
+
+        let config = SearchProbeConfig {
+            enabled: true,
+            first_turn_only: false,
+            max_generations: 1,
+            per_generation_timeout_secs: 1,
+            total_timeout_secs: 1,
+            ..SearchProbeConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let (_result, _outcome) = maybe_run_search_probe_with_runtime(
+            &session_manager,
+            "session",
+            "task",
+            execute_request("follow-up prompt"),
+            &config,
+            tx,
+            CancellationToken::new(),
+        )
+        .await;
+        let events = collect_probe_events(rx).await;
+
+        let milestones = milestone_names(&events);
+        assert!(
+            milestones.contains(&"search_probe_started".to_string()),
+            "first_turn_only=false must start probe even with prior message, got: {milestones:?}"
+        );
     }
 
     #[tokio::test]
