@@ -432,8 +432,8 @@ impl BrowserSidecar for FakeBrowserSidecar {
         }
         let mut state = self.state();
         state.session_mut(session_id)?;
-        // Fake PNG bytes so image validation in the consumer passes.
-        Ok(b"\x89PNG\r\n\x1a\nfake-browser-screenshot-bytes".to_vec())
+        // Fake JPEG bytes (SOI marker) so image validation in the consumer passes.
+        Ok(b"\xff\xd8\xff\xe0fake-browser-screenshot-bytes".to_vec())
     }
 
     async fn debug_network(

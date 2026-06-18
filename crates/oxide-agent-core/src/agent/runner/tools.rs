@@ -406,14 +406,23 @@ impl AgentRunner {
             )
         };
         if let Some(image) = output.image_attachment {
-            memory_message
-                .attachments
-                .push(AgentMessageAttachment::image(
+            let attachment = if let Some(data) = image.data {
+                AgentMessageAttachment::image_with_data(
                     image.file_name,
                     image.mime_type,
                     image.size_bytes,
                     image.sandbox_path,
-                ));
+                    data,
+                )
+            } else {
+                AgentMessageAttachment::image(
+                    image.file_name,
+                    image.mime_type,
+                    image.size_bytes,
+                    image.sandbox_path,
+                )
+            };
+            memory_message.attachments.push(attachment);
         }
         ctx.agent.memory_mut().add_message(memory_message);
     }

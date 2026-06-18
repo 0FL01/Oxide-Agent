@@ -102,6 +102,18 @@ impl BrowserSessionState {
         self.action_seq
     }
 
+    /// Browser task ID (LLM-provided or fallback to session ID).
+    #[must_use]
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    /// Browser session ID (from sidecar).
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Latest screenshot frame, if any.
     #[must_use]
     pub const fn latest(&self) -> Option<&BrowserFrame> {

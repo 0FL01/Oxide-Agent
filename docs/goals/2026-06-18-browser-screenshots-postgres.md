@@ -251,13 +251,14 @@ Out of scope:
 - Validation: `git grep 'std::fs::write' crates/oxide-browser-sidecar/` returns nothing; `cargo test -p oxide-browser-sidecar`; Docker build
 - Exit condition: G3 verified
 
-### CP5: Core stores screenshots in Postgres
+### CP5: Core stores screenshots in Postgres (verified)
 - Audit IDs: G4
-- Expected changes:
-  - `tools.rs`: `persist_latest_screenshot` calls `storage.save_browser_artifact(...)` instead of `tokio::fs::write`
-  - `ArtifactRef.local_path` set to `PathBuf::new()` for browser artifacts (not used for lookup)
-  - Integration test: screenshot round-trip through Postgres
-- Validation: `cargo test -p oxide-agent-core` browser_live tests pass
+- Changes:
+  - Migration `0009`: dropped web_tasks FK (contract bug — browser provider has no web-task IDs), added `context_key` (transport-agnostic from `AgentMemoryScope`)
+  - `BrowserLiveModuleContext` threads `storage`+`user_id`+`context_key` from executor to browser provider
+  - `persist_latest_screenshot` calls `storage.save_browser_artifact()` instead of `tokio::fs::write`
+  - `ToolOutputImageAttachment` + `AgentMessageAttachment` carry inline bytes (`#[serde(skip)] data`) for vision-capable LLM — no disk read needed
+- Validation: 3 Postgres tests + 80 browser tests + 1312 core tests pass; clippy + fmt clean
 - Exit condition: G4 verified
 
 ### CP6: Web server serves browser artifacts from Postgres
@@ -273,8 +274,8 @@ Out of scope:
 ### CP7: Deletion on chat/session delete
 - Audit IDs: G6
 - Expected changes:
-  - Postgres CASCADE handles new artifacts (FK from CP2)
-  - Filesystem cleanup: `api_delete_session` → also delete `artifact_dir/browser/{task_id}/**` for legacy PNGs
+  - `api_delete_session` → call `storage.delete_browser_artifacts_by_context_key(user_id, context_key)` for Postgres artifacts
+  - Filesystem cleanup: also delete `artifact_dir/browser/{task_id}/**` for legacy PNGs
   - Test: create session → browser task → screenshot in Postgres → delete session → 0 rows in `browser_artifacts`; filesystem dir gone
 - Validation: `cargo test -p oxide-agent-transport-web` session deletion test
 - Exit condition: G6 verified
@@ -343,6 +344,11 @@ Out of scope:
   - Evidence: `git grep 'std::fs::write' crates/oxide-browser-sidecar/` = nothing; `git grep 'BROWSER_AGENT_ARTIFACT_DIR'` = nothing; 92 tests pass; clippy + fmt clean
   - Audit IDs updated: G3→verified
   - Next: CP5 — Core provider persists screenshots to Postgres
+- 2026-06-19 01:30: CP5 complete — Core provider persists screenshots to Postgres.
+  - Changed: `migrations/0009_browser_artifacts_context_key.sql` (drop web_tasks FK, add `context_key` column, replace session_id index with context_key index — root cause: browser provider has no web-task IDs, only transport-agnostic `context_key` from `AgentMemoryScope`); `storage/browser_artifacts.rs` (add `context_key` field to `BrowserArtifactRecord`); `storage/provider.rs` (rename `delete_browser_artifacts_by_session` → `delete_browser_artifacts_by_context_key(user_id, context_key)`); `storage/sqlx/mod.rs` (INSERT includes `context_key`, DELETE by `(user_id, context_key)`); `storage/sqlx/tests.rs` (update tests: no FK chain needed, test isolation by context_key); `agent/tool_runtime/modules.rs` (new `BrowserLiveModuleContext` with storage+user_id+context_key, added to `ToolModuleContext`/`ToolModuleContextParts`); `agent/tool_runtime/mod.rs` (export `BrowserLiveModuleContext`); `agent/executor.rs` (add `storage: Option<Arc<dyn StorageProvider>>` field); `agent/executor/config.rs` (init field, add `with_storage()` builder); `agent/executor/registry.rs` (thread `BrowserLiveModuleContext` from `session.memory_scope()`); `agent/providers/browser_live/tools.rs` (add `storage`+`user_id`+`context_key` to `BrowserLiveProvider`, `persist_latest_screenshot` calls `storage.save_browser_artifact()` instead of `tokio::fs::write`, `screenshot_image_attachment` passes inline bytes, `record_after_observation` returns bytes); `agent/providers/browser_live/session.rs` (add `task_id()`/`session_id()` accessors); `agent/tool_runtime/output.rs` (add `data: Option<Vec<u8>>` to `ToolOutputImageAttachment`, new `image_with_data()` constructor); `agent/memory.rs` (add `#[serde(skip)] data: Option<Vec<u8>>` to `AgentMessageAttachment`, new `image_with_data()` constructor); `agent/runner/tools.rs` (pass `data` through to `AgentMessageAttachment`); `agent/runner/llm_calls.rs` (use inline `data` when available, fall back to filesystem read); `agent/providers/browser_live/test_support.rs` (fake JPEG bytes instead of PNG); transport: `session.rs` (web) and `session.rs` (telegram) call `.with_storage()` on executor; `delegation.rs` (add `browser_live_context: None` for sub-agents)
+  - Evidence: 3 Postgres tests pass (save/load round-trip, delete by context_key, isolation by context_key); 80 browser tests pass; 1312 core tests pass (profile-full); 140 telegram tests pass; 7 web transport tests pass; 9 static guard tests pass; clippy + fmt clean on all 3 crates
+  - Audit IDs updated: G4→verified
+  - Next: CP6 — Web server serves browser artifacts from Postgres
 
 ## Risks and Blockers
 

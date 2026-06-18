@@ -81,6 +81,7 @@ impl AgentExecutor {
             compaction_controller,
             wiki_memory_store: None,
             last_topic_infra_preflight_summary: None,
+            storage: None,
         }
     }
 
@@ -192,6 +193,14 @@ impl AgentExecutor {
         if let Some(control_plane) = self.manager_control_plane.as_mut() {
             control_plane.topic_lifecycle = Some(topic_lifecycle);
         }
+        self
+    }
+
+    /// Attach durable storage for tool modules that need Postgres
+    /// (e.g. browser-live screenshot artifacts).
+    #[must_use]
+    pub fn with_storage(mut self, storage: Arc<dyn StorageProvider>) -> Self {
+        self.storage = Some(storage);
         self
     }
 }

@@ -87,7 +87,8 @@ use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
 #[cfg(any(
     feature = "tool-agents-md",
     feature = "manager-control-plane",
-    feature = "integration-ssh-mcp"
+    feature = "integration-ssh-mcp",
+    feature = "tool-browser-live"
 ))]
 use crate::storage::StorageProvider;
 #[cfg(feature = "integration-ssh-mcp")]
@@ -170,6 +171,47 @@ impl SshMcpModuleContext {
     }
 }
 
+/// Context required by browser-live tools: durable storage for screenshot
+/// artifacts and transport-agnostic session scope for deletion.
+#[cfg(feature = "tool-browser-live")]
+#[derive(Clone)]
+pub struct BrowserLiveModuleContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: String,
+}
+
+#[cfg(feature = "tool-browser-live")]
+impl BrowserLiveModuleContext {
+    /// Create a context for browser-live screenshot storage.
+    #[must_use]
+    pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64, context_key: String) -> Self {
+        Self {
+            storage,
+            user_id,
+            context_key,
+        }
+    }
+
+    /// Durable storage handle for saving/loading browser artifacts.
+    #[must_use]
+    pub fn storage(&self) -> Arc<dyn StorageProvider> {
+        Arc::clone(&self.storage)
+    }
+
+    /// Owning user ID.
+    #[must_use]
+    pub const fn user_id(&self) -> i64 {
+        self.user_id
+    }
+
+    /// Transport-agnostic session identifier (from `AgentMemoryScope`).
+    #[must_use]
+    pub fn context_key(&self) -> &str {
+        &self.context_key
+    }
+}
+
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
@@ -183,6 +225,8 @@ pub struct ToolModuleContext {
     manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
     #[cfg(feature = "integration-ssh-mcp")]
     ssh_mcp_context: Option<SshMcpModuleContext>,
+    #[cfg(feature = "tool-browser-live")]
+    browser_live_context: Option<BrowserLiveModuleContext>,
     #[cfg(feature = "tool-reminder")]
     reminder_context: Option<ReminderContext>,
     #[cfg(feature = "tool-wiki-memory")]
@@ -213,6 +257,9 @@ pub struct ToolModuleContextParts {
     /// Optional topic infrastructure context for SSH MCP tools.
     #[cfg(feature = "integration-ssh-mcp")]
     pub ssh_mcp_context: Option<SshMcpModuleContext>,
+    /// Optional browser-live context for screenshot storage.
+    #[cfg(feature = "tool-browser-live")]
+    pub browser_live_context: Option<BrowserLiveModuleContext>,
     /// Optional reminder context.
     #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
@@ -242,6 +289,8 @@ impl ToolModuleContext {
             manager_control_plane_context: parts.manager_control_plane_context,
             #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: parts.ssh_mcp_context,
+            #[cfg(feature = "tool-browser-live")]
+            browser_live_context: parts.browser_live_context,
             #[cfg(feature = "tool-reminder")]
             reminder_context: parts.reminder_context,
             #[cfg(feature = "tool-wiki-memory")]
@@ -303,6 +352,13 @@ impl ToolModuleContext {
         self.ssh_mcp_context.clone()
     }
 
+    /// Optional context for browser-live screenshot storage.
+    #[cfg(feature = "tool-browser-live")]
+    #[must_use]
+    pub fn browser_live_context(&self) -> Option<BrowserLiveModuleContext> {
+        self.browser_live_context.clone()
+    }
+
     /// Optional context for reminder tools.
     #[cfg(feature = "tool-reminder")]
     #[must_use]
@@ -354,11 +410,15 @@ impl BrowserLiveToolModule {
         }
         let base_url = browser.sidecar_base_url.as_deref()?;
         let token = browser.sidecar_token.as_deref()?;
+        let live_ctx = ctx.browser_live_context()?;
         BrowserLiveProvider::from_sidecar_config(
             base_url,
             token,
             BrowserArtifactSettings::default(),
             ctx.progress_tx(),
+            live_ctx.storage(),
+            live_ctx.user_id(),
+            live_ctx.context_key().to_string(),
         )
         .ok()
     }

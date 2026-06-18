@@ -2,18 +2,24 @@
 //!
 //! Screenshots are stored as JPEG bytes in the `browser_artifacts` table.
 //! The `artifact_uri` is the primary key and lookup key — no filesystem path
-//! needed. Deletion cascades from `web_tasks` via FK `ON DELETE CASCADE`.
+//! needed. Deletion is by `(user_id, context_key)` — the transport-agnostic
+//! session identifier from `AgentMemoryScope`. No FK: the browser provider
+//! (core layer) does not have web-task IDs, so explicit cleanup is used
+//! instead of a CASCADE that the sending side cannot satisfy.
 
 /// A browser screenshot artifact stored in Postgres.
 #[derive(Debug, Clone)]
 pub struct BrowserArtifactRecord {
     /// Primary key — `artifact://browser/{task_id}/{session_id}/step-NNNN-{purpose}.jpg`
     pub artifact_uri: String,
-    /// Owning user ID (FK to `web_tasks`).
+    /// Owning user ID.
     pub user_id: i64,
-    /// Owning session ID (FK to `web_tasks`).
+    /// Transport-agnostic session identifier (from `AgentMemoryScope.context_key`).
+    /// Used for deletion when a session is deleted.
+    pub context_key: String,
+    /// Browser session ID (informational, from sidecar).
     pub session_id: String,
-    /// Owning task ID (FK to `web_tasks`).
+    /// Browser task ID (informational, LLM-provided or fallback).
     pub task_id: String,
     /// MIME type, always `image/jpeg` for screenshots.
     pub mime_type: String,

@@ -176,6 +176,9 @@ pub struct AgentExecutor {
     compaction_controller: CompactionController,
     wiki_memory_store: Option<WikiStore>,
     last_topic_infra_preflight_summary: Option<String>,
+    /// Durable storage handle for tool modules that need Postgres
+    /// (e.g. browser-live screenshot artifacts). Set by the transport layer.
+    storage: Option<Arc<dyn crate::storage::StorageProvider>>,
 }
 
 /// Terminal outcome of an agent execution request.

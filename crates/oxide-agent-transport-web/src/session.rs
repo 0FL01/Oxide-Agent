@@ -730,7 +730,8 @@ impl WebSessionManager {
                 .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
                     self.storage(),
                     "",
-                ));
+                ))
+                .with_storage(self.storage());
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),

@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 
 /// Image attachment returned by a tool executor.
 ///
-/// The actual bytes are kept out of the output and persisted only at the
-/// referenced sandbox path; they are resolved transiently before a vision-capable
-/// LLM request.
+/// The actual bytes are either carried inline (`data`) or persisted at the
+/// referenced sandbox path. When `data` is `Some`, the runner uses the bytes
+/// directly; when `None`, it reads from `sandbox_path` (filesystem fallback
+/// for tools that still write to disk).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutputImageAttachment {
     /// Original file name reported by the tool.
@@ -20,12 +21,16 @@ pub struct ToolOutputImageAttachment {
     pub mime_type: Option<String>,
     /// File size in bytes.
     pub size_bytes: u64,
-    /// Absolute sandbox path where the image is stored.
+    /// Absolute sandbox path where the image is stored (filesystem fallback).
     pub sandbox_path: String,
+    /// Inline image bytes when available (e.g. from Postgres, not filesystem).
+    /// When `Some`, the runner uses these bytes directly instead of reading
+    /// from `sandbox_path`.
+    pub data: Option<Vec<u8>>,
 }
 
 impl ToolOutputImageAttachment {
-    /// Create an image attachment ref without retaining bytes.
+    /// Create an image attachment ref without retaining bytes (filesystem path).
     #[must_use]
     pub fn image(
         file_name: impl Into<String>,
@@ -38,6 +43,25 @@ impl ToolOutputImageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            data: None,
+        }
+    }
+
+    /// Create an image attachment with inline bytes (no filesystem read needed).
+    #[must_use]
+    pub fn image_with_data(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+            data: Some(data),
         }
     }
 }

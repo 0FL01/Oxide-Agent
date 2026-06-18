@@ -139,12 +139,16 @@ pub trait StorageProvider: Send + Sync {
         let _ = artifact_uri;
         Ok(None)
     }
-    /// Delete all browser artifacts for a session (complements FK CASCADE).
-    async fn delete_browser_artifacts_by_session(
+    /// Delete all browser artifacts for a session identified by
+    /// `(user_id, context_key)` — the transport-agnostic scope from
+    /// `AgentMemoryScope`. Called explicitly when a session is deleted.
+    async fn delete_browser_artifacts_by_context_key(
         &self,
-        session_id: &str,
+        user_id: i64,
+        context_key: &str,
     ) -> Result<u64, StorageError> {
-        let _ = session_id;
+        let _ = user_id;
+        let _ = context_key;
         Ok(0)
     }
     /// Load a durable LLM Wiki Markdown object by deterministic storage key.

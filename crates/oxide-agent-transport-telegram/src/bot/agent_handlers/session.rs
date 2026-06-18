@@ -294,7 +294,8 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
             ctx.storage.clone(),
             "",
-        ));
+        ))
+        .with_storage(ctx.storage.clone());
     executor.set_agents_md_context(ctx.storage.clone(), ctx.user_id, ctx.context_key.clone());
     if manager_enabled {
         let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(

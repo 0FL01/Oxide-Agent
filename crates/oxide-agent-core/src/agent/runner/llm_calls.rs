@@ -145,10 +145,19 @@ impl AgentRunner {
                     continue;
                 }
 
-                match image_reader
-                    .read_native_image_file(&attachment.sandbox_path)
-                    .await
-                {
+                // Use inline data when available (e.g. browser screenshots from
+                // Postgres). Fall back to reading from sandbox_path (filesystem).
+                let image_bytes_result: Result<Vec<u8>, String> =
+                    if let Some(data) = &attachment.data {
+                        Ok(data.clone())
+                    } else {
+                        image_reader
+                            .read_native_image_file(&attachment.sandbox_path)
+                            .await
+                            .map_err(|e| e.to_string())
+                    };
+
+                match image_bytes_result {
                     Ok(bytes) if bytes.is_empty() => {
                         warn!(
                             provider = route.provider.as_str(),
@@ -178,7 +187,7 @@ impl AgentRunner {
                             model = route.id.as_str(),
                             path = attachment.sandbox_path.as_str(),
                             error = %error,
-                            "Skipping native image attachment because sandbox file could not be read"
+                            "Skipping native image attachment because image bytes could not be resolved"
                         );
                     }
                 }

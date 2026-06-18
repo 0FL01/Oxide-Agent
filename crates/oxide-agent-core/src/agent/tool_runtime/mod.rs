@@ -33,6 +33,8 @@ pub use modules::AgentsMdToolModule;
 #[cfg(feature = "tool-brave-search")]
 pub use modules::BraveSearchToolModule;
 #[cfg(feature = "tool-browser-live")]
+pub use modules::BrowserLiveModuleContext;
+#[cfg(feature = "tool-browser-live")]
 pub use modules::BrowserLiveToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;

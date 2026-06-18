@@ -701,12 +701,13 @@ impl StorageProvider for SqlxStorage {
         query::<Postgres>(
             r#"
             INSERT INTO browser_artifacts (
-                artifact_uri, user_id, session_id, task_id,
+                artifact_uri, user_id, context_key, session_id, task_id,
                 mime_type, data, bytes, sha256
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (artifact_uri) DO UPDATE
-            SET mime_type = EXCLUDED.mime_type,
+            SET context_key = EXCLUDED.context_key,
+                mime_type = EXCLUDED.mime_type,
                 data = EXCLUDED.data,
                 bytes = EXCLUDED.bytes,
                 sha256 = EXCLUDED.sha256
@@ -714,6 +715,7 @@ impl StorageProvider for SqlxStorage {
         )
         .bind(&record.artifact_uri)
         .bind(record.user_id)
+        .bind(&record.context_key)
         .bind(&record.session_id)
         .bind(&record.task_id)
         .bind(&record.mime_type)
@@ -755,17 +757,19 @@ impl StorageProvider for SqlxStorage {
         .transpose()
     }
 
-    async fn delete_browser_artifacts_by_session(
+    async fn delete_browser_artifacts_by_context_key(
         &self,
-        session_id: &str,
+        user_id: i64,
+        context_key: &str,
     ) -> Result<u64, StorageError> {
         let result = query::<Postgres>(
             r#"
             DELETE FROM browser_artifacts
-            WHERE session_id = $1
+            WHERE user_id = $1 AND context_key = $2
             "#,
         )
-        .bind(session_id)
+        .bind(user_id)
+        .bind(context_key)
         .execute(&self.pool)
         .await
         .map_err(db_error)?;

@@ -67,8 +67,9 @@ pub struct AgentMessage {
 
 /// Safe persisted reference to an attachment associated with a user message.
 ///
-/// Raw bytes are intentionally absent; provider-native media parts are resolved
-/// transiently from `sandbox_path` immediately before an LLM request.
+/// Raw bytes are intentionally absent from persistence; provider-native media
+/// parts are resolved transiently from `sandbox_path` or inline `data`
+/// immediately before an LLM request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentMessageAttachment {
@@ -83,6 +84,12 @@ pub struct AgentMessageAttachment {
     pub size_bytes: u64,
     /// Absolute sandbox path where the upload was staged.
     pub sandbox_path: String,
+    /// Inline image bytes when available from the tool (e.g. browser screenshots
+    /// stored in Postgres, not on filesystem). Transient: not serialized,
+    /// not persisted. After deserialization this is always `None`, and the
+    /// runner falls back to reading from `sandbox_path`.
+    #[serde(skip, default)]
+    pub data: Option<Vec<u8>>,
 }
 
 impl AgentMessageAttachment {
@@ -100,6 +107,26 @@ impl AgentMessageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            data: None,
+        }
+    }
+
+    /// Create an image attachment with inline bytes (no filesystem read needed).
+    #[must_use]
+    pub fn image_with_data(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            kind: AgentMessageAttachmentKind::Image,
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+            data: Some(data),
         }
     }
 }

@@ -4,6 +4,8 @@ use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(feature = "tool-brave-search")]
 use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-browser-live")]
+use crate::agent::tool_runtime::BrowserLiveModuleContext;
+#[cfg(feature = "tool-browser-live")]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
@@ -352,6 +354,15 @@ impl AgentExecutor {
                     context.user_id,
                     context.topic_id.clone(),
                     context.config.clone(),
+                )
+            }),
+            #[cfg(feature = "tool-browser-live")]
+            browser_live_context: self.storage.as_ref().map(|storage| {
+                let scope = self.session.memory_scope();
+                BrowserLiveModuleContext::new(
+                    Arc::clone(storage),
+                    scope.user_id,
+                    scope.context_key.clone(),
                 )
             }),
             #[cfg(feature = "tool-reminder")]

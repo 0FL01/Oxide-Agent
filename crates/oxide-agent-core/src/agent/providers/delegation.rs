@@ -772,6 +772,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             manager_control_plane_context: None,
             #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: None,
+            #[cfg(feature = "tool-browser-live")]
+            browser_live_context: None,
             #[cfg(feature = "tool-reminder")]
             reminder_context: None,
             #[cfg(feature = "tool-wiki-memory")]

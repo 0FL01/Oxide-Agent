@@ -948,13 +948,11 @@ fn assert_memory_eq(expected: &AgentMemory, actual: &AgentMemory) {
 // Browser artifact storage tests
 // ---------------------------------------------------------------------------
 
-/// Create prerequisite `users` + `web_users` + `web_sessions` + `web_tasks`
-/// rows so the `browser_artifacts` FK is satisfied. Returns
-/// `(user_id, session_id, task_id)`.
-async fn setup_web_task_chain(storage: &SqlxStorage) -> (i64, String, String) {
+/// Create prerequisite `users` row. No FK chain needed — `browser_artifacts`
+/// has no FK after migration 0009. Returns `(user_id, context_key)`.
+async fn setup_browser_artifact_scope(storage: &SqlxStorage) -> (i64, String) {
     let user_id = unique_user_id();
-    let session_id = format!("test-session-{user_id}");
-    let task_id = format!("test-task-{user_id}");
+    let context_key = format!("web-session-{user_id}");
 
     query::<Postgres>("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING")
         .bind(user_id)
@@ -962,51 +960,11 @@ async fn setup_web_task_chain(storage: &SqlxStorage) -> (i64, String, String) {
         .await
         .expect("insert users");
 
-    query::<Postgres>(
-        r#"
-        INSERT INTO web_users (user_id, login, normalized_login, password_hash, role, status, created_at)
-        VALUES ($1, $2, $2, 'x', 'user', 'active', now())
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(user_id)
-    .bind(format!("test{user_id}"))
-    .execute(storage.pool())
-    .await
-    .expect("insert web_users");
-
-    query::<Postgres>(
-        r#"
-        INSERT INTO web_sessions (user_id, session_id, title, context_key, context_keys, agent_flow_id, created_at, updated_at)
-        VALUES ($1, $2, 'test', 'ctx', '{}', 'flow1', now(), now())
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(user_id)
-    .bind(&session_id)
-    .execute(storage.pool())
-    .await
-    .expect("insert web_sessions");
-
-    query::<Postgres>(
-        r#"
-        INSERT INTO web_tasks (user_id, session_id, task_id, version_group_id, status, input_markdown, created_at, updated_at)
-        VALUES ($1, $2, $3, 'vg1', 'completed', 'test', now(), now())
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(user_id)
-    .bind(&session_id)
-    .bind(&task_id)
-    .execute(storage.pool())
-    .await
-    .expect("insert web_tasks");
-
-    (user_id, session_id, task_id)
+    (user_id, context_key)
 }
 
-/// Clean up the prerequisite chain (cascades to `browser_artifacts`).
-async fn cleanup_web_task_chain(storage: &SqlxStorage, user_id: i64) {
+/// Clean up the prerequisite user row.
+async fn cleanup_browser_artifact_scope(storage: &SqlxStorage, user_id: i64) {
     let _ = query::<Postgres>("DELETE FROM users WHERE user_id = $1")
         .bind(user_id)
         .execute(storage.pool())
@@ -1018,8 +976,10 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
     let Some(storage) = sqlx_test_storage().await else {
         return;
     };
-    let (user_id, session_id, task_id) = setup_web_task_chain(&storage).await;
+    let (user_id, context_key) = setup_browser_artifact_scope(&storage).await;
 
+    let session_id = format!("br-{user_id}");
+    let task_id = format!("task-{user_id}");
     let artifact_uri = format!("artifact://browser/{task_id}/{session_id}/step-0001-milestone.jpg");
     let test_data = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]; // JPEG SOI + APP0
     let sha256 = format!("{:x}", sha2::Digest::finalize(sha2::Sha256::new()));
@@ -1027,6 +987,7 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
     let record = BrowserArtifactRecord {
         artifact_uri: artifact_uri.clone(),
         user_id,
+        context_key: context_key.clone(),
         session_id: session_id.clone(),
         task_id: task_id.clone(),
         mime_type: "image/jpeg".to_string(),
@@ -1055,6 +1016,7 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
     let record2 = BrowserArtifactRecord {
         artifact_uri: artifact_uri.clone(),
         user_id,
+        context_key: context_key.clone(),
         session_id: session_id.clone(),
         task_id: task_id.clone(),
         mime_type: "image/jpeg".to_string(),
@@ -1081,23 +1043,27 @@ async fn sqlx_browser_artifact_save_load_round_trip() {
         .expect("load non-existent should not error");
     assert!(missing.is_none());
 
-    cleanup_web_task_chain(&storage, user_id).await;
+    cleanup_browser_artifact_scope(&storage, user_id).await;
 }
 
 #[tokio::test]
-async fn sqlx_browser_artifact_delete_by_session() {
+async fn sqlx_browser_artifact_delete_by_context_key() {
     let Some(storage) = sqlx_test_storage().await else {
         return;
     };
-    let (user_id, session_id, task_id) = setup_web_task_chain(&storage).await;
+    let (user_id, context_key) = setup_browser_artifact_scope(&storage).await;
 
-    // Save two artifacts for the same session.
+    let session_id = format!("br-{user_id}");
+    let task_id = format!("task-{user_id}");
+
+    // Save two artifacts for the same context_key.
     for i in 0..2u8 {
         let uri = format!("artifact://browser/{task_id}/{session_id}/step-{i:04}-live.jpg");
         storage
             .save_browser_artifact(BrowserArtifactRecord {
                 artifact_uri: uri,
                 user_id,
+                context_key: context_key.clone(),
                 session_id: session_id.clone(),
                 task_id: task_id.clone(),
                 mime_type: "image/jpeg".to_string(),
@@ -1109,11 +1075,11 @@ async fn sqlx_browser_artifact_delete_by_session() {
             .expect("save artifact");
     }
 
-    // Delete by session.
+    // Delete by context_key.
     let deleted = storage
-        .delete_browser_artifacts_by_session(&session_id)
+        .delete_browser_artifacts_by_context_key(user_id, &context_key)
         .await
-        .expect("delete by session should succeed");
+        .expect("delete by context_key should succeed");
     assert_eq!(deleted, 2);
 
     // Verify they're gone.
@@ -1124,21 +1090,27 @@ async fn sqlx_browser_artifact_delete_by_session() {
         .expect("load after delete should not error");
     assert!(loaded.is_none());
 
-    cleanup_web_task_chain(&storage, user_id).await;
+    cleanup_browser_artifact_scope(&storage, user_id).await;
 }
 
 #[tokio::test]
-async fn sqlx_browser_artifact_cascade_on_task_delete() {
+async fn sqlx_browser_artifact_isolation_by_context_key() {
     let Some(storage) = sqlx_test_storage().await else {
         return;
     };
-    let (user_id, session_id, task_id) = setup_web_task_chain(&storage).await;
+    let (user_id, context_key_a) = setup_browser_artifact_scope(&storage).await;
+    let context_key_b = format!("web-session-other-{user_id}");
 
-    let artifact_uri = format!("artifact://browser/{task_id}/{session_id}/step-0001-final.jpg");
+    let session_id = format!("br-{user_id}");
+    let task_id = format!("task-{user_id}");
+
+    // Save one artifact for context_key_a and one for context_key_b.
+    let uri_a = format!("artifact://browser/{task_id}/{session_id}/step-0001-final.jpg");
     storage
         .save_browser_artifact(BrowserArtifactRecord {
-            artifact_uri: artifact_uri.clone(),
+            artifact_uri: uri_a.clone(),
             user_id,
+            context_key: context_key_a.clone(),
             session_id: session_id.clone(),
             task_id: task_id.clone(),
             mime_type: "image/jpeg".to_string(),
@@ -1147,27 +1119,49 @@ async fn sqlx_browser_artifact_cascade_on_task_delete() {
             sha256: None,
         })
         .await
-        .expect("save artifact");
+        .expect("save artifact A");
 
-    // Delete the web_tasks row — should cascade to browser_artifacts.
-    query::<Postgres>(
-        "DELETE FROM web_tasks WHERE user_id = $1 AND session_id = $2 AND task_id = $3",
-    )
-    .bind(user_id)
-    .bind(&session_id)
-    .bind(&task_id)
-    .execute(storage.pool())
-    .await
-    .expect("delete web_tasks");
-
-    let loaded = storage
-        .load_browser_artifact(&artifact_uri)
+    let uri_b = format!("artifact://browser/{task_id}/{session_id}/step-0002-final.jpg");
+    storage
+        .save_browser_artifact(BrowserArtifactRecord {
+            artifact_uri: uri_b.clone(),
+            user_id,
+            context_key: context_key_b.clone(),
+            session_id: session_id.clone(),
+            task_id: task_id.clone(),
+            mime_type: "image/jpeg".to_string(),
+            data: vec![0xff, 0xd8, 0xff, 0xd8],
+            bytes: 4,
+            sha256: None,
+        })
         .await
-        .expect("load after cascade should not error");
-    assert!(
-        loaded.is_none(),
-        "artifact should be cascade-deleted with web_tasks"
-    );
+        .expect("save artifact B");
 
-    cleanup_web_task_chain(&storage, user_id).await;
+    // Delete only context_key_a — context_key_b must survive.
+    let deleted = storage
+        .delete_browser_artifacts_by_context_key(user_id, &context_key_a)
+        .await
+        .expect("delete by context_key_a should succeed");
+    assert_eq!(deleted, 1);
+
+    let loaded_a = storage
+        .load_browser_artifact(&uri_a)
+        .await
+        .expect("load after delete should not error");
+    assert!(loaded_a.is_none(), "artifact A should be deleted");
+
+    let loaded_b = storage
+        .load_browser_artifact(&uri_b)
+        .await
+        .expect("load survivor should not error")
+        .expect("artifact B should still exist");
+    assert_eq!(loaded_b.data, vec![0xff, 0xd8, 0xff, 0xd8]);
+
+    // Clean up remaining artifact B.
+    storage
+        .delete_browser_artifacts_by_context_key(user_id, &context_key_b)
+        .await
+        .expect("cleanup context_key_b");
+
+    cleanup_browser_artifact_scope(&storage, user_id).await;
 }

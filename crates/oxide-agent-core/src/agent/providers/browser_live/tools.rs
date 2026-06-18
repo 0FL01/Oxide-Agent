@@ -19,6 +19,7 @@ use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
     ToolOutputImageAttachment, ToolRuntimeConfig, ToolRuntimeError,
 };
+use crate::storage::{BrowserArtifactRecord, StorageProvider};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,6 +51,13 @@ pub struct BrowserLiveProvider {
     artifact_settings: BrowserArtifactSettings,
     progress_tx: Option<Sender<AgentEvent>>,
     metrics: Arc<BrowserMetricsCollector>,
+    /// Durable storage for screenshot artifacts (Postgres BYTEA).
+    /// `None` in tests or when no storage backend is configured.
+    storage: Option<Arc<dyn StorageProvider>>,
+    /// User ID for artifact ownership.
+    user_id: i64,
+    /// Transport-agnostic session identifier for artifact deletion.
+    context_key: String,
 }
 
 /// Result returned by the `browser_observe` tool executor.
@@ -72,7 +80,10 @@ struct ExecuteToolResult {
     image_attachment: Option<ToolOutputImageAttachment>,
 }
 
-fn screenshot_image_attachment(frame: &BrowserFrame) -> Option<ToolOutputImageAttachment> {
+fn screenshot_image_attachment(
+    frame: &BrowserFrame,
+    screenshot_bytes: Option<&[u8]>,
+) -> Option<ToolOutputImageAttachment> {
     if frame.screenshot.redacted || frame.screenshot.byte_size == 0 {
         return None;
     }
@@ -82,12 +93,23 @@ fn screenshot_image_attachment(frame: &BrowserFrame) -> Option<ToolOutputImageAt
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| format!("screenshot-{}.jpg", frame.screenshot.screenshot_id));
-    Some(ToolOutputImageAttachment::image(
-        file_name,
-        Some(frame.screenshot.mime_type.clone()),
-        frame.screenshot.byte_size,
-        frame.artifact.local_path.to_string_lossy().to_string(),
-    ))
+    let sandbox_path = frame.artifact.local_path.to_string_lossy().to_string();
+    if let Some(bytes) = screenshot_bytes {
+        Some(ToolOutputImageAttachment::image_with_data(
+            file_name,
+            Some(frame.screenshot.mime_type.clone()),
+            frame.screenshot.byte_size,
+            sandbox_path,
+            bytes.to_vec(),
+        ))
+    } else {
+        Some(ToolOutputImageAttachment::image(
+            file_name,
+            Some(frame.screenshot.mime_type.clone()),
+            frame.screenshot.byte_size,
+            sandbox_path,
+        ))
+    }
 }
 
 impl BrowserLiveProvider {
@@ -100,11 +122,17 @@ impl BrowserLiveProvider {
         token: &str,
         artifact_settings: BrowserArtifactSettings,
         progress_tx: Option<Sender<AgentEvent>>,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        context_key: String,
     ) -> Result<Self, BrowserSidecarError> {
         Ok(Self::new(
             Arc::new(BrowserSidecarClient::new(base_url, token)?),
             artifact_settings,
             progress_tx,
+            Some(storage),
+            user_id,
+            context_key,
         ))
     }
 
@@ -114,6 +142,9 @@ impl BrowserLiveProvider {
         sidecar: Arc<dyn BrowserSidecar>,
         artifact_settings: BrowserArtifactSettings,
         progress_tx: Option<Sender<AgentEvent>>,
+        storage: Option<Arc<dyn StorageProvider>>,
+        user_id: i64,
+        context_key: String,
     ) -> Self {
         Self {
             sidecar,
@@ -121,6 +152,9 @@ impl BrowserLiveProvider {
             artifact_settings,
             progress_tx,
             metrics: Arc::new(BrowserMetricsCollector::new()),
+            storage,
+            user_id,
+            context_key,
         }
     }
 
@@ -291,10 +325,11 @@ impl BrowserLiveProvider {
             args.session_id, frame.action_seq
         ))
         .await;
-        self.persist_latest_screenshot(&args.session_id, &mut frame)
+        let screenshot_bytes = self
+            .persist_latest_screenshot(&args.session_id, &mut frame)
             .await?;
 
-        let image_attachment = screenshot_image_attachment(&frame);
+        let image_attachment = screenshot_image_attachment(&frame, Some(&screenshot_bytes));
         Ok(ObserveToolResult {
             payload: observation_payload(&args.session_id, &frame.screenshot, &frame),
             image_attachment,
@@ -400,7 +435,7 @@ impl BrowserLiveProvider {
                         "fallback_observe",
                     ),
                 };
-                let (after_frame, after_payload) = self
+                let (after_frame, after_payload, screenshot_bytes) = self
                     .record_after_observation(&args.session_id, &after)
                     .await?;
                 let post_observation_diagnostics = post_observation_diagnostics(
@@ -409,7 +444,8 @@ impl BrowserLiveProvider {
                     &before,
                     &after,
                 );
-                let image_attachment = screenshot_image_attachment(&after_frame);
+                let image_attachment =
+                    screenshot_image_attachment(&after_frame, Some(&screenshot_bytes));
                 let verification =
                     verify_navigation(expected_result, &before, &response.navigation, &after);
                 self.emit_verification(&args.session_id, action_seq, &verification)
@@ -474,7 +510,7 @@ impl BrowserLiveProvider {
                             "fallback_observe",
                         ),
                     };
-                    let (after_frame, after_payload) = self
+                    let (after_frame, after_payload, screenshot_bytes) = self
                         .record_after_observation(&args.session_id, &after)
                         .await?;
                     let post_observation_diagnostics = post_observation_diagnostics(
@@ -483,7 +519,8 @@ impl BrowserLiveProvider {
                         &before,
                         &after,
                     );
-                    let image_attachment = screenshot_image_attachment(&after_frame);
+                    let image_attachment =
+                        screenshot_image_attachment(&after_frame, Some(&screenshot_bytes));
                     let verification = verify_sidecar_action(
                         expected_result,
                         &before,
@@ -594,7 +631,7 @@ impl BrowserLiveProvider {
         &self,
         session_id: &str,
         observation: &BrowserObservation,
-    ) -> Result<(BrowserFrame, Value), ToolRuntimeError> {
+    ) -> Result<(BrowserFrame, Value, Vec<u8>), ToolRuntimeError> {
         let mut frame = {
             let mut states = self.states.lock().await;
             let state = states.get_mut(session_id).ok_or_else(|| {
@@ -606,10 +643,11 @@ impl BrowserLiveProvider {
                 .clone()
         };
         self.record_observation_metrics(&frame);
-        self.persist_latest_screenshot(session_id, &mut frame)
+        let screenshot_bytes = self
+            .persist_latest_screenshot(session_id, &mut frame)
             .await?;
         let payload = observation_payload(session_id, &frame.screenshot, &frame);
-        Ok((frame, payload))
+        Ok((frame, payload, screenshot_bytes))
     }
 
     async fn persist_latest_screenshot(
@@ -628,23 +666,39 @@ impl BrowserLiveProvider {
             ))
             .await
             .map_err(sidecar_runtime_error)?;
-        if let Some(parent) = frame.artifact.local_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                ToolRuntimeError::Failure(format!(
-                    "failed to create screenshot artifact directory: {error}"
-                ))
-            })?;
-        }
-        tokio::fs::write(&frame.artifact.local_path, &bytes)
-            .await
-            .map_err(|error| {
-                ToolRuntimeError::Failure(format!(
-                    "failed to write screenshot artifact {}: {error}",
-                    frame.artifact.local_path.display()
-                ))
-            })?;
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         let byte_size = bytes.len() as u64;
+
+        // Persist to Postgres BYTEA (replaces filesystem write).
+        if let Some(storage) = &self.storage {
+            let (task_id, browser_session_id) = {
+                let states = self.states.lock().await;
+                let state = states.get(session_id).ok_or_else(|| {
+                    ToolRuntimeError::Failure("browser session is not started".to_string())
+                })?;
+                (state.task_id().to_string(), state.session_id().to_string())
+            };
+            let record = BrowserArtifactRecord {
+                artifact_uri: frame.artifact.uri.clone(),
+                user_id: self.user_id,
+                context_key: self.context_key.clone(),
+                session_id: browser_session_id,
+                task_id,
+                mime_type: frame.screenshot.mime_type.clone(),
+                data: bytes.clone(),
+                bytes: byte_size as i64,
+                sha256: Some(sha256.clone()),
+            };
+            storage
+                .save_browser_artifact(record)
+                .await
+                .map_err(|error| {
+                    ToolRuntimeError::Failure(format!(
+                        "failed to save browser artifact to storage: {error}"
+                    ))
+                })?;
+        }
+
         {
             let mut states = self.states.lock().await;
             let state = states.get_mut(session_id).ok_or_else(|| {
@@ -1704,6 +1758,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -1749,6 +1806,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -1803,6 +1863,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -1920,8 +1983,13 @@ mod tests {
                 .starts_with("image/")
         );
         assert!(image.size_bytes > 0);
-        assert!(std::path::Path::new(&image.sandbox_path).exists());
+        // Screenshots are now stored in Postgres (or in-memory in tests),
+        // not on disk. The sandbox_path is a logical reference, not a file.
         assert!(image.sandbox_path.contains("step-"));
+        assert!(
+            image.data.is_some(),
+            "image attachment should carry inline bytes"
+        );
         assert_eq!(
             close.structured_payload.as_ref().expect("payload")["status"],
             "closed"
@@ -1961,15 +2029,15 @@ mod tests {
             ),
             retained: false,
         };
-        assert!(screenshot_image_attachment(&base).is_some());
+        assert!(screenshot_image_attachment(&base, None).is_some());
 
         let mut redacted = base.clone();
         redacted.screenshot.redacted = true;
-        assert!(screenshot_image_attachment(&redacted).is_none());
+        assert!(screenshot_image_attachment(&redacted, None).is_none());
 
         let mut empty = base;
         empty.screenshot.byte_size = 0;
-        assert!(screenshot_image_attachment(&empty).is_none());
+        assert!(screenshot_image_attachment(&empty, None).is_none());
     }
 
     #[tokio::test]
@@ -2073,6 +2141,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2109,6 +2180,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2284,6 +2358,9 @@ mod tests {
             Arc::new(fake),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2357,6 +2434,9 @@ mod tests {
                 Arc::new(FakeBrowserSidecar::new()),
                 BrowserArtifactSettings::default(),
                 Some(tx),
+                None,
+                0,
+                "test".to_string(),
             ));
             provider.tool_runtime_executors()
         };
@@ -2433,6 +2513,9 @@ mod tests {
                 &token,
                 BrowserArtifactSettings::default(),
                 None,
+                Arc::new(crate::testing::mock_storage_noop()),
+                0,
+                "e2e-test".to_string(),
             )
             .expect("live sidecar client"),
         );
@@ -2549,6 +2632,9 @@ mod tests {
             Arc::new(FakeBrowserSidecar::new()),
             BrowserArtifactSettings::default(),
             None,
+            None,
+            0,
+            "test".to_string(),
         ))
     }
 
