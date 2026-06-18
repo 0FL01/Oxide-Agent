@@ -19,6 +19,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+use tracing::warn;
 
 const TOOL_REMINDER_SCHEDULE: &str = "reminder_schedule";
 const TOOL_REMINDER_LIST: &str = "reminder_list";
@@ -244,7 +245,7 @@ impl ReminderProvider {
         self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(record.clone())))
             .await;
 
-        let _ = self
+        if let Err(e) = self
             .context
             .storage
             .append_audit_event(AppendAuditEventOptions {
@@ -262,7 +263,10 @@ impl ReminderProvider {
                     "timezone": record.timezone,
                 }),
             })
-            .await;
+            .await
+        {
+            warn!(error = %e, "audit append failed for reminder_job_scheduled");
+        }
 
         Ok(format_reminder_created(&record, &compiled.preview))
     }
@@ -325,7 +329,7 @@ impl ReminderProvider {
         self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(cancelled.clone())))
             .await;
 
-        let _ = self
+        if let Err(e) = self
             .context
             .storage
             .append_audit_event(AppendAuditEventOptions {
@@ -338,7 +342,10 @@ impl ReminderProvider {
                     "status": cancelled.status,
                 }),
             })
-            .await;
+            .await
+        {
+            warn!(error = %e, "audit append failed for reminder_job_cancelled");
+        }
 
         Ok(format!(
             "Reminder cancelled. ID: {}. Status: {:?}.",
@@ -492,7 +499,7 @@ impl ReminderProvider {
     }
 
     async fn append_audit(&self, action: &str, payload: serde_json::Value) {
-        let _ = self
+        if let Err(e) = self
             .context
             .storage
             .append_audit_event(AppendAuditEventOptions {
@@ -502,7 +509,10 @@ impl ReminderProvider {
                 action: action.to_string(),
                 payload,
             })
-            .await;
+            .await
+        {
+            warn!(error = %e, action = %action, "audit append failed");
+        }
     }
 
     async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {

@@ -5,7 +5,7 @@ Status: active
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — static scan of warnings/errors/coffee-smells across the workspace
 Goal doc owner: Codex
-Last updated: 2026-06-18 13:05
+Last updated: 2026-06-18 13:20
 
 ## Objective
 
@@ -79,8 +79,8 @@ None. RECON provided enough evidence to design all fixes.
   - Source: RECON Stage 4 — `reminder.rs:247/328/495`.
   - Acceptance: `let _ = ... append_audit_event(...)` replaced with `if let Err(e) = ... { tracing::warn!(...) }` (or equivalent logging); `git grep -n 'let _ = .*append_audit_event' crates/oxide-agent-core/src/agent/providers/reminder.rs` returns nothing.
   - Evidence required: clippy clean; `cargo test -p oxide-agent-core` green.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP4 — 3 sites in `reminder.rs` fixed: inline `reminder_job_scheduled` (line 247→248), inline `reminder_job_cancelled` (line 328→329), `append_audit` helper (line 494→496, covers 3 more call sites at 373/419/466). All `let _ = ... .await;` → `if let Err(e) = ... .await { warn!(error = %e, ...) }`. Added `use tracing::warn;` import. `git grep -n 'let _ = .*append_audit_event' reminder.rs` → 0 matches. Gates: fmt exit 0; clippy ×4 exit 0; `cargo test -p oxide-agent-core --features profile-full` 1370 passed 0 failed 10 ignored.
 
 - Q1: Workspace clippy clean with `-D warnings` across `profile-full`, `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-search-only`.
   - Source: AGENTS.md lint requirement.
@@ -216,12 +216,19 @@ None. RECON provided enough evidence to design all fixes.
   - Audit IDs updated: G2 → verified; Q1 → verified; Q2 → verified; Q3 → verified; N1 → verified; N2 → verified; N3 → verified.
   - Next: CP3 — Stage 3 collapse too_many_arguments.
 
-- 2026-06-18 13:05: CP3 complete — Stage 3 too_many_arguments class closed.
+- 2026-06-18 13:05: CP3 complete — Stage 3 too_many_arguments class closed. Commit `5a2a28d3`.
   - Changed: `agent/providers/webfetch_md/fetch.rs` (FetchOptions struct + 4 function refactors + 4 call sites), `llm/providers/openai_base/mod.rs` (build_tool_chat_body refactor + 17 call sites + test import fix), `transport-telegram/src/bot/agent_handlers/controls.rs`, `transport-telegram/src/bot/agent_handlers/lifecycle.rs`, `transport-telegram/src/bot/handlers.rs`, `transport-telegram/src/runner.rs` (stale `#[allow]` removal).
   - Evidence: G3 verified — `git grep "too_many_arguments" -- '*.rs'` → 0 matches; all gates green; tests green (1370 + 168). N1/N2/N3 preserved (no Class C / test panic / new deps edits).
   - Commands: `git grep "too_many_arguments" -- '*.rs'`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo check --workspace --all-targets --features profile-full`; `cargo test -p oxide-agent-core --features profile-full`; `cargo test -p oxide-agent-transport-telegram --features profile-embedded-opencode-local`.
   - Audit IDs updated: G3 → verified.
   - Next: CP4 — Stage 4 reminder.rs audit logging.
+
+- 2026-06-18 13:20: CP4 complete — Stage 4 reminder audit logging class closed.
+  - Changed: `agent/providers/reminder.rs` (3 `let _ = append_audit_event` → `if let Err(e) = ... { warn!(...) }` + `use tracing::warn;` import). `append_audit` helper fix covers 3 more call sites (373/419/466).
+  - Evidence: G4 verified — `git grep -n 'let _ = .*append_audit_event' reminder.rs` → 0 matches; clippy ×4 exit 0; fmt exit 0; `cargo test -p oxide-agent-core` 1370 passed 0 failed 10 ignored.
+  - Commands: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo test -p oxide-agent-core --no-default-features --features profile-full`.
+  - Audit IDs updated: G4 → verified.
+  - Next: Final Verification — completion audit, all gates green.
 
 ## Risks and Blockers
 
