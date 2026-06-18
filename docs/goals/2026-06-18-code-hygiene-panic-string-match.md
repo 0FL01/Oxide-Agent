@@ -1,7 +1,7 @@
 # Goal: Code hygiene — close foreign-input panic and string-match classes
 
 Date started: 2026-06-18
-Status: active
+Status: complete
 Codex goal: see /goal objective below
 Source spec: RECON report (this session, 2026-06-18) — static scan of warnings/errors/coffee-smells across the workspace
 Goal doc owner: Codex
@@ -223,7 +223,7 @@ None. RECON provided enough evidence to design all fixes.
   - Audit IDs updated: G3 → verified.
   - Next: CP4 — Stage 4 reminder.rs audit logging.
 
-- 2026-06-18 13:20: CP4 complete — Stage 4 reminder audit logging class closed.
+- 2026-06-18 13:20: CP4 complete — Stage 4 reminder audit logging class closed. Commit `92d651b6`.
   - Changed: `agent/providers/reminder.rs` (3 `let _ = append_audit_event` → `if let Err(e) = ... { warn!(...) }` + `use tracing::warn;` import). `append_audit` helper fix covers 3 more call sites (373/419/466).
   - Evidence: G4 verified — `git grep -n 'let _ = .*append_audit_event' reminder.rs` → 0 matches; clippy ×4 exit 0; fmt exit 0; `cargo test -p oxide-agent-core` 1370 passed 0 failed 10 ignored.
   - Commands: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --features <profile> -- -D warnings` ×4; `cargo test -p oxide-agent-core --no-default-features --features profile-full`.
@@ -237,11 +237,28 @@ None. RECON provided enough evidence to design all fixes.
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all 10 audit IDs verified (G1-G4, Q1-Q3, N1-N3).
+  - G1: CP1 — foreign-input panic class closed (3 sites: controls.rs, progress_render.rs, web_transport.rs). Commit `04bad47f`.
+  - G2: CP2 — string-match over LLM errors eliminated (ApiError struct variant + RequestBuilder variant + typed backoff matching). Commit `6ecf5022`.
+  - G3: CP3 — too_many_arguments lint suppressions eliminated (8 `#[allow]` removed: 7 stale + 1 `build_tool_chat_body` refactor + FetchOptions struct). Commit `5a2a28d3`.
+  - G4: CP4 — reminder audit-event errors logged, not silently discarded (6 sites via 3 fixes + helper). Commit `92d651b6`.
+  - Q1: clippy clean with `-D warnings` across all 4 profiles (profile-full, profile-embedded-opencode-local, profile-web-embedded-opencode-local, profile-search-only).
+  - Q2: `cargo fmt --all -- --check` clean.
+  - Q3: `cargo check --workspace --all-targets --features profile-full` clean.
+  - N1: no Class C `#[allow(dead_code)]` sites touched.
+  - N2: no test-only `expect()`/`panic()`/`unimplemented!()` touched.
+  - N3: no new crates, services, queues, caches, storage backends, or abstraction layers. No Cargo.toml changes.
+- Commands run (final sweep, all exit 0):
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets --no-default-features --features profile-full -- -D warnings`
+  - `cargo clippy --workspace --all-targets --no-default-features --features profile-embedded-opencode-local -- -D warnings`
+  - `cargo clippy --workspace --all-targets --no-default-features --features profile-web-embedded-opencode-local -- -D warnings`
+  - `cargo clippy --workspace --all-targets --no-default-features --features profile-search-only -- -D warnings`
+  - `cargo check --workspace --all-targets --no-default-features --features profile-full`
+  - `cargo test -p oxide-agent-core --no-default-features --features profile-full`
+  - `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`
+  - `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`
+- Artifacts inspected: `git log --oneline -6` confirms 5 commits (27f5cdbc, 04bad47f, 6ecf5022, 5a2a28d3, 92d651b6); `grep -n 'Status:' docs/goals/2026-06-18-code-hygiene-panic-string-match.md` confirms all 10 audit IDs = verified.
+- Remaining gaps: none.
+- User-accepted exceptions: none.
+- Final status: complete.
