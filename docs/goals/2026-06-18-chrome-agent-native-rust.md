@@ -126,8 +126,8 @@ Out of scope:
   - Source: RECON plan — estimated ~2x on light actions, ~2x on observe (concurrent CDP), ~3-5% end-to-end.
   - Acceptance: CP0 measurements confirm or correct the estimates; post-implementation measurements show sidecar overhead reduced vs the Python+pipe baseline.
   - Evidence required: measured timings (click+observe cycle, observe with 3 CDP commands, screenshot) recorded in CP0 (baseline) and CP7 (new); numbers in the Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP0 baseline measured (direct CDP, no pipe): `Accessibility.getFullAXTree` avg=2.6ms, `Page.captureScreenshot(png)` avg=38.2ms, `Runtime.evaluate` avg=1.0ms. Concurrent vs sequential (a11y+screenshot+eval): sequential=49ms, concurrent=30ms → ~1.6x speedup, confirming plan's claim. New-implementation measurements pending CP7.
 
 - Q2: No new workspace crates beyond what is clearly required.
   - Source: AGENTS.md — "No new crates ... unless clearly required."
@@ -154,8 +154,8 @@ Out of scope:
   - Source: P0.5 — "Reality is checked BEFORE anything is built on it."
   - Acceptance: CP0 document records: CDP `Accessibility.getFullAXTree` response shape (fields, `backendDOMNodeId`, `ignored`, `role`, `name`); `Page.navigate` + `Page.loadEventFired` wait_until semantics; `Input.dispatchMouseEvent` click; `DOM.requestNode`+`DOM.getBoxModel` uid→coords; `Page.captureScreenshot` format/quality; `Runtime.evaluate` returnByValue/awaitPromise; `/json/list` discovery; baseline latency measurements.
   - Evidence required: CP0 section in Progress Log with raw CDP responses (or a reference to a verification artifact file).
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP0 complete — `.cp0-verify/CP0-VERIFICATION-RESULTS.md`. Chromium Chrome/149.0.7827.102 headless. All V1 sub-items verified on real Chromium via Node 22 WebSocket script: (1) `Accessibility.getFullAXTree` response shape — `nodes[]` with `nodeId`, `backendDOMNodeId`, `ignored`, `role.value`, `name.value`, `childIds`, `properties`; `role.type` can be `"role"` or `"internalRole"`; `ignored:true` nodes have `role.value:"none"`; button "Login" `backendDOMNodeId=11` → UID `n11`. (2) `Page.navigate` returns `{frameId,loaderId}`; `Page.loadEventFired` event fires with `{timestamp}`; also captured `domContentEventFired` for "domcontentloaded" wait_until. (3) `Input.dispatchMouseEvent` mousePressed+mouseReleased → `{}` success. (4) **CORRECTED**: `DOM.requestNode` takes `objectId` NOT `backendNodeId` (P0.5 caught); correct path is `DOM.getDocument({depth:0})` → `DOM.pushNodesByBackendIdsToFrontend({backendNodeIds:[N]})` → `nodeIds[0]` → `DOM.getBoxModel({nodeId})` → content quad → center coords → `Input.dispatchMouseEvent`. `DOM.getDocument` MUST be called first (else "Document needs to be requested first" error). (5) `Page.captureScreenshot` png→19948 bytes 38ms avg, jpeg q=80→20644 bytes 31ms. (6) `Runtime.evaluate` returnByValue + awaitPromise both work. (7) `/json/list` returns page target `webSocketDebuggerUrl`. Stealth-safe capture verified: console interceptor via `Runtime.evaluate` (no `Runtime.enable`) captures logs; `Network.enable` captures network events. 23 events on single WebSocket confirms G3 viability.
 
 - V2: Smoke test with real Oxide client against new sidecar.
   - Source: end-to-end validation.
@@ -213,7 +213,7 @@ Out of scope:
 
 5. CP4 — Actions (BrowserAction → CDP).
    - Audit IDs: G6.
-   - Expected changes: `actions/` module translating every `BrowserAction` variant to CDP commands: click (uid→DOM.requestNode→getBoxModel→Input.dispatchMouseEvent; selector→DOM.querySelector→...; xy→Input.dispatchMouseEvent), fill/type_text (semantic input JS ported from Python), press (simple via Input.dispatchKeyEvent, combos via JS KeyboardEvent), scroll, get_element_value, execute_javascript, wait/wait_for_selector/wait_for_text, script. Post-action observation capture.
+   - Expected changes: `actions/` module translating every `BrowserAction` variant to CDP commands: click_target_id (uid→`DOM.pushNodesByBackendIdsToFrontend`→`DOM.getBoxModel`→coords→`Input.dispatchMouseEvent`; requires `DOM.getDocument` first); click_selector (`DOM.querySelector`→`DOM.getBoxModel`→...); click_xy (`Input.dispatchMouseEvent`); fill/type_text (semantic input JS ported from Python); press (simple via `Input.dispatchKeyEvent`, combos via JS KeyboardEvent); scroll, get_element_value, execute_javascript, wait/wait_for_selector/wait_for_text, script. Post-action observation capture.
    - Validation: per-variant test or smoke test against a real page; `fill` on a React/Vue page verifying framework-visible events.
    - Exit condition: G6 acceptance met for every variant.
 
@@ -254,17 +254,26 @@ Out of scope:
 - 2026-06-18: Option B (fully native, drop chrome-agent) chosen over Option A (Rust sidecar + chrome-agent subprocess). Rationale (P0): Option A preserves the subprocess boundary (root reason the sidecar exists), the redundant CDP listener, and the stealth conflict — it patches the architecture rather than redesigning the root. Option B eliminates all four root problems (subprocess boundary, redundant CDP, stealth conflict, contract drift) and the chrome-agent external dependency + Python runtime, at ~3000-3500 lines Rust (same order as the 2612-line Python).
 - 2026-06-18: `tokio-tungstenite` + `serde_json` for CDP (not `chromiumoxide`). Rationale: AGENTS.md "no new crates unless clearly required"; chrome-agent itself uses tokio-tungstenite + serde_json for CDP; raw CDP is straightforward and keeps the dep surface minimal. `chromiumoxide` is a heavy abstraction not justified for ~3K lines of direct CDP.
 - 2026-06-18: Shared types location — to be decided in CP1 (candidates: new `oxide-browser-contracts` crate mirroring `oxide-agent-web-contracts`, or a module within an existing crate re-exported by both). Decision deferred to CP1 when the binary crate structure is settled.
+- 2026-06-18 (CP0): `DOM.requestNode` takes `objectId`, NOT `backendNodeId`. Correct click-by-uid path: `DOM.getDocument({depth:0})` (once per navigation, document invalidated on `DOM.documentUpdated` event) → `DOM.pushNodesByBackendIdsToFrontend({backendNodeIds:[N]})` → `nodeIds[0]` → `DOM.getBoxModel({nodeId})` → content quad center → `Input.dispatchMouseEvent`. P0.5 caught this before any production code.
+- 2026-06-18 (CP0): AX `role.type` can be `"role"` or `"internalRole"` — noise filter checks `role.value` only. `ignored:true` nodes have `role.value:"none"`. `name.value` can be empty string. All confirmed on real Chromium.
+- 2026-06-18 (CP0): Stealth-safe capture confirmed: console interceptor via `Runtime.evaluate` (no `Runtime.enable`) + `Page.addScriptToEvaluateOnNewDocument`; network via `Network.enable`. Both work on real Chromium.
 
 ## Progress Log
 
 - 2026-06-18 14:00: Goal created. RECON complete (see compressed conversation summary). Plan approved by user. Branch: `feature/chrome-agent`. Next: CP0 (P0.5 verification framework on real Chromium).
+- 2026-06-18 14:10: CP0 complete — P0.5 CDP verification on real Chromium.
+  - Changed: `.cp0-verify/` (verification scripts + test page + results artifact); this goal doc (V1→verified, Q1→in_progress, CP4 corrected, Decisions +4, R1 resolved).
+  - Evidence: `.cp0-verify/CP0-VERIFICATION-RESULTS.md` — all V1 sub-items verified on Chrome/149.0.7827.102. Baseline latencies: a11y 2.6ms, screenshot 38ms, eval 1ms. Concurrent vs sequential: 30ms vs 49ms (~1.6x). Stealth-safe capture confirmed (no Runtime.enable). Click-by-uid path corrected (`DOM.pushNodesByBackendIdsToFrontend`, not `DOM.requestNode`). 23 events on single WebSocket confirms G3.
+  - Commands: `chromium --headless=new --remote-debugging-port=9222`; `curl /json/list`; `node .cp0-verify/cdp-verify.mjs`; `node .cp0-verify/cdp-verify-click-uid.mjs`.
+  - Audit IDs updated: V1→verified, Q1→in_progress (baseline done, new pending CP7).
+  - Next: CP1 — shared types extraction + new crate/binary scaffold.
 
 ## Risks and Blockers
 
 - R1: CP0 requires a running Chromium for CDP verification.
   - Impact: cannot validate architecture assumptions before code (P0.5 violation).
-  - Evidence: no local chromium binary confirmed yet in dev env.
-  - Mitigation: run CP0 inside the existing `Dockerfile.chrome-agent-sidecar` container (has chromium) or a temporary `chromium` container; attach a CDP client script. User action only if neither works.
+  - Evidence: **RESOLVED** — Chromium available locally at `/usr/bin/chromium` (Chrome/149.0.7827.102). CP0 executed successfully.
+  - Mitigation: N/A.
   - Audit IDs affected: V1, Q1.
 
 - R2: `types.rs` extraction blast radius.
