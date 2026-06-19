@@ -386,6 +386,24 @@ impl OpenCodeGoModelCatalog {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::llm::DiscoveredModelSource for OpenCodeGoModelCatalog {
+    async fn models(&self) -> Vec<crate::llm::DiscoveredLlmModel> {
+        OpenCodeGoModelCatalog::models(self)
+            .await
+            .into_iter()
+            .map(crate::llm::DiscoveredLlmModel::from)
+            .collect()
+    }
+    async fn refresh(&self) -> Vec<crate::llm::DiscoveredLlmModel> {
+        OpenCodeGoModelCatalog::refresh(self)
+            .await
+            .into_iter()
+            .map(crate::llm::DiscoveredLlmModel::from)
+            .collect()
+    }
+}
+
 pub fn parse_models_json(input: &str) -> Result<Vec<RawOpenCodeGoModel>, OpenCodeGoDiscoveryError> {
     let value = serde_json::from_str::<serde_json::Value>(input)
         .map_err(|error| OpenCodeGoDiscoveryError::Parse(error.to_string()))?;

@@ -13,14 +13,11 @@ use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    #[cfg(feature = "llm-opencode-go")]
-    opencode_go_model_catalog:
-        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
-    #[cfg(feature = "llm-opencode-go")]
-    opencode_zen_model_catalog:
-        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
-    #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-    openai_base_model_catalogs: Vec<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
+    /// Provider-specific discovered-model sources, registered at construction time.
+    ///
+    /// Always present so the struct shape is stable across all Cargo feature profiles;
+    /// the Vec is empty when no discovery-capable provider is compiled.
+    discovered_model_sources: Vec<(&'static str, Arc<dyn DiscoveredModelSource>)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -72,6 +69,23 @@ impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for Disc
         }
     }
 }
+
+/// Source of discovered LLM models, abstracting provider-specific catalog types.
+///
+/// Implementations live behind feature gates in provider modules; the trait itself
+/// is always compiled so that [`LlmClient`] has a stable struct shape across profiles.
+#[async_trait::async_trait]
+pub trait DiscoveredModelSource: Send + Sync {
+    /// Returns currently discovered models (from cache or network).
+    async fn models(&self) -> Vec<DiscoveredLlmModel>;
+    /// Forces a network refresh and returns the updated model list.
+    async fn refresh(&self) -> Vec<DiscoveredLlmModel>;
+}
+
+/// Discovered-model source IDs used as registry keys inside [`LlmClient`].
+const SOURCE_ID_OPENCODE_GO: &str = "opencode-go";
+const SOURCE_ID_OPENCODE_ZEN: &str = "opencode-zen";
+const SOURCE_ID_OPENAI_BASE: &str = "openai-base";
 
 /// Internal plain-text completion use cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,30 +234,46 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
         let providers = providers::build_configured_providers(settings);
+
+        #[cfg_attr(
+            not(any(
+                feature = "llm-opencode-go",
+                all(feature = "llm-openai-base", feature = "llm-opencode-go")
+            )),
+            allow(unused_mut)
+        )]
+        let mut discovered_model_sources: Vec<(
+            &'static str,
+            Arc<dyn DiscoveredModelSource>,
+        )> = Vec::new();
         #[cfg(feature = "llm-opencode-go")]
-        let opencode_go_model_catalog = providers::opencode_go::module::build_model_catalog(
-            settings,
-            support::http::create_http_client(),
-        );
-        #[cfg(feature = "llm-opencode-go")]
-        let opencode_zen_model_catalog = providers::opencode_go::module::build_zen_model_catalog(
-            settings,
-            support::http::create_http_client(),
-        );
+        {
+            if let Some(catalog) = providers::opencode_go::module::build_model_catalog(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENCODE_GO, catalog));
+            }
+            if let Some(catalog) = providers::opencode_go::module::build_zen_model_catalog(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENCODE_ZEN, catalog));
+            }
+        }
         #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        let openai_base_model_catalogs = providers::openai_base::module::build_model_catalogs(
-            settings,
-            support::http::create_http_client(),
-        );
+        {
+            for catalog in providers::openai_base::module::build_model_catalogs(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENAI_BASE, catalog));
+            }
+        }
 
         Self {
             providers,
-            #[cfg(feature = "llm-opencode-go")]
-            opencode_go_model_catalog,
-            #[cfg(feature = "llm-opencode-go")]
-            opencode_zen_model_catalog,
-            #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-            openai_base_model_catalogs,
+            discovered_model_sources,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -280,132 +310,72 @@ impl LlmClient {
 
     /// Returns OpenCode Go discovered models when the provider is compiled and configured.
     pub async fn opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_go_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .models()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
+        Some(source.models().await)
     }
 
     /// Refreshes OpenCode Go discovered models when the provider is compiled and configured.
     pub async fn refresh_opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_go_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .refresh()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
+        Some(source.refresh().await)
     }
 
     /// Returns free OpenCode Zen discovered models when the provider is compiled and configured.
     pub async fn opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_zen_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .models()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
+        Some(source.models().await)
     }
 
     /// Refreshes free OpenCode Zen discovered models when the provider is compiled and configured.
     pub async fn refresh_opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_zen_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .refresh()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
+        Some(source.refresh().await)
     }
 
     /// Returns OpenAI Base discovered models when the provider is compiled and configured.
     pub async fn openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        {
-            if self.openai_base_model_catalogs.is_empty() {
-                return None;
-            }
-            let mut models = Vec::new();
-            for catalog in &self.openai_base_model_catalogs {
-                models.extend(
-                    catalog
-                        .models()
-                        .await
-                        .into_iter()
-                        .map(DiscoveredLlmModel::from),
-                );
-            }
-            Some(models)
+        let sources: Vec<_> = self
+            .discovered_model_sources
+            .iter()
+            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
+            .collect();
+        if sources.is_empty() {
+            return None;
         }
-        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
-        {
-            None
+        let mut models = Vec::new();
+        for (_, source) in sources {
+            models.extend(source.models().await);
         }
+        Some(models)
     }
 
     /// Refreshes OpenAI Base discovered models when the provider is compiled and configured.
     pub async fn refresh_openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        {
-            if self.openai_base_model_catalogs.is_empty() {
-                return None;
-            }
-            let mut models = Vec::new();
-            for catalog in &self.openai_base_model_catalogs {
-                models.extend(
-                    catalog
-                        .refresh()
-                        .await
-                        .into_iter()
-                        .map(DiscoveredLlmModel::from),
-                );
-            }
-            Some(models)
+        let sources: Vec<_> = self
+            .discovered_model_sources
+            .iter()
+            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
+            .collect();
+        if sources.is_empty() {
+            return None;
         }
-        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
-        {
-            None
+        let mut models = Vec::new();
+        for (_, source) in sources {
+            models.extend(source.refresh().await);
         }
+        Some(models)
     }
 
     /// Returns the provider for the given name

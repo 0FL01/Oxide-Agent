@@ -16,7 +16,7 @@ pub(crate) use capabilities::{
     provider_capabilities_for_model, provider_media_capabilities_for_model,
 };
 pub(crate) use client::InternalTextPurpose;
-pub use client::{DiscoveredLlmModel, LlmClient};
+pub use client::{DiscoveredLlmModel, DiscoveredModelSource, LlmClient};
 pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
