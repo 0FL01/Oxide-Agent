@@ -7,6 +7,35 @@ pub(super) struct TaskVersionGroup {
     pub(super) versions: Vec<TaskSummary>,
 }
 
+/// Sort a set of task versions by version index, then creation time, then id.
+/// Shared by `group_task_versions` (all groups) and `versions_for_group`
+/// (single group) so the ordering is identical everywhere a card reads it.
+fn sort_versions(versions: &mut [TaskSummary]) {
+    versions.sort_by(|a, b| {
+        a.effective_version_index()
+            .cmp(&b.effective_version_index())
+            .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| a.task_id.cmp(&b.task_id))
+    });
+}
+
+/// Select and sort the versions that belong to a single version group from the
+/// live `tasks` signal. This is the reactive source `TaskCard` reads instead
+/// of a stale by-value snapshot, so status/timestamp updates flowing through
+/// `tasks` reach the card without recreating it.
+pub(super) fn versions_for_group(
+    tasks: &[TaskSummary],
+    version_group_id: &str,
+) -> Vec<TaskSummary> {
+    let mut versions: Vec<TaskSummary> = tasks
+        .iter()
+        .filter(|task| task.effective_version_group_id() == version_group_id)
+        .cloned()
+        .collect();
+    sort_versions(&mut versions);
+    versions
+}
+
 pub(super) fn group_task_versions(tasks: &[TaskSummary]) -> Vec<TaskVersionGroup> {
     let mut grouped = HashMap::<String, Vec<TaskSummary>>::new();
     for task in tasks {
@@ -19,12 +48,7 @@ pub(super) fn group_task_versions(tasks: &[TaskSummary]) -> Vec<TaskVersionGroup
     let mut groups = grouped
         .into_iter()
         .map(|(version_group_id, mut versions)| {
-            versions.sort_by(|a, b| {
-                a.effective_version_index()
-                    .cmp(&b.effective_version_index())
-                    .then_with(|| a.created_at.cmp(&b.created_at))
-                    .then_with(|| a.task_id.cmp(&b.task_id))
-            });
+            sort_versions(&mut versions);
             TaskVersionGroup {
                 version_group_id,
                 versions,

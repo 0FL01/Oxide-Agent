@@ -99,12 +99,15 @@ pub(super) fn latest_editable_task_id(tasks: &[TaskSummary]) -> Option<String> {
         .and_then(|task| task.status.is_terminal().then(|| task.task_id.clone()))
 }
 
-pub(super) fn activity_button_label(task: &TaskSummary) -> String {
+pub(super) fn activity_button_label(task: &TaskSummary, now_millis: i64) -> String {
     match task.status {
         TaskStatus::Queued | TaskStatus::Running => {
             format!(
                 "Thinking for {}",
-                format_duration(task_duration_seconds(task))
+                format_duration(activity_elapsed_seconds(
+                    ActivityTiming::from(task),
+                    now_millis
+                ))
             )
         }
         TaskStatus::WaitingForUserInput => "Waiting for your input".to_string(),
@@ -114,7 +117,10 @@ pub(super) fn activity_button_label(task: &TaskSummary) -> String {
         | TaskStatus::Interrupted => {
             format!(
                 "Thought for {}",
-                format_duration(task_duration_seconds(task))
+                format_duration(activity_elapsed_seconds(
+                    ActivityTiming::from(task),
+                    now_millis
+                ))
             )
         }
     }
@@ -141,11 +147,59 @@ pub(super) fn format_duration(total_seconds: i64) -> String {
     format!("{seconds}s")
 }
 
-fn task_duration_seconds(task: &TaskSummary) -> i64 {
-    let start = task.started_at.as_ref().unwrap_or(&task.created_at);
-    let end = task.finished_at.as_ref().unwrap_or(&task.updated_at);
-    let seconds = end.signed_duration_since(start.to_owned()).num_seconds();
-    seconds.max(0)
+#[derive(Clone, Copy)]
+pub(super) struct ActivityTiming {
+    pub(super) status: TaskStatus,
+    pub(super) created_at_ms: i64,
+    pub(super) started_at_ms: Option<i64>,
+    pub(super) updated_at_ms: i64,
+    pub(super) finished_at_ms: Option<i64>,
+}
+
+impl From<&TaskSummary> for ActivityTiming {
+    fn from(task: &TaskSummary) -> Self {
+        Self {
+            status: task.status,
+            created_at_ms: task.created_at.timestamp_millis(),
+            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
+            updated_at_ms: task.updated_at.timestamp_millis(),
+            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
+        }
+    }
+}
+
+impl From<&TaskDetail> for ActivityTiming {
+    fn from(task: &TaskDetail) -> Self {
+        Self {
+            status: task.status,
+            created_at_ms: task.created_at.timestamp_millis(),
+            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
+            updated_at_ms: task.updated_at.timestamp_millis(),
+            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
+        }
+    }
+}
+
+/// Elapsed seconds for a task. Active (non-terminal) tasks use the live
+/// browser clock `now_millis` as the end, clamped to at least the last
+/// persisted `updated_at` so the timer never runs backwards between ticks.
+/// Terminal tasks freeze at `finished_at` (falling back to `updated_at`).
+pub(super) fn activity_elapsed_seconds(timing: ActivityTiming, now_millis: i64) -> i64 {
+    let start_ms = timing.started_at_ms.unwrap_or(timing.created_at_ms);
+    let end_ms = if timing.status.is_terminal() {
+        timing.finished_at_ms.unwrap_or(timing.updated_at_ms)
+    } else {
+        now_millis.max(timing.updated_at_ms)
+    };
+    end_ms.saturating_sub(start_ms) / 1_000
+}
+
+/// Current wall-clock time in milliseconds from the browser performance API.
+/// Single source for the shared 1s elapsed clock owned by `SessionWorkspace`.
+pub(super) fn browser_now_millis() -> Option<i64> {
+    let performance = web_sys::window()?.performance()?;
+    let millis = performance.time_origin() + performance.now();
+    millis.is_finite().then_some(millis.round() as i64)
 }
 
 pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
@@ -216,16 +270,45 @@ mod tests {
 
     #[test]
     fn activity_button_label_is_status_aware() {
+        // now_millis=0 falls back to updated_at (5s after start) for running tasks.
         assert_eq!(
-            activity_button_label(&task(TaskStatus::Running, None)),
+            activity_button_label(&task(TaskStatus::Running, None), 0),
             "Thinking for 5s"
         );
         assert_eq!(
-            activity_button_label(&task(TaskStatus::WaitingForUserInput, None)),
+            activity_button_label(&task(TaskStatus::WaitingForUserInput, None), 0),
             "Waiting for your input"
         );
         assert_eq!(
-            activity_button_label(&task(TaskStatus::Completed, Some("2026-06-11T00:00:05Z"))),
+            activity_button_label(
+                &task(TaskStatus::Completed, Some("2026-06-11T00:00:05Z")),
+                0
+            ),
+            "Thought for 5s"
+        );
+    }
+
+    #[test]
+    fn activity_button_label_running_advances_with_clock() {
+        let t = task(TaskStatus::Running, None);
+        let start_ms = t.created_at.timestamp_millis();
+        // Clock behind updated_at falls back to updated_at (5s).
+        assert_eq!(activity_button_label(&t, 0), "Thinking for 5s");
+        // Clock ahead of updated_at drives the timer forward independently of
+        // any persisted update — the original "stuck timer" regression.
+        assert_eq!(
+            activity_button_label(&t, start_ms + 12_000),
+            "Thinking for 12s"
+        );
+    }
+
+    #[test]
+    fn activity_button_label_terminal_freezes_with_clock() {
+        let t = task(TaskStatus::Completed, Some("2026-06-11T00:00:05Z"));
+        let start_ms = t.created_at.timestamp_millis();
+        // Terminal tasks must not advance with the live clock.
+        assert_eq!(
+            activity_button_label(&t, start_ms + 999_000),
             "Thought for 5s"
         );
     }

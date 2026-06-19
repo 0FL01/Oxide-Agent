@@ -16,7 +16,7 @@ use super::delivered_files::{
 use super::payload::payload_str_event;
 use super::state::{activity_button_label, summary_to_detail, upsert_task_summary};
 use super::streaming::{StreamUiSignals, start_task_stream};
-use super::versions::selected_version_index;
+use super::versions::{selected_version_index, versions_for_group};
 
 const SEARCH_PROBE_REASONING_PREFIX: &str = "Search Probe #";
 const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main answer.";
@@ -26,8 +26,22 @@ const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main a
 #[derive(Clone)]
 pub(super) struct TaskCardModel {
     pub(super) session_id: String,
-    pub(super) versions: Vec<TaskSummary>,
+    pub(super) version_group_id: String,
+    pub(super) tasks: ReadSignal<Vec<TaskSummary>>,
     pub(super) editable_task_id: Option<String>,
+    pub(super) now_millis: ReadSignal<i64>,
+}
+
+/// Reactive snapshot of the currently selected version within a group.
+/// Derived from the live `tasks` signal (not a by-value prop) so SSE
+/// status/timestamp updates reach the card without recreating it.
+#[derive(Clone, PartialEq)]
+struct SelectedTaskView {
+    task: TaskSummary,
+    selected_index: usize,
+    version_count: usize,
+    previous_task: Option<TaskSummary>,
+    next_task: Option<TaskSummary>,
 }
 
 #[derive(Clone, Copy)]
@@ -47,8 +61,10 @@ pub(super) struct TaskCardSignals {
 pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl IntoView {
     let TaskCardModel {
         session_id,
-        versions,
+        version_group_id,
+        tasks,
         editable_task_id,
+        now_millis,
     } = model;
     let TaskCardSignals {
         events,
@@ -61,34 +77,56 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         stream_signals,
         set_error,
     } = signals;
-    let version_group_id = versions
-        .first()
-        .map(|task| task.effective_version_group_id().to_string())
-        .unwrap_or_default();
-    let version_count = versions.len();
     let (editing, set_editing) = signal(false);
+    let initial_versions = versions_for_group(&tasks.get_untracked(), &version_group_id);
     let (draft, set_draft) = signal(
-        versions
+        initial_versions
             .last()
             .map(|task| task.input_markdown.clone())
             .unwrap_or_default(),
     );
     let (saving, set_saving) = signal(false);
-    let selected_task = Memo::new({
-        let versions = versions.clone();
+    let selected = Memo::new({
         let version_group_id = version_group_id.clone();
         move |_| {
+            let versions = versions_for_group(&tasks.get(), &version_group_id);
             let selected_task_id = selected_versions.get().get(&version_group_id).cloned();
             let selected_index = selected_version_index(&versions, selected_task_id.as_deref());
-            versions[selected_index].clone()
+            let version_count = versions.len();
+            let task = versions.get(selected_index).cloned();
+            let previous_task = selected_index
+                .checked_sub(1)
+                .and_then(|index| versions.get(index).cloned());
+            let next_task = (selected_index + 1 < version_count)
+                .then(|| versions.get(selected_index + 1).cloned())
+                .flatten();
+            task.map(|task| SelectedTaskView {
+                task,
+                selected_index,
+                version_count,
+                previous_task,
+                next_task,
+            })
         }
     });
 
     Effect::new(move |_| {
-        let task = selected_task.get();
-        if !editing.get() {
-            set_draft.set(task.input_markdown.clone());
+        if let Some(view) = selected.get() {
+            if !editing.get() {
+                set_draft.set(view.task.input_markdown.clone());
+            }
         }
+    });
+
+    // The elapsed label ticks with the shared browser clock, independent of
+    // SSE/task updates. Isolating it in its own memo keeps the 1s re-render
+    // scoped to this label text only — the rest of the card does not re-run
+    // every second.
+    let activity_label = Memo::new(move |_| {
+        selected
+            .get()
+            .map(|view| activity_button_label(&view.task, now_millis.get()))
+            .unwrap_or_default()
     });
 
     let edit_signals = TaskInputEditSignals {
@@ -110,11 +148,12 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
 
     view! {
         {move || {
-            let task = selected_task.get();
-            let selected_index = versions
-                .iter()
-                .position(|candidate| candidate.task_id == task.task_id)
-                .unwrap_or_else(|| version_count.saturating_sub(1));
+            let Some(view) = selected.get() else {
+                return ().into_any();
+            };
+            let task = view.task;
+            let selected_index = view.selected_index;
+            let version_count = view.version_count;
             let editable = editable_task_id.as_ref() == Some(&task.task_id);
             let card_status_class = match task.status {
                 TaskStatus::Running | TaskStatus::Queued => "running",
@@ -123,7 +162,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                 _ => "",
             };
             let card_class = format!("task-card {card_status_class}");
-            let activity_label = activity_button_label(&task);
             let original_input = task.input_markdown.clone();
             let input_markdown = task.input_markdown.clone();
             let attachments = task.attachments.clone();
@@ -147,10 +185,10 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                     set_drawer_open.set(true);
                 }
             });
-            let can_select_previous = selected_index > 0;
-            let can_select_next = selected_index + 1 < version_count;
-            let previous_task = can_select_previous.then(|| versions[selected_index - 1].clone());
-            let next_task = can_select_next.then(|| versions[selected_index + 1].clone());
+            let previous_task = view.previous_task;
+            let next_task = view.next_task;
+            let can_select_previous = previous_task.is_some();
+            let can_select_next = next_task.is_some();
 
             view! {
                 <article class=card_class>

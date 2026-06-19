@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
     UploadLargeInputRequest, UserSettingsResponse,
 };
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, time::Duration};
 
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
@@ -26,8 +26,8 @@ use super::profile::{
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
-    summary_to_detail, upsert_session_summary, upsert_task_summary,
+    browser_now_millis, latest_editable_task_id, latest_task, remove_session_summary,
+    session_detail_to_summary, summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -526,6 +526,23 @@ fn SessionWorkspace(
 
     let (drawer_open, set_drawer_open) = signal(false);
     let (activity_task_id, set_activity_task_id) = signal(None::<String>);
+
+    // Shared wall-clock for all elapsed timers (task-card "Thinking for…"
+    // label and the Activity drawer). A single 1s interval drives every
+    // active-task timer so the UI ticks from the browser clock, not from
+    // SSE/DB `updated_at` updates that can stall between events.
+    let (elapsed_now_millis, set_elapsed_now_millis) =
+        signal(browser_now_millis().unwrap_or_default());
+    if let Ok(handle) = set_interval_with_handle(
+        move || {
+            let next = browser_now_millis()
+                .unwrap_or_else(|| elapsed_now_millis.get_untracked().saturating_add(1_000));
+            set_elapsed_now_millis.set(next);
+        },
+        Duration::from_secs(1),
+    ) {
+        on_cleanup(move || handle.clear());
+    }
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -1044,8 +1061,10 @@ fn SessionWorkspace(
                                             <TaskCard
                                                 model=TaskCardModel {
                                                     session_id: session_id_for_cards.clone(),
-                                                    versions: group.versions,
+                                                    version_group_id: group.version_group_id.clone(),
+                                                    tasks,
                                                     editable_task_id: latest_editable_task_id.clone(),
+                                                    now_millis: elapsed_now_millis,
                                                 }
                                                 signals=TaskCardSignals {
                                                     events,
@@ -1239,6 +1258,7 @@ fn SessionWorkspace(
                         .is_some_and(|state| state.loading)
                 })
                 load_older_events=load_older_activity
+                now_millis=elapsed_now_millis
             />
         </section>
     }
