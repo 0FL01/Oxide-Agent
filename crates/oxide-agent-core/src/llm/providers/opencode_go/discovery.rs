@@ -557,10 +557,10 @@ pub fn init_models_dev_catalog(http_client: HttpClient) {
     // Blocking initial fetch so vision data is available synchronously at
     // config-validation time. Only in multi-threaded runtime (production);
     // tests use `init_models_dev_catalog_for_tests` with mock data.
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-            tokio::task::block_in_place(|| handle.block_on(catalog.refresh()));
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current()
+        && handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+    {
+        tokio::task::block_in_place(|| handle.block_on(catalog.refresh()));
     }
 
     Arc::clone(&catalog).spawn_background_refresh();
@@ -583,12 +583,14 @@ pub fn models_dev_supports_image(model_id: &str) -> bool {
 /// Force a refresh of the global Models.dev catalog. Used by smoke tests to
 /// ensure the catalog is populated before asserting on vision support.
 pub async fn refresh_models_dev_catalog() {
-    if let Some(catalog) = MODELS_DEV_CATALOG
+    // Clone the Arc out of the guard and drop the guard before awaiting so
+    // the `StdRwLock` is never held across an await point (deadlock risk).
+    let catalog = MODELS_DEV_CATALOG
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .map(Arc::clone)
-    {
+        .map(Arc::clone);
+    if let Some(catalog) = catalog {
         catalog.refresh().await;
     }
 }
