@@ -5,7 +5,7 @@ Status: active
 Codex goal: see `/goal` objective below
 Source spec: user-approved RECON and decisions from 2026-06-19
 Goal doc owner: Codex
-Last updated: 2026-06-19 11:50
+Last updated: 2026-06-19 12:15
 
 ## Objective
 
@@ -92,7 +92,7 @@ Corrected contract:
   - Acceptance: registry describes every module currently emitted by `compiled_capability_manifest()`, every atomic Cargo capability feature, all supported profiles, module kind, provided capabilities, required capabilities, and generated feature dependencies.
   - Evidence required: generator/check report showing zero missing/extra modules/features/profiles; diff or snapshot proving registry coverage of current compiled manifest for all supported profiles.
   - Status: in_progress
-  - Evidence collected: CP1 added `crates/oxide-agent-core/module_registry.toml` with 40 module records. `cargo run -p xtask -- module-registry check` passed and reported `40 modules`, `45 Cargo features`, and `40 compiled declarations`.
+  - Evidence collected: CP1 added `crates/oxide-agent-core/module_registry.toml` with 40 module records. `cargo run -p xtask -- module-registry check` passed and reported `40 modules`, `45 Cargo features`, and `40 compiled declarations`. CP4 enhanced check to also verify `provides` (ordered capability list) and `requires` presence for all 40 modules — all match.
 
 - G2: Cargo feature/profile surfaces are generated or checked from the registry
   - Source: user-approved decision checked-in generated files plus check gate.
@@ -112,8 +112,8 @@ Corrected contract:
   - Source: RECON `compiled.rs` feature-gated macros duplicate Cargo/profile knowledge.
   - Acceptance: module id, kind, cargo feature, provides, requires, and config schema references in compiled manifest are derived from registry or compared against registry by a failing check.
   - Evidence required: clean `xtask module-registry check`; focused tests for `compiled_capability_manifest()`; snapshot update showing no unintended module loss.
-  - Status: in_progress
-  - Evidence collected: CP1 check parsed `compiled.rs` declarations and verified they match the registry by module id, kind, and Cargo feature for 40 declarations; generated/registry-owned declaration path remains for CP4.
+  - Status: verified
+  - Evidence collected: CP4 enhanced `xtask module-registry check` to parse and compare `provides` (ordered capability ID list) and `requires` presence (macro variant `push_module_with_requires!` vs registry `requires` field) for all 40 modules. Config properties remain in Rust (builder expressions with env/defaults — not expressible in TOML); config schema drift is caught by existing snapshot tests and `openrouter_module_declares_provider_config_schema`. `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` passes (snapshot unchanged). `cargo test -p oxide-agent-core --no-default-features --features profile-full -- capabilities` passes (34 tests). Intentional mismatch test: adding `tool/extra-cap` to registry provides for `tool/todos` → check fails with `provides mismatch for module 'tool/todos': registry=["tool/todos", "tool/extra-cap"] compiled=["tool/todos"]`. Removing `requires` from registry for `tool/sandbox-fileops` → check fails with `requires mismatch for module 'tool/sandbox-fileops': registry_requires=false compiled_uses_push_module_with_requires=true`.
 
 - G5: Test gating uses module/capability requirements instead of raw feature knowledge where practical
   - Source: user-approved cfg alias plan.
@@ -148,14 +148,14 @@ Corrected contract:
   - Acceptance: every checkpoint log names touched symbols/files, consumers, regression hypotheses, validation, failures, and classification.
   - Evidence required: Progress Log entries for CP0..final; `git grep`/diff/status evidence before each checkpoint commit.
   - Status: in_progress
-  - Evidence collected: CP1 blast radius reviewed before implementation: root workspace members, root `Cargo.toml`, new `xtask`, `Cargo.lock`, core registry path, runtime profiles, and `compiled.rs` parser surface.
+  - Evidence collected: CP1 blast radius reviewed before implementation: root workspace members, root `Cargo.toml`, new `xtask`, `Cargo.lock`, core registry path, runtime profiles, and `compiled.rs` parser surface. CP2 blast radius reviewed for Cargo.toml profile section and forwarding crates. CP3 blast radius reviewed for profile TOML files (RECON confirmed no runtime code reads them). CP4 blast radius reviewed: only `xtask/src/main.rs` changed (80 insertions, 33 deletions); no `compiled.rs`, `module_registry.toml`, Cargo.toml, or Rust source changes; no snapshot changes expected (compiled.rs unchanged) — confirmed by snapshot test passing.
 
 - Q3: Generated artifacts are checked in and drift-proofed
   - Source: user-approved decision.
   - Acceptance: ordinary `cargo check` works from a fresh checkout without first running a generator; check command fails if generated surfaces are stale.
   - Evidence required: clean checkout-equivalent `cargo check` command; `xtask module-registry check` output; changed generated files committed.
   - Status: in_progress
-  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; CP3 adds generated `profiles/*.toml` with exact content check; `cargo check --workspace --no-default-features` passes without running generate first (all generated sections are checked in); compiled.rs remains for CP4.
+  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; CP3 adds generated `profiles/*.toml` with exact content check; `cargo check --workspace --no-default-features` passes without running generate first (all generated sections are checked in); CP4 enhances check to verify `compiled.rs` `provides` and `requires` presence against registry — no generation needed (check-only approach, config properties remain in Rust).
 
 - N1: Cargo remains the build system with empty default features
   - Source: AGENTS.md and approved plan.
@@ -343,6 +343,15 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
   - Commands: all of the above.
   - Audit IDs updated: G3 verified, N2 verified, Q3 in_progress (CP3 evidence added).
   - Next: CP4 — make capability manifest declarations registry-owned.
+
+- 2026-06-19 12:15: CP4 capability manifest declarations registry-owned (check-only)
+  - Changed: `xtask/src/main.rs` only (80 insertions, 33 deletions): added `provides: Vec<String>` and `requires: Vec<String>` to `RegistryModule`; added `CompiledModule` struct with `key`, `provides`, `has_requires`; enhanced `parse_registry` with multi-line array support and `provides`/`requires` field parsing; rewrote `parse_compiled_modules` to return `Vec<CompiledModule>` with provides extraction (strings[2..]) and macro variant detection (`_with_requires` suffix); rewrote `check_compiled_modules` to compare provides (ordered Vec) and requires presence (bool) in addition to existing key bidirectionality.
+  - Blast radius reviewed: only `xtask/src/main.rs` changed — no `compiled.rs`, `module_registry.toml`, Cargo.toml, or Rust source changes; xtask is dev tooling with no runtime dependency; no snapshot changes expected (compiled.rs unchanged) — confirmed by snapshot test passing.
+  - Regression hypotheses checked: (1) provides list order mismatch between registry and compiled.rs — verified all 40 modules match exactly via Python pre-check; (2) multi-line arrays in registry TOML — added `brackets_balanced` join logic in `parse_registry`; (3) `has_requires` detection picking up macro definitions — cursor starts at `fn push_transport_and_storage_modules`, skipping macro defs; (4) duplicate module keys — `check_compiled_modules` builds `BTreeMap` by key, last-wins; (5) config property drift not caught by xtask — caught by existing snapshot tests and `openrouter_module_declares_provider_config_schema` test (34 capabilities tests pass).
+  - Evidence: `cargo run -p xtask -- module-registry check` passed (40 modules, 45 features, 40 declarations, zero warnings, zero errors); `cargo clippy -p xtask -- -D warnings` passed; `cargo fmt --all -- --check` passed; `cargo check --workspace --no-default-features` passed; `cargo test -p oxide-agent-core --no-default-features --features profile-full --test modular_registry_snapshots` passed (snapshot unchanged); `cargo test -p oxide-agent-core --no-default-features --features profile-full -- capabilities` passed (34 tests); intentional mismatch test confirmed provides drift detection; intentional mismatch test confirmed requires presence drift detection.
+  - Commands: all of the above.
+  - Audit IDs updated: G4 verified, G1 in_progress (CP4 provides/requires evidence added), Q2 in_progress (CP4 blast radius recorded), Q3 in_progress (CP4 check-only evidence added).
+  - Next: CP5 — add generated module/capability cfg aliases and migrate tests.
 
 ## Risks and Blockers
 

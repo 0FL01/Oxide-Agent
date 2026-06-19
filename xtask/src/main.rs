@@ -127,18 +127,27 @@ fn read_to_string(root: &Path, relative: &str) -> Result<String, String> {
 // registry model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Default)]
 struct ModuleKey {
     cargo_feature: String,
     id: String,
     kind: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RegistryModule {
     key: ModuleKey,
     profile_id: String,
     profiles: BTreeSet<String>,
+    provides: Vec<String>,
+    requires: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledModule {
+    key: ModuleKey,
+    provides: Vec<String>,
+    has_requires: bool,
 }
 
 #[derive(Debug, Default)]
@@ -163,9 +172,13 @@ impl RegistryModule {
 fn parse_registry(input: &str) -> Result<Registry, String> {
     let mut registry = Registry::default();
     let mut current: Option<RegistryModule> = None;
+    let lines: Vec<&str> = input.lines().collect();
+    let mut idx = 0;
 
-    for raw_line in input.lines() {
-        let line = strip_comment(raw_line).trim();
+    while idx < lines.len() {
+        let line = strip_comment(lines[idx]).trim();
+        idx += 1;
+
         if line.is_empty() {
             continue;
         }
@@ -173,15 +186,7 @@ fn parse_registry(input: &str) -> Result<Registry, String> {
             if let Some(module) = current.take() {
                 registry.modules.push(module);
             }
-            current = Some(RegistryModule {
-                key: ModuleKey {
-                    cargo_feature: String::new(),
-                    id: String::new(),
-                    kind: String::new(),
-                },
-                profile_id: String::new(),
-                profiles: BTreeSet::new(),
-            });
+            current = Some(RegistryModule::default());
             continue;
         }
         let Some(module) = current.as_mut() else {
@@ -190,12 +195,24 @@ fn parse_registry(input: &str) -> Result<Registry, String> {
         let Some((name, value)) = line.split_once('=') else {
             continue;
         };
-        match name.trim() {
-            "id" => module.key.id = parse_string(value)?,
-            "profile_id" => module.profile_id = parse_string(value)?,
-            "cargo_feature" => module.key.cargo_feature = parse_string(value)?,
-            "kind" => module.key.kind = parse_string(value)?,
-            "profiles" => module.profiles = parse_string_array(value)?.into_iter().collect(),
+
+        let name = name.trim();
+        let mut full_value = value.trim().to_string();
+
+        while !brackets_balanced(&full_value) && idx < lines.len() {
+            full_value.push('\n');
+            full_value.push_str(strip_comment(lines[idx]).trim());
+            idx += 1;
+        }
+
+        match name {
+            "id" => module.key.id = parse_string(&full_value)?,
+            "profile_id" => module.profile_id = parse_string(&full_value)?,
+            "cargo_feature" => module.key.cargo_feature = parse_string(&full_value)?,
+            "kind" => module.key.kind = parse_string(&full_value)?,
+            "profiles" => module.profiles = parse_string_array(&full_value)?.into_iter().collect(),
+            "provides" => module.provides = parse_string_array(&full_value)?,
+            "requires" => module.requires = parse_string_array(&full_value)?,
             _ => {}
         }
     }
@@ -322,14 +339,18 @@ fn brackets_balanced(s: &str) -> bool {
 // compiled.rs parsing
 // ---------------------------------------------------------------------------
 
-fn parse_compiled_modules(input: &str) -> Result<BTreeSet<ModuleKey>, String> {
-    let mut modules = BTreeSet::new();
+fn parse_compiled_modules(input: &str) -> Result<Vec<CompiledModule>, String> {
+    let mut modules = Vec::new();
     let mut cursor = input
         .find("fn push_transport_and_storage_modules")
         .unwrap_or(0);
 
     while let Some(relative) = input[cursor..].find("push_module") {
         let start = cursor + relative;
+
+        let after = &input[start + "push_module".len()..];
+        let has_requires = after.starts_with("_with_requires");
+
         let Some(paren_relative) = input[start..].find('(') else {
             break;
         };
@@ -343,10 +364,15 @@ fn parse_compiled_modules(input: &str) -> Result<BTreeSet<ModuleKey>, String> {
             let kind = parse_kind_arg(args).ok_or_else(|| {
                 format!("could not parse module kind near compiled.rs byte offset {start}")
             })?;
-            modules.insert(ModuleKey {
-                cargo_feature: strings[0].clone(),
-                id: strings[1].clone(),
-                kind,
+            let provides = strings[2..].to_vec();
+            modules.push(CompiledModule {
+                key: ModuleKey {
+                    cargo_feature: strings[0].clone(),
+                    id: strings[1].clone(),
+                    kind,
+                },
+                provides,
+                has_requires,
             });
         }
         cursor = close + 1;
@@ -536,24 +562,45 @@ fn check_registry_features_exist(
 
 fn check_compiled_modules(
     registry: &Registry,
-    compiled_modules: &BTreeSet<ModuleKey>,
+    compiled: &[CompiledModule],
     errors: &mut Vec<String>,
 ) {
-    let registry_modules = registry
-        .modules
-        .iter()
-        .map(|module| module.key.clone())
-        .collect::<BTreeSet<_>>();
+    let compiled_map: BTreeMap<&ModuleKey, &CompiledModule> =
+        compiled.iter().map(|m| (&m.key, m)).collect();
 
-    for missing in registry_modules.difference(compiled_modules) {
+    let registry_keys: BTreeSet<&ModuleKey> = registry.modules.iter().map(|m| &m.key).collect();
+    let compiled_keys: BTreeSet<&ModuleKey> = compiled.iter().map(|m| &m.key).collect();
+
+    for missing in registry_keys.difference(&compiled_keys) {
         errors.push(format!(
             "compiled.rs is missing registry module {missing:?}"
         ));
     }
-    for extra in compiled_modules.difference(&registry_modules) {
+    for extra in compiled_keys.difference(&registry_keys) {
         errors.push(format!(
             "compiled.rs has undeclared registry module {extra:?}"
         ));
+    }
+
+    for reg_module in &registry.modules {
+        let Some(comp_module) = compiled_map.get(&reg_module.key) else {
+            continue;
+        };
+
+        if reg_module.provides != comp_module.provides {
+            errors.push(format!(
+                "provides mismatch for module `{}`: registry={:?} compiled={:?}",
+                reg_module.key.id, reg_module.provides, comp_module.provides
+            ));
+        }
+
+        let registry_has_requires = !reg_module.requires.is_empty();
+        if registry_has_requires != comp_module.has_requires {
+            errors.push(format!(
+                "requires mismatch for module `{}`: registry_requires={} compiled_uses_push_module_with_requires={}",
+                reg_module.key.id, registry_has_requires, comp_module.has_requires
+            ));
+        }
     }
 }
 
