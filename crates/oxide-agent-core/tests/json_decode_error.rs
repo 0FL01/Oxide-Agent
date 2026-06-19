@@ -10,6 +10,7 @@
 
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
+#![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
 //! This error comes from reqwest when `response.json().await` fails, typically when:
 //! - Server returns HTML error page instead of JSON
 //! - Server returns empty or malformed body
@@ -97,6 +98,7 @@ impl LlmProvider for JsonDecodeRetryMock {
 }
 
 /// Test that JSON decoding errors are detected and retried
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
@@ -149,6 +151,7 @@ async fn test_json_decoding_error_retried_on_failure() {
 }
 
 /// Test that JSON decoding errors eventually succeed after retry
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {

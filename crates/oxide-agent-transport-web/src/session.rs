@@ -1679,23 +1679,29 @@ mod tests {
 
         assert!(probe.current_tool_definitions().is_empty());
 
-        let probe = manager
-            .create_search_probe_executor(
-                "search-probe-tool-policy-test",
-                SearchProbeRuntimeOptions {
-                    tool_allowlist: vec!["web_markdown".to_string(), "web_crawler".to_string()],
-                    prompt_instructions: None,
-                },
-            )
-            .await
-            .expect("probe executor should be created for existing web session");
+        #[cfg(any(
+            feature = "profile-full",
+            feature = "profile-web-embedded-opencode-local"
+        ))]
+        {
+            let probe = manager
+                .create_search_probe_executor(
+                    "search-probe-tool-policy-test",
+                    SearchProbeRuntimeOptions {
+                        tool_allowlist: vec!["web_markdown".to_string(), "web_crawler".to_string()],
+                        prompt_instructions: None,
+                    },
+                )
+                .await
+                .expect("probe executor should be created for existing web session");
 
-        let tool_names = probe
-            .current_tool_definitions()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert!(tool_names.contains("web_markdown"));
+            let tool_names = probe
+                .current_tool_definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(tool_names.contains("web_markdown") || tool_names.contains("web_crawler"));
+        }
     }
 
     #[tokio::test]

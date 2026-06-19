@@ -1,5 +1,6 @@
 // Allow clone_on_ref_ptr in tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
+#![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
 
 mod basics;
 mod registry;

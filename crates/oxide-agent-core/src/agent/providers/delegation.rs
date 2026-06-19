@@ -2075,6 +2075,7 @@ mod tests {
         assert!(parent_rx.recv().await.is_none());
     }
 
+    #[cfg(feature = "tool-todos")]
     #[tokio::test]
     async fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
         let settings = Arc::new(AgentSettings {
@@ -2120,6 +2121,7 @@ mod tests {
         assert!(ctx.tool_runtime_registry.is_some());
     }
 
+    #[cfg(feature = "tool-todos")]
     #[tokio::test]
     async fn prepare_sub_agent_execution_inherits_topic_agents_md() {
         let mut storage = MockStorageProvider::new();

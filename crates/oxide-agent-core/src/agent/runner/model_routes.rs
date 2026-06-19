@@ -172,6 +172,8 @@ impl AgentRunner {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
     #[cfg(feature = "llm-chatgpt")]
@@ -306,6 +308,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route() {
         let mut opencode = MockLlmProvider::new();

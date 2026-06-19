@@ -575,12 +575,17 @@ mod tests {
         }
     }
 
+    fn test_prefix(label: &str) -> String {
+        format!("wiki-context-{label}-{}", uuid::Uuid::new_v4())
+    }
+
     #[tokio::test]
     async fn assembler_bootstraps_missing_indexes_without_writes() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = test_prefix("bootstrap");
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler =
             WikiContextAssembler::new(Arc::clone(&cache), WikiContextAssemblerConfig::default());
@@ -599,30 +604,32 @@ mod tests {
     async fn assembler_loads_overview_and_matching_topic_page() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("load");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n\n## Topic pages\n\n- [deploy-runbook](pages/deploy-runbook.md)\n  - tags: deploy, rollback\n  - summary: Deployment rollback procedure.\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nProject uses staged deploys.".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md"),
             "# Deploy Runbook\n\nRollback with compose pull previous image.".to_string(),
         );
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler = WikiContextAssembler::new(cache, WikiContextAssemblerConfig::default());
 
         let rendered = assembler
-            .assemble_for_context(42, "topic", "How do we rollback deploy?")
+            .assemble_for_context(42, &context_key, "How do we rollback deploy?")
             .await
             .expect("assembly should succeed");
 
@@ -636,32 +643,34 @@ mod tests {
     async fn assembler_reuses_cache_on_repeated_assembly() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("cache");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
                 .to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nCached fact.".to_string(),
         );
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler =
             WikiContextAssembler::new(Arc::clone(&cache), WikiContextAssemblerConfig::default());
 
         assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("first assembly should succeed");
         assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("second assembly should succeed");
 
@@ -672,21 +681,23 @@ mod tests {
     #[tokio::test]
     async fn assembler_respects_render_budget() {
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("budget");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
                 .to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nThis content is too large for the configured budget.".to_string(),
         );
-        let store = WikiStore::new(backend, "prod");
+        let store = WikiStore::new(backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler = WikiContextAssembler::new(
             cache,
@@ -698,7 +709,7 @@ mod tests {
         );
 
         let rendered = assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("assembly should succeed");
 

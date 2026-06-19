@@ -57,6 +57,7 @@ fn resume_with_user_input_is_noop_without_pending_request() {
     assert!(executor.session().drain_runtime_context().is_empty());
 }
 
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test]
 async fn resume_after_user_input_continues_saved_task_without_new_user_task() {
     let mut executor = build_executor_with_mock_response(
@@ -99,6 +100,7 @@ async fn resume_after_user_input_continues_saved_task_without_new_user_task() {
     assert!(runtime_context.is_empty());
 }
 
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test]
 async fn execute_user_input_with_options_persists_user_task_attachment_refs() {
     let mut executor = build_executor_with_mock_response(
@@ -130,6 +132,7 @@ async fn execute_user_input_with_options_persists_user_task_attachment_refs() {
     assert_eq!(user_task.user_attachments(), &[attachment]);
 }
 
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test]
 async fn resume_user_input_with_options_persists_runtime_attachment_refs() {
     let mut executor = build_executor_with_mock_response(
@@ -189,6 +192,7 @@ async fn resume_after_user_input_rejects_sessions_without_pending_request() {
     assert!(error.to_string().contains("not waiting for user input"));
 }
 
+#[cfg(feature = "llm-opencode-go")]
 #[tokio::test]
 async fn continue_after_runtime_context_continues_saved_task_without_new_user_task() {
     let mut executor = build_executor_with_mock_response(

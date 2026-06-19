@@ -943,6 +943,7 @@ mod tests {
             settings
         }
 
+        #[cfg(feature = "llm-mistral")]
         #[test]
         fn resolve_audio_model_name_supports_mistral_stt_route() {
             let settings = with_provider_key(

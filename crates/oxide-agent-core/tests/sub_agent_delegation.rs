@@ -1,5 +1,6 @@
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
+#![cfg_attr(not(feature = "tool-todos"), allow(dead_code, unused_imports))]
 
 use oxide_agent_core::agent::identity::SessionId;
 use oxide_agent_core::agent::providers::DelegationProvider;
@@ -209,6 +210,7 @@ impl LlmProvider for GatedProbeProvider {
     }
 }
 
+#[cfg(feature = "tool-todos")]
 #[tokio::test]
 async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -266,6 +268,7 @@ async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "tool-todos")]
 #[tokio::test]
 async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()> {
     let settings = Arc::new(AgentSettings {

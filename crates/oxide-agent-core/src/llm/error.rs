@@ -70,6 +70,7 @@ impl LlmError {
     /// Classify a `reqwest::Error` into `RequestBuilder` (deterministic) or `NetworkError`
     /// (transient) based on `is_builder()`. Use at every site that converts a reqwest error
     /// to `LlmError`, so retryability is determined from the error kind, not from string contents.
+    #[cfg(feature = "http-client")]
     #[must_use]
     pub fn from_reqwest_error(e: reqwest::Error) -> Self {
         if e.is_builder() {

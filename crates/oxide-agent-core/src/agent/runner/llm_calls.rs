@@ -985,6 +985,8 @@ impl AgentRunner {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -1364,6 +1366,7 @@ mod tests {
         drop(ctx);
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[tokio::test]
     async fn run_repairs_invalid_tool_history_before_llm_call() {
         let llm_client = build_llm_client(single_final_response_provider());
@@ -1444,6 +1447,7 @@ mod tests {
         }));
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[tokio::test]
     async fn run_fails_over_to_weighted_backup_after_persistent_rate_limits() {
         let mut primary = MockLlmProvider::new();
@@ -1544,6 +1548,7 @@ mod tests {
         }));
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[tokio::test]
     async fn run_keeps_primary_provider_when_rate_limit_recovers() {
         let mut primary = MockLlmProvider::new();

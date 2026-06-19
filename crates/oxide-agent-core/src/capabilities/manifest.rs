@@ -972,26 +972,37 @@ mod tests {
         let manifest =
             compiled_capability_manifest().expect("compiled modules must have unique IDs");
 
+        #[cfg(feature = "sandbox-daemon")]
+        let docker_direct_disabled = [
+            ("sandbox-backend/docker-direct", false),
+            ("sandbox-daemon/sandboxd", false),
+        ];
+        #[cfg(not(feature = "sandbox-daemon"))]
+        let docker_direct_disabled = [("sandbox-backend/docker-direct", false)];
         manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/docker-direct", false),
-                ("sandbox-daemon/sandboxd", false),
-            ])
+            .enabled_manifest_from_configured_modules(docker_direct_disabled)
             .expect("sandboxd-client exec backend should satisfy sandbox exec");
         manifest
             .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
             .expect("docker-direct exec backend should satisfy sandbox exec");
 
+        let mut no_exec_backend = vec![
+            ("sandbox-backend/docker-direct", false),
+            ("sandbox-backend/sandboxd-client", false),
+        ];
+        #[cfg(feature = "sandbox-daemon")]
+        no_exec_backend.push(("sandbox-daemon/sandboxd", false));
+        #[cfg(feature = "tool-sandbox-fileops")]
+        no_exec_backend.push(("tool/sandbox-fileops", false));
+        #[cfg(feature = "tool-sandbox-recreate")]
+        no_exec_backend.push(("tool/sandbox-recreate", false));
+        #[cfg(feature = "tool-stack-logs")]
+        no_exec_backend.push(("tool/stack-logs", false));
+        #[cfg(feature = "tool-ytdlp")]
+        no_exec_backend.push(("tool/ytdlp", false));
+
         let error = manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/docker-direct", false),
-                ("sandbox-backend/sandboxd-client", false),
-                ("sandbox-daemon/sandboxd", false),
-                ("tool/sandbox-fileops", false),
-                ("tool/sandbox-recreate", false),
-                ("tool/stack-logs", false),
-                ("tool/ytdlp", false),
-            ])
+            .enabled_manifest_from_configured_modules(no_exec_backend)
             .expect_err("sandbox exec tool must fail without an enabled exec backend");
 
         assert_eq!(
