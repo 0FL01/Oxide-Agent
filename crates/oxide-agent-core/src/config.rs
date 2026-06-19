@@ -379,6 +379,15 @@ impl AgentSettings {
     ///
     /// Returns a `ConfigError` if loading fails.
     pub fn new() -> Result<Self, ConfigError> {
+        // Prime the Models.dev catalog before validation so vision capability
+        // checks (MEDIA_MODEL route validation) have data available.
+        #[cfg(feature = "llm-opencode-go")]
+        {
+            crate::llm::providers::opencode_go::discovery::init_models_dev_catalog(
+                reqwest::Client::new(),
+            );
+        }
+
         let mut settings: Self = build_config()?.try_deserialize()?;
         settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();

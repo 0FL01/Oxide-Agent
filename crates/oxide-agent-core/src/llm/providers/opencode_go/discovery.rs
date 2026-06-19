@@ -541,8 +541,10 @@ impl ModelsDevCatalog {
 
 static MODELS_DEV_CATALOG: StdRwLock<Option<Arc<ModelsDevCatalog>>> = StdRwLock::new(None);
 
-/// Initialize the global Models.dev catalog. Called once during `LlmClient`
-/// construction. Spawns a background refresh task. Subsequent calls are no-ops.
+/// Initialize the global Models.dev catalog. Does a **blocking** initial fetch
+/// in a multi-threaded tokio runtime so the catalog is populated before config
+/// validation runs. Spawns background refresh for periodic updates. Subsequent
+/// calls are no-ops.
 pub fn init_models_dev_catalog(http_client: HttpClient) {
     let mut guard = MODELS_DEV_CATALOG
         .write()
@@ -551,6 +553,16 @@ pub fn init_models_dev_catalog(http_client: HttpClient) {
         return;
     }
     let catalog = Arc::new(ModelsDevCatalog::new(http_client));
+
+    // Blocking initial fetch so vision data is available synchronously at
+    // config-validation time. Only in multi-threaded runtime (production);
+    // tests use `init_models_dev_catalog_for_tests` with mock data.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            tokio::task::block_in_place(|| handle.block_on(catalog.refresh()));
+        }
+    }
+
     Arc::clone(&catalog).spawn_background_refresh();
     *guard = Some(catalog);
 }
