@@ -638,10 +638,19 @@ fn SessionWorkspace(
                                     set_sessions,
                                 },
                             );
-                        } else if task_detail.status == TaskStatus::WaitingForUserInput {
-                            set_active_task.set(Some(task_detail));
                         } else {
-                            set_active_task.set(None);
+                            if task_detail.status == TaskStatus::WaitingForUserInput {
+                                set_active_task.set(Some(task_detail));
+                            } else {
+                                set_active_task.set(None);
+                            }
+                            // Hydrate persisted progress for non-streamed tasks so the
+                            // activity context card (Free/Flow/Prompt/Tools + health)
+                            // renders after reload, not only while streaming.
+                            if let Ok(response) = client.task_progress(&session_id, &task_id).await
+                            {
+                                set_progress.set(response.progress);
+                            }
                         }
                     } else {
                         // Empty session — clear signals
