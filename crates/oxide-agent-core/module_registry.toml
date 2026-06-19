@@ -1,0 +1,290 @@
+# Declarative module registry. CP1 owns this file as the pre-Cargo source of
+# truth and validates it in check-only mode; later checkpoints make generated
+# Cargo/profile/Rust surfaces registry-owned.
+
+[[modules]]
+id = "transport/telegram"
+cargo_feature = "transport-telegram"
+kind = "Transport"
+provides = ["transport/telegram"]
+profiles = ["full", "embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "transport/web"
+cargo_feature = "transport-web"
+kind = "Transport"
+provides = ["transport/web"]
+profiles = ["full", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "storage/sqlx"
+cargo_feature = "storage-sqlx"
+kind = "StorageBackend"
+provides = ["storage/sqlx"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "llm-provider/openai-chatgpt"
+cargo_feature = "llm-chatgpt"
+kind = "LlmProvider"
+provides = ["llm-provider/openai-chatgpt"]
+profiles = ["full"]
+
+[[modules]]
+id = "llm-provider/mistral"
+cargo_feature = "llm-mistral"
+kind = "LlmProvider"
+provides = ["llm-provider/mistral"]
+profiles = ["full"]
+
+[[modules]]
+id = "llm-provider/anthropic"
+profile_id = "llm-provider/minimax"
+cargo_feature = "llm-minimax"
+kind = "LlmProvider"
+provides = ["llm-provider/anthropic"]
+profiles = ["full"]
+
+[[modules]]
+id = "llm-provider/openai-base"
+cargo_feature = "llm-openai-base"
+kind = "LlmProvider"
+provides = ["llm-provider/openai-base"]
+profiles = ["full", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "llm-provider/opencode-go"
+cargo_feature = "llm-opencode-go"
+kind = "LlmProvider"
+provides = ["llm-provider/opencode-go"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "llm-provider/opencode-zen"
+cargo_feature = "llm-opencode-go"
+kind = "LlmProvider"
+provides = ["llm-provider/opencode-zen"]
+profiles = ["full", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "llm-provider/openrouter"
+cargo_feature = "llm-openrouter"
+kind = "LlmProvider"
+provides = ["llm-provider/openrouter"]
+profiles = ["full"]
+
+[[modules]]
+id = "tool/todos"
+cargo_feature = "tool-todos"
+kind = "Tool"
+provides = ["tool/todos"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/compression"
+cargo_feature = "tool-compression"
+kind = "Tool"
+provides = ["tool/compression"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/delegation"
+cargo_feature = "tool-delegation"
+kind = "Tool"
+provides = ["tool/delegation"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/agents-md"
+cargo_feature = "tool-agents-md"
+kind = "Tool"
+provides = ["tool/agents-md"]
+profiles = ["full", "embedded-opencode-local"]
+
+[[modules]]
+id = "tool/reminder"
+cargo_feature = "tool-reminder"
+kind = "Reminder"
+provides = ["tool/reminder"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/wiki-memory"
+cargo_feature = "tool-wiki-memory"
+kind = "Memory"
+provides = ["tool/wiki-memory"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/webfetch-md"
+cargo_feature = "tool-webfetch-md"
+kind = "Search"
+provides = ["tool/webfetch-md"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "tool/web-crawler"
+cargo_feature = "tool-webfetch-md"
+kind = "Search"
+provides = ["tool/web-crawler"]
+profiles = ["web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/tavily"
+cargo_feature = "tool-tavily"
+kind = "Search"
+provides = ["tool/tavily-search", "tool/tavily-extract"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "tool/brave-search"
+cargo_feature = "tool-brave-search"
+kind = "Search"
+provides = ["tool/brave-search"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "tool/crw"
+cargo_feature = "tool-crw"
+kind = "Search"
+provides = ["tool/crw-search", "tool/crw-scrape"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+
+[[modules]]
+id = "tool/browser-live"
+cargo_feature = "tool-browser-live"
+kind = "Browser"
+provides = ["tool/browser-start", "tool/browser-observe", "tool/browser-step", "tool/browser-debug", "tool/browser-close"]
+profiles = ["full", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/sandbox-fileops"
+cargo_feature = "tool-sandbox-fileops"
+kind = "SandboxTool"
+provides = ["tool/sandbox-fileops", "tool/sandbox-list-files"]
+requires = ["sandbox-backend/*/fileops"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/sandbox-exec"
+cargo_feature = "tool-sandbox-exec"
+kind = "SandboxTool"
+provides = ["tool/sandbox-exec"]
+requires = ["sandbox-backend/*/exec"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/sandbox-recreate"
+cargo_feature = "tool-sandbox-recreate"
+kind = "SandboxTool"
+provides = ["tool/sandbox-recreate"]
+requires = ["sandbox-backend/*/lifecycle"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/file-delivery"
+cargo_feature = "tool-file-delivery"
+kind = "FileDelivery"
+provides = ["tool/file-delivery"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/media-audio"
+cargo_feature = "tool-media-audio"
+kind = "Media"
+provides = ["tool/media-audio-transcription"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/media-image"
+cargo_feature = "tool-media-image"
+kind = "Media"
+provides = ["tool/media-image-description"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/media-video"
+cargo_feature = "tool-media-video"
+kind = "Media"
+provides = ["tool/media-video-description"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "tool/ytdlp"
+cargo_feature = "tool-ytdlp"
+kind = "Media"
+provides = ["tool/ytdlp-metadata", "tool/ytdlp-transcript", "tool/ytdlp-download"]
+requires = ["sandbox-backend/*/exec", "sandbox-backend/*/fileops"]
+profiles = ["full"]
+
+[[modules]]
+id = "tool/tts-kokoro"
+cargo_feature = "tool-tts-kokoro"
+kind = "Media"
+provides = ["tool/tts-kokoro"]
+profiles = ["full"]
+
+[[modules]]
+id = "tool/tts-silero"
+cargo_feature = "tool-tts-silero"
+kind = "Media"
+provides = ["tool/tts-silero"]
+profiles = ["full"]
+
+[[modules]]
+id = "tool/stack-logs"
+cargo_feature = "tool-stack-logs"
+kind = "Diagnostics"
+provides = ["tool/stack-logs"]
+requires = ["sandbox-backend/*/diagnostics"]
+profiles = ["full"]
+
+[[modules]]
+id = "sandbox-backend/docker-direct"
+cargo_feature = "sandbox-backend-docker-direct"
+kind = "SandboxBackend"
+provides = ["sandbox-backend/docker-direct", "sandbox-backend/docker-direct/fileops", "sandbox-backend/docker-direct/exec", "sandbox-backend/docker-direct/lifecycle", "sandbox-backend/docker-direct/diagnostics"]
+profiles = ["full", "embedded-opencode-local"]
+
+[[modules]]
+id = "sandbox-backend/sandboxd-client"
+cargo_feature = "sandbox-backend-sandboxd-client"
+kind = "SandboxBackend"
+provides = ["sandbox-backend/sandboxd-client", "sandbox-backend/sandboxd-client/fileops", "sandbox-backend/sandboxd-client/exec", "sandbox-backend/sandboxd-client/lifecycle", "sandbox-backend/sandboxd-client/diagnostics"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
+id = "sandbox-daemon/sandboxd"
+cargo_feature = "sandbox-daemon"
+kind = "Service"
+provides = ["sandbox-daemon/sandboxd"]
+requires = ["sandbox-backend/docker-direct"]
+profiles = ["full"]
+
+[[modules]]
+id = "integration/mcp-jira"
+cargo_feature = "integration-mcp-jira"
+kind = "McpIntegration"
+provides = ["integration/mcp-jira"]
+profiles = ["full"]
+
+[[modules]]
+id = "integration/mcp-mattermost"
+cargo_feature = "integration-mcp-mattermost"
+kind = "McpIntegration"
+provides = ["integration/mcp-mattermost"]
+profiles = ["full"]
+
+[[modules]]
+id = "integration/ssh-mcp"
+cargo_feature = "integration-ssh-mcp"
+kind = "McpIntegration"
+provides = ["integration/ssh-mcp"]
+profiles = ["full"]
+
+[[modules]]
+id = "manager/control-plane"
+cargo_feature = "manager-control-plane"
+kind = "Manager"
+provides = ["manager/control-plane", "manager/topic-sandbox-admin", "manager/agent-profile-admin"]
+profiles = ["full"]

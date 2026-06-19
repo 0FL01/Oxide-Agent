@@ -5,7 +5,7 @@ Status: active
 Codex goal: see `/goal` objective below
 Source spec: user-approved RECON and decisions from 2026-06-19
 Goal doc owner: Codex
-Last updated: 2026-06-19 09:55
+Last updated: 2026-06-19 10:47
 
 ## Objective
 
@@ -91,29 +91,29 @@ Corrected contract:
   - Source: user-approved decision `module_registry.toml` in repo and RECON source split.
   - Acceptance: registry describes every module currently emitted by `compiled_capability_manifest()`, every atomic Cargo capability feature, all supported profiles, module kind, provided capabilities, required capabilities, and generated feature dependencies.
   - Evidence required: generator/check report showing zero missing/extra modules/features/profiles; diff or snapshot proving registry coverage of current compiled manifest for all supported profiles.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 added `crates/oxide-agent-core/module_registry.toml` with 40 module records. `cargo run -p xtask -- module-registry check` passed and reported `40 modules`, `45 Cargo features`, and `40 compiled declarations`.
 
 - G2: Cargo feature/profile surfaces are generated or checked from the registry
   - Source: user-approved decision checked-in generated files plus check gate.
   - Acceptance: core profile feature lists and transport/binary forwarding cannot drift from registry without `xtask module-registry check` failing. Cargo defaults remain empty.
   - Evidence required: clean `xtask module-registry check`; intentional mismatch test or unit/snapshot equivalent; inspected generated sections in relevant Cargo.toml files.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 `xtask module-registry check` verifies each registry `cargo_feature` exists in `crates/oxide-agent-core/Cargo.toml`; generation/check of profile composition and forwarding remains for CP2.
 
 - G3: Runtime profile TOMLs are generated or checked from the same registry
   - Source: verified Browser Live drift and user-approved policy.
   - Acceptance: `profiles/*.toml` module membership matches registry; Browser Live is explicitly included and enabled in `full` and `web-embedded-opencode-local`; stale deferred comments are removed.
   - Evidence required: `xtask module-registry check`; `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/` returns nothing; profile files contain `tool/browser-live` where registry says enabled.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 check compares registry runtime profile membership against `profiles/*.toml` and passes with only known Browser Live warnings for `full` and `web-embedded-opencode-local`; actual profile alignment remains for CP3.
 
 - G4: `compiled.rs` module declarations are generated or checked from the registry
   - Source: RECON `compiled.rs` feature-gated macros duplicate Cargo/profile knowledge.
   - Acceptance: module id, kind, cargo feature, provides, requires, and config schema references in compiled manifest are derived from registry or compared against registry by a failing check.
   - Evidence required: clean `xtask module-registry check`; focused tests for `compiled_capability_manifest()`; snapshot update showing no unintended module loss.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 check parsed `compiled.rs` declarations and verified they match the registry by module id, kind, and Cargo feature for 40 declarations; generated/registry-owned declaration path remains for CP4.
 
 - G5: Test gating uses module/capability requirements instead of raw feature knowledge where practical
   - Source: user-approved cfg alias plan.
@@ -140,22 +140,22 @@ Corrected contract:
   - Source: AGENTS.md scale/implementation bias.
   - Acceptance: generator/check is repo-local tooling; no runtime service or external dependency is introduced. Any new Rust crate inside workspace is justified as `xtask` tooling only.
   - Evidence required: `git diff -- Cargo.toml crates/*/Cargo.toml` review; dependency additions listed with reason.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 added only a workspace `xtask` crate with no dependencies; `Cargo.lock` gained only the local `xtask` package entry.
 
 - Q2: Each checkpoint includes blast-radius review before code and evidence after code
   - Source: user request and П0.6.
   - Acceptance: every checkpoint log names touched symbols/files, consumers, regression hypotheses, validation, failures, and classification.
   - Evidence required: Progress Log entries for CP0..final; `git grep`/diff/status evidence before each checkpoint commit.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 blast radius reviewed before implementation: root workspace members, root `Cargo.toml`, new `xtask`, `Cargo.lock`, core registry path, runtime profiles, and `compiled.rs` parser surface.
 
 - Q3: Generated artifacts are checked in and drift-proofed
   - Source: user-approved decision.
   - Acceptance: ordinary `cargo check` works from a fresh checkout without first running a generator; check command fails if generated surfaces are stale.
   - Evidence required: clean checkout-equivalent `cargo check` command; `xtask module-registry check` output; changed generated files committed.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: CP1 adds a checked-in registry and check gate; generated Cargo/profile/Rust artifacts are not yet registry-owned until CP2-CP4.
 
 - N1: Cargo remains the build system with empty default features
   - Source: AGENTS.md and approved plan.
@@ -316,6 +316,15 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
   - Commands: `git status --short`; targeted reads of `README.md`, root `Cargo.toml`, existing goal doc, and relevant RECON files from prior verification; `cargo fmt --all -- --check` passed after doc creation.
   - Audit IDs updated: Q2 in progress only; implementation audit items remain pending.
   - Next: CP1 design/inventory and check-only registry tooling after reviewer approval of this goal doc.
+
+- 2026-06-19 10:47: CP1 registry and check-only gate implemented
+  - Changed: added `crates/oxide-agent-core/module_registry.toml`, new no-dependency workspace crate `xtask`, and root workspace membership for `xtask`.
+  - Blast radius reviewed: root workspace membership and `Cargo.lock` local package entry; no runtime crate depends on `xtask`; parser/checker reads `crates/oxide-agent-core/Cargo.toml`, `profiles/*.toml`, and `crates/oxide-agent-core/src/capabilities/compiled.rs` without rewriting them.
+  - Regression hypotheses checked: duplicate registry module IDs fail; missing Cargo features fail; extra/missing compiled declarations fail; runtime profile drift fails except explicitly classified current Browser Live mismatch.
+  - Evidence: `cargo run -p xtask -- module-registry check` passed with warnings only for missing `tool/browser-live` in `profiles/full.toml` and `profiles/web-embedded-opencode-local.toml`; check reported `40 modules`, `45 Cargo features`, `40 compiled declarations`.
+  - Commands: `cargo run -p xtask -- module-registry check`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features`.
+  - Audit IDs updated: G1, G2, G3, G4, Q1, Q2, Q3 moved to `in_progress` with CP1 evidence.
+  - Next: review diff and commit CP1, then CP2 makes Cargo profile/forwarding surfaces registry-owned.
 
 ## Risks and Blockers
 
