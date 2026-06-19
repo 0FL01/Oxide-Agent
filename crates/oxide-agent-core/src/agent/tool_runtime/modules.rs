@@ -13,9 +13,7 @@ use crate::agent::providers::SandboxFileOpsProvider;
 #[cfg(feature = "tool-sandbox-recreate")]
 use crate::agent::providers::SandboxLifecycleProvider;
 use crate::agent::providers::{SandboxRuntime, TodoList};
-#[cfg(feature = "tool-wiki-memory")]
 use crate::agent::session::AgentMemoryScope;
-#[cfg(feature = "tool-wiki-memory")]
 use crate::agent::wiki_memory::WikiStore;
 use crate::capabilities::ModuleId;
 use crate::config::AgentSettings;
@@ -46,12 +44,18 @@ use crate::agent::providers::CrwProvider;
 use crate::agent::providers::DelegationProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::providers::ManagerControlPlaneProvider;
+use crate::agent::providers::ManagerTopicLifecycle;
 #[cfg(any(
     feature = "tool-media-audio",
     feature = "tool-media-image",
     feature = "tool-media-video"
 ))]
 use crate::agent::providers::MediaFileProvider;
+use crate::agent::providers::ReminderContext;
+#[cfg(feature = "tool-reminder")]
+use crate::agent::providers::ReminderProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-stack-logs")]
@@ -76,34 +80,23 @@ use crate::agent::providers::{BrowserArtifactSettings, BrowserLiveProvider};
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
-#[cfg(feature = "manager-control-plane")]
-use crate::agent::providers::{ManagerControlPlaneProvider, ManagerTopicLifecycle};
 #[cfg(feature = "integration-mcp-mattermost")]
 use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
-#[cfg(feature = "tool-reminder")]
-use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(any(
-    feature = "tool-agents-md",
-    feature = "manager-control-plane",
-    feature = "integration-ssh-mcp",
-    feature = "tool-browser-live"
-))]
 use crate::storage::StorageProvider;
-#[cfg(feature = "integration-ssh-mcp")]
 use crate::storage::TopicInfraConfigRecord;
 
 /// Topic-scoped context required by the AGENTS.md tools.
-#[cfg(feature = "tool-agents-md")]
 #[derive(Clone)]
+#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
 pub struct AgentsMdModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_id: String,
 }
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
 impl AgentsMdModuleContext {
     /// Create a context for topic-scoped AGENTS.md tools.
     #[must_use]
@@ -117,15 +110,15 @@ impl AgentsMdModuleContext {
 }
 
 /// User-scoped context required by manager control-plane tools.
-#[cfg(feature = "manager-control-plane")]
 #[derive(Clone)]
+#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
 pub struct ManagerControlPlaneModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
 impl ManagerControlPlaneModuleContext {
     /// Create a context for manager control-plane tools.
     #[must_use]
@@ -143,8 +136,8 @@ impl ManagerControlPlaneModuleContext {
 }
 
 /// Topic-scoped infrastructure context required by SSH MCP tools.
-#[cfg(feature = "integration-ssh-mcp")]
 #[derive(Clone)]
+#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
 pub struct SshMcpModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
@@ -152,7 +145,7 @@ pub struct SshMcpModuleContext {
     config: TopicInfraConfigRecord,
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
 impl SshMcpModuleContext {
     /// Create a context for topic-scoped SSH MCP tools.
     #[must_use]
@@ -173,15 +166,15 @@ impl SshMcpModuleContext {
 
 /// Context required by browser-live tools: durable storage for screenshot
 /// artifacts and transport-agnostic session scope for deletion.
-#[cfg(feature = "tool-browser-live")]
 #[derive(Clone)]
+#[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
 pub struct BrowserLiveModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: String,
 }
 
-#[cfg(feature = "tool-browser-live")]
+#[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
 impl BrowserLiveModuleContext {
     /// Create a context for browser-live screenshot storage.
     #[must_use]
@@ -219,19 +212,12 @@ pub struct ToolModuleContext {
     sandbox_runtime: Arc<SandboxRuntime>,
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
-    #[cfg(feature = "tool-agents-md")]
     agents_md_context: Option<AgentsMdModuleContext>,
-    #[cfg(feature = "manager-control-plane")]
     manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
-    #[cfg(feature = "integration-ssh-mcp")]
     ssh_mcp_context: Option<SshMcpModuleContext>,
-    #[cfg(feature = "tool-browser-live")]
     browser_live_context: Option<BrowserLiveModuleContext>,
-    #[cfg(feature = "tool-reminder")]
     reminder_context: Option<ReminderContext>,
-    #[cfg(feature = "tool-wiki-memory")]
     wiki_memory_store: Option<WikiStore>,
-    #[cfg(feature = "tool-wiki-memory")]
     memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
@@ -249,25 +235,18 @@ pub struct ToolModuleContextParts {
     /// Shared agent settings.
     pub settings: Arc<AgentSettings>,
     /// Optional AGENTS.md context.
-    #[cfg(feature = "tool-agents-md")]
     pub agents_md_context: Option<AgentsMdModuleContext>,
     /// Optional manager control-plane context.
-    #[cfg(feature = "manager-control-plane")]
     pub manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
     /// Optional topic infrastructure context for SSH MCP tools.
-    #[cfg(feature = "integration-ssh-mcp")]
     pub ssh_mcp_context: Option<SshMcpModuleContext>,
     /// Optional browser-live context for screenshot storage.
-    #[cfg(feature = "tool-browser-live")]
     pub browser_live_context: Option<BrowserLiveModuleContext>,
     /// Optional reminder context.
-    #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
     /// Optional durable wiki memory store.
-    #[cfg(feature = "tool-wiki-memory")]
     pub wiki_memory_store: Option<WikiStore>,
     /// Stable memory scope for wiki memory tools.
-    #[cfg(feature = "tool-wiki-memory")]
     pub memory_scope: AgentMemoryScope,
     /// Optional progress sender.
     pub progress_tx: Option<Sender<AgentEvent>>,
@@ -283,19 +262,12 @@ impl ToolModuleContext {
             sandbox_runtime: parts.sandbox_runtime,
             llm_client: parts.llm_client,
             settings: parts.settings,
-            #[cfg(feature = "tool-agents-md")]
             agents_md_context: parts.agents_md_context,
-            #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: parts.manager_control_plane_context,
-            #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: parts.ssh_mcp_context,
-            #[cfg(feature = "tool-browser-live")]
             browser_live_context: parts.browser_live_context,
-            #[cfg(feature = "tool-reminder")]
             reminder_context: parts.reminder_context,
-            #[cfg(feature = "tool-wiki-memory")]
             wiki_memory_store: parts.wiki_memory_store,
-            #[cfg(feature = "tool-wiki-memory")]
             memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
         }
@@ -332,49 +304,49 @@ impl ToolModuleContext {
     }
 
     /// Optional context for topic-scoped AGENTS.md tools.
-    #[cfg(feature = "tool-agents-md")]
+    #[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
     #[must_use]
     pub fn agents_md_context(&self) -> Option<AgentsMdModuleContext> {
         self.agents_md_context.clone()
     }
 
     /// Optional context for manager control-plane tools.
-    #[cfg(feature = "manager-control-plane")]
+    #[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
     #[must_use]
     pub fn manager_control_plane_context(&self) -> Option<ManagerControlPlaneModuleContext> {
         self.manager_control_plane_context.clone()
     }
 
     /// Optional context for topic-scoped SSH MCP tools.
-    #[cfg(feature = "integration-ssh-mcp")]
+    #[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
     #[must_use]
     pub fn ssh_mcp_context(&self) -> Option<SshMcpModuleContext> {
         self.ssh_mcp_context.clone()
     }
 
     /// Optional context for browser-live screenshot storage.
-    #[cfg(feature = "tool-browser-live")]
+    #[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
     #[must_use]
     pub fn browser_live_context(&self) -> Option<BrowserLiveModuleContext> {
         self.browser_live_context.clone()
     }
 
     /// Optional context for reminder tools.
-    #[cfg(feature = "tool-reminder")]
+    #[cfg_attr(not(feature = "tool-reminder"), allow(dead_code))]
     #[must_use]
     pub fn reminder_context(&self) -> Option<ReminderContext> {
         self.reminder_context.clone()
     }
 
     /// Optional durable wiki memory store.
-    #[cfg(feature = "tool-wiki-memory")]
+    #[cfg_attr(not(feature = "tool-wiki-memory"), allow(dead_code))]
     #[must_use]
     pub fn wiki_memory_store(&self) -> Option<WikiStore> {
         self.wiki_memory_store.clone()
     }
 
     /// Stable memory scope used by wiki memory tools.
-    #[cfg(feature = "tool-wiki-memory")]
+    #[cfg_attr(not(feature = "tool-wiki-memory"), allow(dead_code))]
     #[must_use]
     pub fn memory_scope(&self) -> AgentMemoryScope {
         self.memory_scope.clone()

@@ -26,13 +26,11 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
-#[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdModuleContext;
 #[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdToolModule;
 #[cfg(feature = "tool-brave-search")]
 pub use modules::BraveSearchToolModule;
-#[cfg(feature = "tool-browser-live")]
 pub use modules::BrowserLiveModuleContext;
 #[cfg(feature = "tool-browser-live")]
 pub use modules::BrowserLiveToolModule;
@@ -48,7 +46,6 @@ pub use modules::FileDeliveryToolModule;
 pub use modules::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 pub use modules::KokoroTtsToolModule;
-#[cfg(feature = "manager-control-plane")]
 pub use modules::ManagerControlPlaneModuleContext;
 #[cfg(feature = "manager-control-plane")]
 pub use modules::ManagerControlPlaneToolModule;
@@ -70,7 +67,6 @@ pub use modules::SandboxFileOpsToolModule;
 pub use modules::SandboxRecreateToolModule;
 #[cfg(feature = "tool-tts-silero")]
 pub use modules::SileroTtsToolModule;
-#[cfg(feature = "integration-ssh-mcp")]
 pub use modules::SshMcpModuleContext;
 #[cfg(feature = "integration-ssh-mcp")]
 pub use modules::SshMcpToolModule;

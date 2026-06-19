@@ -766,19 +766,12 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             sandbox_runtime,
             llm_client: Arc::clone(&self.llm_client),
             settings: Arc::clone(&self.settings),
-            #[cfg(feature = "tool-agents-md")]
             agents_md_context: None,
-            #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: None,
-            #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: None,
-            #[cfg(feature = "tool-browser-live")]
             browser_live_context: None,
-            #[cfg(feature = "tool-reminder")]
             reminder_context: None,
-            #[cfg(feature = "tool-wiki-memory")]
             wiki_memory_store: None,
-            #[cfg(feature = "tool-wiki-memory")]
             memory_scope: _memory_scope,
             progress_tx: progress_tx.cloned(),
         })

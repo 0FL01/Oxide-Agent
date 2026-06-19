@@ -1,9 +1,11 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
+use crate::agent::tool_runtime::AgentsMdModuleContext;
+#[cfg(feature = "tool-agents-md")]
+use crate::agent::tool_runtime::AgentsMdToolModule;
 #[cfg(feature = "tool-brave-search")]
 use crate::agent::tool_runtime::BraveSearchToolModule;
-#[cfg(feature = "tool-browser-live")]
 use crate::agent::tool_runtime::BrowserLiveModuleContext;
 #[cfg(feature = "tool-browser-live")]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
@@ -19,7 +21,6 @@ use crate::agent::tool_runtime::FileDeliveryToolModule;
 use crate::agent::tool_runtime::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::tool_runtime::KokoroTtsToolModule;
-#[cfg(feature = "manager-control-plane")]
 use crate::agent::tool_runtime::ManagerControlPlaneModuleContext;
 #[cfg(feature = "manager-control-plane")]
 use crate::agent::tool_runtime::ManagerControlPlaneToolModule;
@@ -41,6 +42,9 @@ use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::tool_runtime::SileroTtsToolModule;
+use crate::agent::tool_runtime::SshMcpModuleContext;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::tool_runtime::SshMcpToolModule;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::tool_runtime::StackLogsToolModule;
 #[cfg(feature = "tool-tavily")]
@@ -86,10 +90,6 @@ use crate::agent::tool_runtime::WikiMemoryToolModule;
 use crate::agent::tool_runtime::YtdlpToolModule;
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
-#[cfg(feature = "tool-agents-md")]
-use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::tool_runtime::{SshMcpModuleContext, SshMcpToolModule};
 use crate::agent::tool_runtime::{
     ToolExecutor, ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
 };
@@ -331,7 +331,6 @@ impl AgentExecutor {
             sandbox_runtime: self.build_sandbox_runtime(sandbox_scope, progress_tx),
             llm_client: self.runner.llm_client(),
             settings: Arc::clone(&self.settings),
-            #[cfg(feature = "tool-agents-md")]
             agents_md_context: self.agents_md.as_ref().map(|context| {
                 AgentsMdModuleContext::new(
                     Arc::clone(&context.storage),
@@ -339,7 +338,6 @@ impl AgentExecutor {
                     context.topic_id.clone(),
                 )
             }),
-            #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: self.manager_control_plane.as_ref().map(|context| {
                 ManagerControlPlaneModuleContext::new(
                     Arc::clone(&context.storage),
@@ -347,7 +345,6 @@ impl AgentExecutor {
                     context.topic_lifecycle.clone(),
                 )
             }),
-            #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: self.topic_infra.as_ref().map(|context| {
                 SshMcpModuleContext::new(
                     Arc::clone(&context.storage),
@@ -356,7 +353,6 @@ impl AgentExecutor {
                     context.config.clone(),
                 )
             }),
-            #[cfg(feature = "tool-browser-live")]
             browser_live_context: self.storage.as_ref().map(|storage| {
                 let scope = self.session.memory_scope();
                 BrowserLiveModuleContext::new(
@@ -365,11 +361,8 @@ impl AgentExecutor {
                     scope.context_key.clone(),
                 )
             }),
-            #[cfg(feature = "tool-reminder")]
             reminder_context: self.reminder_context.clone(),
-            #[cfg(feature = "tool-wiki-memory")]
             wiki_memory_store: self.wiki_memory_store.clone(),
-            #[cfg(feature = "tool-wiki-memory")]
             memory_scope: self.session.memory_scope().clone(),
             progress_tx: progress_tx.cloned(),
         })
