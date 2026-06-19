@@ -1713,6 +1713,11 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let mut mock = std::collections::HashMap::new();
+        mock.insert("mimo-v2.5".to_string(), true);
+        crate::llm::providers::opencode_go::discovery::init_models_dev_catalog_for_tests(mock);
+
         set_minimal_opencode_go_agent_env();
         clear_browser_agent_env();
         test_set_env("MEDIA_MODEL_ID", "mimo-v2.5");

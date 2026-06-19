@@ -248,6 +248,9 @@ impl LlmClient {
         )> = Vec::new();
         #[cfg(feature = "llm-opencode-go")]
         {
+            providers::opencode_go::discovery::init_models_dev_catalog(
+                support::http::create_http_client(),
+            );
             if let Some(catalog) = providers::opencode_go::module::build_model_catalog(
                 settings,
                 support::http::create_http_client(),

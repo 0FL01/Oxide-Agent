@@ -1363,6 +1363,11 @@ mod tests {
 
     #[test]
     fn tool_chat_body_serializes_user_image_parts_for_image_models_only() {
+        let mut mock = std::collections::HashMap::new();
+        mock.insert("mimo-v2.5".to_string(), true);
+        mock.insert("mimo-v2.5-pro".to_string(), false);
+        super::discovery::init_models_dev_catalog_for_tests(mock);
+
         let user = Message::user("What is written here?").with_user_content_parts(vec![
             MessageContentPart::image("image/png", b"png".to_vec()),
         ]);
@@ -1447,6 +1452,10 @@ mod tests {
         ) {
             return;
         }
+
+        // Initialize and populate Models.dev catalog for vision lookup
+        super::discovery::init_models_dev_catalog(reqwest::Client::new());
+        super::discovery::refresh_models_dev_catalog().await;
 
         let api_key = opencode_go_smoke_api_key();
         let api_base = std::env::var("OPENCODE_GO_API_BASE")

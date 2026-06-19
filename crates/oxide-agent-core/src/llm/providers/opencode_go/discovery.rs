@@ -2,10 +2,10 @@ use chrono::{DateTime, Utc};
 use lazy_regex::lazy_regex;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -405,6 +405,199 @@ impl crate::llm::DiscoveredModelSource for OpenCodeGoModelCatalog {
     }
 }
 
+// === Models.dev catalog ===
+
+/// Authoritative source for model modalities, used by opencode itself.
+/// Bare OpenAI-compatible `/v1/models` endpoints (opencode-go, opencode-zen,
+/// openai-base) do not expose modality metadata. Models.dev fills that gap.
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+const MODELS_DEV_TTL: Duration = Duration::from_secs(DEFAULT_MODEL_DISCOVERY_TTL_SECS);
+
+#[derive(Debug)]
+pub struct ModelsDevCatalog {
+    http_client: HttpClient,
+    state: StdRwLock<ModelsDevState>,
+}
+
+#[derive(Debug, Default)]
+struct ModelsDevState {
+    image_support: HashMap<String, bool>,
+    fetched_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Error)]
+enum ModelsDevError {
+    #[error("models.dev catalog request failed: {0}")]
+    Network(String),
+    #[error("models.dev catalog returned HTTP {0}")]
+    HttpStatus(u16),
+    #[error("models.dev catalog response parse failed: {0}")]
+    Parse(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsDevResponse {
+    opencode: ModelsDevProvider,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsDevProvider {
+    models: HashMap<String, ModelsDevModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsDevModel {
+    #[serde(default)]
+    modalities: Option<ModelsDevModalities>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsDevModalities {
+    #[serde(default)]
+    input: Vec<String>,
+}
+
+impl ModelsDevCatalog {
+    #[must_use]
+    pub fn new(http_client: HttpClient) -> Self {
+        Self {
+            http_client,
+            state: StdRwLock::new(ModelsDevState::default()),
+        }
+    }
+
+    pub fn spawn_background_refresh(self: Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            self.refresh().await;
+            loop {
+                tokio::time::sleep(MODELS_DEV_TTL).await;
+                self.refresh().await;
+            }
+        });
+    }
+
+    async fn refresh(&self) {
+        match self.fetch().await {
+            Ok(image_support) => {
+                let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+                state.image_support = image_support;
+                state.fetched_at = Some(Utc::now());
+            }
+            Err(error) => {
+                warn!(%error, "Models.dev catalog refresh failed; using cached data if available");
+            }
+        }
+    }
+
+    async fn fetch(&self) -> Result<HashMap<String, bool>, ModelsDevError> {
+        let response = self
+            .http_client
+            .get(MODELS_DEV_API_URL)
+            .send()
+            .await
+            .map_err(|e| ModelsDevError::Network(e.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(ModelsDevError::HttpStatus(status.as_u16()));
+        }
+        let body: ModelsDevResponse = response
+            .json()
+            .await
+            .map_err(|e| ModelsDevError::Parse(e.to_string()))?;
+        Ok(body
+            .opencode
+            .models
+            .into_iter()
+            .map(|(id, model)| {
+                let supports_image = model
+                    .modalities
+                    .as_ref()
+                    .map(|m| m.input.iter().any(|input| input == "image"))
+                    .unwrap_or(false);
+                (id, supports_image)
+            })
+            .collect())
+    }
+
+    /// Check if a model supports image input.
+    /// Tries exact ID match first, then `{model_id}-free` (pricing tier
+    /// normalization — `-free` is a pricing variant, not a capability change).
+    fn supports_image(&self, model_id: &str) -> bool {
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(&supports) = state.image_support.get(model_id) {
+            return supports;
+        }
+        let free_variant = format!("{model_id}-free");
+        state
+            .image_support
+            .get(&free_variant)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+static MODELS_DEV_CATALOG: StdRwLock<Option<Arc<ModelsDevCatalog>>> = StdRwLock::new(None);
+
+/// Initialize the global Models.dev catalog. Called once during `LlmClient`
+/// construction. Spawns a background refresh task. Subsequent calls are no-ops.
+pub fn init_models_dev_catalog(http_client: HttpClient) {
+    let mut guard = MODELS_DEV_CATALOG
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if guard.is_some() {
+        return;
+    }
+    let catalog = Arc::new(ModelsDevCatalog::new(http_client));
+    Arc::clone(&catalog).spawn_background_refresh();
+    *guard = Some(catalog);
+}
+
+/// Synchronous lookup: does `model_id` support image input per Models.dev?
+/// Returns `false` if the catalog is not yet initialized or the model is
+/// unknown (safe default: text-only).
+#[must_use]
+pub fn models_dev_supports_image(model_id: &str) -> bool {
+    MODELS_DEV_CATALOG
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|catalog| catalog.supports_image(model_id))
+        .unwrap_or(false)
+}
+
+/// Force a refresh of the global Models.dev catalog. Used by smoke tests to
+/// ensure the catalog is populated before asserting on vision support.
+pub async fn refresh_models_dev_catalog() {
+    if let Some(catalog) = MODELS_DEV_CATALOG
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(Arc::clone)
+    {
+        catalog.refresh().await;
+    }
+}
+
+/// Test-only: initialize the global catalog with pre-populated mock data.
+/// No network fetch, no background refresh. Replaces any existing catalog
+/// so tests can set up known vision state regardless of call order.
+#[cfg(test)]
+pub(crate) fn init_models_dev_catalog_for_tests(image_support: HashMap<String, bool>) {
+    let catalog = Arc::new(ModelsDevCatalog {
+        http_client: HttpClient::new(),
+        state: StdRwLock::new(ModelsDevState {
+            image_support,
+            fetched_at: Some(Utc::now()),
+        }),
+    });
+    *MODELS_DEV_CATALOG
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(catalog);
+}
+
 pub fn parse_models_json(input: &str) -> Result<Vec<RawOpenCodeGoModel>, OpenCodeGoDiscoveryError> {
     let value = serde_json::from_str::<serde_json::Value>(input)
         .map_err(|error| OpenCodeGoDiscoveryError::Parse(error.to_string()))?;
@@ -564,12 +757,12 @@ fn supports_image_input(
 ) -> bool {
     explicit_image_input_support(model)
         .or(config.default_image_input)
-        .unwrap_or_else(|| supports_image_input_for_model_id(model_id))
+        .unwrap_or_else(|| models_dev_supports_image(model_id))
 }
 
 #[must_use]
 pub fn supports_image_input_for_model_id(model_id: &str) -> bool {
-    fallback_image_input_support(model_id)
+    models_dev_supports_image(&raw_model_id(model_id))
 }
 
 fn explicit_image_input_support(model: &RawOpenCodeGoModel) -> Option<bool> {
@@ -647,14 +840,6 @@ fn modality_value_is_image(value: &str) -> bool {
                 "image" | "images" | "vision" | "image_url" | "input_image"
             )
         })
-}
-
-fn fallback_image_input_support(model_id: &str) -> bool {
-    let lower = raw_model_id(model_id).to_ascii_lowercase();
-    if lower == "mimo-v2.5-pro" || lower.starts_with("mimo-v2.5-pro-") {
-        return false;
-    }
-    lower == "mimo-v2.5" || lower.starts_with("mimo-v2.5-")
 }
 
 fn model_matches_filter(model: &RawOpenCodeGoModel, filter: ModelDiscoveryFilter) -> bool {
@@ -747,35 +932,47 @@ mod tests {
     }
 
     #[test]
-    fn image_support_uses_modalities_before_mimo_fallback() {
-        let models = normalize_models(
+    fn image_support_uses_explicit_modalities_before_default_fallback() {
+        let config = OpenCodeGoDiscoveryConfig::new_for_provider(
+            OPENCODE_GO_PROVIDER_ID,
+            OPENCODE_GO_PROVIDER_ID,
+            DEFAULT_MODELS_URL.to_string(),
+            Duration::from_secs(60),
+            BTreeMap::new(),
+            None,
+            Some(true),
+            ModelDiscoveryFilter::All,
+        );
+        let models = normalize_models_for_config(
             vec![
-                raw_model("mimo-v2.5"),
-                raw_model("mimo-v2.5-pro"),
+                raw_model("no-metadata-1"),
+                raw_model("no-metadata-2"),
                 RawOpenCodeGoModel {
                     modalities: Some(RawOpenCodeGoModelModalities {
                         input: vec!["text".to_string()],
                         output: Vec::new(),
                     }),
-                    ..raw_model("mimo-v2.5-preview")
+                    ..raw_model("explicit-text-only")
                 },
                 RawOpenCodeGoModel {
                     modalities: Some(RawOpenCodeGoModelModalities {
                         input: vec!["text".to_string(), "image".to_string()],
                         output: Vec::new(),
                     }),
-                    ..raw_model("mimo-v2.5-pro-preview")
+                    ..raw_model("explicit-image")
                 },
             ],
             DiscoverySource::Network,
             Utc::now(),
-            &BTreeMap::new(),
+            &config,
         );
 
-        assert!(model_by_id(&models, "mimo-v2.5").supports_image_input);
-        assert!(!model_by_id(&models, "mimo-v2.5-pro").supports_image_input);
-        assert!(!model_by_id(&models, "mimo-v2.5-preview").supports_image_input);
-        assert!(model_by_id(&models, "mimo-v2.5-pro-preview").supports_image_input);
+        // No explicit modalities → falls back to default_image_input=true
+        assert!(model_by_id(&models, "no-metadata-1").supports_image_input);
+        // Explicit text-only → overrides default
+        assert!(!model_by_id(&models, "explicit-text-only").supports_image_input);
+        // Explicit image → overrides default
+        assert!(model_by_id(&models, "explicit-image").supports_image_input);
     }
 
     #[test]
@@ -896,7 +1093,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn smoke_opencode_go_models_report_mimo_image_support() {
+    async fn smoke_opencode_go_models_report_vision_via_models_dev() {
         if !matches!(
             std::env::var("RUN_OPENCODE_GO_DISCOVERY_SMOKE").as_deref(),
             Ok("1")
@@ -911,6 +1108,10 @@ mod tests {
             _ => panic!("set OPENCODE_GO_API_KEY or OPENCODE_API_KEY for smoke test"),
         };
 
+        // Initialize and populate Models.dev catalog for vision lookup
+        init_models_dev_catalog(HttpClient::new());
+        refresh_models_dev_catalog().await;
+
         let catalog =
             OpenCodeGoModelCatalog::new(HttpClient::new(), Some(api_key), discovery_config());
         let models = catalog.refresh().await;
@@ -918,8 +1119,10 @@ mod tests {
             !models.is_empty(),
             "OpenCode /models returned no usable models"
         );
-        assert!(model_by_id(&models, "mimo-v2.5").supports_image_input);
-        assert!(!model_by_id(&models, "mimo-v2.5-pro").supports_image_input);
+        // kimi-k2.5 has vision per Models.dev (exact ID match)
+        assert!(model_by_id(&models, "kimi-k2.5").supports_image_input);
+        // deepseek-v4-flash is text-only per Models.dev
+        assert!(!model_by_id(&models, "deepseek-v4-flash").supports_image_input);
     }
 
     fn model_by_id<'a>(
