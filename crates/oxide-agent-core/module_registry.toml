@@ -141,14 +141,14 @@ id = "tool/brave-search"
 cargo_feature = "tool-brave-search"
 kind = "Search"
 provides = ["tool/brave-search"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "web-embedded-opencode-local", "search-only"]
 
 [[modules]]
 id = "tool/crw"
 cargo_feature = "tool-crw"
 kind = "Search"
 provides = ["tool/crw-search", "tool/crw-scrape"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "web-embedded-opencode-local", "search-only"]
 
 [[modules]]
 id = "tool/browser-live"

@@ -5,7 +5,7 @@ Status: active
 Codex goal: see `/goal` objective below
 Source spec: user-approved RECON and decisions from 2026-06-19
 Goal doc owner: Codex
-Last updated: 2026-06-19 10:47
+Last updated: 2026-06-19 11:30
 
 ## Objective
 
@@ -98,8 +98,8 @@ Corrected contract:
   - Source: user-approved decision checked-in generated files plus check gate.
   - Acceptance: core profile feature lists and transport/binary forwarding cannot drift from registry without `xtask module-registry check` failing. Cargo defaults remain empty.
   - Evidence required: clean `xtask module-registry check`; intentional mismatch test or unit/snapshot equivalent; inspected generated sections in relevant Cargo.toml files.
-  - Status: in_progress
-  - Evidence collected: CP1 `xtask module-registry check` verifies each registry `cargo_feature` exists in `crates/oxide-agent-core/Cargo.toml`; generation/check of profile composition and forwarding remains for CP2.
+  - Status: verified
+  - Evidence collected: CP2 added `generate` subcommand and marked `# BEGIN/END OXIDE-REGISTRY: profiles` section in core Cargo.toml. `cargo run -p xtask -- module-registry generate` regenerates the 4 profile feature lists from registry module order. `check` verifies the marked section is not stale and verifies forwarding crates (transport-telegram, transport-web, telegram-bot) have correct profile features forwarding to `oxide-agent-core/profile-X`. Registry drift `tool/brave-search`/`tool/crw` in `embedded-opencode-local` fixed (registry now matches Cargo, not runtime TOML — runtime TOML fix is CP3). All 5 profile `cargo check` commands pass. `default = []` preserved at line 67.
 
 - G3: Runtime profile TOMLs are generated or checked from the same registry
   - Source: verified Browser Live drift and user-approved policy.
@@ -155,14 +155,14 @@ Corrected contract:
   - Acceptance: ordinary `cargo check` works from a fresh checkout without first running a generator; check command fails if generated surfaces are stale.
   - Evidence required: clean checkout-equivalent `cargo check` command; `xtask module-registry check` output; changed generated files committed.
   - Status: in_progress
-  - Evidence collected: CP1 adds a checked-in registry and check gate; generated Cargo/profile/Rust artifacts are not yet registry-owned until CP2-CP4.
+  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; `cargo check --workspace --no-default-features` passes without running generate first (generated section is checked in); runtime profile TOMLs and compiled.rs remain for CP3/CP4.
 
 - N1: Cargo remains the build system with empty default features
   - Source: AGENTS.md and approved plan.
   - Must preserve: `default = []`; profile feature names stay available.
   - Evidence required: `grep -n 'default = \[\]' crates/oxide-agent-core/Cargo.toml`; profile feature names still compile.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP2 verified `default = []` at `crates/oxide-agent-core/Cargo.toml:67`; all 5 profile `cargo check` commands pass (`no-default`, `profile-embedded-opencode-local`, `profile-search-only`, `profile-full`, `profile-web-embedded-opencode-local`).
 
 - N2: Existing runtime behavior is preserved except explicit Browser Live profile drift correction
   - Source: scope boundary and RECON.
@@ -325,6 +325,15 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
   - Commands: `cargo run -p xtask -- module-registry check`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features`.
   - Audit IDs updated: G1, G2, G3, G4, Q1, Q2, Q3 moved to `in_progress` with CP1 evidence.
   - Next: review diff and commit CP1, then CP2 makes Cargo profile/forwarding surfaces registry-owned.
+
+- 2026-06-19 11:30: CP2 Cargo profile/forwarding surfaces registry-owned
+  - Changed: `module_registry.toml` (removed `embedded-opencode-local` from `tool/brave-search` and `tool/crw` — Cargo does not compile them for that profile); `crates/oxide-agent-core/Cargo.toml` (added `# BEGIN/END OXIDE-REGISTRY: profiles` markers, regenerated 4 profile feature lists from registry via `generate`); `xtask/src/main.rs` (added `generate` subcommand, `compute_profile_compositions`, `render_profile_section`, `check_core_profile_section`, `check_forwarding`, `check_profile_coverage`, `parse_cargo_features_with_deps`, `brackets_balanced`, known drift for brave-search/crw embedded extras).
+  - Blast radius reviewed: core `Cargo.toml` profile section (feature sets unchanged, only order changed to match registry module order — Cargo treats arrays as sets); forwarding crates (transport-telegram, transport-web, telegram-bot — verified all have correct profiles and core forwarding); `xtask` is dev tooling only, no runtime dependency; `module_registry.toml` only consumed by xtask.
+  - Regression hypotheses checked: (1) feature reordering changes Cargo behavior — NO, arrays are sets; (2) missing features in generated profiles — verified same sets; (3) forwarding check false positives — verified all 3 crates pass; (4) parser edge cases — tested on real Cargo.toml; (5) brave-search/crw embedded drift classification — real stale entry in runtime TOML, to be fixed in CP3.
+  - Evidence: `cargo run -p xtask -- module-registry check` passed (40 modules, 45 features, 40 declarations, 4 known runtime-profile warnings); `cargo fmt --all -- --check` passed; `cargo clippy -p xtask -- -D warnings` passed; `cargo check --workspace --no-default-features` passed; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed; `cargo check --workspace --no-default-features --features profile-search-only` passed; `cargo check --workspace --no-default-features --features profile-full` passed; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` passed; `grep -n 'default = \[\]' crates/oxide-agent-core/Cargo.toml` confirmed at line 67.
+  - Commands: all of the above.
+  - Audit IDs updated: G2 verified, N1 verified, Q3 in_progress (CP2 evidence added), Q2 in_progress (CP2 blast radius + regression hunt recorded).
+  - Next: CP3 — make `profiles/*.toml` registry-owned and fix Browser Live + brave-search/crw runtime drift.
 
 ## Risks and Blockers
 
