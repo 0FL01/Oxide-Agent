@@ -42,7 +42,7 @@ Web console with remote Postgres from `.env`:
 docker compose -f docker-compose.web.yml up --build -d
 ```
 
-Web console with local Postgres and CRW:
+Web console with local Postgres and full-stack CRW (search + JS rendering):
 
 ```bash
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
@@ -62,12 +62,23 @@ Retention cleanup helpers are bounded and opt-in; no scheduled deletion policy i
 
 ## 4. Optional services
 
-Local sidecars:
+Local sidecars (full-stack CRW + local Postgres for web):
 
 ```bash
 docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-services.yml up --build -d
 docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
 ```
+
+The local-services overlays provide full-stack CRW (external project, AGPL-3.0, https://github.com/us/crw):
+- **crw** — web crawler/scrape server (`ghcr.io/us/crw`)
+- **searxng** — meta-search engine for `/v1/search` (`searxng/searxng`, needs `docker/searxng/settings.yml`)
+- **lightpanda** — lightweight headless browser for JS rendering (`/v1/scrape` with `renderJs:true`)
+
+The base compose files run CRW in single-container mode (scrape/markdown only, no search or JS rendering). The local-services overlays upgrade to full-stack by adding SearXNG and LightPanda sidecars. All three containers communicate on the default bridge network by service name; the app (host-network mode) reaches CRW via the published `127.0.0.1:3000` port.
+
+SearXNG requires a custom `settings.yml` (`docker/searxng/settings.yml`) that enables JSON format and disables the built-in limiter. Without it, SearXNG returns 403 on JSON API requests. Generate a secret key with `openssl rand -hex 32` and set `SEARXNG_SECRET_KEY` in `.env`.
+
+The CRW image (debian:bookworm-slim) contains no wget or curl, so healthchecks use bash `/dev/tcp` probes. Loopback self-hosted CRW needs no API key — `OXIDE_CRW_API_TOKEN` can stay empty.
 
 External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first and CRW scrape fallback; set it to `false` to expose split lightweight `web_markdown` fetches.
 

@@ -1,0 +1,36 @@
+# SearXNG settings for local CRW full-stack (used by /v1/search).
+# Upstream: https://github.com/us/crw  •  config/searxng/settings.yml
+# CRW docs: https://docs.fastcrw.com/docker#search-searxng
+#
+# use_default_settings inherits all upstream engine definitions; we only
+# override what the CRW integration needs.
+use_default_settings: true
+
+general:
+  instance_name: "crw-search"
+  privacypolicy_url: false
+  contact_url: false
+  donation_url: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
+  # JSON format must be explicitly enabled — SearXNG returns 403 on
+  # `?format=json` otherwise. CRW's /v1/search expects JSON responses.
+  formats:
+    - html
+    - json
+
+server:
+  # SEARXNG_SECRET_KEY env var on the container overrides this at startup.
+  # Generate one with: openssl rand -hex 32
+  secret_key: "change-me-with-openssl-rand-hex-32-please"
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Rate limiting is handled by crw-server's own middleware, so SearXNG's
+  # built-in limiter (which requires Valkey/Redis) stays off.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"

@@ -13,20 +13,108 @@ services:
       crw:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # CRW — external web crawler/scrape service (AGPL-3.0).
+  # Upstream: https://github.com/us/crw  •  Docs: https://docs.fastcrw.com
+  # Image: ghcr.io/us/crw (debian:bookworm-slim, ~30 MB)
+  #
+  # Full-stack mode: CRW + SearXNG (search) + LightPanda (headless JS rendering).
+  # The crw image ships /app/config.docker.toml which references searxng and
+  # lightpanda by Docker service name. Setting CRW_CONFIG=config.docker makes
+  # crw-server load that file, wiring:
+  #   search       → http://searxng:8080   (SearXNG JSON API)
+  #   lightpanda   → ws://lightpanda:9222  (CDP for JS rendering)
+  #
+  # This overlay redefines the crw service from the base docker-compose.telegram.yml
+  # (single-container) to full-stack. All three containers (crw, searxng, lightpanda)
+  # run on the default bridge network and communicate by service name.
+  #
+  # Loopback self-hosted CRW needs no API key (no [auth] block in config).
+  # OXIDE_CRW_API_TOKEN can stay empty for local deployments.
+  #
+  # The image has only crw/crw-mcp/crw-server binaries — no wget, no curl,
+  # no busybox. Bash IS present, so the healthcheck probes /health via
+  # bash /dev/tcp + HTTP/1.0.
+  # ---------------------------------------------------------------------------
   crw:
     image: ${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}
     container_name: crw
     restart: unless-stopped
     environment:
       TZ: Europe/Moscow
+      CRW_CONFIG: config.docker
     ports:
       - "127.0.0.1:${OXIDE_CRW_PORT:-3000}:3000"
+    depends_on:
+      searxng:
+        condition: service_healthy
+      lightpanda:
+        condition: service_started
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || curl -fsS http://localhost:3000/health"]
+      test: ["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/3000; printf 'GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3; read -r s <&3; case \"$$s\" in *200*) exit 0;; *) exit 1;; esac"]
       interval: 5s
       timeout: 3s
       retries: 30
       start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  # SearXNG — meta-search engine (AGPL-3.0).
+  # Upstream: https://github.com/searxng/searxng
+  # CRW uses SearXNG's JSON API for /v1/search. The custom settings.yml
+  # (docker/searxng/settings.yml) enables JSON format and disables the
+  # built-in limiter (which would need Valkey/Redis). Without this file,
+  # SearXNG auto-generates settings that return 403 on ?format=json.
+  searxng:
+    image: ${OXIDE_SEARXNG_IMAGE:-searxng/searxng:latest}
+    container_name: searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY:-change-me-with-openssl-rand-hex-32-please}
+      TZ: Europe/Moscow
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  # LightPanda — lightweight headless browser engine for JS rendering.
+  # Upstream: https://github.com/lightpanda-io/lightpanda  •  ~64 MB image.
+  # CRW uses it for /v1/scrape with renderJs:true. Works out of the box — no config.
+  # restart: unless-stopped is load-bearing: LightPanda can segfault/OOM under load.
+  # No cap_drop — browser engines need capabilities for sandboxing.
+  lightpanda:
+    image: ${OXIDE_LIGHTPANDA_IMAGE:-lightpanda/browser:latest}
+    container_name: lightpanda
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     logging:
       driver: json-file
       options:

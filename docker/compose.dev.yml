@@ -91,6 +91,11 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  # CRW — external web crawler/scrape service (AGPL-3.0).
+  # Upstream: https://github.com/us/crw  •  Docs: https://docs.fastcrw.com
+  # Single-container: scrape/markdown only (no search, no JS rendering).
+  # For full-stack (SearXNG search + LightPanda JS), use *-local-services.yml overlays.
+  # Healthcheck uses bash /dev/tcp — the image (debian:bookworm-slim) has no wget/curl.
   crw:
     image: ${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}
     container_name: crw_dev
@@ -100,7 +105,7 @@ services:
     ports:
       - "127.0.0.1:${OXIDE_CRW_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || curl -fsS http://localhost:3000/health"]
+      test: ["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/3000; printf 'GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3; read -r s <&3; case \"$$s\" in *200*) exit 0;; *) exit 1;; esac"]
       interval: 5s
       timeout: 3s
       retries: 30
