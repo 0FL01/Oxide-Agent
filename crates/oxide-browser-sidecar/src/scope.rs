@@ -114,11 +114,55 @@ fn is_benign_scheme(scheme: &str) -> bool {
     matches!(scheme, "data" | "blob" | "filesystem")
 }
 
+/// Whether a URL refers to a browser-discovered static asset whose absence
+/// (e.g. a 404) is benign diagnostic noise rather than a real site error.
+///
+/// Covers:
+/// - `favicon.ico`, `robots.txt`, `manifest.json` — exact filename match
+///   (a bare `.json` like `/api/data.json` is NOT benign).
+/// - `apple-touch-icon*` — filename prefix, covers `apple-touch-icon.png`,
+///   `apple-touch-icon-precomposed.png`, and sized variants
+///   `apple-touch-icon-120x120.png` (browser-discovered iOS home-screen icon).
+/// - `*.webmanifest` — PWA web app manifest extension (`site.webmanifest`,
+///   `manifest.webmanifest`).
+/// - Font files: `.woff`/`.woff2`/`.ttf`/`.otf`/`.eot`, or CDP
+///   `resource_type == "font"`.
+///
+/// Query and fragment are stripped before matching, and matching is
+/// case-insensitive on the last path segment. Shared by network and console
+/// classification so the benign-asset class is applied consistently across
+/// both capture sources.
+#[must_use]
+pub fn is_benign_static_asset(url: &str, resource_type: Option<&str>) -> bool {
+    if resource_type.is_some_and(|rt| rt.eq_ignore_ascii_case("font")) {
+        return true;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let lower = path.to_ascii_lowercase();
+    let filename = lower
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(&lower);
+    if filename == "favicon.ico"
+        || filename == "robots.txt"
+        || filename == "manifest.json"
+        || filename.starts_with("apple-touch-icon")
+    {
+        return true;
+    }
+    let ext = filename.rsplit_once('.').map(|(_, ext)| ext);
+    matches!(
+        ext,
+        Some("woff" | "woff2" | "ttf" | "otf" | "eot" | "webmanifest")
+    )
+}
+
 /// Classify a network request by its relationship to the page under test.
 ///
 /// Order (first match wins):
 /// 1. Request or owning-document scheme is browser-internal → `BrowserInternal`.
-/// 2. Request scheme is `data`/`blob`, URL is a favicon, or it is a canceled
+/// 2. Request scheme is `data`/`blob`, URL is a benign static asset
+///    (`favicon.ico`/`robots.txt`/font files), or it is a canceled
 ///    `net::ERR_ABORTED` → `Benign`.
 /// 3. Otherwise compare the request host to the page host (preferring
 ///    `page_url`/`current_url`, falling back to `document_url`):
@@ -144,13 +188,11 @@ pub fn classify_network(
         return DiagnosticScope::BrowserInternal;
     }
 
-    let is_favicon = req_url
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(req_url)
-        .ends_with("/favicon.ico");
     let is_aborted = canceled && error_text == Some("net::ERR_ABORTED");
-    if req_scheme.as_deref().is_some_and(is_benign_scheme) || is_favicon || is_aborted {
+    if req_scheme.as_deref().is_some_and(is_benign_scheme)
+        || is_benign_static_asset(req_url, Some(resource_type))
+        || is_aborted
+    {
         return DiagnosticScope::Benign;
     }
 
@@ -190,7 +232,9 @@ pub fn classify_network(
 ///
 /// Console entries carry the resource `url` for network-sourced errors and no
 /// url for page script errors. Page-script errors (no url) are the page's own
-/// console output → `SiteRelated`.
+/// console output → `SiteRelated`. Network-sourced log entries for missing
+/// static assets (`favicon.ico`/`robots.txt`/fonts) are `Benign` so a 404 on
+/// those does not inflate `console_summary.error_count`.
 #[must_use]
 pub fn classify_console(entry_url: Option<&str>, page_url: Option<&str>) -> DiagnosticScope {
     let Some(entry_url) = entry_url.filter(|u| !u.is_empty()) else {
@@ -208,6 +252,9 @@ pub fn classify_console(entry_url: Option<&str>, page_url: Option<&str>) -> Diag
         .as_deref()
         .is_some_and(is_benign_scheme)
     {
+        return DiagnosticScope::Benign;
+    }
+    if is_benign_static_asset(entry_url, None) {
         return DiagnosticScope::Benign;
     }
 
@@ -397,6 +444,110 @@ mod tests {
                 Some("http://127.0.0.1:8080/")
             ),
             DiagnosticScope::ThirdPartySubresource
+        );
+    }
+
+    #[test]
+    fn benign_static_asset_classification() {
+        // favicon / robots / fonts by path.
+        assert!(is_benign_static_asset("https://x/favicon.ico", None));
+        assert!(is_benign_static_asset("https://x/robots.txt", None));
+        assert!(is_benign_static_asset("https://x/fonts/inter.woff2", None));
+        assert!(is_benign_static_asset("https://x/f.woff", None));
+        assert!(is_benign_static_asset("https://x/f.ttf", None));
+        assert!(is_benign_static_asset("https://x/f.otf", None));
+        assert!(is_benign_static_asset("https://x/f.eot", None));
+        // PWA manifest + apple-touch-icon variants.
+        assert!(is_benign_static_asset("https://x/manifest.json", None));
+        assert!(is_benign_static_asset("https://x/site.webmanifest", None));
+        assert!(is_benign_static_asset(
+            "https://x/manifest.webmanifest",
+            None
+        ));
+        assert!(is_benign_static_asset(
+            "https://x/apple-touch-icon.png",
+            None
+        ));
+        assert!(is_benign_static_asset(
+            "https://x/apple-touch-icon-precomposed.png",
+            None
+        ));
+        assert!(is_benign_static_asset(
+            "https://x/apple-touch-icon-120x120.png",
+            None
+        ));
+        // Font by CDP resource type, arbitrary URL.
+        assert!(is_benign_static_asset("https://x/blob", Some("Font")));
+        // Query/fragment stripped before matching.
+        assert!(is_benign_static_asset("https://x/favicon.ico?v=2", None));
+        assert!(is_benign_static_asset("https://x/robots.txt#frag", None));
+        assert!(is_benign_static_asset("https://x/manifest.json?v=1", None));
+        assert!(is_benign_static_asset(
+            "https://x/apple-touch-icon.png#x",
+            None
+        ));
+        // Case-insensitive.
+        assert!(is_benign_static_asset("https://x/FAVICON.ICO", None));
+        assert!(is_benign_static_asset("https://x/F.WOFF2", None));
+        assert!(is_benign_static_asset("https://x/MANIFEST.JSON", None));
+        assert!(is_benign_static_asset("https://x/SITE.WEBMANIFEST", None));
+        assert!(is_benign_static_asset(
+            "https://x/Apple-Touch-Icon.png",
+            None
+        ));
+        // NOT benign: real API / script / stylesheet / bare root.
+        assert!(!is_benign_static_asset("https://x/api/isWritable", None));
+        assert!(!is_benign_static_asset("https://x/app.js", None));
+        assert!(!is_benign_static_asset("https://x/style.css", None));
+        assert!(!is_benign_static_asset("https://x/", None));
+        // NOT benign: extensionless path that merely contains a font dir name.
+        assert!(!is_benign_static_asset("https://x/fonts", None));
+        // NOT benign: a .json that is not the PWA manifest.
+        assert!(!is_benign_static_asset("https://x/api/data.json", None));
+        assert!(!is_benign_static_asset("https://x/config.json", None));
+        // NOT benign: apple.png is not an apple-touch-icon.
+        assert!(!is_benign_static_asset("https://x/apple.png", None));
+    }
+
+    #[test]
+    fn console_static_asset_404_is_benign() {
+        // favicon/robots/font/manifest/apple-touch-icon 404 from
+        // Log.entryAdded is benign, not first-party.
+        let cases = [
+            "https://site.com/favicon.ico",
+            "https://site.com/robots.txt",
+            "https://site.com/fonts/inter.woff2",
+            "https://site.com/manifest.json",
+            "https://site.com/site.webmanifest",
+            "https://site.com/apple-touch-icon.png",
+        ];
+        for url in cases {
+            assert_eq!(
+                classify_console(Some(url), Some("https://site.com/")),
+                DiagnosticScope::Benign,
+                "{url} should be benign"
+            );
+        }
+        // Real first-party API failure stays surfaced.
+        assert_eq!(
+            classify_console(
+                Some("https://site.com/api/isWritable"),
+                Some("https://site.com/")
+            ),
+            DiagnosticScope::FirstParty
+        );
+        // A non-manifest .json 404 stays surfaced.
+        assert_eq!(
+            classify_console(
+                Some("https://site.com/api/data.json"),
+                Some("https://site.com/")
+            ),
+            DiagnosticScope::FirstParty
+        );
+        // Page-script error (no url) still surfaced.
+        assert_eq!(
+            classify_console(None, Some("https://site.com/")),
+            DiagnosticScope::SiteRelated
         );
     }
 }

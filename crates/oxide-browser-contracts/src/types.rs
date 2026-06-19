@@ -690,7 +690,8 @@ pub struct NetworkItem {
     /// Diagnostic scope, classified at capture time.
     #[serde(default)]
     pub scope: DiagnosticScope,
-    /// Number of fingerprint-identical occurrences merged into this item.
+    /// Number of fingerprint-identical occurrences of this item within the
+    /// current action (per-observation), not cumulative across the session.
     #[serde(default = "default_occurrences", skip_serializing_if = "is_one")]
     pub occurrences: u32,
 }
@@ -708,7 +709,8 @@ pub struct ConsoleItem {
     /// Diagnostic scope, classified at capture time.
     #[serde(default)]
     pub scope: DiagnosticScope,
-    /// Number of fingerprint-identical occurrences merged into this item.
+    /// Number of fingerprint-identical occurrences of this item within the
+    /// current action (per-observation), not cumulative across the session.
     #[serde(default = "default_occurrences", skip_serializing_if = "is_one")]
     pub occurrences: u32,
 }

@@ -852,6 +852,13 @@ pub fn build_console_debug_payload(
 ///
 /// Each entry is tagged with `action_seq` so debug endpoints can filter with
 /// `since_action_seq`. Ported from the Python sidecar's `_merge_history`.
+///
+/// `occurrences` is **per-action**, not cumulative across the session: when a
+/// fingerprint repeats within the same `action_seq` (e.g. several identical
+/// requests captured between observations) occurrences are summed; when it
+/// repeats in a later action the count is reset to the fresh item's value so
+/// `sum(occurrences)` over surfaced items stays consistent with
+/// `request_count` (which counts distinct items for the current action).
 pub fn merge_network_history(
     history: &mut Vec<(NetworkItem, u64)>,
     fresh: Vec<NetworkItem>,
@@ -860,11 +867,16 @@ pub fn merge_network_history(
     for item in fresh {
         let key = network_item_key(&item);
         if let Some(pos) = history.iter().position(|(e, _)| network_item_key(e) == key) {
-            // Repeat: fold into the existing entry, bump occurrences, and refresh
-            // recency (timestamp + action_seq) by re-appending at the tail so the
-            // current action surfaces it again instead of dropping it.
-            let (mut existing, _) = history.remove(pos);
-            existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            // Repeat: refresh recency (timestamp + action_seq) by re-appending
+            // at the tail so the current action surfaces it again instead of
+            // dropping it. Occurrences accumulate only within the same action;
+            // a repeat from a later action resets to the fresh per-action count.
+            let (mut existing, old_seq) = history.remove(pos);
+            if old_seq == action_seq {
+                existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            } else {
+                existing.occurrences = item.occurrences.max(1);
+            }
             existing.timestamp = item.timestamp;
             if item.body.is_some() {
                 existing.body = item.body;
@@ -883,6 +895,7 @@ pub fn merge_network_history(
 /// Append new console items to history, deduplicating by content key.
 ///
 /// Ported from the Python sidecar's `_merge_history` (console variant).
+/// `occurrences` is per-action: see [`merge_network_history`].
 pub fn merge_console_history(
     history: &mut Vec<(ConsoleItem, u64)>,
     fresh: Vec<ConsoleItem>,
@@ -891,8 +904,12 @@ pub fn merge_console_history(
     for item in fresh {
         let key = console_item_key(&item);
         if let Some(pos) = history.iter().position(|(e, _)| console_item_key(e) == key) {
-            let (mut existing, _) = history.remove(pos);
-            existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            let (mut existing, old_seq) = history.remove(pos);
+            if old_seq == action_seq {
+                existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            } else {
+                existing.occurrences = item.occurrences.max(1);
+            }
             existing.timestamp = item.timestamp;
             history.push((existing, action_seq));
         } else {
@@ -1334,14 +1351,27 @@ mod tests {
     // ── merge_network_history ───────────────────────────────────────────
 
     #[test]
-    fn merge_network_dedup() {
+    fn merge_network_dedup_same_action_accumulates() {
         let mut history = Vec::new();
         let item = net_item("GET", "https://x.com/a", Some(200), None);
-        merge_network_history(&mut history, vec![item.clone()], 1);
-        merge_network_history(&mut history, vec![item], 2);
+        // Two fresh identical items merged under the same action_seq → summed.
+        merge_network_history(&mut history, vec![item.clone(), item], 1);
         assert_eq!(history.len(), 1); // deduped by fingerprint (no timestamp)
+        assert_eq!(history[0].1, 1);
+        assert_eq!(history[0].0.occurrences, 2); // same-action repeat accumulates
+    }
+
+    #[test]
+    fn merge_network_dedup_cross_action_resets_occurrences() {
+        let mut history = Vec::new();
+        let item = net_item("GET", "https://x.com/a", Some(404), None);
+        merge_network_history(&mut history, vec![item.clone()], 1);
+        // Same fingerprint reappears in a later action: occurrences reset to
+        // the fresh per-action count instead of accumulating across the session.
+        merge_network_history(&mut history, vec![item], 2);
+        assert_eq!(history.len(), 1); // still deduped to one entry
         assert_eq!(history[0].1, 2); // recency refreshes to latest action_seq
-        assert_eq!(history[0].0.occurrences, 2); // repeat bumps occurrences
+        assert_eq!(history[0].0.occurrences, 1); // cross-action reset, not 2
     }
 
     #[test]
@@ -1357,14 +1387,57 @@ mod tests {
     // ── merge_console_history ───────────────────────────────────────────
 
     #[test]
-    fn merge_console_dedup() {
+    fn merge_console_dedup_same_action_accumulates() {
+        let mut history = Vec::new();
+        let item = console_item(ConsoleLevel::Error, "error");
+        merge_console_history(&mut history, vec![item.clone(), item], 1);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].1, 1);
+        assert_eq!(history[0].0.occurrences, 2); // same-action repeat accumulates
+    }
+
+    #[test]
+    fn merge_console_dedup_cross_action_resets_occurrences() {
         let mut history = Vec::new();
         let item = console_item(ConsoleLevel::Error, "error");
         merge_console_history(&mut history, vec![item.clone()], 1);
         merge_console_history(&mut history, vec![item], 2);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].1, 2); // recency refreshes to latest action_seq
-        assert_eq!(history[0].0.occurrences, 2); // repeat bumps occurrences
+        assert_eq!(history[0].0.occurrences, 1); // cross-action reset, not 2
+    }
+
+    #[test]
+    fn summary_occurrences_are_per_action_not_cumulative() {
+        // Simulate a favicon-style 404 reappearing every action across a
+        // session, plus a one-off first-party failure in the latest action.
+        // The compact summary for the latest action must report per-action
+        // occurrences (1), not the session-total, and keep failed_count
+        // consistent with the distinct surfaced items for that action.
+        let mut history = Vec::new();
+        let recurring = net_item("GET", "https://site.com/api/health", Some(500), None);
+        for seq in 1..=8_u64 {
+            merge_network_history(&mut history, vec![recurring.clone()], seq);
+        }
+        let one_off = net_item("GET", "https://site.com/api/login", Some(404), None);
+        merge_network_history(&mut history, vec![one_off], 8);
+
+        let latest: Vec<_> = history
+            .iter()
+            .filter(|(_, seq)| *seq == 8)
+            .map(|(item, _)| item.clone())
+            .collect();
+        let summary = summarize_network(&latest, 20);
+        assert_eq!(summary.failed_count, 2); // two distinct surfaced failures
+        let recurring_entry = summary
+            .recent_failures
+            .iter()
+            .find(|i| i.url_redacted.contains("/health"))
+            .expect("recurring failure surfaced in latest action");
+        assert_eq!(
+            recurring_entry.occurrences, 1,
+            "per-action occurrences, not session-cumulative 8"
+        );
     }
 
     // ── now_iso / epoch_to_iso ──────────────────────────────────────────
