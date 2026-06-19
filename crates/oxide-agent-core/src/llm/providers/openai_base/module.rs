@@ -29,6 +29,12 @@ pub(crate) struct OpenAIBaseEndpointConfig {
     pub(crate) models_url: Option<String>,
     pub(crate) model_cache_ttl_secs: u64,
     pub(crate) profile: Option<String>,
+    /// Operator override for image input support on bare OpenAI-compatible
+    /// providers whose `/v1/models` endpoint does not expose modality metadata
+    /// (e.g. ZAI, aigate). `Some(true)` marks all models on this endpoint as
+    /// vision-capable; `None` leaves discovery to infer from metadata or
+    /// name-based fallback (safe default: text-only).
+    pub(crate) default_image_input: Option<bool>,
 }
 
 #[derive(Default)]
@@ -39,6 +45,7 @@ struct PartialOpenAIBaseEndpointConfig {
     models_url: Option<String>,
     model_cache_ttl_secs: Option<u64>,
     profile: Option<String>,
+    default_image_input: Option<bool>,
 }
 
 impl PartialOpenAIBaseEndpointConfig {
@@ -66,6 +73,7 @@ impl PartialOpenAIBaseEndpointConfig {
                     .unwrap_or(MODEL_CACHE_TTL_SECS_DEFAULT),
             ),
             profile: self.profile,
+            default_image_input: self.default_image_input,
         })
     }
 }
@@ -138,6 +146,9 @@ pub(crate) fn configured_endpoints() -> Vec<OpenAIBaseEndpointConfig> {
                 provider.model_cache_ttl_secs = value.parse::<u64>().ok();
             }
             "PROFILE" => provider.profile = Some(value),
+            "DEFAULT_IMAGE_INPUT" => {
+                provider.default_image_input = parse_bool_env(&value);
+            }
             _ => {}
         }
     }
@@ -158,6 +169,16 @@ fn normalize_provider_instance_name(name: &str) -> Option<String> {
         return None;
     }
     Some(name)
+}
+
+/// Parse a boolean environment variable value. Accepts `true`/`false`
+/// (case-insensitive) and `1`/`0`. Returns `None` for unrecognized values.
+fn parse_bool_env(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// Resolve a profile name string (from `OPENAI_BASE_PROVIDERS__N__PROFILE`)
@@ -186,6 +207,25 @@ fn profile_for_provider(provider_name: &str) -> OpenAICompatibleProfile {
         .find(|endpoint| endpoint.name == instance)
         .map(|endpoint| resolve_profile(&endpoint.profile))
         .unwrap_or_else(OpenAICompatibleProfile::generic)
+}
+
+/// Resolve image input support for a model route on an openai-base endpoint.
+///
+/// Looks up the endpoint by the provider instance name encoded in
+/// `provider_name` and returns its `default_image_input` override. Falls back
+/// to `false` (text-only) when the endpoint is not found or the operator did
+/// not set the override — the safe default for bare OpenAI-compatible
+/// providers whose `/v1/models` does not expose modality metadata.
+fn endpoint_image_input_for_provider(provider_name: &str) -> bool {
+    let Some(instance) = provider_instance_name(provider_name) else {
+        return false;
+    };
+
+    configured_endpoints()
+        .into_iter()
+        .find(|endpoint| endpoint.name == instance)
+        .and_then(|endpoint| endpoint.default_image_input)
+        .unwrap_or(false)
 }
 
 #[cfg(feature = "llm-opencode-go")]
@@ -234,6 +274,7 @@ fn openai_base_discovery_config(
             .clone()
             .unwrap_or_else(|| models_url_from_api_base(&endpoint.api_base)),
         std::time::Duration::from_secs(endpoint.model_cache_ttl_secs),
+        endpoint.default_image_input,
     )
 }
 
@@ -314,7 +355,15 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
     }
 
     fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(false, true, false)
+        MediaCapabilities::new(false, false, false)
+    }
+
+    fn media_capabilities_for_model(
+        &self,
+        model_info: &crate::config::ModelInfo,
+    ) -> MediaCapabilities {
+        let supports_image = endpoint_image_input_for_provider(&model_info.provider);
+        MediaCapabilities::new(false, supports_image, false)
     }
 
     fn capabilities_for_model(

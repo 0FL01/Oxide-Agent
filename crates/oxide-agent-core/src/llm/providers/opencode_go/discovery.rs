@@ -182,7 +182,7 @@ impl OpenCodeGoDiscoveryConfig {
 
     #[must_use]
     pub fn new_openai_base(models_url: impl Into<String>, ttl: Duration) -> Self {
-        Self::new_openai_base_for_provider(OPENAI_BASE_PROVIDER_ID, models_url, ttl)
+        Self::new_openai_base_for_provider(OPENAI_BASE_PROVIDER_ID, models_url, ttl, None)
     }
 
     #[must_use]
@@ -190,6 +190,7 @@ impl OpenCodeGoDiscoveryConfig {
         provider_id: impl Into<String>,
         models_url: impl Into<String>,
         ttl: Duration,
+        default_image_input: Option<bool>,
     ) -> Self {
         let provider_id = provider_id.into();
         Self::new_for_provider(
@@ -199,7 +200,7 @@ impl OpenCodeGoDiscoveryConfig {
             ttl,
             BTreeMap::new(),
             Some(ModelProtocol::OpenAiChatCompletions),
-            Some(true),
+            default_image_input,
             ModelDiscoveryFilter::All,
         )
     }
