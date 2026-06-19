@@ -746,15 +746,28 @@ impl BrowserLiveProvider {
         args: DebugArgs,
     ) -> Result<Value, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
+        let since_action_seq = if args.all_history {
+            0
+        } else if let Some(seq) = args.since_action_seq {
+            seq
+        } else {
+            self.states
+                .lock()
+                .await
+                .get(&args.session_id)
+                .map_or(0, |state| state.action_seq())
+        };
+        let include_suppressed = args.include_suppressed || args.all_history;
         let network = if args.include_network {
             Some(
                 self.measure_sidecar(self.sidecar.debug_network(
                     &args.session_id,
                     &NetworkDebugQuery {
-                        since_action_seq: args.since_action_seq.unwrap_or_default(),
+                        since_action_seq,
                         level: DebugLevel::Summary,
                         include_bodies: false,
                         filter: NetworkFilter::Failed,
+                        include_suppressed,
                         limit: args.limit.unwrap_or(20),
                     },
                 ))
@@ -770,9 +783,10 @@ impl BrowserLiveProvider {
                 self.measure_sidecar(self.sidecar.debug_console(
                     &args.session_id,
                     &ConsoleDebugQuery {
-                        since_action_seq: args.since_action_seq.unwrap_or_default(),
+                        since_action_seq,
                         level: DebugLevel::Summary,
                         min_level: ConsoleLevel::Error,
+                        include_suppressed,
                         limit: args.limit.unwrap_or(20),
                     },
                 ))
@@ -1010,6 +1024,10 @@ struct DebugArgs {
     include_console: bool,
     #[serde(default)]
     since_action_seq: Option<u64>,
+    #[serde(default)]
+    all_history: bool,
+    #[serde(default)]
+    include_suppressed: bool,
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -1408,7 +1426,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_DEBUG => (
-            "Fetch browser console/network debug summaries as compact artifact-backed diagnostics.",
+            "Fetch browser console/network debug summaries as compact artifact-backed diagnostics. Defaults to current action only; set all_history=true to inspect older/suppressed diagnostics.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
@@ -1416,7 +1434,9 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "session_id": {"type": "string"},
                     "include_network": {"type": "boolean", "default": true},
                     "include_console": {"type": "boolean", "default": true},
-                    "since_action_seq": {"type": "integer", "minimum": 0},
+                    "since_action_seq": {"type": "integer", "minimum": 0, "description": "Start at this browser action sequence. Defaults to the current action."},
+                    "all_history": {"type": "boolean", "default": false, "description": "Use since_action_seq=0 and include suppressed browser-internal/third-party/benign diagnostics."},
+                    "include_suppressed": {"type": "boolean", "default": false, "description": "Include browser-internal, third-party, and benign diagnostics in debug payloads."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100}
                 },
                 "additionalProperties": false
@@ -1459,6 +1479,7 @@ async fn extract_from_network(
         level: DebugLevel::Summary,
         include_bodies: args.include_bodies.unwrap_or(true),
         filter: NetworkFilter::All,
+        include_suppressed: false,
         limit: max_results,
     };
     let response = provider

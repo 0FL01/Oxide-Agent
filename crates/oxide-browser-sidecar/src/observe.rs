@@ -108,10 +108,19 @@ pub async fn build_observation(
     session.merge_network_history(net_items, action_seq);
     session.merge_console_history(con_items, action_seq);
 
-    // Build summaries from history.
+    // Build compact summaries scoped to the CURRENT action/page only. History
+    // retains all actions (browser_debug with all_history exposes it), but the
+    // observation summary deliberately reflects just this action so old errors
+    // from earlier navigations do not drown the current page's diagnostics.
+    // Repeats refresh their action_seq on merge, so a still-occurring error
+    // re-surfaces in the current action rather than disappearing.
     let network_summary = if include_network {
         let history = session.network_history();
-        let items: Vec<_> = history.iter().map(|(item, _)| item.clone()).collect();
+        let items: Vec<_> = history
+            .iter()
+            .filter(|(_, seq)| *seq == action_seq)
+            .map(|(item, _)| item.clone())
+            .collect();
         Some(capture::summarize_network(&items, max_debug_items as usize))
     } else {
         None
@@ -119,7 +128,11 @@ pub async fn build_observation(
 
     let console_summary = if include_console {
         let history = session.console_history();
-        let items: Vec<_> = history.iter().map(|(item, _)| item.clone()).collect();
+        let items: Vec<_> = history
+            .iter()
+            .filter(|(_, seq)| *seq == action_seq)
+            .map(|(item, _)| item.clone())
+            .collect();
         Some(capture::summarize_console(&items, max_debug_items as usize))
     } else {
         None

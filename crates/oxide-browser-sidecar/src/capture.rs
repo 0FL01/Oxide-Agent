@@ -17,19 +17,20 @@
 //! `Runtime.evaluate` (current page). The array is drained on demand via
 //! `Runtime.evaluate` — **never** via `Runtime.enable` + `Runtime.consoleAPICalled`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use oxide_browser_contracts::{
-    ConsoleDebugPayload, ConsoleItem, ConsoleLevel, ConsoleSummary, NetworkDebugPayload,
-    NetworkFilter, NetworkItem, NetworkSummary,
+    ConsoleDebugPayload, ConsoleItem, ConsoleLevel, ConsoleSummary, DiagnosticScope,
+    NetworkDebugPayload, NetworkFilter, NetworkItem, NetworkSummary, ScopeCounts,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::cdp::{CdpClient, CdpEvent};
+use crate::scope;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -41,9 +42,6 @@ const MAX_BODY_CHARS: usize = 4096;
 
 /// Max items retained in history (matches Python `_merge_history` default).
 const MAX_HISTORY_ITEMS: usize = 1000;
-
-/// URL suffixes considered noise (favicon requests).
-const NOISE_URL_SUFFIXES: &[&str] = &["/favicon.ico"];
 
 // ── Console interceptor JS ──────────────────────────────────────────────
 
@@ -90,6 +88,12 @@ struct PendingRequest {
     resource_type: String,
     status: Option<u16>,
     error_text: Option<String>,
+    /// URL of the document that owns this request (CDP `documentURL`). Reliable
+    /// page-identity signal used to classify the request's diagnostic scope.
+    document_url: Option<String>,
+    /// Whether the request was canceled (CDP `loadingFailed.canceled`). A
+    /// canceled `net::ERR_ABORTED` is benign navigation churn, not a real error.
+    canceled: bool,
 }
 
 /// Errors from capture setup.
@@ -241,6 +245,10 @@ impl CaptureCollector {
             .to_string();
         let cdp_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let resource_type = resource_type_from_cdp(cdp_type);
+        let document_url = params
+            .get("documentURL")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let pending = PendingRequest {
             method,
@@ -248,6 +256,8 @@ impl CaptureCollector {
             resource_type,
             status: None,
             error_text: None,
+            document_url,
+            canceled: false,
         };
 
         self.pending_requests
@@ -290,7 +300,8 @@ impl CaptureCollector {
             return;
         };
 
-        let mut item = finalize_network_item(entry);
+        let page_url = self.current_url();
+        let mut item = finalize_network_item(entry, page_url.as_deref());
 
         // Fetch body for XHR/fetch/failed requests.
         if should_capture_body(&item)
@@ -306,9 +317,9 @@ impl CaptureCollector {
             item.body = Some(body);
         }
 
-        if !is_noise_network(&item) {
-            self.network_items.lock_guard().push(item);
-        }
+        // Always retained; noise is classified by `scope` (suppressed from
+        // compact summaries) rather than silently dropped.
+        self.network_items.lock_guard().push(item);
     }
 
     async fn on_loading_failed(&self, cdp: &CdpClient, params: &Value) {
@@ -326,8 +337,13 @@ impl CaptureCollector {
             .and_then(|v| v.as_str())
             .or_else(|| params.get("type").and_then(|v| v.as_str()))
             .map(|s| s.to_string());
+        entry.canceled = params
+            .get("canceled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
-        let mut item = finalize_network_item(entry);
+        let page_url = self.current_url();
+        let mut item = finalize_network_item(entry, page_url.as_deref());
 
         // Fetch body for failed requests.
         if should_capture_body(&item)
@@ -343,9 +359,9 @@ impl CaptureCollector {
             item.body = Some(body);
         }
 
-        if !is_noise_network(&item) {
-            self.network_items.lock_guard().push(item);
-        }
+        // Always retained; noise is classified by `scope` (suppressed from
+        // compact summaries) rather than silently dropped.
+        self.network_items.lock_guard().push(item);
     }
 
     // ── Log event handler ───────────────────────────────────────────────
@@ -371,9 +387,12 @@ impl CaptureCollector {
             .unwrap_or("")
             .to_string();
 
-        if is_noise_console(&text, level_str) {
-            return;
-        }
+        // `entry.url` is the resource URL the log refers to (verified CDP field).
+        // It drives scope classification: chrome:// internal, third-party host,
+        // or the page's own origin.
+        let entry_url = entry.get("url").and_then(|v| v.as_str());
+        let page_url = self.current_url();
+        let scope = scope::classify_console(entry_url, page_url.as_deref());
 
         let item = ConsoleItem {
             timestamp: now_iso(),
@@ -387,6 +406,8 @@ impl CaptureCollector {
                 .get("lineNumber")
                 .and_then(|v| v.as_u64())
                 .map(|l| l as u32),
+            scope,
+            occurrences: 1,
         };
 
         self.console_items.lock_guard().push(item);
@@ -405,7 +426,10 @@ impl CaptureCollector {
         }
 
         let url = frame.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        if url.is_empty() || url.starts_with("chrome-") || url == "about:blank" {
+        // Never adopt a browser-internal surface (e.g. `chrome://new-tab-page/`)
+        // as page identity. Classifying by scheme catches `chrome://` too, which
+        // the old `starts_with("chrome-")` check missed.
+        if url.is_empty() || url == "about:blank" || scope::is_internal_url(url) {
             return;
         }
 
@@ -459,15 +483,48 @@ impl<T> MutexGuardExt<T> for std::sync::Mutex<T> {
 // ── Free functions: network item construction ──────────────────────────
 
 /// Convert a `PendingRequest` into a finalized `NetworkItem`.
-fn finalize_network_item(entry: PendingRequest) -> NetworkItem {
+///
+/// `page_url` is the top-level page URL (`current_url`) at finalize time; it is
+/// the page-identity input for [`scope::classify_network`]. Classification runs
+/// on the full request URL before the URL is compacted for storage.
+fn finalize_network_item(entry: PendingRequest, page_url: Option<&str>) -> NetworkItem {
+    let scope = scope::classify_network(
+        &entry.url,
+        entry.document_url.as_deref(),
+        page_url,
+        &entry.resource_type,
+        entry.canceled,
+        entry.error_text.as_deref(),
+    );
     NetworkItem {
         timestamp: now_iso(),
         method: entry.method,
-        url_redacted: entry.url,
+        url_redacted: compact_url(entry.url),
         status: entry.status,
         resource_type: entry.resource_type,
         error_text: entry.error_text,
         body: None,
+        scope,
+        occurrences: 1,
+    }
+}
+
+/// Maximum stored length for inline `data:`/`blob:` URLs. The NTP storm emits
+/// many multi-kilobyte `data:image/*;base64` URLs; keeping the full payload in
+/// history would bloat memory for no diagnostic value.
+const MAX_INLINE_URL_CHARS: usize = 64;
+
+/// Compact noisy inline URLs (`data:`/`blob:`) to a short, scheme-preserving
+/// prefix. Other URLs are returned unchanged. Truncation is char-boundary safe.
+fn compact_url(url: String) -> String {
+    if (url.starts_with("data:") || url.starts_with("blob:")) && url.len() > MAX_INLINE_URL_CHARS {
+        let mut end = MAX_INLINE_URL_CHARS;
+        while end > 0 && !url.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &url[..end])
+    } else {
+        url
     }
 }
 
@@ -478,22 +535,6 @@ fn finalize_network_item(entry: PendingRequest) -> NetworkItem {
 /// Matches the Python sidecar's `_is_network_failure` — the CP-B criterion.
 pub fn is_network_failure(item: &NetworkItem) -> bool {
     item.status.is_some_and(|s| s >= 400) || item.error_text.is_some()
-}
-
-/// Check if a network item is noise (favicon.ico with None/404 status).
-fn is_noise_network(item: &NetworkItem) -> bool {
-    if NOISE_URL_SUFFIXES
-        .iter()
-        .any(|suffix| item.url_redacted.ends_with(suffix))
-    {
-        return item.status.is_none() || item.status == Some(404);
-    }
-    false
-}
-
-/// Check if a console entry is noise (text contains `favicon.ico` at non-error level).
-fn is_noise_console(text: &str, level: &str) -> bool {
-    text.contains("favicon.ico") && matches!(level, "info" | "warning" | "verbose")
 }
 
 // ── Free functions: resource type mapping ──────────────────────────────
@@ -598,15 +639,15 @@ pub async fn drain_console_js(cdp: &CdpClient) -> Vec<ConsoleItem> {
                 "error" => ConsoleLevel::Error,
                 _ => return None, // Only Warning/Error in contract
             };
-            if is_noise_console(&entry.text, &entry.level) {
-                return None;
-            }
             Some(ConsoleItem {
                 timestamp: now_iso(),
                 level,
                 text_redacted: entry.text,
                 source: Some("console-api".to_string()),
                 line: None,
+                // `console.*` calls are the page's own output → always surfaced.
+                scope: DiagnosticScope::SiteRelated,
+                occurrences: 1,
             })
         })
         .collect()
@@ -614,48 +655,87 @@ pub async fn drain_console_js(cdp: &CdpClient) -> Vec<ConsoleItem> {
 
 // ── Free functions: summarization ──────────────────────────────────────
 
-/// Build a `NetworkSummary` from a list of network items.
+/// Build a scope-aware `NetworkSummary` from a list of network items.
 ///
-/// Ported from the Python sidecar's `summarize_network`.
+/// Only surfaced items (first-party XHR/fetch and site navigation) populate the
+/// counts and `recent_*` lists; browser-internal, third-party, and benign items
+/// are tallied into `suppressed` instead. `recent_*` are latest-first and capped
+/// at `limit`. Items are assumed already deduplicated (one entry per
+/// fingerprint, with `occurrences` on the item), so counting items counts
+/// distinct requests.
 pub fn summarize_network(items: &[NetworkItem], limit: usize) -> NetworkSummary {
-    let failures: Vec<NetworkItem> = items
+    let mut suppressed = ScopeCounts::default();
+    let mut surfaced: Vec<&NetworkItem> = Vec::new();
+    for item in items {
+        if item.scope.is_surfaced() {
+            surfaced.push(item);
+        } else {
+            suppressed.record(item.scope);
+        }
+    }
+
+    let failed_count = surfaced.iter().filter(|i| is_network_failure(i)).count() as u32;
+    let request_count = surfaced.len() as u32;
+    let recent_failures = surfaced
         .iter()
+        .rev()
         .filter(|i| is_network_failure(i))
-        .cloned()
+        .take(limit)
+        .map(|i| (*i).clone())
         .collect();
-    let failed_count = failures.len() as u32;
-    let request_count = items.len() as u32;
-    let recent_failures = failures.into_iter().take(limit).collect();
-    let recent_requests = items.iter().take(limit).cloned().collect();
+    let recent_requests = surfaced
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|i| (*i).clone())
+        .collect();
     NetworkSummary {
         failed_count,
         recent_failures,
         request_count,
         recent_requests,
+        suppressed,
     }
 }
 
-/// Build a `ConsoleSummary` from a list of console items.
+/// Build a scope-aware `ConsoleSummary` from a list of console items.
 ///
-/// Ported from the Python sidecar's `summarize_console`. Only Error-level items
-/// are stored in `recent_errors`; Warning items are counted but not stored
-/// (matching the contract).
+/// Only surfaced items (the page's own console output and first-party
+/// network/script errors) populate the counts and `recent_errors`; internal and
+/// third-party entries are tallied into `suppressed`. Only Error-level items are
+/// stored in `recent_errors` (latest-first, capped at `limit`); Warning items
+/// are counted but not stored (matching the contract).
 pub fn summarize_console(items: &[ConsoleItem], limit: usize) -> ConsoleSummary {
-    let errors: Vec<ConsoleItem> = items
+    let mut suppressed = ScopeCounts::default();
+    let mut surfaced: Vec<&ConsoleItem> = Vec::new();
+    for item in items {
+        if item.scope.is_surfaced() {
+            surfaced.push(item);
+        } else {
+            suppressed.record(item.scope);
+        }
+    }
+
+    let error_count = surfaced
         .iter()
         .filter(|i| i.level == ConsoleLevel::Error)
-        .cloned()
-        .collect();
-    let warning_count = items
+        .count() as u32;
+    let warning_count = surfaced
         .iter()
         .filter(|i| i.level == ConsoleLevel::Warning)
         .count() as u32;
-    let error_count = errors.len() as u32;
-    let recent_errors = errors.into_iter().take(limit).collect();
+    let recent_errors = surfaced
+        .iter()
+        .rev()
+        .filter(|i| i.level == ConsoleLevel::Error)
+        .take(limit)
+        .map(|i| (*i).clone())
+        .collect();
     ConsoleSummary {
         error_count,
         warning_count,
         recent_errors,
+        suppressed,
     }
 }
 
@@ -668,6 +748,7 @@ pub fn build_network_debug_payload(
     history: &[(NetworkItem, u64)],
     since_action_seq: u64,
     filter: NetworkFilter,
+    include_suppressed: bool,
     include_bodies: bool,
     limit: usize,
 ) -> NetworkDebugPayload {
@@ -676,6 +757,12 @@ pub fn build_network_debug_payload(
         .filter(|(_, seq)| *seq >= since_action_seq)
         .map(|(item, _)| item.clone())
         .collect();
+
+    // Suppress browser-internal/third-party/benign noise unless explicitly
+    // requested (parity with the compact summaries).
+    if !include_suppressed {
+        items.retain(|i| i.scope.is_surfaced());
+    }
 
     match filter {
         NetworkFilter::Failed => items.retain(is_network_failure),
@@ -721,6 +808,7 @@ pub fn build_console_debug_payload(
     history: &[(ConsoleItem, u64)],
     since_action_seq: u64,
     min_level: ConsoleLevel,
+    include_suppressed: bool,
     limit: usize,
 ) -> ConsoleDebugPayload {
     let level_rank = |level: &ConsoleLevel| match level {
@@ -733,6 +821,7 @@ pub fn build_console_debug_payload(
         .iter()
         .filter(|(_, seq)| *seq >= since_action_seq)
         .filter(|(item, _)| level_rank(&item.level) >= min_rank)
+        .filter(|(item, _)| include_suppressed || item.scope.is_surfaced())
         .map(|(item, _)| item.clone())
         .collect();
 
@@ -768,17 +857,22 @@ pub fn merge_network_history(
     fresh: Vec<NetworkItem>,
     action_seq: u64,
 ) {
-    let mut seen: HashSet<String> = history
-        .iter()
-        .map(|(item, _)| network_item_key(item))
-        .collect();
     for item in fresh {
         let key = network_item_key(&item);
-        if seen.contains(&key) {
-            continue;
+        if let Some(pos) = history.iter().position(|(e, _)| network_item_key(e) == key) {
+            // Repeat: fold into the existing entry, bump occurrences, and refresh
+            // recency (timestamp + action_seq) by re-appending at the tail so the
+            // current action surfaces it again instead of dropping it.
+            let (mut existing, _) = history.remove(pos);
+            existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            existing.timestamp = item.timestamp;
+            if item.body.is_some() {
+                existing.body = item.body;
+            }
+            history.push((existing, action_seq));
+        } else {
+            history.push((item, action_seq));
         }
-        history.push((item, action_seq));
-        seen.insert(key);
     }
     let start = history.len().saturating_sub(MAX_HISTORY_ITEMS);
     if start > 0 {
@@ -794,17 +888,16 @@ pub fn merge_console_history(
     fresh: Vec<ConsoleItem>,
     action_seq: u64,
 ) {
-    let mut seen: HashSet<String> = history
-        .iter()
-        .map(|(item, _)| console_item_key(item))
-        .collect();
     for item in fresh {
         let key = console_item_key(&item);
-        if seen.contains(&key) {
-            continue;
+        if let Some(pos) = history.iter().position(|(e, _)| console_item_key(e) == key) {
+            let (mut existing, _) = history.remove(pos);
+            existing.occurrences = existing.occurrences.saturating_add(item.occurrences.max(1));
+            existing.timestamp = item.timestamp;
+            history.push((existing, action_seq));
+        } else {
+            history.push((item, action_seq));
         }
-        history.push((item, action_seq));
-        seen.insert(key);
     }
     let start = history.len().saturating_sub(MAX_HISTORY_ITEMS);
     if start > 0 {
@@ -812,24 +905,29 @@ pub fn merge_console_history(
     }
 }
 
-/// Dedup key for a network item (timestamp|method|url|status|resource_type|error_text).
+/// Dedup fingerprint for a network item (method|url|status|resource_type|error_text|scope).
+///
+/// Timestamp is intentionally excluded so that repeats of the same request fold
+/// together (bumping `occurrences`) instead of accumulating as distinct noise.
 fn network_item_key(item: &NetworkItem) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
-        item.timestamp,
+        "{}|{}|{}|{}|{}|{:?}",
         item.method,
         item.url_redacted,
         item.status.map(|s| s.to_string()).unwrap_or_default(),
         item.resource_type,
         item.error_text.as_deref().unwrap_or(""),
+        item.scope,
     )
 }
 
-/// Dedup key for a console item (timestamp|level|text|source|line).
+/// Dedup fingerprint for a console item (level|text|source|line|scope).
+///
+/// Timestamp is intentionally excluded so repeated identical log lines fold
+/// together instead of accumulating.
 fn console_item_key(item: &ConsoleItem) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
-        item.timestamp,
+        "{}|{}|{}|{}|{:?}",
         match item.level {
             ConsoleLevel::Warning => "warning",
             ConsoleLevel::Error => "error",
@@ -837,6 +935,7 @@ fn console_item_key(item: &ConsoleItem) -> String {
         item.text_redacted,
         item.source.as_deref().unwrap_or(""),
         item.line.map(|l| l.to_string()).unwrap_or_default(),
+        item.scope,
     )
 }
 
@@ -912,49 +1011,6 @@ mod tests {
     fn failure_empty_item() {
         let item = net_item("GET", "https://x.com/api", None, None);
         assert!(!is_network_failure(&item));
-    }
-
-    // ── is_noise_network ────────────────────────────────────────────────
-
-    #[test]
-    fn noise_favicon_404() {
-        let item = net_item("GET", "https://x.com/favicon.ico", Some(404), None);
-        assert!(is_noise_network(&item));
-    }
-
-    #[test]
-    fn noise_favicon_no_status() {
-        let item = net_item("GET", "https://x.com/favicon.ico", None, None);
-        assert!(is_noise_network(&item));
-    }
-
-    #[test]
-    fn noise_favicon_200_kept() {
-        let item = net_item("GET", "https://x.com/favicon.ico", Some(200), None);
-        assert!(!is_noise_network(&item));
-    }
-
-    #[test]
-    fn noise_non_favicon_kept() {
-        let item = net_item("GET", "https://x.com/api/data", Some(404), None);
-        assert!(!is_noise_network(&item));
-    }
-
-    // ── is_noise_console ────────────────────────────────────────────────
-
-    #[test]
-    fn noise_console_favicon_warning() {
-        assert!(is_noise_console("GET /favicon.ico 404", "warning"));
-    }
-
-    #[test]
-    fn noise_console_favicon_error_kept() {
-        assert!(!is_noise_console("GET /favicon.ico 404", "error"));
-    }
-
-    #[test]
-    fn noise_console_non_favicon_kept() {
-        assert!(!is_noise_console("real error", "error"));
     }
 
     // ── resource_type_from_cdp ──────────────────────────────────────────
@@ -1041,6 +1097,141 @@ mod tests {
         assert_eq!(summary.recent_errors.len(), 2);
     }
 
+    // ── scope classification + suppression ──────────────────────────────
+
+    #[test]
+    fn finalize_classifies_first_party_xhr() {
+        let entry = PendingRequest {
+            method: "GET".into(),
+            url: "https://site.com/api/isWritable".into(),
+            resource_type: "xhr".into(),
+            status: Some(404),
+            error_text: None,
+            document_url: Some("https://site.com/".into()),
+            canceled: false,
+        };
+        let item = finalize_network_item(entry, Some("https://site.com/"));
+        assert_eq!(item.scope, DiagnosticScope::FirstParty);
+        assert_eq!(item.occurrences, 1);
+        assert!(is_network_failure(&item));
+    }
+
+    #[test]
+    fn finalize_classifies_chrome_internal() {
+        let entry = PendingRequest {
+            method: "GET".into(),
+            url: "chrome://new-tab-page/foo.js".into(),
+            resource_type: "script".into(),
+            status: Some(200),
+            error_text: None,
+            document_url: Some("chrome://new-tab-page/".into()),
+            canceled: false,
+        };
+        let item = finalize_network_item(entry, Some("https://site.com/"));
+        assert_eq!(item.scope, DiagnosticScope::BrowserInternal);
+    }
+
+    #[test]
+    fn finalize_compacts_data_url() {
+        let long_payload = "A".repeat(500);
+        let entry = PendingRequest {
+            method: "GET".into(),
+            url: format!("data:image/png;base64,{long_payload}"),
+            resource_type: "image".into(),
+            status: None,
+            error_text: None,
+            document_url: Some("https://site.com/".into()),
+            canceled: false,
+        };
+        let item = finalize_network_item(entry, Some("https://site.com/"));
+        assert_eq!(item.scope, DiagnosticScope::Benign);
+        assert!(item.url_redacted.chars().count() <= MAX_INLINE_URL_CHARS + 1);
+        assert!(item.url_redacted.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn summarize_network_suppresses_noise_and_surfaces_first_party() {
+        let third_party = NetworkItem {
+            scope: DiagnosticScope::ThirdPartySubresource,
+            ..net_item("GET", "https://ads.example/beacon", Some(500), None)
+        };
+        let internal = NetworkItem {
+            scope: DiagnosticScope::BrowserInternal,
+            ..net_item("GET", "chrome://new-tab-page/x.js", Some(200), None)
+        };
+        let benign = NetworkItem {
+            scope: DiagnosticScope::Benign,
+            ..net_item("GET", "https://site.com/favicon.ico", Some(404), None)
+        };
+        let items = vec![
+            net_item("GET", "https://site.com/api/a", Some(500), None),
+            third_party,
+            internal,
+            benign,
+            net_item("GET", "https://site.com/api/b", Some(404), None),
+        ];
+        let summary = summarize_network(&items, 20);
+        // Only the two first-party failures surface.
+        assert_eq!(summary.failed_count, 2);
+        assert_eq!(summary.request_count, 2);
+        assert_eq!(summary.recent_failures.len(), 2);
+        // Latest-first ordering.
+        assert_eq!(
+            summary.recent_failures[0].url_redacted,
+            "https://site.com/api/b"
+        );
+        // Noise is counted, not surfaced.
+        assert_eq!(summary.suppressed.third_party, 1);
+        assert_eq!(summary.suppressed.browser_internal, 1);
+        assert_eq!(summary.suppressed.benign, 1);
+    }
+
+    #[test]
+    fn summarize_console_suppresses_noise() {
+        let internal = ConsoleItem {
+            scope: DiagnosticScope::BrowserInternal,
+            ..console_item(ConsoleLevel::Error, "chrome internal error")
+        };
+        let third_party = ConsoleItem {
+            scope: DiagnosticScope::ThirdPartySubresource,
+            ..console_item(ConsoleLevel::Error, "third party error")
+        };
+        let items = vec![
+            console_item(ConsoleLevel::Error, "site error 1"),
+            internal,
+            third_party,
+            console_item(ConsoleLevel::Error, "site error 2"),
+        ];
+        let summary = summarize_console(&items, 20);
+        assert_eq!(summary.error_count, 2);
+        assert_eq!(summary.recent_errors.len(), 2);
+        assert_eq!(summary.recent_errors[0].text_redacted, "site error 2");
+        assert_eq!(summary.suppressed.browser_internal, 1);
+        assert_eq!(summary.suppressed.third_party, 1);
+    }
+
+    #[test]
+    fn debug_network_include_suppressed_reveals_third_party() {
+        let history = vec![
+            (
+                NetworkItem {
+                    scope: DiagnosticScope::ThirdPartySubresource,
+                    ..net_item("GET", "https://ads.example/x", Some(500), None)
+                },
+                0,
+            ),
+            (net_item("GET", "https://site.com/api", Some(500), None), 0),
+        ];
+        // Default: suppressed hidden.
+        let hidden =
+            build_network_debug_payload(&history, 0, NetworkFilter::Failed, false, false, 10);
+        assert_eq!(hidden.items.len(), 1);
+        // include_suppressed: both visible.
+        let shown =
+            build_network_debug_payload(&history, 0, NetworkFilter::Failed, true, false, 10);
+        assert_eq!(shown.items.len(), 2);
+    }
+
     // ── build_network_debug_payload ─────────────────────────────────────
 
     #[test]
@@ -1053,7 +1244,8 @@ mod tests {
                 1,
             ),
         ];
-        let payload = build_network_debug_payload(&history, 0, NetworkFilter::Failed, false, 10);
+        let payload =
+            build_network_debug_payload(&history, 0, NetworkFilter::Failed, false, false, 10);
         assert_eq!(payload.items.len(), 2);
         assert_eq!(payload.failed_count, 2);
     }
@@ -1070,7 +1262,8 @@ mod tests {
             ),
             (net_item("GET", "https://x.com/doc", Some(200), None), 0),
         ];
-        let payload = build_network_debug_payload(&history, 0, NetworkFilter::Xhr, false, 10);
+        let payload =
+            build_network_debug_payload(&history, 0, NetworkFilter::Xhr, false, false, 10);
         assert_eq!(payload.items.len(), 1);
     }
 
@@ -1080,7 +1273,8 @@ mod tests {
             (net_item("GET", "https://x.com/a", Some(200), None), 1),
             (net_item("GET", "https://x.com/b", Some(200), None), 5),
         ];
-        let payload = build_network_debug_payload(&history, 3, NetworkFilter::All, false, 10);
+        let payload =
+            build_network_debug_payload(&history, 3, NetworkFilter::All, false, false, 10);
         assert_eq!(payload.items.len(), 1);
         assert_eq!(payload.items[0].url_redacted, "https://x.com/b");
     }
@@ -1095,7 +1289,7 @@ mod tests {
             },
             0,
         )];
-        let payload = build_network_debug_payload(&history, 0, NetworkFilter::All, true, 10);
+        let payload = build_network_debug_payload(&history, 0, NetworkFilter::All, false, true, 10);
         assert!(payload.items[0].body.is_none());
     }
 
@@ -1109,7 +1303,8 @@ mod tests {
             },
             0,
         )];
-        let payload = build_network_debug_payload(&history, 0, NetworkFilter::All, false, 10);
+        let payload =
+            build_network_debug_payload(&history, 0, NetworkFilter::All, false, false, 10);
         assert!(payload.items[0].body.is_none());
     }
 
@@ -1121,7 +1316,7 @@ mod tests {
             (console_item(ConsoleLevel::Warning, "warn"), 0),
             (console_item(ConsoleLevel::Error, "err"), 0),
         ];
-        let payload = build_console_debug_payload(&history, 0, ConsoleLevel::Error, 10);
+        let payload = build_console_debug_payload(&history, 0, ConsoleLevel::Error, false, 10);
         assert_eq!(payload.items.len(), 1);
         assert_eq!(payload.items[0].text_redacted, "err");
     }
@@ -1132,7 +1327,7 @@ mod tests {
             (console_item(ConsoleLevel::Warning, "warn"), 0),
             (console_item(ConsoleLevel::Error, "err"), 0),
         ];
-        let payload = build_console_debug_payload(&history, 0, ConsoleLevel::Warning, 10);
+        let payload = build_console_debug_payload(&history, 0, ConsoleLevel::Warning, false, 10);
         assert_eq!(payload.items.len(), 2);
     }
 
@@ -1144,8 +1339,9 @@ mod tests {
         let item = net_item("GET", "https://x.com/a", Some(200), None);
         merge_network_history(&mut history, vec![item.clone()], 1);
         merge_network_history(&mut history, vec![item], 2);
-        assert_eq!(history.len(), 1); // deduped
-        assert_eq!(history[0].1, 1); // keeps first action_seq
+        assert_eq!(history.len(), 1); // deduped by fingerprint (no timestamp)
+        assert_eq!(history[0].1, 2); // recency refreshes to latest action_seq
+        assert_eq!(history[0].0.occurrences, 2); // repeat bumps occurrences
     }
 
     #[test]
@@ -1167,6 +1363,8 @@ mod tests {
         merge_console_history(&mut history, vec![item.clone()], 1);
         merge_console_history(&mut history, vec![item], 2);
         assert_eq!(history.len(), 1);
+        assert_eq!(history[0].1, 2); // recency refreshes to latest action_seq
+        assert_eq!(history[0].0.occurrences, 2); // repeat bumps occurrences
     }
 
     // ── now_iso / epoch_to_iso ──────────────────────────────────────────
@@ -1252,6 +1450,8 @@ mod tests {
             resource_type: "other".into(),
             error_text: error,
             body: None,
+            scope: DiagnosticScope::SiteRelated,
+            occurrences: 1,
         }
     }
 
@@ -1262,6 +1462,8 @@ mod tests {
             text_redacted: text.into(),
             source: None,
             line: None,
+            scope: DiagnosticScope::SiteRelated,
+            occurrences: 1,
         }
     }
 }

@@ -9,6 +9,7 @@ pub mod capture;
 pub mod cdp;
 pub mod dom;
 pub mod observe;
+pub mod scope;
 pub mod screenshot;
 pub mod session;
 pub mod snapshot;
@@ -430,6 +431,7 @@ async fn debug_network(
         &history,
         query.since_action_seq,
         query.filter,
+        query.include_suppressed,
         query.include_bodies,
         query.limit as usize,
     );
@@ -471,6 +473,7 @@ async fn debug_console(
         &history,
         query.since_action_seq,
         query.min_level,
+        query.include_suppressed,
         query.limit as usize,
     );
 

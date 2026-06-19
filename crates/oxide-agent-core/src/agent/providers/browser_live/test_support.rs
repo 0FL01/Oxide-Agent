@@ -6,11 +6,11 @@ use super::types::{
     ActionRequest, ActionResponse, ActionResult, ActionStatus, BrowserDescriptor,
     BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleDebugPayload,
     ConsoleDebugQuery, ConsoleDebugResponse, ConsoleItem, ConsoleLevel, ConsoleSummary,
-    CreateSessionRequest, CreateSessionResponse, DebugLevel, DomSnapshotNode, GotoRequest,
-    GotoResponse, LoadingState, NavigationResult, NavigationStatus, NetworkDebugPayload,
-    NetworkDebugQuery, NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary,
-    ObserveQuery, ObserveResponse, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery,
-    ScreenshotResponse, Viewport,
+    CreateSessionRequest, CreateSessionResponse, DebugLevel, DiagnosticScope, DomSnapshotNode,
+    GotoRequest, GotoResponse, LoadingState, NavigationResult, NavigationStatus,
+    NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, NetworkFilter, NetworkItem,
+    NetworkSummary, ObserveQuery, ObserveResponse, ScopeCounts, ScreenshotArtifact,
+    ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -93,6 +93,8 @@ impl FakeBrowserSidecar {
             resource_type: "xhr".to_string(),
             error_text: Some(error_text.to_string()),
             body: None,
+            scope: DiagnosticScope::SiteRelated,
+            occurrences: 1,
         });
     }
 
@@ -111,6 +113,8 @@ impl FakeBrowserSidecar {
             resource_type: "xhr".to_string(),
             error_text: None,
             body: body.map(str::to_string),
+            scope: DiagnosticScope::SiteRelated,
+            occurrences: 1,
         });
     }
 
@@ -121,6 +125,8 @@ impl FakeBrowserSidecar {
             text_redacted: text_redacted.to_string(),
             source: Some("app.js".to_string()),
             line: Some(42),
+            scope: DiagnosticScope::SiteRelated,
+            occurrences: 1,
         });
     }
 
@@ -143,6 +149,8 @@ impl FakeBrowserSidecar {
                 resource_type: "xhr".to_string(),
                 error_text: Some(error_text.to_string()),
                 body: None,
+                scope: DiagnosticScope::SiteRelated,
+                occurrences: 1,
             },
         ));
     }
@@ -159,6 +167,8 @@ impl FakeBrowserSidecar {
                 text_redacted: text_redacted.to_string(),
                 source: Some("app.js".to_string()),
                 line: Some(42),
+                scope: DiagnosticScope::SiteRelated,
+                occurrences: 1,
             },
         ));
     }
@@ -450,6 +460,9 @@ impl BrowserSidecar for FakeBrowserSidecar {
             .filter(|(seq, _)| *seq >= query.since_action_seq)
             .map(|(_, item)| item.clone())
             .collect();
+        if !query.include_suppressed {
+            items.retain(|item| item.scope.is_surfaced());
+        }
         if query.filter == NetworkFilter::Failed {
             items.retain(|item| {
                 item.error_text.is_some() || item.status.is_some_and(|status| status >= 400)
@@ -483,6 +496,9 @@ impl BrowserSidecar for FakeBrowserSidecar {
             .filter(|(seq, _)| *seq >= query.since_action_seq)
             .map(|(_, item)| item.clone())
             .collect();
+        if !query.include_suppressed {
+            items.retain(|item| item.scope.is_surfaced());
+        }
         if query.min_level == ConsoleLevel::Error {
             items.retain(|item| item.level == ConsoleLevel::Error);
         }
@@ -605,11 +621,13 @@ impl FakeSession {
                 recent_failures: network_items.to_vec(),
                 request_count: network_items.len() as u32,
                 recent_requests: network_items.to_vec(),
+                suppressed: ScopeCounts::default(),
             }),
             console_summary: Some(ConsoleSummary {
                 error_count,
                 warning_count,
                 recent_errors: console_items.to_vec(),
+                suppressed: ScopeCounts::default(),
             }),
         }
     }
@@ -850,6 +868,7 @@ mod tests {
                     level: DebugLevel::Summary,
                     include_bodies: false,
                     filter: NetworkFilter::Failed,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )
@@ -862,6 +881,7 @@ mod tests {
                     since_action_seq: 0,
                     level: DebugLevel::Summary,
                     min_level: ConsoleLevel::Error,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )
@@ -930,6 +950,7 @@ mod tests {
                     level: DebugLevel::Summary,
                     include_bodies: false,
                     filter: NetworkFilter::Failed,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )
@@ -943,6 +964,7 @@ mod tests {
                     level: DebugLevel::Summary,
                     include_bodies: false,
                     filter: NetworkFilter::Failed,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )
@@ -980,6 +1002,7 @@ mod tests {
                     since_action_seq: 0,
                     level: DebugLevel::Summary,
                     min_level: ConsoleLevel::Error,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )
@@ -992,6 +1015,7 @@ mod tests {
                     since_action_seq: 1,
                     level: DebugLevel::Summary,
                     min_level: ConsoleLevel::Error,
+                    include_suppressed: false,
                     limit: 10,
                 },
             )

@@ -325,7 +325,75 @@ pub struct ScreenshotArtifact {
     pub byte_size: u64,
 }
 
+/// Diagnostic scope classification for a network/console item.
+///
+/// Computed at capture time (where page identity — the top-level URL — is
+/// known) and stored on each item, so downstream summary/debug builders
+/// classify by a typed enum instead of re-deriving from URL strings after the
+/// page has navigated. Drives summary surfacing: `SiteRelated` and `FirstParty`
+/// are surfaced into `recent_*`; `BrowserInternal`, `ThirdPartySubresource`,
+/// and `Benign` are suppressed into `ScopeCounts`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticScope {
+    /// Top-level document / navigation of the page under test (surfaced).
+    #[default]
+    SiteRelated,
+    /// Same-site subresource / XHR / fetch (surfaced).
+    FirstParty,
+    /// Subresource from an unrelated third-party host (suppressed, counted).
+    ThirdPartySubresource,
+    /// Browser-internal scheme: chrome, chrome-untrusted, devtools,
+    /// chrome-extension, edge, about (suppressed, counted).
+    BrowserInternal,
+    /// Benign noise: data:/blob: URLs, favicon, canceled aborts (suppressed,
+    /// counted).
+    Benign,
+}
+
+impl DiagnosticScope {
+    /// Whether this scope is surfaced in compact summaries (vs suppressed).
+    #[must_use]
+    pub const fn is_surfaced(self) -> bool {
+        matches!(self, Self::SiteRelated | Self::FirstParty)
+    }
+}
+
+/// Counts of items suppressed from compact summaries, bucketed by scope.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ScopeCounts {
+    #[serde(default)]
+    pub browser_internal: u32,
+    #[serde(default)]
+    pub third_party: u32,
+    #[serde(default)]
+    pub benign: u32,
+}
+
+impl ScopeCounts {
+    /// Add one suppressed item to the appropriate bucket. Surfaced scopes are
+    /// ignored (they belong in `recent_*`, not the suppressed counts).
+    pub fn record(&mut self, scope: DiagnosticScope) {
+        match scope {
+            DiagnosticScope::BrowserInternal => self.browser_internal += 1,
+            DiagnosticScope::ThirdPartySubresource => self.third_party += 1,
+            DiagnosticScope::Benign => self.benign += 1,
+            DiagnosticScope::SiteRelated | DiagnosticScope::FirstParty => {}
+        }
+    }
+
+    /// Total suppressed items across all buckets.
+    #[must_use]
+    pub const fn total(&self) -> u32 {
+        self.browser_internal + self.third_party + self.benign
+    }
+}
+
 /// Network summary embedded in observations.
+///
+/// Scoped to the current action/page: `recent_*` carry only surfaced
+/// (`SiteRelated`/`FirstParty`) failures/requests, latest first. Internal,
+/// third-party, and benign items are tallied in `suppressed`.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct NetworkSummary {
     #[serde(default)]
@@ -336,9 +404,15 @@ pub struct NetworkSummary {
     pub request_count: u32,
     #[serde(default)]
     pub recent_requests: Vec<NetworkItem>,
+    #[serde(default)]
+    pub suppressed: ScopeCounts,
 }
 
 /// Console summary embedded in observations.
+///
+/// Scoped to the current action/page: `recent_errors` carry only surfaced
+/// (`SiteRelated`/`FirstParty`) errors, latest first. Internal, third-party,
+/// and benign items are tallied in `suppressed`.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ConsoleSummary {
     #[serde(default)]
@@ -347,6 +421,8 @@ pub struct ConsoleSummary {
     pub warning_count: u32,
     #[serde(default)]
     pub recent_errors: Vec<ConsoleItem>,
+    #[serde(default)]
+    pub suppressed: ScopeCounts,
 }
 
 /// Request for `POST /sessions/{id}/action`.
@@ -499,6 +575,10 @@ pub struct NetworkDebugQuery {
     pub filter: NetworkFilter,
     #[serde(default = "default_limit")]
     pub limit: u32,
+    /// Include suppressed scopes (browser-internal, third-party, benign). When
+    /// false (default), only surfaced site-related/first-party items return.
+    #[serde(default)]
+    pub include_suppressed: bool,
 }
 
 /// Query for console debug endpoint.
@@ -512,6 +592,10 @@ pub struct ConsoleDebugQuery {
     pub min_level: ConsoleLevel,
     #[serde(default = "default_limit")]
     pub limit: u32,
+    /// Include suppressed scopes (browser-internal, third-party, benign). When
+    /// false (default), only surfaced site-related/first-party items return.
+    #[serde(default)]
+    pub include_suppressed: bool,
 }
 
 /// Debug output verbosity.
@@ -603,6 +687,12 @@ pub struct NetworkItem {
     pub error_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Diagnostic scope, classified at capture time.
+    #[serde(default)]
+    pub scope: DiagnosticScope,
+    /// Number of fingerprint-identical occurrences merged into this item.
+    #[serde(default = "default_occurrences", skip_serializing_if = "is_one")]
+    pub occurrences: u32,
 }
 
 /// One redacted console event.
@@ -615,6 +705,12 @@ pub struct ConsoleItem {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    /// Diagnostic scope, classified at capture time.
+    #[serde(default)]
+    pub scope: DiagnosticScope,
+    /// Number of fingerprint-identical occurrences merged into this item.
+    #[serde(default = "default_occurrences", skip_serializing_if = "is_one")]
+    pub occurrences: u32,
 }
 
 /// WebSocket subscribe message contract. CP-4 defines the wire type only.
@@ -665,6 +761,18 @@ const fn default_true() -> bool {
 /// Default for `ObserveQuery::max_debug_items` and `*DebugQuery::limit`.
 const fn default_limit() -> u32 {
     20
+}
+
+/// Default occurrence count for a freshly captured network/console item.
+const fn default_occurrences() -> u32 {
+    1
+}
+
+/// Serde skip predicate: omit `occurrences` from the wire when it is the
+/// default of 1 (single occurrence).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_one(value: &u32) -> bool {
+    *value == 1
 }
 
 #[cfg(test)]
