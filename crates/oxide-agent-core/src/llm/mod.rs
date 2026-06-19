@@ -1,6 +1,8 @@
 //! LLM providers and client
 //!
 //! Provides a unified interface to agent-compatible LLM providers.
+//!
+//! Prompt cache hit details: `docs/tips/cache-hit.md`
 
 mod capabilities;
 mod client;

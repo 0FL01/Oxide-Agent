@@ -3,6 +3,8 @@
 //! Runtime tool registration and browser loop execution are added by later
 //! checkpoints. CP-5 adds a test-only fake sidecar behind `cfg(test)` so unit
 //! tests can cover browser lifecycle code without Chromium or external services.
+//!
+//! Documentation: `docs/browser-live.md`
 
 /// Action execution planning from direct `BrowserAction` inputs.
 pub mod actions;

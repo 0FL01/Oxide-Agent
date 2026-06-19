@@ -2,6 +2,8 @@
 //!
 //! This module is intentionally separate from `agent::memory`, which remains
 //! hot/session context for active agent runs.
+//!
+//! Documentation: `docs/wiki-memory.md`
 
 /// Per-run read-through cache for deterministic wiki pages.
 pub mod cache;

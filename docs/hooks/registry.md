@@ -47,7 +47,7 @@ pub const fn new() -> Self {
 ```rust
 // src/agent/hooks/registry.rs:34-37
 pub fn register(&mut self, hook: Box<dyn Hook>) {
-    info!(hook = hook.name(), "Registered hook");
+    debug!(hook = hook.name(), "Registered hook");
     self.hooks.push(hook);
 }
 ```
@@ -143,11 +143,25 @@ Hook 2 → ForceIteration { reason: "..." }
 ### В AgentRunner
 
 ```rust
-// src/agent/executor.rs:52-57
-let mut runner = AgentRunner::new(llm_client.clone());
+// src/agent/executor/config.rs:42-51
+let mut runner = AgentRunner::new(Arc::clone(&llm_client));
 runner.register_hook(Box::new(CompletionCheckHook::new()));
-runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
-runner.register_hook(Box::new(TimeoutReportHook::new()));
+runner.register_hook(Box::new(HotContextHealthHook::new()));
+runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
+runner.register_hook(Box::new(EpisodicExtractHook::new()));
+Self::register_policy_controlled_hook(
+    &mut runner,
+    SearchBudgetHook::new(get_agent_search_limit()),
+    Arc::clone(&hook_policy_state),
+);
+runner.register_hook(Box::new(ToolAccessPolicyHook::new(Arc::clone(
+    &tool_policy_state,
+))));
+Self::register_policy_controlled_hook(
+    &mut runner,
+    TimeoutReportHook::new(),
+    Arc::clone(&hook_policy_state),
+);
 ```
 
 ## Интеграция в runner
@@ -172,6 +186,8 @@ let result = self.hook_registry.execute(
 |-----------|----------|------------------|
 | `Continue` | `debug` | "Hook returned Continue" |
 | `InjectContext` | `debug` | "Hook injecting context" |
+| `InjectTransientContext` | `debug` | "Hook injecting transient context" |
+| `RequestCompaction` | `debug` | "Hook requesting compaction" |
 | `ForceIteration` | `info` | "Hook forcing iteration" |
 | `Block` | `info` | "Hook blocking action" |
 | `Finish` | `info` | "Hook requested finish" |

@@ -1,4 +1,6 @@
 //! Hook for generating a structured report when a timeout is reached.
+//!
+//! Documentation: `docs/hooks/timeout-report.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

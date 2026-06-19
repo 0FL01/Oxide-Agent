@@ -2,6 +2,8 @@
 //!
 //! The runtime path is `CompactionController` plus `LocalLlmSummary`, which
 //! writes one current `OXIDE_COMPACTED_SUMMARY_V1` handoff message.
+//!
+//! Documentation: `docs/context-window-tracking.md`
 
 pub mod archive;
 pub mod budget;

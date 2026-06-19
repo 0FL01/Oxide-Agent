@@ -33,6 +33,8 @@ Default branch: `dev`.
 - `oxide-agent-web-ui` - Leptos web console frontend: components, SSE streaming, markdown rendering, dark theme.
 - `oxide-agent-sandboxd` - Docker sandbox broker daemon; Unix socket, Docker access.
 - `oxide-agent-telegram-bot` - Telegram bot binary.
+- `oxide-browser-contracts` - Shared REST contract types between the native browser sidecar and the core browser-live client; independent of core/runtime internals.
+- `oxide-browser-sidecar` - Native Rust Chromium sidecar binary; talks CDP directly, serves the browser-live REST API (sessions, actions, snapshots, screenshots).
 
 ## Where To Look
 
@@ -41,8 +43,8 @@ Default branch: `dev`.
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
 - `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker (`broker.rs`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
-- `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs`, with `sse.rs`, `static_assets.rs`, `task_executor.rs`, and `types.rs` for streaming/assets/execution/state.
-- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `10-responsive.css`).
+- `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs` (`auth_routes.rs`, `session_routes.rs`, `task_routes.rs`, `settings_routes.rs`), with `agent_profiles.rs`, `auto_title.rs`, `converters.rs`, `model_routes.rs`, `search_probe.rs`, `sse.rs`, `static_assets.rs`, `task_executor.rs`, `auth_helpers.rs`, and `types.rs` for streaming/assets/execution/state.
+- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `06-activity.css`, `08-markdown.css` through `10-responsive.css`).
 - `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
 - `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
 - `docs/` - detailed documentation for hooks, integrations, sandbox, wiki memory, and TTS.
@@ -67,7 +69,7 @@ Default branch: `dev`.
 
 ### Agent execution
 - Runner in `agent/runner/`; executor slices in `agent/executor/`.
-- Runner modules: `execution.rs`, `llm_calls.rs`, `model_routes.rs`, `response_dispatch.rs`, `runtime_compaction.rs`, `token_snapshots.rs`, `hooks.rs`, `loop_detection.rs`, `tools.rs`.
+- Runner modules: `execution.rs`, `llm_calls.rs`, `model_routes.rs`, `response_dispatch.rs`, `responses.rs`, `runtime_compaction.rs`, `token_snapshots.rs`, `hooks.rs`, `loop_detection.rs`, `tools.rs`, `types.rs`, `test_support.rs`.
 - Tool calls run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
@@ -78,7 +80,7 @@ Default branch: `dev`.
 - Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
 
 ### Hooks and sub-agents
-- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) activate when wiki memory writer is enabled. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
+- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) are registered unconditionally but gated internally by `HookAccessPolicy` flags; sub-agents are short-circuited. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
 - Loop detection has content, tool-sequence, and LLM layers; do not bypass in runner changes.
 - Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`.
 - Do not reintroduce embedding-selected skills.
@@ -103,6 +105,11 @@ Default branch: `dev`.
 - SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
 - Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
 
+### Browser Live
+- Provider in `agent/providers/browser_live/`; sidecar binary in `oxide-browser-sidecar`, shared REST types in `oxide-browser-contracts`.
+- Tools: `browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over a CDP WebSocket to a headless Chromium.
+- Runs in Yolo mode (agent may type secrets and submit forms); disabled by default via `BROWSER_AGENT_ENABLED`. Details: `docs/browser-live.md`.
+
 ### Storage and LLM
 - Storage facade and SQLx/Postgres backend in `storage/`; context-scoped APIs for transport state.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
@@ -110,7 +117,7 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, brave-search, webfetch_md, crw, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox (split into `sandbox-fileops`: `read_file`/`write_file`/`apply_file_edit`/`list_files`, `sandbox-exec`: `execute_command`, `sandbox-recreate`: `recreate_sandbox`), todos, tavily, brave-search, webfetch_md, crw, browser_live (`browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over CDP sidecar), media (audio transcription, image description, video description), jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 - `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, which uses webfetch first and falls back to CRW scrape only on anti-bot/access-block failures when `OXIDE_CRW_ENABLED=true`. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
 
 ## Configuration
@@ -175,8 +182,9 @@ feat(sources): add bybit proof of reserves source
 - `docs/context-window-tracking.md` - token budget and context window management.
 - `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.
 - `docs/deploy.md` - concise deploy guide, optional external services, local service overlays, operations.
+- `docs/browser-live.md` - Browser Live agent: sidecar setup, REST/CDP contract, actions, security model.
 - `README.md` - product overview and user-facing setup notes.
-- `config/` and `.env.example` - runtime configuration examples.
+- `.env.example` - runtime configuration examples.
 
 ## System extension
 

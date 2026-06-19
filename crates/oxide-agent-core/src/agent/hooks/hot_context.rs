@@ -1,4 +1,6 @@
 //! Hot context health hook.
+//!
+//! Documentation: `docs/hooks/overview.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

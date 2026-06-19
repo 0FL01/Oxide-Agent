@@ -1,6 +1,8 @@
 //! Hook Types - events, results, and context for the hook system
 //!
 //! Defines the data structures used for agent lifecycle hooks.
+//!
+//! Documentation: `docs/hooks/types.md`
 
 use super::super::providers::TodoList;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;

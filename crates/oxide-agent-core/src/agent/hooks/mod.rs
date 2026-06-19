@@ -2,6 +2,8 @@
 //!
 //! Provides a hook system for intercepting and customizing agent behavior
 //! at various points in the agent lifecycle.
+//!
+//! Documentation: `docs/hooks/`
 
 pub mod completion;
 pub mod hot_context;

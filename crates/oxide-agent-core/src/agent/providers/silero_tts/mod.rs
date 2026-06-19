@@ -3,6 +3,8 @@
 //! Provides `text_to_speech_ru` tool for generating Russian voice messages.
 //! Uses local Silero TTS server running at 127.0.0.1:8001 by default.
 //!
+//! Documentation: `docs/silero-tts-api.md`
+//!
 //! # Configuration
 //!
 //! Environment variables:

@@ -2,6 +2,8 @@
 //!
 //! Provides the `Hook` trait and `HookRegistry` for registering and
 //! executing hooks at various points in the agent lifecycle.
+//!
+//! Documentation: `docs/hooks/registry.md`, `docs/hooks/overview.md`
 
 use super::types::{HookContext, HookEvent, HookResult};
 use tracing::{debug, info};

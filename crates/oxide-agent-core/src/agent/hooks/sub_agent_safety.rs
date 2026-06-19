@@ -1,6 +1,8 @@
 //! Sub-agent safety hook.
 //!
 //! Enforces token/iteration limits and blocks recursive delegation.
+//!
+//! Documentation: `docs/hooks/sub-agent-safety.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

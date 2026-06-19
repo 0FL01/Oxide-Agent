@@ -1,4 +1,6 @@
 //! Stack logs provider for compose-stack log discovery and retrieval.
+//!
+//! Documentation: `docs/stack-logs-stage0.md`
 
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,

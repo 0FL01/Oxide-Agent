@@ -25,8 +25,9 @@ pub fn execute(&self, event: &HookEvent, context: &HookContext) -> HookResult {
 
 ### 3. Стратегия
 Разные хуки реализуют разные стратегии обработки одного и того же события. Например, `BeforeTool` обрабатывается:
-- `SubAgentSafetyHook` - блокирует запрещённые инструменты
+- `SubAgentSafetyHook` - блокирует запрещённые инструменты (саб-агенты)
 - `SearchBudgetHook` - ограничивает поисковые вызовы
+- `ToolAccessPolicyHook` - применяет политику доступа к инструментам (основной агент)
 
 ### 4. Декоратор
 Хуки "оборачивают" базовую логику агента, добавляя проверки и инъекции контекста.
@@ -38,32 +39,52 @@ src/agent/hooks/
 ├── types.rs               # HookEvent, HookResult, HookContext
 ├── registry.rs            # Hook trait, HookRegistry
 ├── completion.rs          # CompletionCheckHook
+├── hot_context.rs         # HotContextHealthHook
+├── memory.rs              # EpisodicExtractHook, RetrievalAdvisorHook
+├── tool_access.rs         # ToolAccessPolicyHook
 ├── sub_agent_safety.rs    # SubAgentSafetyHook
-├── search_budget.rs        # SearchBudgetHook
+├── search_budget.rs       # SearchBudgetHook
 ├── timeout_report.rs      # TimeoutReportHook
-└── mod.rs                # Публичные экспорты
+└── mod.rs                 # Публичные экспорты
 
 src/agent/runner/
-└── hooks.rs              # Интеграция хуков в runner
+└── hooks.rs               # Интеграция хуков в runner
 ```
 
 ## Регистрация хуков
 
-### Основной агент (src/agent/executor.rs:52-57)
+### Основной агент (src/agent/executor/config.rs:42-51)
 
 ```rust
-let mut runner = AgentRunner::new(llm_client.clone());
+let mut runner = AgentRunner::new(Arc::clone(&llm_client));
 runner.register_hook(Box::new(CompletionCheckHook::new()));
-runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
-runner.register_hook(Box::new(TimeoutReportHook::new()));
+runner.register_hook(Box::new(HotContextHealthHook::new()));
+runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
+runner.register_hook(Box::new(EpisodicExtractHook::new()));
+Self::register_policy_controlled_hook(
+    &mut runner,
+    SearchBudgetHook::new(get_agent_search_limit()),
+    Arc::clone(&hook_policy_state),
+);
+runner.register_hook(Box::new(ToolAccessPolicyHook::new(Arc::clone(
+    &tool_policy_state,
+))));
+Self::register_policy_controlled_hook(
+    &mut runner,
+    TimeoutReportHook::new(),
+    Arc::clone(&hook_policy_state),
+);
 ```
 
-### Саб-агент (src/agent/providers/delegation.rs:164-171)
+> `register_policy_controlled_hook` оборачивает хук в `PolicyControlledHook`, который применяет флаги `HookAccessPolicy`. Memory-хуки регистрируются безусловно, но гейтятся внутренне; саб-агенты short-circuit'ятся через `is_sub_agent`.
+
+### Саб-агент (src/agent/providers/delegation.rs:883-898)
 
 ```rust
-fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
+fn create_sub_agent_runner_with_client(&self, ...) -> AgentRunner {
     let mut runner = AgentRunner::new(self.llm_client.clone());
     runner.register_hook(Box::new(CompletionCheckHook::new()));
+    runner.register_hook(Box::new(HotContextHealthHook::new()));
     runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
         max_iterations: SUB_AGENT_MAX_ITERATIONS,
         max_tokens: sub_agent_context_budget,
@@ -74,6 +95,8 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
     runner
 }
 ```
+
+> Саб-агенты не получают `RetrievalAdvisorHook`, `EpisodicExtractHook`, `ToolAccessPolicyHook`.
 
 ## Поток выполнения
 
@@ -131,7 +154,7 @@ apply_timeout_hook(&mut ctx, &RunState) -> Result<Option<String>>
 | Роль | Оркестратор (анализ, принятие решений) | Рабочий (выполнение задач) |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
-| Макс. итераций | 200 | 60 |
+| Макс. итераций | 200 (`AGENT_MAX_ITERATIONS`) | 2000 (`SUB_AGENT_MAX_ITERATIONS`) |
 | Макс. токены | По модели/профилю | Наследует main-agent budget, если не задан override |
 | Тип работы | Анализ данных | Получение данных |
 

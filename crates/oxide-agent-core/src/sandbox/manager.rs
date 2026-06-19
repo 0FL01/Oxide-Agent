@@ -3,6 +3,8 @@
 //! Sandbox manager facade.
 //!
 //! Dispatches sandbox operations to the selected compiled backend.
+//!
+//! Deployment: `docs/deploy.md`
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use anyhow::Context;
