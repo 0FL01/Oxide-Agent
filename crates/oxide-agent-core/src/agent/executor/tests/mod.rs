@@ -1,6 +1,9 @@
 // Allow clone_on_ref_ptr in tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
-#![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+#![cfg_attr(
+    not(oxide_module_llm_provider_opencode_go),
+    allow(dead_code, unused_imports)
+)]
 
 mod basics;
 mod registry;
@@ -11,7 +14,7 @@ pub(super) use super::{AgentExecutor, AgentUserInput};
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub(super) use crate::agent::providers::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerTopicLifecycle,
@@ -20,17 +23,17 @@ pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInput
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
 pub(super) use anyhow::Result;
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub(super) use anyhow::bail;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub(super) struct RecordingTopicLifecycle {
     create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 impl RecordingTopicLifecycle {
     pub(super) fn new() -> Self {
         Self {
@@ -39,7 +42,7 @@ impl RecordingTopicLifecycle {
     }
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 #[async_trait::async_trait]
 impl ManagerTopicLifecycle for RecordingTopicLifecycle {
     async fn forum_topic_create(

@@ -926,7 +926,7 @@ mod tests {
     use super::{InternalTextPurpose, LlmClient};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::MockLlmProvider;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::llm::{ChatResponse, Message};
     use std::sync::Arc;
 
@@ -942,7 +942,7 @@ mod tests {
         settings
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
         let settings = with_provider_key(
@@ -966,7 +966,10 @@ mod tests {
         assert_eq!(route.provider, "openrouter");
     }
 
-    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
+    #[cfg(all(
+        oxide_module_llm_provider_openrouter,
+        oxide_module_llm_provider_mistral
+    ))]
     #[test]
     fn media_resolver_rejects_media_route_when_modality_is_not_supported() {
         let settings = with_provider_key(
@@ -997,7 +1000,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-mistral")]
+    #[cfg(oxide_module_llm_provider_mistral)]
     #[test]
     fn media_resolver_allows_mistral_for_audio_stt_only() {
         let settings = with_provider_key(
@@ -1048,7 +1051,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn media_model_name_resolvers_return_selected_route_names() {
         let settings = with_provider_key(
@@ -1081,7 +1084,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
+    #[cfg(all(
+        oxide_module_llm_provider_openrouter,
+        oxide_module_llm_provider_mistral
+    ))]
     #[test]
     fn media_name_resolver_does_not_fallback_to_agent_for_non_stt_modalities() {
         let settings = with_provider_key(
@@ -1110,7 +1116,7 @@ mod tests {
         assert!(llm.resolve_media_model_name_for_video().is_err());
     }
 
-    #[cfg(feature = "llm-mistral")]
+    #[cfg(oxide_module_llm_provider_mistral)]
     #[test]
     fn multimodal_availability_is_modality_specific() {
         let settings = with_provider_key(
@@ -1161,7 +1167,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn llm_client_registers_opencode_go_when_key_present() {
         let settings = with_provider_key(
@@ -1184,7 +1190,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn llm_client_registers_opencode_zen_when_key_present() {
         let settings = with_provider_key(
@@ -1207,7 +1213,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn main_agent_tool_request_uses_configured_temperature() {
         let settings = with_provider_key(
@@ -1306,7 +1312,7 @@ mod tests {
         assert_eq!(response, "ok");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn tool_requests_fold_system_history_into_prompt() {
         let settings = with_provider_key(

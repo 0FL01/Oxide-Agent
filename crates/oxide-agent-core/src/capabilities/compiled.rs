@@ -629,7 +629,7 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tool-browser-live")]
+    #[cfg(oxide_module_tool_browser_live)]
     #[test]
     fn compiled_manifest_exposes_browser_live_tool_module() {
         let manifest =
@@ -658,7 +658,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "storage-sqlx")]
+    #[cfg(oxide_module_storage_sqlx)]
     #[test]
     fn compiled_manifest_exposes_compiled_durable_storage_backends() {
         let manifest =
@@ -677,7 +677,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn openrouter_module_declares_provider_config_schema() {
         let manifest =

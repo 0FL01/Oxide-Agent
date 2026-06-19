@@ -168,7 +168,7 @@ pub fn supports_structured_output_for_model(model_info: &ModelInfo) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "llm-chatgpt")]
+    #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     #[test]
     fn chatgpt_capabilities_disable_structured_output() {
         let capabilities = super::provider_capabilities("chatgpt");
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 
-    #[cfg(feature = "llm-minimax")]
+    #[cfg(oxide_module_llm_provider_anthropic)]
     #[test]
     fn anthropic_capabilities_disable_structured_output() {
         let capabilities = super::provider_capabilities("anthropic");
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn openrouter_provider_capabilities_are_default_deny_without_model_policy() {
         let capabilities = super::provider_capabilities("openrouter");
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn openrouter_model_policy_allows_only_explicit_agent_routes() {
         for model_id in ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] {
@@ -245,7 +245,7 @@ mod tests {
         assert!(!super::provider_capabilities_for_model(&unknown).supports_tool_calling);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_capabilities_enable_strict_tools() {
         let capabilities = super::provider_capabilities("opencode-go");
@@ -260,7 +260,7 @@ mod tests {
         assert!(!alias.supports_structured_output);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_models_use_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_any_model_uses_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_prefixed_model_id_is_normalized_for_capabilities() {
         let route = crate::config::ModelInfo {
@@ -314,9 +314,9 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "llm-openrouter",
-        feature = "llm-mistral",
-        feature = "llm-opencode-go"
+        oxide_module_llm_provider_openrouter,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_opencode_go
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {

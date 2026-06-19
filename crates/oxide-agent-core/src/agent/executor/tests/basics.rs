@@ -1,5 +1,5 @@
 #![cfg_attr(
-    not(any(feature = "llm-opencode-go", feature = "tool-wiki-memory")),
+    not(any(oxide_module_llm_provider_opencode_go, oxide_module_tool_wiki_memory)),
     allow(dead_code)
 )]
 
@@ -190,7 +190,7 @@ fn execution_options_reasoning_override_wins_over_runtime_effort() {
     assert_eq!(options.effort, AgentExecutionEffort::Heavy);
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 #[test]
 fn executor_exposes_wiki_memory_tools_when_store_configured() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -205,7 +205,7 @@ fn executor_exposes_wiki_memory_tools_when_store_configured() {
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_delete"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn new_task_clears_stale_todos_before_completion_check() {
     let mut executor = build_executor_with_mock_response(
@@ -229,7 +229,7 @@ async fn new_task_clears_stale_todos_before_completion_check() {
     assert!(executor.session().memory.todos.items.is_empty());
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
     let mut executor = build_executor_with_mock_response(
@@ -260,7 +260,7 @@ async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
     assert!(!messages[boundary_index].content.contains("1779802440"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
@@ -499,7 +499,7 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     );
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -539,7 +539,7 @@ async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     assert!(log.contains("post-run wiki memory candidate capture"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_prefers_contentful_final_answer_for_explicit_remember() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -566,7 +566,7 @@ async fn executor_prefers_contentful_final_answer_for_explicit_remember() {
     assert!(!page_entry.contains("# explicit-remember\n\nRemember this: my lucky number"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -596,7 +596,7 @@ async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
     assert!(page_entry.contains("перед деплоем запускать smoke tests"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_spawns_wiki_memory_flush_without_blocking_completed_result() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -633,7 +633,7 @@ async fn executor_spawns_wiki_memory_flush_without_blocking_completed_result() {
     assert!(page_entry.contains("background wiki flush must not block completion"));
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn background_writer_extracts_previous_message_for_empty_remember_payload() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -736,7 +736,7 @@ fn executor_timeout_check_uses_configured_value_and_ignores_idle_sessions() {
     assert!(!executor.is_timed_out());
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn execute_new_task_remembers_task_and_appends_single_user_task() {
     let mut executor = build_executor_with_mock_response(

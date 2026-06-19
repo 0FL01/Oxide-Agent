@@ -1,4 +1,4 @@
-#![cfg(feature = "llm-mistral")]
+#![cfg(oxide_module_llm_provider_mistral)]
 
 use anyhow::Result;
 use dotenvy::dotenv;

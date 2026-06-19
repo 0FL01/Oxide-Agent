@@ -1,6 +1,6 @@
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
-#![cfg(feature = "llm-opencode-go")]
+#![cfg(oxide_module_llm_provider_opencode_go)]
 
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{

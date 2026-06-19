@@ -552,16 +552,16 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 #[cfg(test)]
 #[cfg_attr(
     not(any(
-        feature = "llm-chatgpt",
-        feature = "llm-mistral",
-        feature = "llm-minimax",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_openai_chatgpt,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     )),
     allow(dead_code, unused_imports)
 )]
 mod tests {
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     use super::canonical_route_provider;
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(provider_key("OpenCode-Go"), "opencode-go");
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn openai_base_registers_named_env_provider_instances_only() {
         let _guard = test_env_mutex()
@@ -620,7 +620,7 @@ mod tests {
         test_remove_env("OPENAI_BASE_PROVIDERS__1__API_BASE");
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn openai_base_legacy_env_returns_migration_error() {
         let _guard = test_env_mutex()
@@ -639,7 +639,7 @@ mod tests {
         test_remove_env("OPENAI_BASE_API_BASE");
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn openai_base_profile_env_selects_mistral_profile() {
         let _guard = test_env_mutex()
@@ -662,7 +662,7 @@ mod tests {
         test_remove_env("OPENAI_BASE_PROVIDERS__0__PROFILE");
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_module_registers_provider_id_and_aliases() {
         let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
@@ -682,7 +682,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn disabled_opencode_go_module_registers_no_aliases() {
         let mut settings =
@@ -699,7 +699,7 @@ mod tests {
         assert!(!providers.contains_key("opencode_go"));
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_module_owns_missing_route_config_message() {
         let _guard = test_env_mutex()
@@ -739,7 +739,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_capabilities_resolve_provider_id_and_aliases() {
         let provider_id =
@@ -752,7 +752,7 @@ mod tests {
         assert!(alias.supports_tool_calling);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_zen_module_registers_provider_id_and_aliases() {
         let settings = settings_with_provider_key("llm-provider/opencode-zen", "test-opencode-key");
@@ -768,7 +768,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_zen_module_accepts_go_key_env_alias() {
         let _guard = test_env_mutex()
@@ -798,7 +798,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn opencode_go_module_all_models_use_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
@@ -816,7 +816,7 @@ mod tests {
         assert!(!capabilities.supports_structured_output);
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn openrouter_module_owns_model_specific_media_capabilities() {
         for model_id in [
@@ -844,7 +844,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-minimax")]
+    #[cfg(oxide_module_llm_provider_anthropic)]
     #[test]
     fn anthropic_module_registers_provider_id_and_aliases() {
         let settings = settings_with_provider_key("llm-provider/anthropic", "test-anthropic-key");
@@ -859,7 +859,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-minimax")]
+    #[cfg(oxide_module_llm_provider_anthropic)]
     #[test]
     fn anthropic_module_owns_base_capabilities() {
         let capabilities =
@@ -870,7 +870,10 @@ mod tests {
         assert!(!capabilities.supports_structured_output);
     }
 
-    #[cfg(all(feature = "llm-openai-base", feature = "llm-minimax"))]
+    #[cfg(all(
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_anthropic
+    ))]
     #[test]
     fn generic_chat_completions_provider_builds_from_kind_endpoint_profile() {
         let ctx = super::LlmProviderBuildContext::new();
@@ -903,7 +906,10 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "llm-openai-base", feature = "llm-minimax"))]
+    #[cfg(all(
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_anthropic
+    ))]
     #[test]
     fn generic_messages_provider_builds_from_kind_endpoint_profile() {
         let ctx = super::LlmProviderBuildContext::new();
@@ -936,11 +942,11 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "llm-chatgpt",
-        feature = "llm-mistral",
-        feature = "llm-minimax",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_openai_chatgpt,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))]
     #[test]
     fn legacy_aliases_still_build_same_provider_modules() {
@@ -969,7 +975,7 @@ mod tests {
         assert!(super::GenericProviderKind::from_config_value("chatgpt").is_err());
     }
 
-    #[cfg(feature = "llm-mistral")]
+    #[cfg(oxide_module_llm_provider_mistral)]
     #[test]
     fn mistral_module_registers_provider_id_and_aliases() {
         let settings = settings_with_provider_key("llm-provider/mistral", "test-mistral-key");
@@ -981,7 +987,7 @@ mod tests {
         assert_eq!(provider_module_id("mistral"), Some("llm-provider/mistral"));
     }
 
-    #[cfg(feature = "llm-mistral")]
+    #[cfg(oxide_module_llm_provider_mistral)]
     #[test]
     fn mistral_module_owns_media_capabilities() {
         let capabilities = super::provider_media_capabilities("llm-provider/mistral")
@@ -992,7 +998,7 @@ mod tests {
         assert!(!capabilities.supports_video_understanding);
     }
 
-    #[cfg(feature = "llm-chatgpt")]
+    #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     #[test]
     fn chatgpt_module_owns_aliases_and_base_capabilities() {
         let capabilities =

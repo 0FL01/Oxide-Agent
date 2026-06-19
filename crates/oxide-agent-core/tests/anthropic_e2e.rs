@@ -1,4 +1,4 @@
-#![cfg(feature = "llm-minimax")]
+#![cfg(oxide_module_llm_provider_anthropic)]
 
 use anyhow::Result;
 use dotenvy::dotenv;

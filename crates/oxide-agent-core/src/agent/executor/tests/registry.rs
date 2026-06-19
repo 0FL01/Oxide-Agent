@@ -1,20 +1,20 @@
 use super::*;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::storage::MockStorageProvider;
 // Feature-gated tests below may not consume both helpers in every profile (e.g. profile-search-only).
 #[allow(unused_imports)]
 use crate::testing::{test_remove_env, test_set_env};
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use std::collections::HashSet;
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 #[derive(Default)]
 struct RegistryWikiBackend;
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 #[async_trait::async_trait]
 impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
     async fn get_text(&self, _key: &str) -> Result<Option<String>, crate::storage::StorageError> {
@@ -34,12 +34,12 @@ impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
     }
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 fn registry_wiki_store() -> crate::agent::wiki_memory::WikiStore {
     crate::agent::wiki_memory::WikiStore::new(Arc::new(RegistryWikiBackend), "prod")
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
     crate::storage::TopicInfraConfigRecord {
         schema_version: 1,
@@ -163,10 +163,10 @@ fn v1_tool_runtime_model_detection_rejects_unsupported_routes() {
 }
 
 #[cfg(all(
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-recreate",
-    feature = "tool-file-delivery"
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_recreate,
+    oxide_module_tool_file_delivery
 ))]
 #[test]
 fn typed_runtime_registry_exposes_sandbox_tools() {
@@ -194,13 +194,13 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
             "missing typed runtime tool: {tool_name}"
         );
     }
-    #[cfg(feature = "tool-compression")]
+    #[cfg(oxide_module_tool_compression)]
     assert!(tool_names.contains("compress"));
-    #[cfg(not(feature = "tool-compression"))]
+    #[cfg(not(oxide_module_tool_compression))]
     assert!(!tool_names.contains("compress"));
 }
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 #[test]
 fn typed_runtime_registry_exposes_delegation_tools() {
     let executor = build_executor();
@@ -221,7 +221,7 @@ fn typed_runtime_registry_exposes_delegation_tools() {
     }
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 #[test]
 fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
     let executor =
@@ -248,7 +248,7 @@ fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
     }
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 #[test]
 fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_attached() {
     let lifecycle = Arc::new(RecordingTopicLifecycle::new());
@@ -270,7 +270,7 @@ fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_atta
     }
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 #[test]
 fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
     let mut executor = build_executor();
@@ -302,7 +302,7 @@ fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
     }
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 #[test]
 fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
     let executor = build_executor().with_wiki_memory_store(registry_wiki_store());
@@ -326,7 +326,7 @@ fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[test]
 fn typed_runtime_registry_exposes_webfetch_tool() {
     let _guard = crate::config::test_env_mutex()
@@ -345,7 +345,7 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
     assert!(tool_names.contains("web_markdown"));
 }
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 #[test]
 fn typed_runtime_registry_exposes_ytdlp_tools() {
     let executor = build_executor();
@@ -370,7 +370,7 @@ fn typed_runtime_registry_exposes_ytdlp_tools() {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[test]
 fn typed_runtime_registry_merges_web_tools_when_enabled() {
     let _guard = crate::config::test_env_mutex()
@@ -392,7 +392,7 @@ fn typed_runtime_registry_merges_web_tools_when_enabled() {
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[test]
 fn typed_runtime_registry_keeps_webfetch_when_merge_disabled() {
     let _guard = crate::config::test_env_mutex()
@@ -414,7 +414,7 @@ fn typed_runtime_registry_keeps_webfetch_when_merge_disabled() {
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 }
 
-#[cfg(all(feature = "tool-tts-kokoro", feature = "tool-tts-silero"))]
+#[cfg(all(oxide_module_tool_tts_kokoro, oxide_module_tool_tts_silero))]
 #[test]
 fn typed_runtime_registry_exposes_tts_tools() {
     let _guard = crate::config::test_env_mutex()
@@ -448,9 +448,9 @@ fn typed_runtime_registry_exposes_tts_tools() {
 }
 
 #[cfg(all(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 #[test]
 fn typed_runtime_registry_exposes_media_tools() {
@@ -476,7 +476,7 @@ fn typed_runtime_registry_exposes_media_tools() {
     }
 }
 
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
     let mut executor =
@@ -524,7 +524,7 @@ fn typed_runtime_registry_skips_disabled_todos_module() {
     assert!(!tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[test]
 fn typed_runtime_registry_skips_disabled_webfetch_module() {
     let settings = Arc::new(AgentSettings {
@@ -549,7 +549,7 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 #[test]
 fn typed_runtime_registry_skips_disabled_compression_module() {
     let settings = Arc::new(AgentSettings {
@@ -574,7 +574,7 @@ fn typed_runtime_registry_skips_disabled_compression_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 #[test]
 fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     let _guard = crate::config::test_env_mutex()
@@ -607,7 +607,7 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     test_remove_env("KOKORO_TTS_URL");
 }
 
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 #[test]
 fn typed_runtime_registry_skips_disabled_media_audio_module() {
     let settings = Arc::new(AgentSettings {
@@ -632,7 +632,7 @@ fn typed_runtime_registry_skips_disabled_media_audio_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 #[test]
 fn typed_runtime_registry_skips_disabled_media_image_module() {
     let settings = Arc::new(AgentSettings {
@@ -657,7 +657,7 @@ fn typed_runtime_registry_skips_disabled_media_image_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 #[test]
 fn typed_runtime_registry_skips_disabled_media_video_module() {
     let settings = Arc::new(AgentSettings {
@@ -682,7 +682,7 @@ fn typed_runtime_registry_skips_disabled_media_video_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 #[test]
 fn typed_runtime_registry_skips_disabled_silero_tts_module() {
     let _guard = crate::config::test_env_mutex()
@@ -715,7 +715,7 @@ fn typed_runtime_registry_skips_disabled_silero_tts_module() {
     test_remove_env("SILERO_TTS_URL");
 }
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 #[test]
 fn typed_runtime_registry_skips_disabled_ytdlp_module() {
     let settings = Arc::new(AgentSettings {
@@ -741,7 +741,7 @@ fn typed_runtime_registry_skips_disabled_ytdlp_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 #[test]
 fn typed_runtime_registry_skips_disabled_delegation_module() {
     let settings = Arc::new(AgentSettings {
@@ -768,7 +768,7 @@ fn typed_runtime_registry_skips_disabled_delegation_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 #[test]
 fn typed_runtime_registry_skips_disabled_tavily_module() {
     let _guard = crate::config::test_env_mutex()
@@ -803,7 +803,7 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     test_remove_env("TAVILY_API_KEY");
 }
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 #[test]
 fn typed_runtime_registry_skips_disabled_brave_search_module() {
     let _guard = crate::config::test_env_mutex()
@@ -831,14 +831,14 @@ fn typed_runtime_registry_skips_disabled_brave_search_module() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(!tool_names.contains("brave_search"));
-    #[cfg(feature = "tool-todos")]
+    #[cfg(oxide_module_tool_todos)]
     assert!(tool_names.contains("write_todos"));
 
     test_remove_env("BRAVE_SEARCH_ENABLED");
     test_remove_env("BRAVE_SEARCH_API_KEY");
 }
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 #[test]
 fn current_tool_definitions_include_brave_search_when_key_is_configured() {
     let _guard = crate::config::test_env_mutex()
@@ -859,7 +859,7 @@ fn current_tool_definitions_include_brave_search_when_key_is_configured() {
     test_remove_env("BRAVE_SEARCH_API_KEY");
 }
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 #[test]
 fn typed_runtime_registry_registers_search_modules_once() {
     let _guard = crate::config::test_env_mutex()
@@ -892,7 +892,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
     test_remove_env("TAVILY_API_KEY");
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 #[test]
 fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
     let settings = Arc::new(AgentSettings {
@@ -919,7 +919,7 @@ fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 #[test]
 fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
     let settings = Arc::new(AgentSettings {
@@ -952,9 +952,9 @@ fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
 }
 
 #[cfg(all(
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-recreate"
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_recreate
 ))]
 #[test]
 fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
@@ -982,10 +982,10 @@ fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
 }
 
 #[cfg(all(
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-recreate",
-    feature = "tool-file-delivery"
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_recreate,
+    oxide_module_tool_file_delivery
 ))]
 #[test]
 fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
@@ -1016,7 +1016,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
     assert!(tool_names.contains("recreate_sandbox"));
 }
 
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 #[test]
 fn typed_runtime_registry_skips_disabled_file_delivery_module() {
     let settings = Arc::new(AgentSettings {
@@ -1045,7 +1045,7 @@ fn typed_runtime_registry_skips_disabled_file_delivery_module() {
     assert!(tool_names.contains("list_files"));
 }
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 #[test]
 fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
@@ -1077,7 +1077,7 @@ fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
     test_remove_env("JIRA_URL");
 }
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 #[test]
 fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
@@ -1111,7 +1111,7 @@ fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
     test_remove_env("MATTERMOST_URL");
 }
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 #[test]
 fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
     let _guard = crate::config::test_env_mutex()
@@ -1151,7 +1151,7 @@ fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
     test_remove_env("JIRA_URL");
 }
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 #[test]
 fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
     let _guard = crate::config::test_env_mutex()
@@ -1189,8 +1189,8 @@ fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
 }
 
 #[cfg(all(
-    feature = "integration-mcp-jira",
-    feature = "integration-mcp-mattermost"
+    oxide_module_integration_mcp_jira,
+    oxide_module_integration_mcp_mattermost
 ))]
 #[test]
 fn typed_runtime_registry_registers_mcp_modules_once() {
@@ -1234,9 +1234,9 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
 }
 
 #[cfg(all(
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-exec",
-    feature = "tool-file-delivery"
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_file_delivery
 ))]
 #[test]
 fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
@@ -1260,13 +1260,13 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     assert!(tool_names.contains("write_todos"));
     assert!(tool_names.contains("write_file"));
     assert!(tool_names.contains("apply_file_edit"));
-    #[cfg(feature = "tool-compression")]
+    #[cfg(oxide_module_tool_compression)]
     assert!(tool_names.contains("compress"));
-    #[cfg(not(feature = "tool-compression"))]
+    #[cfg(not(oxide_module_tool_compression))]
     assert!(!tool_names.contains("compress"));
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 #[test]
 fn current_tool_definitions_include_manager_tools_for_v1_route() {
     let settings = Arc::new(AgentSettings {
