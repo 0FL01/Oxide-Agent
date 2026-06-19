@@ -370,7 +370,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
             FakeActionOutcome::Failure => unreachable!("failure returned above"),
             FakeActionOutcome::JsError(_) => ActionStatus::Failed,
         };
-        let technical_success = status == ActionStatus::Executed;
+        let technical_success = matches!(status, ActionStatus::Executed | ActionStatus::NoOp);
         let hint = match outcome {
             FakeActionOutcome::JsError(ref message) => Some(message.clone()),
             _ => (status == ActionStatus::NoOp)
@@ -782,7 +782,7 @@ mod tests {
             "fake-obs-3"
         );
         assert_eq!(noop.action_result.status, ActionStatus::NoOp);
-        assert!(!noop.action_result.technical_success);
+        assert!(noop.action_result.technical_success);
         assert_eq!(
             noop.post_observation
                 .as_ref()

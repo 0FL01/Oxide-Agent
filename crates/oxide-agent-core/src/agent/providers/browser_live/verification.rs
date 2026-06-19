@@ -61,13 +61,13 @@ pub fn verify_by_result(
     before: &BrowserObservation,
     action_result: &ActionResult,
 ) -> BrowserActionVerification {
-    if !action_result.technical_success || action_result.status != ActionStatus::Executed {
+    if !action_result.technical_success {
         return failed(
             expected_result,
             before,
             None,
             format!(
-                "pure action status {:?} is not executed successfully",
+                "pure action status {:?} is not technically successful",
                 action_result.status
             ),
         );
@@ -275,6 +275,33 @@ mod tests {
         assert!(!verification.task_success);
         assert!(verification.after_observation_id.is_none());
         assert!(verification.after_screenshot_id.is_none());
+    }
+
+    #[test]
+    fn noop_pure_action_with_technical_success_is_verified() {
+        let before = observation("obs-1", "shot-1", 0);
+        let result = ActionResult {
+            action_seq: 1,
+            kind: "wait".to_string(),
+            status: ActionStatus::NoOp,
+            duration_ms: 3_000,
+            technical_success: true,
+            hint: None,
+            result: Some("waited 3000ms".to_string()),
+        };
+
+        let verification = verify_by_result("expected", &before, &result);
+
+        assert_eq!(
+            verification.status,
+            BrowserVerificationStatus::ActionVerified
+        );
+        assert!(!verification.task_success);
+        assert!(
+            verification
+                .reason
+                .contains("result returned without post-action screenshot")
+        );
     }
 
     #[test]
