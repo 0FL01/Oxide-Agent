@@ -1,11 +1,11 @@
 # Goal: Module registry as source of truth
 
 Date started: 2026-06-19
-Status: active
+Status: complete
 Codex goal: see `/goal` objective below
 Source spec: user-approved RECON and decisions from 2026-06-19
 Goal doc owner: Codex
-Last updated: 2026-06-19 14:30
+Last updated: 2026-06-19 15:30
 
 ## Objective
 
@@ -91,8 +91,8 @@ Corrected contract:
   - Source: user-approved decision `module_registry.toml` in repo and RECON source split.
   - Acceptance: registry describes every module currently emitted by `compiled_capability_manifest()`, every atomic Cargo capability feature, all supported profiles, module kind, provided capabilities, required capabilities, and generated feature dependencies.
   - Evidence required: generator/check report showing zero missing/extra modules/features/profiles; diff or snapshot proving registry coverage of current compiled manifest for all supported profiles.
-  - Status: in_progress
-  - Evidence collected: CP1 added `crates/oxide-agent-core/module_registry.toml` with 40 module records. `cargo run -p xtask -- module-registry check` passed and reported `40 modules`, `45 Cargo features`, and `40 compiled declarations`. CP4 enhanced check to also verify `provides` (ordered capability list) and `requires` presence for all 40 modules — all match.
+  - Status: verified
+  - Evidence collected: CP1 added `crates/oxide-agent-core/module_registry.toml` with 40 module records. `cargo run -p xtask -- module-registry check` passed and reported `40 modules`, `45 Cargo features`, and `40 compiled declarations`. CP4 enhanced check to also verify `provides` (ordered capability list) and `requires` presence for all 40 modules — all match. CP8 confirmed from clean worktree: check still passes with zero warnings/errors. Registry covers every module emitted by `compiled_capability_manifest()`, every atomic Cargo capability feature, all 4 supported profiles, module kind, provided capabilities, required capabilities, and Cargo feature mapping.
 
 - G2: Cargo feature/profile surfaces are generated or checked from the registry
   - Source: user-approved decision checked-in generated files plus check gate.
@@ -133,29 +133,29 @@ Corrected contract:
   - Source: user-approved matrix gate.
   - Acceptance: validation includes default/no-default, embedded, web-embedded, search-only, full, and scoped web tests where workspace-wide tests are not valid for a transport-specific profile.
   - Evidence required: command outputs for the Validation Contract matrix, or documented pre-existing/environment failures proven by rollback or import-scope evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP8 ran the full Validation Contract matrix: `cargo run -p xtask -- module-registry check` (40 modules, 45 features, 40 declarations, zero warnings/errors); `cargo fmt --all -- --check` (clean); `cargo clippy --workspace --all-targets -- -D warnings` (clean); all 5 profile `cargo check` commands pass (no-default, embedded-opencode-local, search-only, full, web-embedded-opencode-local); `cargo test --workspace --no-default-features --features profile-full` (1328+ tests, 0 failed across all test suites); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` (145 passed, 0 failed). No pre-existing or environment failures — all commands pass clean.
 
 - Q1: No new service/storage/cache/queue or unjustified dependency layer
   - Source: AGENTS.md scale/implementation bias.
   - Acceptance: generator/check is repo-local tooling; no runtime service or external dependency is introduced. Any new Rust crate inside workspace is justified as `xtask` tooling only.
   - Evidence required: `git diff -- Cargo.toml crates/*/Cargo.toml` review; dependency additions listed with reason.
-  - Status: in_progress
-  - Evidence collected: CP1 added only a workspace `xtask` crate with no dependencies; `Cargo.lock` gained only the local `xtask` package entry.
+  - Status: verified
+  - Evidence collected: CP8 verified `git diff 30f45ad7..HEAD -- Cargo.toml crates/*/Cargo.toml xtask/Cargo.toml`: root Cargo.toml added only `xtask` to workspace members; core Cargo.toml changes are only profile feature list reordering and `# BEGIN/END OXIDE-REGISTRY` markers (no new deps); xtask/Cargo.toml has zero dependencies; `async-trait` (used by CP7 `DiscoveredModelSource` trait) was already a non-optional dependency before CP0 (`async-trait = "0.1.89"` at `30f45ad7:crates/oxide-agent-core/Cargo.toml`); `build.rs` (CP5) uses only std. No new runtime service, storage backend, queue, cache, or observability layer introduced.
 
 - Q2: Each checkpoint includes blast-radius review before code and evidence after code
   - Source: user request and П0.6.
   - Acceptance: every checkpoint log names touched symbols/files, consumers, regression hypotheses, validation, failures, and classification.
   - Evidence required: Progress Log entries for CP0..final; `git grep`/diff/status evidence before each checkpoint commit.
-  - Status: in_progress
-  - Evidence collected: CP1 blast radius reviewed before implementation: root workspace members, root `Cargo.toml`, new `xtask`, `Cargo.lock`, core registry path, runtime profiles, and `compiled.rs` parser surface. CP2 blast radius reviewed for Cargo.toml profile section and forwarding crates. CP3 blast radius reviewed for profile TOML files (RECON confirmed no runtime code reads them). CP4 blast radius reviewed: only `xtask/src/main.rs` changed (80 insertions, 33 deletions); no `compiled.rs`, `module_registry.toml`, Cargo.toml, or Rust source changes; no snapshot changes expected (compiled.rs unchanged) — confirmed by snapshot test passing. CP5 blast radius reviewed: new `build.rs` affects all compilations of `oxide-agent-core` (unit tests, integration tests, examples, main crate); cfg aliases are per-package (not visible to dependents like `transport-web`); 15 test files modified with mechanical `feature = "X"` → `oxide_module_Y` replacements; implementation code untouched (verified by grep — all remaining `feature = "..."` in `llm/` is before test module boundary); profile gates in `modular_registry_snapshots.rs` intentionally not migrated (profile features are composite, not module features); `transport-web` tests use their own crate features (not affected by core's build.rs). CP6 blast radius reviewed: 4 files changed (`modules.rs`, `tool_runtime/mod.rs`, `registry.rs`, `delegation.rs`), 27 insertions, 73 deletions — net code reduction; context type structs made always-compiled with `cfg_attr(dead_code)` (same pattern as `executor/types.rs`); all context type dependencies verified as always-compiled modules (no new deps in slim profiles); 2 construction sites simplified (no per-field `#[cfg]`); 7 accessor methods always compiled with `cfg_attr(dead_code)`; feature-gated `ToolModule` impls unchanged; `tool_runtime_static_guards.rs` string-match test unaffected; no transports construct `ToolModuleContextParts` directly (verified by grep — only 2 construction sites, both in core).
+  - Status: verified
+  - Evidence collected: CP1 blast radius reviewed before implementation: root workspace members, root `Cargo.toml`, new `xtask`, `Cargo.lock`, core registry path, runtime profiles, and `compiled.rs` parser surface. CP2 blast radius reviewed for Cargo.toml profile section and forwarding crates. CP3 blast radius reviewed for profile TOML files (RECON confirmed no runtime code reads them). CP4 blast radius reviewed: only `xtask/src/main.rs` changed (80 insertions, 33 deletions); no `compiled.rs`, `module_registry.toml`, Cargo.toml, or Rust source changes; no snapshot changes expected (compiled.rs unchanged) — confirmed by snapshot test passing. CP5 blast radius reviewed: new `build.rs` affects all compilations of `oxide-agent-core` (unit tests, integration tests, examples, main crate); cfg aliases are per-package (not visible to dependents like `transport-web`); 15 test files modified with mechanical `feature = "X"` → `oxide_module_Y` replacements; implementation code untouched (verified by grep — all remaining `feature = "..."` in `llm/` is before test module boundary); profile gates in `modular_registry_snapshots.rs` intentionally not migrated (profile features are composite, not module features); `transport-web` tests use their own crate features (not affected by core's build.rs). CP6 blast radius reviewed: 4 files changed (`modules.rs`, `tool_runtime/mod.rs`, `registry.rs`, `delegation.rs`), 27 insertions, 73 deletions — net code reduction; context type structs made always-compiled with `cfg_attr(dead_code)` (same pattern as `executor/types.rs`); all context type dependencies verified as always-compiled modules (no new deps in slim profiles); 2 construction sites simplified (no per-field `#[cfg]`); 7 accessor methods always compiled with `cfg_attr(dead_code)`; feature-gated `ToolModule` impls unchanged; `tool_runtime_static_guards.rs` string-match test unaffected; no transports construct `ToolModuleContextParts` directly (verified by grep — only 2 construction sites in core). CP7 blast radius reviewed: 3 files changed (`client.rs`, `discovery.rs`, `mod.rs`); all 8 catalog field references within `client.rs` only; 1 external caller (`model_routes.rs`) signatures unchanged; ~100 `LlmClient::new()` sites constructor signature unchanged; snapshot tests use `configured_provider_names()` only; `async-trait` already a non-optional dep; `OpenCodeGoModelCatalog` auto-gated by module. CP8 blast radius reviewed: only `AGENTS.md` and this goal doc changed — no code, no Cargo.toml, no generated artifacts; full Validation Contract matrix run as evidence; no regressions possible from docs-only change. All 8 checkpoints (CP0-CP8) have Progress Log entries with blast radius, regression hypotheses, validation evidence, and `git status` clean before commit.s, both in core).
 
 - Q3: Generated artifacts are checked in and drift-proofed
   - Source: user-approved decision.
   - Acceptance: ordinary `cargo check` works from a fresh checkout without first running a generator; check command fails if generated surfaces are stale.
   - Evidence required: clean checkout-equivalent `cargo check` command; `xtask module-registry check` output; changed generated files committed.
-  - Status: in_progress
-  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; CP3 adds generated `profiles/*.toml` with exact content check; `cargo check --workspace --no-default-features` passes without running generate first (all generated sections are checked in); CP4 enhances check to verify `compiled.rs` `provides` and `requires` presence against registry — no generation needed (check-only approach, config properties remain in Rust).
+  - Status: verified
+  - Evidence collected: CP8 verified from clean worktree (HEAD=31b747a0, `git status --short` clean): `cargo check --workspace --no-default-features` passes without running `generate` first (all generated sections checked in); `cargo run -p xtask -- module-registry check` passes (generated artifacts not stale — 40 modules, 45 features, 40 declarations, zero warnings/errors). CP1 adds checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; CP3 adds generated `profiles/*.toml` with exact content check; CP4 enhances check to verify `compiled.rs` `provides` and `requires` against registry (check-only, no generation needed). All generated artifacts (`Cargo.toml` profile section, `profiles/*.toml`) are committed in their respective checkpoint commits.
 
 - N1: Cargo remains the build system with empty default features
   - Source: AGENTS.md and approved plan.
@@ -175,8 +175,8 @@ Corrected contract:
   - Source: AGENTS.md architecture invariants.
   - Must preserve: Gemini remains OpenRouter-routed; core/runtime do not depend on transport crates.
   - Evidence required: `cargo tree -p oxide-agent-core` or import grep review if dependencies change; code review of generated/tooling imports.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP8 verified `cargo tree -p oxide-agent-core --no-default-features` shows no transport crate dependencies (grep for `transport|telegram|web` returns no matches); `git grep -i 'gemini' crates/oxide-agent-core/src/llm/providers/` shows all Gemini references are model IDs routed through OpenRouter (`google/gemini-*` in `openrouter.rs` and `openrouter/module.rs`) — no `gemini.rs` or `gemini/` directory exists; no direct Gemini provider was introduced by any checkpoint (CP1-CP8 changes reviewed: only `xtask`, `build.rs`, test cfg migration, struct shape stabilization, and docs — no provider additions).
 
 ## Implementation Plan
 
@@ -380,6 +380,15 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
   - Audit IDs updated: G6 verified (both `ToolModuleContext`/`Parts` and `LlmClient` stable), Q2 in_progress (CP7 blast radius recorded), N2 verified (behavior preserved — same data flows, just type-erased registry).
   - Next: CP8 — full matrix validation and documentation refresh.
 
+- 2026-06-19 15:30: CP8 full matrix validation and documentation refresh
+  - Changed: `AGENTS.md` (updated architectural invariant line 54 to name `module_registry.toml` as single source of truth; added `### Module registry` subsection to Build section with `check`/`generate` commands and `build.rs` cfg alias documentation; added cfg alias testing convention to Testing section); this goal doc (all remaining audit items verified, Final Verification filled).
+  - Blast radius reviewed: only `AGENTS.md` and this goal doc changed — no code, no Cargo.toml, no generated artifacts; full Validation Contract matrix run as evidence; no regressions possible from docs-only change.
+  - Regression hypotheses checked: (1) docs promise commands that do not pass — NO, all commands run and verified in this checkpoint; (2) workspace-wide test command invalid for transport-specific profile — NO, used scoped `-p` for web-embedded as documented; (3) failures misclassified without proof — NO, all commands pass clean, no failures to classify.
+  - Evidence: `cargo run -p xtask -- module-registry check` (40 modules, 45 features, 40 declarations, zero warnings/errors); `cargo fmt --all -- --check` (clean); `cargo clippy --workspace --all-targets -- -D warnings` (clean); all 5 profile `cargo check` commands pass; `cargo test --workspace --no-default-features --features profile-full` (1328+ tests, 0 failed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` (145 passed, 0 failed); `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/` returns nothing (exit 1); `git grep '#\[cfg(feature =' crates/oxide-agent-core/tests/` returns only profile gates in `modular_registry_snapshots.rs` (justified exception); `ToolModuleContext`/`ToolModuleContextParts`/`LlmClient` struct definitions verified zero `#[cfg(feature)]` on any field; `cargo tree -p oxide-agent-core --no-default-features` shows no transport deps; `git grep -i 'gemini' crates/oxide-agent-core/src/llm/providers/` shows only OpenRouter-routed model IDs; `git diff 30f45ad7..HEAD -- Cargo.toml crates/*/Cargo.toml` shows no new deps; `git status --short` clean.
+  - Commands: all of the above.
+  - Audit IDs updated: G7 verified, Q1 verified, Q2 verified, Q3 verified, N3 verified. All audit items now verified.
+  - Next: fill Final Verification and commit CP8.
+
 ## Risks and Blockers
 
 - Risk: Cargo cannot consume generated feature lists at build-script time.
@@ -402,11 +411,22 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all items verified (G1-G7, Q1-Q3, N1-N3).
+  - G1: `module_registry.toml` covers 40 modules, 45 Cargo features, 40 compiled declarations — verified by `xtask module-registry check` with provides/requires bidirectional comparison.
+  - G2: Cargo profile feature lists and transport forwarding are generated/checked from registry — verified by `xtask check` and all 5 profile `cargo check` commands.
+  - G3: Runtime `profiles/*.toml` generated from registry, Browser Live drift fixed — verified by `xtask check` and `git grep` for stale comments.
+  - G4: `compiled.rs` declarations checked against registry (provides ordered, requires presence) — verified by `xtask check` and intentional mismatch tests.
+  - G5: Tests use `oxide_module_<id>` cfg aliases from `build.rs` — verified by grep (0 raw feature cfg in test dirs except justified profile gates) and 1328+ tests pass.
+  - G6: `ToolModuleContext`/`ToolModuleContextParts` (13 fields) and `LlmClient` (6 fields) have stable shape — verified by grep (zero `#[cfg(feature)]` on any struct field).
+  - G7: Full Validation Contract matrix passes — all static gates, profile checks, and test suites green.
+  - Q1: No new deps/services/caches/queues — xtask has zero deps, no runtime deps added.
+  - Q2: All 9 checkpoints (CP0-CP8) have blast radius reviews in Progress Log.
+  - Q3: Generated artifacts checked in, `cargo check` works without `generate`, `xtask check` catches drift.
+  - N1: `default = []` preserved at `Cargo.toml:67`, all profile names compile.
+  - N2: No module removed from compiled profiles; Browser Live explicitly enabled in full/web TOMLs.
+  - N3: No transport deps in core (`cargo tree`), Gemini only via OpenRouter routes.
+- Commands run: `cargo run -p xtask -- module-registry check`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo check --workspace --no-default-features`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-search-only`; `cargo check --workspace --no-default-features --features profile-full`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-full`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/`; `git grep '#\[cfg(feature =' crates/oxide-agent-core/tests/`; `cargo tree -p oxide-agent-core --no-default-features`; `git grep -i 'gemini' crates/oxide-agent-core/src/llm/providers/`; `git diff 30f45ad7..HEAD -- Cargo.toml crates/*/Cargo.toml`; `git status --short`.
+- Artifacts inspected: `module_registry.toml` (40 module records); `crates/oxide-agent-core/Cargo.toml` (generated profile section with markers); `profiles/*.toml` (4 generated files); `crates/oxide-agent-core/build.rs` (cfg alias emission); `xtask/src/main.rs` (check + generate); `crates/oxide-agent-core/src/agent/tool_runtime/modules.rs` (struct definitions); `crates/oxide-agent-core/src/llm/client.rs` (struct definition); `AGENTS.md` (registry workflow docs).
+- Remaining gaps: none.
+- User-accepted exceptions: profile-level test gates in `modular_registry_snapshots.rs` remain raw `feature = "profile-..."` (justified: profile features are composite Cargo features, not module features); implementation code in `llm/` and `tool_runtime/modules.rs` uses raw `#[cfg(feature = "...")]` for provider adapter gating (justified: per goal decision, raw Cargo features remain acceptable for implementation/dependency gating).
+- Final status: complete. All Completion Audit items verified by their required evidence. All 9 checkpoints committed (CP0=30f45ad7, CP1=ae1ac58f, CP2=c73af450, CP3=a09086fb, CP4=fcdb31f9, CP5=f66c3b2a, CP6=7bdd1727, CP7=31b747a0, CP8=pending commit).
