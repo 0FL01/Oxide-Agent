@@ -2,10 +2,10 @@ profile = "search-only"
 cargo_features = ["profile-search-only"]
 
 [modules]
-"transport/telegram" = { enabled = true }
-"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
-"tool/webfetch-md" = { enabled = true }
-"tool/tavily" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "tool/brave-search" = { enabled = true }
 "tool/crw" = { enabled = true }
+"tool/tavily" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }
+"transport/telegram" = { enabled = true }

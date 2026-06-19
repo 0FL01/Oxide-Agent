@@ -5,7 +5,7 @@ Status: active
 Codex goal: see `/goal` objective below
 Source spec: user-approved RECON and decisions from 2026-06-19
 Goal doc owner: Codex
-Last updated: 2026-06-19 11:30
+Last updated: 2026-06-19 11:50
 
 ## Objective
 
@@ -105,8 +105,8 @@ Corrected contract:
   - Source: verified Browser Live drift and user-approved policy.
   - Acceptance: `profiles/*.toml` module membership matches registry; Browser Live is explicitly included and enabled in `full` and `web-embedded-opencode-local`; stale deferred comments are removed.
   - Evidence required: `xtask module-registry check`; `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/` returns nothing; profile files contain `tool/browser-live` where registry says enabled.
-  - Status: in_progress
-  - Evidence collected: CP1 check compares registry runtime profile membership against `profiles/*.toml` and passes with only known Browser Live warnings for `full` and `web-embedded-opencode-local`; actual profile alignment remains for CP3.
+  - Status: verified
+  - Evidence collected: CP3 `generate` now generates all 4 `profiles/*.toml` files from registry; `check` does exact content comparison (no warnings, no errors); `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/` returns nothing (exit 1); `tool/browser-live` present in `profiles/full.toml:22` and `profiles/web-embedded-opencode-local.toml:11`; `tool/brave-search` and `tool/crw` removed from `profiles/embedded-opencode-local.toml` (matching Cargo profile). RECON confirmed no Rust runtime code or scripts read these files — they are reference-only.
 
 - G4: `compiled.rs` module declarations are generated or checked from the registry
   - Source: RECON `compiled.rs` feature-gated macros duplicate Cargo/profile knowledge.
@@ -155,7 +155,7 @@ Corrected contract:
   - Acceptance: ordinary `cargo check` works from a fresh checkout without first running a generator; check command fails if generated surfaces are stale.
   - Evidence required: clean checkout-equivalent `cargo check` command; `xtask module-registry check` output; changed generated files committed.
   - Status: in_progress
-  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; `cargo check --workspace --no-default-features` passes without running generate first (generated section is checked in); runtime profile TOMLs and compiled.rs remain for CP3/CP4.
+  - Evidence collected: CP1 adds a checked-in registry and check gate; CP2 adds generated profile section in core Cargo.toml with `generate`/`check` drift gate; CP3 adds generated `profiles/*.toml` with exact content check; `cargo check --workspace --no-default-features` passes without running generate first (all generated sections are checked in); compiled.rs remains for CP4.
 
 - N1: Cargo remains the build system with empty default features
   - Source: AGENTS.md and approved plan.
@@ -168,8 +168,8 @@ Corrected contract:
   - Source: scope boundary and RECON.
   - Must preserve: no module is removed from compiled profiles unless documented; Browser Live full/web runtime enablement is explicit.
   - Evidence required: before/after compiled manifest snapshots; profile TOML review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: CP3 generated profile TOMLs match Cargo compiled profiles exactly — `tool/browser-live` now explicitly enabled in `full` and `web-embedded-opencode-local` TOMLs (was compiled but not listed); `tool/brave-search` and `tool/crw` removed from `embedded-opencode-local` TOML (were listed but not compiled); all 5 `cargo check` profile commands pass (CP2 evidence); no Rust runtime code reads profile TOMLs (RECON verified by grep).
 
 - N3: No direct Gemini provider or transport/core dependency inversion is introduced
   - Source: AGENTS.md architecture invariants.
@@ -334,6 +334,15 @@ Done when all Completion Audit items are `verified`, generated artifacts are che
   - Commands: all of the above.
   - Audit IDs updated: G2 verified, N1 verified, Q3 in_progress (CP2 evidence added), Q2 in_progress (CP2 blast radius + regression hunt recorded).
   - Next: CP3 — make `profiles/*.toml` registry-owned and fix Browser Live + brave-search/crw runtime drift.
+
+- 2026-06-19 11:50: CP3 profile TOMLs registry-owned and Browser Live drift fixed
+  - Changed: `profiles/full.toml`, `profiles/web-embedded-opencode-local.toml`, `profiles/embedded-opencode-local.toml`, `profiles/search-only.toml` (all regenerated from registry via `generate`); `xtask/src/main.rs` (added `render_profile_toml`, `generate_profile_tomls`, `check_profile_tomls` with exact content comparison; removed `check_profiles`, `parse_profile_modules`, `is_known_runtime_profile_drift`, and `warnings` vector — no known drifts remain).
+  - Blast radius reviewed: RECON confirmed no Rust runtime code or scripts read `profiles/*.toml` — they are reference-only files; only xtask reads them; generated format matches previous format (alphabetical module order, same header fields).
+  - Regression hypotheses checked: (1) adding `tool/browser-live` to runtime TOMLs — no runtime effect, TOMLs are reference-only; (2) removing `tool/brave-search`/`tool/crw` from embedded TOML — correct, Cargo doesn't compile them for embedded; (3) generated format mismatch — only xtask reads them, self-consistent; (4) stale comment removal — correct, comment referenced CP-7 which no longer exists.
+  - Evidence: `cargo run -p xtask -- module-registry check` passed with zero warnings and zero errors; `git grep 'Browser Live Agent profile wiring lands with CP-7' profiles/` returned nothing (exit 1); `tool/browser-live` present in `profiles/full.toml:22` and `profiles/web-embedded-opencode-local.toml:11`; `cargo fmt --all -- --check` passed; `cargo clippy -p xtask -- -D warnings` passed; `cargo check --workspace --no-default-features` passed.
+  - Commands: all of the above.
+  - Audit IDs updated: G3 verified, N2 verified, Q3 in_progress (CP3 evidence added).
+  - Next: CP4 — make capability manifest declarations registry-owned.
 
 ## Risks and Blockers
 

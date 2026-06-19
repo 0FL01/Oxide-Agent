@@ -57,7 +57,6 @@ fn module_registry_check() -> Result<(), String> {
     let compiled_modules = parse_compiled_modules(&read_to_string(&root, COMPILED_RS_PATH)?)?;
 
     let mut errors = Vec::new();
-    let mut warnings = Vec::new();
 
     check_duplicate_registry_ids(&registry, &mut errors);
     check_registry_features_exist(&registry, &cargo_features, &mut errors);
@@ -65,11 +64,7 @@ fn module_registry_check() -> Result<(), String> {
     check_profile_coverage(&registry, &mut errors);
     check_core_profile_section(&root, &registry, &mut errors)?;
     check_forwarding(&root, &registry, &mut errors)?;
-    check_profiles(&root, &registry, &mut errors, &mut warnings)?;
-
-    for warning in &warnings {
-        println!("warning: {warning}");
-    }
+    check_profile_tomls(&root, &registry, &mut errors)?;
 
     if errors.is_empty() {
         println!(
@@ -104,10 +99,13 @@ fn module_registry_generate() -> Result<(), String> {
     fs::write(root.join(CORE_CARGO_PATH), updated)
         .map_err(|err| format!("write {}: {err}", CORE_CARGO_PATH))?;
 
+    generate_profile_tomls(&root, &registry)?;
+
     println!(
-        "generated profile section for {} profiles in {}",
+        "generated profile section for {} profiles in {} and {} profile TOMLs in profiles/",
         compositions.len(),
-        CORE_CARGO_PATH
+        CORE_CARGO_PATH,
+        PROFILE_ORDER.len()
     );
     Ok(())
 }
@@ -651,80 +649,48 @@ fn check_forwarding(
 
     Ok(())
 }
-
-fn check_profiles(
+fn check_profile_tomls(
     root: &Path,
     registry: &Registry,
     errors: &mut Vec<String>,
-    warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    let mut expected_by_profile: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for module in &registry.modules {
-        for profile in &module.profiles {
-            expected_by_profile
-                .entry(profile.clone())
-                .or_default()
-                .insert(module.profile_module_id().to_string());
+    for profile_name in PROFILE_ORDER {
+        let path = root.join("profiles").join(format!("{profile_name}.toml"));
+        let current =
+            fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+        let expected = render_profile_toml(profile_name, registry);
+        if current != expected {
+            errors.push(format!(
+                "profiles/{profile_name}.toml is stale; run `cargo run -p xtask -- module-registry generate`"
+            ));
         }
     }
-
-    for (profile, expected) in expected_by_profile {
-        let path = root.join("profiles").join(format!("{profile}.toml"));
-        let actual = parse_profile_modules(
-            &fs::read_to_string(&path)
-                .map_err(|err| format!("read runtime profile {}: {err}", path.display()))?,
-        )?;
-
-        for missing in expected.difference(&actual) {
-            if is_known_runtime_profile_drift(&profile, missing) {
-                warnings.push(format!(
-                    "known runtime-profile drift: `{missing}` missing from profiles/{profile}.toml"
-                ));
-            } else {
-                errors.push(format!(
-                    "profiles/{profile}.toml is missing registry module `{missing}`"
-                ));
-            }
-        }
-        for extra in actual.difference(&expected) {
-            if is_known_runtime_profile_drift(&profile, extra) {
-                warnings.push(format!(
-                    "known runtime-profile drift: `{extra}` extra in profiles/{profile}.toml"
-                ));
-            } else {
-                errors.push(format!(
-                    "profiles/{profile}.toml has module `{extra}` not enabled by registry"
-                ));
-            }
-        }
-    }
-
     Ok(())
 }
 
-fn parse_profile_modules(input: &str) -> Result<BTreeSet<String>, String> {
-    let mut modules = BTreeSet::new();
-    for raw_line in input.lines() {
-        let line = strip_comment(raw_line).trim();
-        if !line.starts_with('"') {
-            continue;
-        }
-        let Some(end) = line[1..].find('"') else {
-            return Err(format!("invalid quoted module line `{line}`"));
-        };
-        modules.insert(line[1..=end].to_string());
+fn generate_profile_tomls(root: &Path, registry: &Registry) -> Result<(), String> {
+    for profile_name in PROFILE_ORDER {
+        let content = render_profile_toml(profile_name, registry);
+        let path = root.join("profiles").join(format!("{profile_name}.toml"));
+        fs::write(&path, content).map_err(|err| format!("write {}: {err}", path.display()))?;
     }
-    Ok(modules)
+    Ok(())
 }
 
-fn is_known_runtime_profile_drift(profile: &str, module_id: &str) -> bool {
-    if module_id == "tool/browser-live" && matches!(profile, "full" | "web-embedded-opencode-local")
-    {
-        return true;
+fn render_profile_toml(profile_name: &str, registry: &Registry) -> String {
+    let mut module_ids: BTreeSet<String> = BTreeSet::new();
+    for module in &registry.modules {
+        if module.profiles.contains(profile_name) {
+            module_ids.insert(module.profile_module_id().to_string());
+        }
     }
-    if matches!(module_id, "tool/brave-search" | "tool/crw") && profile == "embedded-opencode-local"
-    {
-        return true;
+
+    let mut output = format!("profile = \"{profile_name}\"\n");
+    output.push_str(&format!("cargo_features = [\"profile-{profile_name}\"]\n"));
+    output.push('\n');
+    output.push_str("[modules]\n");
+    for module_id in &module_ids {
+        output.push_str(&format!("\"{module_id}\" = {{ enabled = true }}\n"));
     }
-    false
+    output
 }
