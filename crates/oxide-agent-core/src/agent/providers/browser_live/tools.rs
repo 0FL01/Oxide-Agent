@@ -530,6 +530,7 @@ impl BrowserLiveProvider {
                         screenshot_image_attachment(&after_frame, Some(&screenshot_bytes));
                     let verification = verify_sidecar_action(
                         expected_result,
+                        &request.action,
                         &before,
                         &response.action_result,
                         &after,
@@ -2246,11 +2247,9 @@ mod tests {
             payload["post_observation_diagnostics"]["mode"],
             json!("result_only")
         );
-        assert!(
-            payload["verification"]["reason"]
-                .as_str()
-                .expect("reason")
-                .contains("result returned without post-action screenshot")
+        assert_eq!(
+            payload["verification"]["reason"].as_str().expect("reason"),
+            "action completed successfully"
         );
     }
 
