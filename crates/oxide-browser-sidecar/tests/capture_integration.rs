@@ -75,7 +75,7 @@ async fn capture_network_and_console_on_real_chromium() {
         .expect("launch Chromium");
 
     // Start capture collector before navigation.
-    let collector = Arc::new(CaptureCollector::new());
+    let collector = Arc::new(CaptureCollector::new(None));
     CaptureCollector::start(&cdp, collector.clone())
         .await
         .expect("start capture");
@@ -189,7 +189,7 @@ async fn capture_summarize_and_debug_payloads() {
         .await
         .expect("launch Chromium");
 
-    let collector = Arc::new(CaptureCollector::new());
+    let collector = Arc::new(CaptureCollector::new(None));
     CaptureCollector::start(&cdp, collector.clone())
         .await
         .expect("start capture");

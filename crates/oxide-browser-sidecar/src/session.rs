@@ -77,7 +77,7 @@ impl BrowserSession {
         // Start capture collector before navigation so we catch the initial
         // page load's network events. Runs on the same CDP WebSocket (G3)
         // and never sends Runtime.enable (G4).
-        let capture = Arc::new(CaptureCollector::new());
+        let capture = Arc::new(CaptureCollector::new(None));
         CaptureCollector::start(&cdp, capture.clone())
             .await
             .context("start capture collector")?;
@@ -183,7 +183,7 @@ impl BrowserSession {
         let new_page_id = new_chromium.page_target_id().to_string();
 
         // Start fresh capture collector.
-        let new_capture = Arc::new(CaptureCollector::new());
+        let new_capture = Arc::new(CaptureCollector::new(None));
         CaptureCollector::start(&new_cdp, new_capture.clone())
             .await
             .context("force_reload: start capture collector")?;

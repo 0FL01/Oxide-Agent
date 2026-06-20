@@ -27,8 +27,9 @@ use oxide_browser_contracts::{
 };
 use serde_json::{Value, json};
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
+use crate::adblock::AdblockEngine;
 use crate::cdp::{CdpClient, CdpEvent};
 use crate::scope;
 
@@ -144,16 +145,25 @@ pub struct CaptureCollector {
     console_items: std::sync::Mutex<Vec<ConsoleItem>>,
     pending_requests: std::sync::Mutex<HashMap<String, PendingRequest>>,
     current_url: std::sync::Mutex<Option<String>>,
+    /// Ad blocking engine. When `Some`, `Fetch.enable` is sent in `start()`
+    /// and `Fetch.requestPaused` events are handled. When `None`, no Fetch
+    /// domain commands are sent — zero behavior change.
+    engine: Option<Arc<AdblockEngine>>,
 }
 
 impl CaptureCollector {
-    /// Create an empty collector.
-    pub fn new() -> Self {
+    /// Create a collector with an optional ad blocking engine.
+    ///
+    /// Pass `None` to disable ad blocking (default behavior). Pass
+    /// `Some(Arc<AdblockEngine>)` to enable network-level request
+    /// interception via CDP `Fetch.enable`.
+    pub fn new(engine: Option<Arc<AdblockEngine>>) -> Self {
         Self {
             network_items: std::sync::Mutex::new(Vec::new()),
             console_items: std::sync::Mutex::new(Vec::new()),
             pending_requests: std::sync::Mutex::new(HashMap::new()),
             current_url: std::sync::Mutex::new(None),
+            engine,
         }
     }
 
@@ -181,6 +191,24 @@ impl CaptureCollector {
             .await
             .map_err(|e| CaptureError::Cdp(e.to_string()))?;
         debug!("Log.enable sent for capture");
+
+        // Enable Fetch domain for ad blocking if engine is present.
+        // Fetch.enable does NOT require Runtime.enable — it is an independent
+        // network-layer domain with zero JS-visible side effects.
+        if collector.engine.is_some() {
+            let patterns: Vec<Value> = crate::adblock::FETCH_PATTERNS
+                .iter()
+                .map(|&(key, val)| json!({ key: val }))
+                .collect();
+            cdp.send_command(
+                "Fetch.enable",
+                json!({ "patterns": patterns }),
+                CAPTURE_TIMEOUT,
+            )
+            .await
+            .map_err(|e| CaptureError::Cdp(e.to_string()))?;
+            info!("Fetch.enable sent for ad blocking");
+        }
 
         // Inject console interceptor via Page.addScriptToEvaluateOnNewDocument
         // (survives navigations) + Runtime.evaluate (patches current page).
@@ -241,6 +269,7 @@ impl CaptureCollector {
             "Network.loadingFailed" => self.on_loading_failed(cdp, &event.params).await,
             "Log.entryAdded" => self.on_log_entry(&event.params),
             "Page.frameNavigated" => self.on_frame_navigated(&event.params),
+            "Fetch.requestPaused" => self.on_fetch_request_paused(cdp, &event.params).await,
             _ => {}
         }
     }
@@ -458,6 +487,59 @@ impl CaptureCollector {
         *self.current_url.lock_guard() = Some(url.to_string());
     }
 
+    // ── Fetch.requestPaused handler (ad blocking) ──────────────────────
+
+    /// Handle `Fetch.requestPaused` — check the adblock engine and block or
+    /// continue the request.
+    ///
+    /// Fail-open: on any error or missing field, `continueRequest` is sent so
+    /// the request is never hung. Navigation requests are always passed
+    /// through (also excluded from `Fetch.enable` patterns as defense-in-depth).
+    async fn on_fetch_request_paused(&self, cdp: &CdpClient, params: &Value) {
+        let Some(request_id) = params.get("requestId").and_then(|v| v.as_str()) else {
+            return;
+        };
+
+        let request = params.get("request").unwrap_or(&Value::Null);
+        let url = request.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let resource_type = params
+            .get("resourceType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Other");
+        let is_nav = request
+            .get("isNavigationRequest")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let source_url = self.current_url().unwrap_or_default();
+
+        let blocked = should_block_request(
+            self.engine.as_deref(),
+            url,
+            resource_type,
+            is_nav,
+            &source_url,
+        );
+
+        if blocked {
+            debug!(url, request_id, "adblock: blocking request");
+            let _ = cdp
+                .send_command(
+                    "Fetch.failRequest",
+                    json!({ "requestId": request_id, "errorReason": "BlockedByClient" }),
+                    CAPTURE_TIMEOUT,
+                )
+                .await;
+        } else {
+            let _ = cdp
+                .send_command(
+                    "Fetch.continueRequest",
+                    json!({ "requestId": request_id }),
+                    CAPTURE_TIMEOUT,
+                )
+                .await;
+        }
+    }
+
     // ── Public drain/query methods ──────────────────────────────────────
 
     /// Drain all accumulated network items (moves them out).
@@ -485,7 +567,7 @@ impl CaptureCollector {
 
 impl Default for CaptureCollector {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -575,6 +657,35 @@ fn resource_type_from_cdp(type_name: &str) -> String {
         _ => &value,
     }
     .to_string()
+}
+
+// ── Free functions: ad blocking decision ───────────────────────────────
+
+/// Decide whether a `Fetch.requestPaused` event should be blocked.
+///
+/// Pure function (no CDP commands) — extracted from `on_fetch_request_paused`
+/// for testability. Returns `true` if the request should be blocked via
+/// `Fetch.failRequest`, `false` if it should continue via `Fetch.continueRequest`.
+///
+/// Rules:
+/// 1. Navigation requests and Document resources are never blocked.
+/// 2. If no engine is configured, nothing is blocked.
+/// 3. `engine.should_block` decides; malformed URLs fail-open (return `false`).
+fn should_block_request(
+    engine: Option<&AdblockEngine>,
+    url: &str,
+    cdp_resource_type: &str,
+    is_navigation: bool,
+    source_url: &str,
+) -> bool {
+    if is_navigation || cdp_resource_type == "Document" {
+        return false;
+    }
+    let Some(engine) = engine else {
+        return false;
+    };
+    let adblock_type = crate::adblock::cdp_type_to_adblock(cdp_resource_type);
+    engine.should_block(url, source_url, adblock_type)
 }
 
 // ── Free functions: body capture ───────────────────────────────────────
@@ -1069,6 +1180,131 @@ mod tests {
     fn resource_type_other() {
         assert_eq!(resource_type_from_cdp("Media"), "media");
         assert_eq!(resource_type_from_cdp(""), "");
+    }
+
+    // ── should_block_request (ad blocking decision) ────────────────────
+
+    fn make_engine() -> Arc<AdblockEngine> {
+        Arc::new(AdblockEngine::from_rules([
+            "||ads.example.com^",
+            "||tracker.example.com^",
+        ]))
+    }
+
+    #[test]
+    fn adblock_no_engine_never_blocks() {
+        assert!(!should_block_request(
+            None,
+            "https://ads.example.com/ad.js",
+            "Script",
+            false,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_blocks_matching_url() {
+        let engine = make_engine();
+        assert!(should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/ad.js",
+            "Script",
+            false,
+            "https://example.com/"
+        ));
+        assert!(should_block_request(
+            Some(engine.as_ref()),
+            "https://tracker.example.com/pixel.gif",
+            "Image",
+            false,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_allows_non_matching_url() {
+        let engine = make_engine();
+        assert!(!should_block_request(
+            Some(engine.as_ref()),
+            "https://example.com/page.html",
+            "Document",
+            false,
+            "https://example.com/"
+        ));
+        assert!(!should_block_request(
+            Some(engine.as_ref()),
+            "https://cdn.example.com/lib.js",
+            "Script",
+            false,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_skips_navigation_requests() {
+        let engine = make_engine();
+        // Even if the URL matches a block rule, navigation is never blocked
+        assert!(!should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/landing",
+            "Document",
+            true,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_skips_document_resource_type() {
+        let engine = make_engine();
+        // Document resource type is never blocked (defense-in-depth)
+        assert!(!should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/doc.html",
+            "Document",
+            false,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_fail_open_on_malformed_url() {
+        let engine = make_engine();
+        assert!(!should_block_request(
+            Some(engine.as_ref()),
+            "not-a-url",
+            "Script",
+            false,
+            "https://example.com/"
+        ));
+    }
+
+    #[test]
+    fn adblock_maps_cdp_types_correctly() {
+        let engine = make_engine();
+        // Script type
+        assert!(should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/ad.js",
+            "Script",
+            false,
+            "https://example.com/"
+        ));
+        // XHR type (maps to "xhr" in adblock)
+        assert!(should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/api",
+            "XHR",
+            false,
+            "https://example.com/"
+        ));
+        // Image type
+        assert!(should_block_request(
+            Some(engine.as_ref()),
+            "https://ads.example.com/banner.png",
+            "Image",
+            false,
+            "https://example.com/"
+        ));
     }
 
     // ── should_capture_body ─────────────────────────────────────────────
