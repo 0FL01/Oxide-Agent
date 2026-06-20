@@ -130,7 +130,24 @@ fn build_script(rules_json: &str) -> String {
     // Rules loaded from file by the Rust sidecar.
     var rules = {rules};
     // Create engine — auto-detects and dismisses CMP banners.
-    new ConsentEngine(rules, consentTypes, null);
+    // The handledCallback restarts the engine after ANY CMP handling
+    // (handled: true or error: true) so it tries the next matching CMP.
+    // Without this, a false-positive CMP detection (e.g. OneTrust element
+    // present but the real CMP is Sourcepoint) would stop the engine after
+    // "successfully" clicking non-existent buttons. The triedCMPs set
+    // prevents infinite loops — each CMP is tried at most once. The timeout
+    // case (handled: false, no error) does NOT restart.
+    var engine;
+    engine = new ConsentEngine(rules, consentTypes, function(evt) {{
+        if ((evt.handled || evt.error) && engine) {{
+            setTimeout(function() {{
+                engine.startObserver();
+                engine.startStopTimeout();
+                engine.handleMutations([]);
+            }}, 200);
+        }}
+    }});
+    ConsentEngine.singleton = engine;
 }})();
 "#,
         rules = rules_json
@@ -192,7 +209,9 @@ mod tests {
         assert!(script.contains("ConsentEngine.prototype.showProgressDialog"));
         assert!(script.contains("ConsentEngine.generalSettings"));
         assert!(script.contains("hideInsteadOfPIP: true"));
-        assert!(script.contains("new ConsentEngine(rules, consentTypes, null)"));
+        assert!(script.contains("new ConsentEngine(rules, consentTypes,"));
+        assert!(script.contains("ConsentEngine.singleton = engine"));
+        assert!(script.contains("evt.handled || evt.error"));
         // Rules inlined.
         assert!(script.contains("TestCMP"));
     }

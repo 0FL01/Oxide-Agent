@@ -252,13 +252,12 @@ impl CaptureCollector {
                 .send_command(
                     "Page.addScriptToEvaluateOnNewDocument",
                     json!({
-                        "source": script.as_str(),
-                        "worldName": "consent"
+                        "source": script.as_str()
                     }),
                     CAPTURE_TIMEOUT,
                 )
                 .await;
-            info!("consent auto-dismiss engine injected (world: consent)");
+            info!("consent auto-dismiss engine injected");
         }
 
         // Spawn background task to process CDP events.

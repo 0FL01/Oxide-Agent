@@ -52,12 +52,13 @@ RUN mkdir -p /opt/adblock \
     && curl -fsSL https://easylist.to/easylist/easyprivacy.txt -o /opt/adblock/easyprivacy.txt \
     && chown -R browser:browser /opt/adblock
 
-# Download Consent-O-Matic rules (204 CMP variants) for cookie consent
-# banner auto-dismissal. Enabled by default via CONSENT_AUTO_DISMISS.
-RUN mkdir -p /opt/consent \
-    && curl -fsSL https://raw.githubusercontent.com/cavi-au/Consent-O-Matic/master/Rules.json \
-        -o /opt/consent/rules.json \
-    && chown -R browser:browser /opt/consent
+# Consent-O-Matic rules (203 CMP variants) for cookie consent banner
+# auto-dismissal. Merged from all individual rule files in the
+# Consent-O-Matic repository — the monolithic Rules.json is outdated and
+# missing key variants (e.g. onetrust_banner with full SAVE_CONSENT).
+# Enabled by default via CONSENT_AUTO_DISMISS.
+COPY docker/consent-rules.json /opt/consent/rules.json
+RUN chown -R browser:browser /opt/consent
 
 COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
 
