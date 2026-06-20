@@ -45,10 +45,18 @@ RUN groupadd --system --gid 10002 browser \
     && useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/browser browser \
     && chown -R browser:browser /home/browser
 
+# Download ad blocking filter lists (EasyList + EasyPrivacy).
+# ADBLOCK_ENABLED is NOT set here — ad blocking is opt-in (set in runtime env).
+RUN mkdir -p /opt/adblock \
+    && curl -fsSL https://easylist.to/easylist/easylist.txt -o /opt/adblock/easylist.txt \
+    && curl -fsSL https://easylist.to/easylist/easyprivacy.txt -o /opt/adblock/easyprivacy.txt \
+    && chown -R browser:browser /opt/adblock
+
 COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
 
 ENV BROWSER_AGENT_SIDECAR_BIND=0.0.0.0:8787 \
-    CHROMIUM_BIN=/usr/bin/chromium
+    CHROMIUM_BIN=/usr/bin/chromium \
+    ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt
 
 USER browser
 WORKDIR /home/browser
