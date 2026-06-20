@@ -21,3 +21,4 @@ __pycache__
 dist/
 pg_data/
 postgres-init/
+.donor
