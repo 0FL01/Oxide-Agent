@@ -30,6 +30,68 @@ no `chrome-agent` subprocess.
 - Vision-based decision layer or screenshot analysis as a browser control mechanism
 - MiMo or any intermediate model deciding actions; the main agent directly plans and executes actions
 
+## Stealth and anti-detection
+
+The sidecar is a direct CDP client (no Playwright/Selenium shim), which is the
+strongest starting position per 2026 bot-detection benchmarks. The following
+hardening measures are built in:
+
+### Command-line flags
+
+- `--disable-blink-features=AutomationControlled` is set so `navigator.webdriver`
+  is `false` at the Blink/C++ level (undetectable by JS getter checks).
+- Fingerprint flags removed: `--disable-extensions`,
+  `--disable-popup-blocking`, `--disable-gpu` (each is a known automation
+  signal when present).
+- `--disable-features` includes the Patchright-derived list
+  (`ImprovedCookieControls`, `LazyFrameLoading`, `ThirdPartyStoragePartitioning`,
+  `Translate`, `HttpsUpgrades`, etc.) to match a stock Chrome profile.
+
+### Chrome binary preference
+
+Launch resolution order: `$CHROMIUM_BIN` env (highest priority when set) >
+`google-chrome` > `google-chrome-stable` > `chromium`. Using a real Chrome
+binary (not the Chromium build) avoids headless-Chromium-specific fingerprints.
+Docker sets `CHROMIUM_BIN=/usr/bin/chromium` so the override is preserved.
+
+### Isolated worlds for read-only JS
+
+All internal read-only JavaScript (DOM fingerprinting, URL/title reads, DOM
+snapshots, element queries, selector/text polling) runs in an isolated
+execution context created via `Page.createIsolatedWorld`. Page JS cannot
+detect or intercept evaluation in an isolated world — only the C++ DOM is
+shared. If the isolated context becomes stale (client-side navigation without
+going through our `navigate()`), evaluation falls back to the main world
+gracefully.
+
+Page-interacting JavaScript (event dispatch, form filling, key presses,
+scrolling, SPA hash navigation, stealth patches, console interceptor) stays
+in the main world where it must be visible to the page.
+
+### Console interceptor hardening
+
+The console interceptor overrides `console.log/warn/error/debug/info` to
+capture entries. A `WeakMap`-backed `Function.prototype.toString` override
+ensures every patched method returns its native string
+(`"function log() { [native code] }"`) under `toString()`,
+`Function.prototype.toString.call()`, and `String()`. The override itself is
+registered in the `WeakMap` so it too looks native. Non-patched functions
+delegate to the real `toString` with no observable difference.
+
+### Architectural invariants
+
+The sidecar never calls `Runtime.enable`, `Target.setAutoAttach`,
+`Target.attachToTarget`, or `Console.enable` — all are well-known CDP
+detection vectors. JS evaluation uses `Runtime.evaluate` (a command, not
+event subscription) directly on the page target WebSocket.
+
+### Not covered
+
+- TLS fingerprint (JA4) and HTTP/2 SETTINGS ordering are binary-level and not
+  controllable from a CDP client.
+- Headless screen-dimension artifacts (`--headless=new` limitations).
+- Behavioral patterns (mouse movement, typing cadence) are agent-controlled.
+
 ## Requirements
 
 - Docker with Compose

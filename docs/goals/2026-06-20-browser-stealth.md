@@ -1,7 +1,7 @@
 # Goal: Browser Live Stealth Hardening
 
 Date started: 2026-06-20
-Status: active
+Status: complete
 Codex goal: not set
 Source spec: RECON of `.donor/patchright/` vs `crates/oxide-browser-sidecar/`; 2026 benchmark (ianlpaterson.com)
 Goal doc owner: Codex
@@ -111,43 +111,42 @@ None. All requirements derivable from RECON + donor code.
 - Source: AGENTS.md — implementation bias
 - Acceptance: No new Cargo dependencies added to `oxide-browser-sidecar`. Isolated world support implemented in existing `cdp.rs`.
 - Evidence required: `Cargo.toml` diff shows no new deps; `cargo check -p oxide-browser-sidecar` green
-- Status: verified (for checkpoints 1-4)
-- Evidence collected: no Cargo.toml changes; `cargo check -p oxide-browser-sidecar` green
+- Status: verified (all checkpoints)
+- Evidence collected: no Cargo.toml changes across all 5 code checkpoints; `cargo check -p oxide-browser-sidecar` green
 
 ### Q2: Architectural invariants preserved
 - Source: AGENTS.md — never call `Runtime.enable` or `Target.*`
 - Acceptance: No `Runtime.enable`, `Target.setAutoAttach`, `Target.attachToTarget`, `Console.enable` calls added. Existing tests for these invariants still pass.
 - Evidence required: `cargo test -p oxide-browser-sidecar` green; `git grep` confirms no new calls
-- Status: verified (for checkpoints 1-4)
-- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 126 tests green; no new `Target.*` or `Console.enable` calls; `Runtime.evaluate` with `contextId` used in `eval_in_context`/`eval_readonly` — this is a command, NOT `Runtime.enable` (event subscription); `git grep` confirms no actual `Runtime.enable`/`Target.*`/`Console.enable` calls; `eval_readonly` fallback path uses `Runtime.evaluate` without `contextId` — same command, not `Runtime.enable`
+- Status: verified (all checkpoints)
+- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 127 tests green; no new `Target.*` or `Console.enable` calls; `Runtime.evaluate` with `contextId` used in `eval_in_context`/`eval_readonly` — this is a command, NOT `Runtime.enable` (event subscription); `git grep` confirms no actual `Runtime.enable`/`Target.*`/`Console.enable` calls; `eval_readonly` fallback path uses `Runtime.evaluate` without `contextId` — same command, not `Runtime.enable`; CP5 console interceptor toString hardening uses `Function.prototype.toString` override in JS only, no new CDP domain calls
 
 ### Q3: clippy + fmt clean
 - Source: AGENTS.md — CI enforces both
 - Acceptance: `cargo clippy -p oxide-browser-sidecar -- -D warnings` and `cargo fmt --all -- --check` both pass
 - Evidence required: command output clean
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` → clean; `cargo fmt --all -- --check` → clean
 
 ### Q4: Documentation updated
 - Source: docs/browser-live.md
 - Acceptance: `docs/browser-live.md` documents new stealth hardening: flag changes, isolated world architecture, Chrome binary preference.
-- Evidence required: file review
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `docs/browser-live.md` — added "Stealth and anti-detection" section with subsections: Command-line flags, Chrome binary preference, Isolated worlds for read-only JS, Console interceptor hardening, Architectural invariants, Not covered
 
 ### N1: No script-tag injection method
 - Source: RECON Phase 5 analysis — diminishing returns vs complexity
 - Must preserve: `Page.addScriptToEvaluateOnNewDocument` for stealth patches (main world) and console interceptor (main world)
 - Evidence required: no route interception / `<script class=randomhex>` injection code added
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `git grep` for `script.*class.*random`, `initScriptTag`, `route.*interception`, `DOM.removeNode` → no matches in sidecar src
 
 ### N2: No CDP-Patches integration
 - Source: RECON — CDP-Patches only relevant for headful, fixed in Chrome v142+
 - Must preserve: existing JS-level screenX/screenY patch in stealth.rs stays; no OS-level input event patches
 - Evidence required: no CDP-Patches code added
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `git grep` for `cdp.patches`, `cdp-patches`, `os.level.input` → no matches; existing screenX/screenY patch confirmed in stealth.rs:55-61
 
 ## Implementation Plan
 
@@ -220,6 +219,8 @@ None. All requirements derivable from RECON + donor code.
 - 2026-06-20: Console interceptor MUST stay in main world (needs to override page's `console.*`). Console drain (`drain_console_js`) also stays in main world — isolated worlds have separate global objects and cannot access `window.__oxideDrainConsole` / `window.__oxideConsoleCapture` defined in the main world. Only the DOM is shared across worlds; custom JS properties on the window wrapper are not.
 - 2026-06-20: `CHROMIUM_BIN` env override has highest priority when set, then auto-detect google-chrome variants, then fallback to `chromium`.
 - 2026-06-20: `eval_readonly` method on CdpClient implements the "try isolated world, fall back to main world" pattern. This handles stale context_id (after client-side navigation that destroys the frame without going through our `navigate()`) gracefully — degraded stealth but functional. The fallback uses `parse_eval_result` for consistent value extraction on both paths.
+- 2026-06-20: Console interceptor toString hardening uses a `WeakMap`-backed `Function.prototype.toString` override instead of Proxy. Rationale: `Function.prototype.toString.call(fn)` accesses the internal `[[SourceText]]` slot directly, bypassing Proxy `get` traps — Proxy does not close this detection vector. The WeakMap approach intercepts ALL toString paths (`fn.toString()`, `Function.prototype.toString.call(fn)`, `String(fn)`, `fn + ''`) and the override itself is registered in the WeakMap to look native. Non-patched functions delegate to the real `toString` with zero observable difference.
+- 2026-06-20: `drain_console_js` stays in main world. Isolated worlds have separate global objects — `window.__oxideDrainConsole` and `window.__oxideConsoleCapture` defined in the main world are NOT accessible from an isolated world. Only the C++ DOM is shared across worlds.
 
 ## Progress Log
 
@@ -258,6 +259,20 @@ None. All requirements derivable from RECON + donor code.
   - Audit IDs updated: G5 verified, G6 verified, Q1 verified (CP4), Q2 verified (CP4)
   - Next: Checkpoint 5
 
+- 2026-06-20 01:30: Checkpoint 5 — console interceptor toString hardening
+  - Changed: `capture.rs` (replaced direct console method override with `WeakMap`-backed `Function.prototype.toString` override; patched functions registered in WeakMap with native toString strings; override itself registered to look native; added `interceptor_js_hardens_function_to_string` unit test)
+  - Evidence: `cargo test -p oxide-browser-sidecar` → 127 passed, 0 failed; `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` clean; `cargo fmt --all -- --check` clean; `git grep` confirms no `Runtime.enable`/`Target.*`/`Console.enable` calls added
+  - Commands: cargo test, cargo clippy --all-targets, cargo fmt
+  - Audit IDs updated: Q2 verified (CP5)
+  - Next: Checkpoint 6
+
+- 2026-06-20 01:45: Checkpoint 6 — documentation + final verification
+  - Changed: `docs/browser-live.md` (added "Stealth and anti-detection" section with subsections for flags, Chrome binary preference, isolated worlds, console interceptor hardening, architectural invariants, not covered); `docs/goals/2026-06-20-browser-stealth.md` (updated all audit items to verified, added CP5/CP6 progress log entries, decisions, final verification)
+  - Evidence: `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` → clean; `cargo fmt --all -- --check` → clean; `cargo test -p oxide-browser-sidecar` → 127 passed, 0 failed; `git grep` confirms N1 (no script-tag injection) and N2 (no CDP-Patches); existing screenX/screenY patch confirmed in stealth.rs
+  - Commands: cargo clippy --all-targets, cargo fmt, cargo test, git grep (N1, N2, invariant grep)
+  - Audit IDs updated: Q3 verified, Q4 verified, N1 verified, N2 verified, Q1 verified (all), Q2 verified (all)
+  - Next: Final verification
+
 ## Risks and Blockers
 
 - Isolated world refactor touches all eval sites — risk of misclassifying read-only vs page-interacting. Mitigation: explicit classification in Checkpoint 4, test each eval site.
@@ -266,4 +281,33 @@ None. All requirements derivable from RECON + donor code.
 
 ## Final Verification
 
-Filled only when complete.
+- Completion Audit result: ALL items verified (G1-G7, Q1-Q4, N1-N2)
+- Commands run:
+  - `cargo test -p oxide-browser-sidecar` → 127 passed, 0 failed
+  - `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` → clean
+  - `cargo fmt --all -- --check` → clean
+  - `git grep` for `Runtime.enable`/`Target.setAutoAttach`/`Target.attachToTarget`/`Console.enable` → only in comments/assertions
+  - `git grep` for script-tag injection patterns → no matches (N1)
+  - `git grep` for CDP-Patches patterns → no matches (N2)
+  - `git grep` for screenX/screenY in stealth.rs → confirmed present (N2)
+- Artifacts inspected:
+  - `crates/oxide-browser-sidecar/src/browser.rs` — launch flags, Chrome binary resolution
+  - `crates/oxide-browser-sidecar/src/stealth.rs` — webdriver override removed, serviceWorker patch added, screenX/screenY patch preserved
+  - `crates/oxide-browser-sidecar/src/cdp.rs` — `create_isolated_world`, `eval_in_context`, `eval_readonly`
+  - `crates/oxide-browser-sidecar/src/session.rs` — isolated world lifecycle in `navigate_to`
+  - `crates/oxide-browser-sidecar/src/observe.rs` — DOM fingerprint + URL/title via `eval_readonly`
+  - `crates/oxide-browser-sidecar/src/dom.rs` — DOM snapshot via `eval_readonly`
+  - `crates/oxide-browser-sidecar/src/actions.rs` — read-only queries via `eval_js_readonly`, page-interacting via `eval_js`
+  - `crates/oxide-browser-sidecar/src/capture.rs` — WeakMap-backed toString hardening
+  - `docs/browser-live.md` — "Stealth and anti-detection" section
+- Remaining gaps: none
+- User-accepted exceptions: none
+- Final status: complete
+
+Commits:
+- CP1: `487687d0` — command-line flags + webdriver fix + serviceWorker patch
+- CP2: `be3a4f4a` — system Chrome binary preference
+- CP3: `549499d4` — isolated world support in CDP client
+- CP4: `bca4ffb1` — move read-only JS to isolated world
+- CP5: `e2eff8ad` — console interceptor toString hardening
+- CP6: (this commit) — documentation + final verification
