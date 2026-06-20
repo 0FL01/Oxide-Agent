@@ -1115,9 +1115,69 @@ mod tests {
     #[cfg(feature = "llm-openai-base")]
     #[test]
     fn openai_base_route_supports_native_image_parts_by_capability() {
-        let route = test_route("openai-base:local", "local-vision-model");
+        use crate::testing::{test_remove_env, test_set_env};
 
-        assert!(AgentRunner::route_supports_native_image_parts(&route));
+        const IDX: &str = "99";
+
+        // Endpoint with DEFAULT_IMAGE_INPUT=true → vision-capable.
+        test_set_env(
+            format!("OPENAI_BASE_PROVIDERS__{IDX}__NAME"),
+            "local-vision",
+        );
+        test_set_env(
+            format!("OPENAI_BASE_PROVIDERS__{IDX}__API_BASE"),
+            "http://localhost:9999/v1",
+        );
+        test_set_env(
+            format!("OPENAI_BASE_PROVIDERS__{IDX}__DEFAULT_IMAGE_INPUT"),
+            "true",
+        );
+
+        let route = test_route("openai-base:local-vision", "local-vision-model");
+        assert!(
+            AgentRunner::route_supports_native_image_parts(&route),
+            "route with DEFAULT_IMAGE_INPUT=true should support image parts"
+        );
+
+        // Switch to DEFAULT_IMAGE_INPUT=false → text-only.
+        test_set_env(
+            format!("OPENAI_BASE_PROVIDERS__{IDX}__DEFAULT_IMAGE_INPUT"),
+            "false",
+        );
+        assert!(
+            !AgentRunner::route_supports_native_image_parts(&route),
+            "route with DEFAULT_IMAGE_INPUT=false should not support image parts"
+        );
+
+        // Remove DEFAULT_IMAGE_INPUT entirely → safe default is text-only.
+        test_remove_env(format!("OPENAI_BASE_PROVIDERS__{IDX}__DEFAULT_IMAGE_INPUT"));
+        assert!(
+            !AgentRunner::route_supports_native_image_parts(&route),
+            "route without DEFAULT_IMAGE_INPUT should default to text-only"
+        );
+
+        // Cleanup.
+        test_remove_env(format!("OPENAI_BASE_PROVIDERS__{IDX}__NAME"));
+        test_remove_env(format!("OPENAI_BASE_PROVIDERS__{IDX}__API_BASE"));
+        test_remove_env(format!("OPENAI_BASE_PROVIDERS__{IDX}__DEFAULT_IMAGE_INPUT"));
+    }
+
+    #[cfg(feature = "llm-openai-base")]
+    #[test]
+    fn openai_base_route_without_config_defaults_to_text_only() {
+        use crate::testing::test_remove_env;
+
+        // No OPENAI_BASE_PROVIDERS env vars set → no endpoint found → text-only.
+        let route = test_route("openai-base:nonexistent", "some-model");
+        assert!(
+            !AgentRunner::route_supports_native_image_parts(&route),
+            "route for unconfigured endpoint should default to text-only"
+        );
+
+        // Cleanup in case env leaked from a parallel test.
+        test_remove_env("OPENAI_BASE_PROVIDERS__99__NAME");
+        test_remove_env("OPENAI_BASE_PROVIDERS__99__API_BASE");
+        test_remove_env("OPENAI_BASE_PROVIDERS__99__DEFAULT_IMAGE_INPUT");
     }
 
     #[tokio::test]
