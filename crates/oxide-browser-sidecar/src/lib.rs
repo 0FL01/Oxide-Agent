@@ -32,21 +32,11 @@ use oxide_browser_contracts::{
     CreateSessionRequest, CreateSessionResponse, GotoRequest, GotoResponse, NavigationResult,
     NavigationStatus, NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, ObserveQuery,
     ObserveResponse, ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, SidecarErrorBody,
-    WaitUntil,
 };
 use serde_json::json;
 use tracing::warn;
 
 use session::SessionManager;
-
-/// Pause after mutating actions before draining capture (matches Python's 200ms).
-const POST_ACTION_DRAIN_DELAY: Duration = Duration::from_millis(200);
-
-/// Network idle polling timeout for `wait_until=networkidle`.
-const NETWORK_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Network idle polling interval.
-const NETWORK_IDLE_POLL: Duration = Duration::from_millis(50);
 
 /// Shared state passed to all route handlers.
 #[derive(Clone)]
@@ -170,8 +160,6 @@ async fn goto(
                     Duration::from_secs(15),
                 )
                 .await;
-            // Brief wait for SPA to process the hash change.
-            tokio::time::sleep(Duration::from_millis(500)).await;
         } else {
             // Normal navigation.
             if let Err(e) = session.navigate(&url, timeout).await {
@@ -197,12 +185,6 @@ async fn goto(
                     }),
                 });
             }
-        }
-
-        // Wait for network idle if requested.
-        if req.wait_until == WaitUntil::NetworkIdle {
-            let capture = session.capture().await;
-            wait_for_network_idle(&capture).await;
         }
     }
 
@@ -308,9 +290,9 @@ async fn action(
     let ok = action_result.technical_success;
 
     // Build post-observation if capture_after and action succeeded.
+    // Quiescence wait (DOM-stable + network-idle) is applied inside
+    // build_observation, replacing the previous fixed 200ms sleep.
     let post_observation = if ok && req.capture_after {
-        // Brief pause for in-flight network requests to complete.
-        tokio::time::sleep(POST_ACTION_DRAIN_DELAY).await;
         Some(observe::build_observation(&session, req.action_seq, true, true, true, true, 20).await)
     } else {
         None
@@ -543,17 +525,6 @@ fn is_same_origin_path_hash_navigation(current: &str, target: &str) -> bool {
         && c.port() == t.port()
         && c.path() == t.path()
         && (c.fragment() != t.fragment() || t.fragment().is_some())
-}
-
-/// Wait for network idle by polling the capture collector's pending count.
-async fn wait_for_network_idle(capture: &Arc<crate::capture::CaptureCollector>) {
-    let deadline = tokio::time::Instant::now() + NETWORK_IDLE_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        if capture.pending_request_count() == 0 {
-            break;
-        }
-        tokio::time::sleep(NETWORK_IDLE_POLL).await;
-    }
 }
 
 /// Get the string representation of a `BrowserAction` kind.
