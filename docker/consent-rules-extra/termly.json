@@ -1,0 +1,134 @@
+{
+    "Termly": {
+        "detectors": [
+            {
+                "presentMatcher": [
+                    {
+                        "type": "css",
+                        "target": {
+                            "selector": "#termly-code-snippet-support"
+                        }
+                    }
+                ],
+                "showingMatcher": [
+                    {
+                        "type": "css",
+                        "target": {
+                            "selector": "#termly-code-snippet-support .t-consentPrompt",
+                            "displayFilter": true
+                        }
+                    }
+                ]
+            }
+        ],
+        "methods": [
+            {
+                "action": {
+                    "type": "hide",
+                    "target": {
+                        "selector": "#termly-code-snippet-support"
+                    }
+                },
+                "name": "HIDE_CMP"
+            },
+            {
+                "action": {
+                    "type": "click",
+                    "target": {
+                        "selector": "#termly-code-snippet-support .t-preference-button"
+                    }
+                },
+                "name": "OPEN_OPTIONS"
+            },
+            {
+                "action": {
+                    "type": "ifallownone",
+                    "trueAction": {
+                        "type": "click",
+                        "target": {
+                            "selector": "#termly-code-snippet-support .t-reject-all"
+                        }
+                    },
+                    "falseAction": {
+                        "type": "list",
+                        "actions": [
+                            {
+                                "type": "consent",
+                                "consents": [
+                                    {
+                                        "matcher": {
+                                            "type": "css",
+                                            "target": {
+                                                "selector": ".t-checkBox--performance.checked"
+                                            }
+                                        },
+                                        "toggleAction": {
+                                            "type": "click",
+                                            "target": {
+                                                "selector": ".t-checkBox--performance"
+                                            }
+                                        },
+                                        "type": "B"
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "consent",
+                                "consents": [
+                                    {
+                                        "matcher": {
+                                            "type": "css",
+                                            "target": {
+                                                "selector": ".t-checkBox--advertising.checked"
+                                            }
+                                        },
+                                        "toggleAction": {
+                                            "type": "click",
+                                            "target": {
+                                                "selector": ".t-checkBox--advertising"
+                                            }
+                                        },
+                                        "type": "F"
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "consent",
+                                "consents": [
+                                    {
+                                        "matcher": {
+                                            "type": "css",
+                                            "target": {
+                                                "selector": ".t-checkBox--social_networking.checked"
+                                            }
+                                        },
+                                        "toggleAction": {
+                                            "type": "click",
+                                            "target": {
+                                                "selector": ".t-checkBox--social_networking"
+                                            }
+                                        },
+                                        "type": "A"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                "name": "DO_CONSENT"
+            },
+            {
+                "action": {
+                    "type": "click",
+                    "target": {
+                        "selector": "#termly-code-snippet-support .t-saveButton"
+                    }
+                },
+                "name": "SAVE_CONSENT"
+            },
+            {
+                "name": "UTILITY"
+            }
+        ]
+    }
+}
