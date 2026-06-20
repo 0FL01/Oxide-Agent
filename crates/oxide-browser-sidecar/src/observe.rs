@@ -1,11 +1,8 @@
 //! Observation building — concurrent a11y + screenshot + URL/title + DOM.
 //!
-//! Replaces the Python sidecar's `build_observation` function. Runs the three
-//! primary CDP commands (a11y snapshot, screenshot, URL/title eval) concurrently
-//! on the single session WebSocket (~1.6x speedup vs sequential, verified in
-//! CP0). DOM snapshot runs separately when `include_dom=true`.
-//!
-//! Before any capture, [`wait_for_page_quiescence`] waits for DOM stability +
+//! All four capture channels run concurrently via `tokio::join!` so they
+//! observe the same DOM state. Before any capture, [`wait_for_page_quiescence`]
+//! waits for DOM stability (MutationObserver age + fingerprint unchanged) +
 //! network idle so SPA post-navigate snapshots are not racy.
 
 use std::time::Duration;
@@ -20,7 +17,7 @@ use crate::screenshot;
 use crate::session::BrowserSession;
 use crate::snapshot;
 
-/// CDP timeout for URL/title eval.
+/// CDP timeout for URL/title and quiescence probe eval.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Maximum time to wait for page quiescence before proceeding with observation.
@@ -30,74 +27,102 @@ const EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// state rather than hanging.
 const QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Duration the DOM fingerprint and network pending count must remain unchanged
-/// before the page is considered quiescent.
-///
-/// 500ms catches SPA renders that happen shortly after `Page.loadEventFired`.
-/// Verified on real Chromium: a setTimeout(500)-based form render changes the
-/// fingerprint at T+500, resetting the timer before the quiet window elapses.
+/// Duration the DOM must remain mutation-free (MutationObserver age) AND the
+/// fingerprint unchanged AND no pending network requests before the page is
+/// considered quiescent.
 const QUIESCENCE_QUIET_WINDOW: Duration = Duration::from_millis(500);
 
 /// Poll interval for quiescence checks.
 const QUIESCENCE_POLL: Duration = Duration::from_millis(50);
 
-/// JavaScript expression that produces a compact DOM fingerprint.
+/// JavaScript expression that sets up a MutationObserver and returns a
+/// quiescence probe result.
 ///
-/// Returns a JSON string with three integer fields:
-/// - `els`: total element count
-/// - `interactive`: count of interactive elements (same selectors as DOM snapshot)
-/// - `text`: `document.body.textContent.length`
+/// Lazily installs a `MutationObserver` on `document.documentElement` that
+/// records the timestamp of every DOM mutation. On each call, returns a JSON
+/// string with:
+/// - `age`: milliseconds since the last DOM mutation (primary quiescence signal)
+/// - `fp`: structural fingerprint (element count + interactive count + text length)
 ///
-/// Two fingerprints are equal iff the DOM has not structurally changed between
-/// samples. This is a structural signal, not a text search — it detects SPA
-/// renders, route changes, and dynamic content injection without knowing
-/// page-specific selectors.
-const DOM_FINGERPRINT_EXPR: &str = r#"JSON.stringify({
-  els: document.getElementsByTagName('*').length,
-  interactive: document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[data-clipboard-text]').length,
-  text: (document.body && document.body.textContent) ? document.body.textContent.length : 0
-})"#;
+/// The MutationObserver catches ALL DOM mutations regardless of trigger
+/// mechanism (setTimeout, requestAnimationFrame, microtask, async callback) —
+/// unlike fingerprint polling which only samples every 50ms and can miss
+/// mutations between polls.
+///
+/// The observer persists in the isolated world's global for the lifetime of the
+/// execution context. After navigation, the context is recreated and the
+/// observer is re-installed on first call.
+///
+/// `age = 0` on first call (just installed) grows naturally: if no mutations
+/// occur, `age` increases by the poll interval each call. If a mutation occurs,
+/// `age` resets to 0. Quiescence requires `age >= QUIESCENCE_QUIET_WINDOW`.
+const QUIESCENCE_PROBE_EXPR: &str = r#"(() => {
+  if (!window.__oxideQuiescence) {
+    let lastMutation = Date.now();
+    try {
+      const observer = new MutationObserver(function() { lastMutation = Date.now(); });
+      observer.observe(document.documentElement || document.body, {
+        childList: true, subtree: true, attributes: true, characterData: true
+      });
+    } catch(e) {}
+    window.__oxideQuiescence = { getLastMutation: function() { return lastMutation; } };
+  }
+  const age = Date.now() - window.__oxideQuiescence.getLastMutation();
+  const fp = JSON.stringify({
+    els: document.getElementsByTagName('*').length,
+    interactive: document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[data-clipboard-text]').length,
+    text: (document.body && document.body.textContent) ? document.body.textContent.length : 0
+  });
+  return JSON.stringify({ age: age, fp: fp });
+})()"#;
 
-/// Whether the page is quiescent given the current fingerprint, the last
-/// fingerprint, and the pending network request count.
-///
-/// Extracted as a pure function for unit testing. Conditions:
-/// 1. Current fingerprint is `Some` (eval succeeded, page is readable).
-/// 2. Fingerprint unchanged since the last sample.
-/// 3. No pending network requests (in-flight requests may inject DOM changes).
-fn is_quiescent_signal(
-    current_fp: &Option<String>,
-    last_fp: &Option<String>,
-    pending: usize,
-) -> bool {
-    current_fp.is_some() && current_fp == last_fp && pending == 0
+/// Parsed quiescence probe result.
+#[derive(Debug, Clone)]
+struct QuiescenceProbe {
+    age_ms: u64,
+    fingerprint: Option<String>,
 }
 
-/// Evaluate the DOM fingerprint expression in the isolated world (with
+/// Whether the page is quiescent given the probe, the last fingerprint, and the
+/// pending network request count.
+///
+/// Extracted as a pure function for unit testing. Conditions:
+/// 1. MutationObserver age >= quiet window (no DOM mutations recently).
+/// 2. Fingerprint is `Some` and unchanged since the last sample.
+/// 3. No pending network requests (in-flight requests may inject DOM changes).
+fn is_quiescent_signal(probe: &QuiescenceProbe, last_fp: &Option<String>, pending: usize) -> bool {
+    probe.age_ms >= QUIESCENCE_QUIET_WINDOW.as_millis() as u64
+        && probe.fingerprint.is_some()
+        && &probe.fingerprint == last_fp
+        && pending == 0
+}
+
+/// Evaluate the quiescence probe expression in the isolated world (with
 /// main-world fallback).
 ///
 /// Returns `None` on CDP error or JS exception (page navigating, execution
 /// context destroyed). `None` is treated as "not stable" by the quiescence
 /// loop.
-///
-/// Running in the isolated world hides the `querySelectorAll` / DOM query
-/// from page JS that may have monkey-patched `document.querySelectorAll` to
-/// detect automation.
-async fn get_dom_fingerprint(cdp: &CdpClient, context_id: Option<u64>) -> Option<String> {
-    cdp.eval_readonly(context_id, DOM_FINGERPRINT_EXPR, EVAL_TIMEOUT)
+async fn get_quiescence_probe(cdp: &CdpClient, context_id: Option<u64>) -> Option<QuiescenceProbe> {
+    let value = cdp
+        .eval_readonly(context_id, QUIESCENCE_PROBE_EXPR, EVAL_TIMEOUT)
         .await
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .ok()?;
+    let json_str = value.as_str()?;
+    let parsed: Value = serde_json::from_str(json_str).ok()?;
+    Some(QuiescenceProbe {
+        age_ms: parsed.get("age")?.as_u64()?,
+        fingerprint: parsed.get("fp")?.as_str().map(|s| s.to_string()),
+    })
 }
 
-/// Wait for page quiescence: DOM fingerprint stable for `QUIESCENCE_QUIET_WINDOW`
-/// AND no pending network requests.
+/// Wait for page quiescence: MutationObserver age >= quiet window AND
+/// fingerprint unchanged AND no pending network requests.
 ///
-/// Replaces the previous `Page.loadEventFired`-only wait and fixed sleeps. SPA
-/// pages often render interactive elements after `loadEventFired` (via
-/// setTimeout, microtask, or fetch callback); the quiescence gate ensures the
-/// snapshot is taken after the DOM has settled, not after the browser's load
-/// event.
+/// The MutationObserver continuously records all DOM mutations (not just
+/// sampled fingerprints), making `age` an exact "time since last mutation"
+/// signal. The fingerprint is a belt-and-suspenders check for CSS-only visual
+/// changes that don't trigger MutationObserver.
 ///
 /// On timeout, proceeds with the current state — does not fail the observation.
 /// This handles pages with persistent connections (SSE, long-polling) where
@@ -109,18 +134,18 @@ async fn wait_for_page_quiescence(
 ) {
     let deadline = tokio::time::Instant::now() + QUIESCENCE_TIMEOUT;
     let mut last_fp: Option<String> = None;
-    let mut last_change = tokio::time::Instant::now();
+    let mut quiescent_since = tokio::time::Instant::now();
 
     loop {
-        let fp = get_dom_fingerprint(cdp, context_id).await;
+        let probe = get_quiescence_probe(cdp, context_id).await;
         let pending = capture.pending_request_count();
 
-        if !is_quiescent_signal(&fp, &last_fp, pending) {
-            last_change = tokio::time::Instant::now();
-            last_fp = fp;
+        if !is_quiescent_signal(&probe_or_default(&probe), &last_fp, pending) {
+            quiescent_since = tokio::time::Instant::now();
+            last_fp = probe.as_ref().and_then(|p| p.fingerprint.clone());
         }
 
-        if last_change.elapsed() >= QUIESCENCE_QUIET_WINDOW {
+        if quiescent_since.elapsed() >= QUIESCENCE_QUIET_WINDOW {
             break;
         }
 
@@ -132,11 +157,19 @@ async fn wait_for_page_quiescence(
     }
 }
 
+/// Return a default probe (age 0, no fingerprint) when the eval fails.
+fn probe_or_default(probe: &Option<QuiescenceProbe>) -> QuiescenceProbe {
+    probe.clone().unwrap_or(QuiescenceProbe {
+        age_ms: 0,
+        fingerprint: None,
+    })
+}
+
 /// Build a full `BrowserObservation` from the current page state.
 ///
-/// Runs a11y snapshot + screenshot + URL/title concurrently via `tokio::join!`,
-/// then optionally captures DOM snapshot, drains network/console, merges into
-/// history, and builds summaries.
+/// Runs a11y snapshot + screenshot + URL/title + DOM snapshot concurrently via
+/// `tokio::join!` so all four channels observe the same DOM state. Then drains
+/// network/console, merges into history, and builds summaries.
 ///
 /// When `fresh=false`, returns the cached last observation if available.
 pub async fn build_observation(
@@ -158,21 +191,32 @@ pub async fn build_observation(
     let viewport = session.viewport;
     let context_id = session.isolated_context_id().await;
 
-    // Wait for page quiescence before capturing — DOM fingerprint stable +
-    // network idle. Prevents racy snapshots on SPA pages where interactive
-    // elements appear after `Page.loadEventFired`.
+    // Wait for page quiescence before capturing — MutationObserver age +
+    // fingerprint stable + network idle. Prevents racy snapshots on SPA pages
+    // where interactive elements appear after `Page.loadEventFired`.
     wait_for_page_quiescence(&cdp, &capture, context_id).await;
 
-    // Concurrent: a11y snapshot + screenshot + URL/title eval.
+    // Concurrent: a11y snapshot + screenshot + URL/title + DOM snapshot.
+    // All four CDP commands are sent near-simultaneously and capture the same
+    // DOM state. Moving DOM into the join eliminates the desync where the DOM
+    // snapshot could lag behind the screenshot by 100-500ms.
     let screenshot_id = format!("shot-{}-{}", session.id, session.next_screenshot_seq());
 
-    let (snapshot_result, screenshot_result, url_title) = tokio::join!(
+    let (snapshot_result, screenshot_result, url_title, dom_result) = tokio::join!(
         snapshot::take_snapshot(&cdp),
         screenshot::capture_screenshot(&cdp, viewport, &session.artifact_root, &screenshot_id),
         get_url_title(&cdp, context_id),
+        async {
+            if include_dom {
+                dom::capture_dom_snapshot(&cdp, context_id).await
+            } else {
+                (Some(Vec::<DomSnapshotNode>::new()), None)
+            }
+        },
     );
 
     let (screenshot_artifact, screenshot_bytes) = screenshot_result;
+    let (dom_snapshot, dom_snapshot_error) = dom_result;
 
     // Store bytes in-memory for the binary screenshot endpoint (no disk I/O).
     session.set_latest_screenshot_bytes(screenshot_bytes);
@@ -203,13 +247,6 @@ pub async fn build_observation(
     } else {
         session.set_title(&title);
         title
-    };
-
-    // DOM snapshot (if requested) — runs after concurrent batch.
-    let (dom_snapshot, dom_snapshot_error) = if include_dom {
-        dom::capture_dom_snapshot(&cdp, context_id).await
-    } else {
-        (Some(Vec::<DomSnapshotNode>::new()), None)
     };
 
     // Drain network + console from capture collector.
@@ -383,41 +420,74 @@ mod tests {
     // ── Quiescence unit tests ───────────────────────────────────────────
 
     #[test]
-    fn dom_fingerprint_expr_contains_key_selectors() {
-        assert!(DOM_FINGERPRINT_EXPR.contains("getElementsByTagName('*')"));
-        assert!(DOM_FINGERPRINT_EXPR.contains("querySelectorAll"));
-        assert!(DOM_FINGERPRINT_EXPR.contains("textarea"));
-        assert!(DOM_FINGERPRINT_EXPR.contains("button"));
-        assert!(DOM_FINGERPRINT_EXPR.contains("textContent"));
-        assert!(DOM_FINGERPRINT_EXPR.contains("JSON.stringify"));
+    fn quiescence_probe_expr_installs_mutation_observer() {
+        assert!(QUIESCENCE_PROBE_EXPR.contains("MutationObserver"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("childList: true"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("subtree: true"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("attributes: true"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("characterData: true"));
     }
 
     #[test]
-    fn quiescent_signal_requires_fingerprint_and_no_pending() {
+    fn quiescence_probe_expr_returns_age_and_fingerprint() {
+        assert!(
+            QUIESCENCE_PROBE_EXPR.contains("\"age\"") || QUIESCENCE_PROBE_EXPR.contains("age:")
+        );
+        assert!(QUIESCENCE_PROBE_EXPR.contains("\"fp\"") || QUIESCENCE_PROBE_EXPR.contains("fp:"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("getElementsByTagName('*')"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("querySelectorAll"));
+        assert!(QUIESCENCE_PROBE_EXPR.contains("textContent"));
+    }
+
+    #[test]
+    fn quiescent_signal_requires_age_fingerprint_and_no_pending() {
+        let probe = QuiescenceProbe {
+            age_ms: 600,
+            fingerprint: Some("abc".to_string()),
+        };
         let fp = Some("abc".to_string());
-        assert!(is_quiescent_signal(&fp, &fp, 0));
+        assert!(is_quiescent_signal(&probe, &fp, 0));
+    }
+
+    #[test]
+    fn quiescent_signal_rejects_age_below_quiet_window() {
+        let probe = QuiescenceProbe {
+            age_ms: 499,
+            fingerprint: Some("abc".to_string()),
+        };
+        let fp = Some("abc".to_string());
+        assert!(!is_quiescent_signal(&probe, &fp, 0));
     }
 
     #[test]
     fn quiescent_signal_rejects_pending_requests() {
+        let probe = QuiescenceProbe {
+            age_ms: 600,
+            fingerprint: Some("abc".to_string()),
+        };
         let fp = Some("abc".to_string());
-        assert!(!is_quiescent_signal(&fp, &fp, 1));
-        assert!(!is_quiescent_signal(&fp, &fp, 5));
+        assert!(!is_quiescent_signal(&probe, &fp, 1));
+        assert!(!is_quiescent_signal(&probe, &fp, 5));
     }
 
     #[test]
     fn quiescent_signal_rejects_changed_fingerprint() {
-        let fp_a = Some("abc".to_string());
+        let probe = QuiescenceProbe {
+            age_ms: 600,
+            fingerprint: Some("abc".to_string()),
+        };
         let fp_b = Some("def".to_string());
-        assert!(!is_quiescent_signal(&fp_a, &fp_b, 0));
-        assert!(!is_quiescent_signal(&fp_b, &fp_a, 0));
+        assert!(!is_quiescent_signal(&probe, &fp_b, 0));
     }
 
     #[test]
     fn quiescent_signal_rejects_missing_fingerprint() {
+        let probe = QuiescenceProbe {
+            age_ms: 600,
+            fingerprint: None,
+        };
         let fp = Some("abc".to_string());
-        assert!(!is_quiescent_signal(&None, &None, 0));
-        assert!(!is_quiescent_signal(&None, &fp, 0));
-        assert!(!is_quiescent_signal(&fp, &None, 0));
+        assert!(!is_quiescent_signal(&probe, &fp, 0));
+        assert!(!is_quiescent_signal(&probe, &None, 0));
     }
 }

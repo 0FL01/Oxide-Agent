@@ -36,6 +36,24 @@ setTimeout(function() {\
 </script>\
 </body></html>";
 
+/// SPA page where hydration is delayed beyond the 500ms quiet window. The
+/// shell DOM is stable for >500ms, which would fool pure fingerprint polling.
+/// The MutationObserver catches the late mutation and resets the age timer.
+const SPA_LATE_HYDRATION_PAGE: &str = "data:text/html,\
+<!DOCTYPE html>\
+<html><head><title>SPA Late Hydration Test</title></head>\
+<body>\
+<div id='app'><h1>Loading...</h1></div>\
+<script>\
+setTimeout(function() {\
+  document.getElementById('app').innerHTML =\
+  '<h1>Contact Form</h1>' +\
+  '<textarea id=\"msg\" placeholder=\"Message\"></textarea>' +\
+  '<button id=\"submit\">Submit</button>';\
+}, 1200);\
+</script>\
+</body></html>";
+
 /// Static page used as session start_url so the SPA page is only loaded via
 /// `/goto`, ensuring `loadEventFired` + quiescence is tested fresh.
 const STATIC_START_PAGE: &str = "data:text/html,<html><body><h1>Start</h1></body></html>";
@@ -158,6 +176,51 @@ async fn quiescence_catches_spa_post_navigate_render() {
         assert!(
             button_count >= 1,
             "iteration {i}: button missing — quiescence gate did not wait for SPA render"
+        );
+
+        // Clean up.
+        let _ = http
+            .post(format!("{base}/sessions/{session_id}/close"))
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .json(&serde_json::json!({"reason": "test_complete"}))
+            .send()
+            .await;
+    }
+}
+
+/// Verify: goto to an SPA page where form appears 1200ms after load (beyond
+/// the 500ms quiet window) returns an observation with textarea and button.
+///
+/// The shell DOM is stable for >500ms after load, which would fool pure
+/// fingerprint polling. The MutationObserver catches the late mutation at
+/// T+1200, resets the age timer, and quiescence passes at T+1700.
+#[tokio::test]
+#[ignore = "requires Chromium binary"]
+async fn quiescence_catches_late_spa_hydration_beyond_quiet_window() {
+    let base = start_server().await;
+    let http = auth_client();
+
+    for i in 0..3 {
+        let session_id = create_session(&base, &http).await;
+        let observation =
+            goto_with_capture(&base, &http, &session_id, SPA_LATE_HYDRATION_PAGE).await;
+
+        let textarea_count = count_dom_elements(&observation, "textarea");
+        let button_count = count_dom_elements(&observation, "button");
+
+        println!("[late iteration {i}] textarea={textarea_count}, button={button_count}");
+        println!(
+            "[late iteration {i}] dom_snapshot: {}",
+            serde_json::to_string_pretty(&observation["dom_snapshot"]).unwrap_or_default()
+        );
+
+        assert!(
+            textarea_count >= 1,
+            "late iteration {i}: textarea missing — quiescence gate did not wait for late SPA hydration"
+        );
+        assert!(
+            button_count >= 1,
+            "late iteration {i}: button missing — quiescence gate did not wait for late SPA hydration"
         );
 
         // Clean up.
