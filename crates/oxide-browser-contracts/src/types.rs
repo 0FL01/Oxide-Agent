@@ -494,6 +494,101 @@ pub enum BrowserAction {
     },
 }
 
+/// All valid action kind strings, comma-separated for error messages.
+const VALID_ACTION_KINDS: &str = "click_xy, click_selector, fill, type_text, press, scroll, get_element_value, execute_javascript, wait, wait_for_selector, wait_for_text, script, navigate";
+
+/// Required fields for each action kind (excluding `kind` itself).
+fn required_fields(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "click_xy" => Some(&["x", "y"]),
+        "click_selector" => Some(&["selector"]),
+        "fill" => Some(&["selector", "value"]),
+        "type_text" => Some(&["selector", "value"]),
+        "press" => Some(&["key"]),
+        "scroll" => Some(&["delta_x", "delta_y"]),
+        "get_element_value" => Some(&["selector"]),
+        "execute_javascript" => Some(&["expression"]),
+        "wait" => Some(&["timeout_ms"]),
+        "wait_for_selector" => Some(&["selector", "timeout_ms"]),
+        "wait_for_text" => Some(&["text", "timeout_ms"]),
+        "script" => Some(&["steps"]),
+        "navigate" => Some(&["url"]),
+        _ => None,
+    }
+}
+
+/// Validates a raw JSON `action` value for human-readable error messages before
+/// serde deserialization.
+///
+/// Returns `Ok(())` if the action has a known `kind` and all required fields are
+/// present. Recurses into `script` steps. Does **not** check field types or
+/// unknown fields — serde's `deny_unknown_fields` and type checking remain the
+/// final authority.
+///
+/// # Errors
+///
+/// Returns a human-readable diagnostic string suitable for LLM consumption.
+pub fn validate_action_fields(action: &Value) -> Result<(), String> {
+    validate_action_fields_inner(action, None)
+}
+
+fn validate_action_fields_inner(action: &Value, script_path: Option<usize>) -> Result<(), String> {
+    let prefix = match script_path {
+        Some(idx) => format!("script step {idx}: "),
+        None => String::new(),
+    };
+
+    let Some(obj) = action.as_object() else {
+        return Err(format!("{prefix}action must be a JSON object"));
+    };
+
+    let Some(kind) = obj.get("kind").and_then(Value::as_str) else {
+        return Err(format!(
+            "{prefix}action is missing \"kind\" field or it is not a string.\n\
+             Valid kinds: {VALID_ACTION_KINDS}."
+        ));
+    };
+
+    let Some(required) = required_fields(kind) else {
+        return Err(format!(
+            "{prefix}unknown action kind \"{kind}\".\n\
+             Valid kinds: {VALID_ACTION_KINDS}."
+        ));
+    };
+
+    // Collect missing required fields.
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|field| !obj.contains_key(*field))
+        .collect();
+
+    if missing.is_empty() {
+        // Recurse into script steps.
+        if kind == "script"
+            && let Some(steps) = obj.get("steps").and_then(Value::as_array)
+        {
+            for (idx, step) in steps.iter().enumerate() {
+                validate_action_fields_inner(step, Some(idx))?;
+            }
+        }
+        return Ok(());
+    }
+
+    let fields_list = required.to_vec().join(", ");
+    let missing_list = missing
+        .iter()
+        .copied()
+        .map(|f| format!("\"{f}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "{prefix}action \"{kind}\" is missing required field{s} {missing_list}.\n\
+         Required fields for \"{kind}\": {fields_list}.",
+        s = if missing.len() == 1 { "" } else { "s" },
+    ))
+}
+
 /// Response from `POST /sessions/{id}/action`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActionResponse {
@@ -924,5 +1019,111 @@ mod tests {
             "unexpected": true
         }));
         assert!(fill_with_extra.is_err());
+    }
+
+    #[test]
+    fn validate_action_fields_accepts_valid_fill() {
+        let action = json!({"kind": "fill", "selector": "#email", "value": "hi"});
+        assert!(validate_action_fields(&action).is_ok());
+    }
+
+    #[test]
+    fn validate_action_fields_rejects_missing_value() {
+        let action = json!({"kind": "fill", "selector": "#email"});
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(
+            err.contains(r#"action "fill" is missing required field "value""#),
+            "got: {err}"
+        );
+        assert!(err.contains(r#"Required fields for "fill": selector, value"#));
+    }
+
+    #[test]
+    fn validate_action_fields_rejects_missing_selector() {
+        let action = json!({"kind": "click_selector"});
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains(r#"action "click_selector" is missing required field "selector""#));
+        assert!(err.contains(r#"Required fields for "click_selector": selector"#));
+    }
+
+    #[test]
+    fn validate_action_fields_rejects_unknown_kind() {
+        let action = json!({"kind": "type", "selector": "#q", "value": "hi"});
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains(r#"unknown action kind "type""#));
+        assert!(err.contains("click_xy"));
+        assert!(err.contains("navigate"));
+    }
+
+    #[test]
+    fn validate_action_fields_rejects_missing_kind() {
+        let action = json!({"selector": "#q", "value": "hi"});
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains(r#"action is missing "kind" field"#));
+    }
+
+    #[test]
+    fn validate_action_fields_rejects_non_object() {
+        let action = json!("not an object");
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains("action must be a JSON object"));
+    }
+
+    #[test]
+    fn validate_action_fields_reports_multiple_missing_fields() {
+        let action = json!({"kind": "wait_for_selector"});
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains(r#""selector""#));
+        assert!(err.contains(r#""timeout_ms""#));
+        assert!(err.contains(r#"Required fields for "wait_for_selector": selector, timeout_ms"#));
+    }
+
+    #[test]
+    fn validate_action_fields_recurses_into_script_steps() {
+        let action = json!({
+            "kind": "script",
+            "steps": [
+                {"kind": "fill", "selector": "#q"}
+            ]
+        });
+        let err = validate_action_fields(&action).expect_err("validation should fail");
+        assert!(err.contains("script step 0:"), "got: {err}");
+        assert!(err.contains(r#"action "fill" is missing required field "value""#));
+    }
+
+    #[test]
+    fn validate_action_fields_accepts_valid_script() {
+        let action = json!({
+            "kind": "script",
+            "steps": [
+                {"kind": "click_selector", "selector": "#btn"},
+                {"kind": "wait", "timeout_ms": 500}
+            ]
+        });
+        assert!(validate_action_fields(&action).is_ok());
+    }
+
+    #[test]
+    fn validate_action_fields_accepts_all_variants() {
+        let cases = [
+            json!({"kind": "click_xy", "x": 10, "y": 20}),
+            json!({"kind": "click_selector", "selector": "#a"}),
+            json!({"kind": "fill", "selector": "#a", "value": "v"}),
+            json!({"kind": "type_text", "selector": "#a", "value": "v"}),
+            json!({"kind": "press", "key": "Enter"}),
+            json!({"kind": "scroll", "delta_x": 0, "delta_y": 100}),
+            json!({"kind": "get_element_value", "selector": "#a"}),
+            json!({"kind": "execute_javascript", "expression": "1+1"}),
+            json!({"kind": "wait", "timeout_ms": 100}),
+            json!({"kind": "wait_for_selector", "selector": "#a", "timeout_ms": 100}),
+            json!({"kind": "wait_for_text", "text": "hi", "timeout_ms": 100}),
+            json!({"kind": "navigate", "url": "https://example.com"}),
+        ];
+        for case in &cases {
+            assert!(
+                validate_action_fields(case).is_ok(),
+                "expected ok for {case}"
+            );
+        }
     }
 }

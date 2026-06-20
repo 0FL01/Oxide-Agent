@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use axum::{
     Router,
+    body::Bytes,
     extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
@@ -34,6 +35,7 @@ use oxide_browser_contracts::{
     CreateSessionRequest, CreateSessionResponse, GotoRequest, GotoResponse, NavigationResult,
     NavigationStatus, NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, ObserveQuery,
     ObserveResponse, ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, SidecarErrorBody,
+    validate_action_fields,
 };
 use serde_json::json;
 use tracing::warn;
@@ -259,25 +261,89 @@ async fn observe(
 async fn action(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<ActionRequest>,
+    body: Bytes,
 ) -> Json<ActionResponse> {
     let request_id = session::new_request_id();
     let session_id = id.clone();
+
+    // Parse → validate → deserialize. Each stage produces a human-readable
+    // error envelope instead of axum's default 422 with raw serde text.
+    let raw: serde_json::Value = match serde_json::from_slice(body.as_ref()) {
+        Ok(value) => value,
+        Err(error) => {
+            return Json(ActionResponse {
+                request_id,
+                session_id,
+                ok: false,
+                action_result: failed_action_result(0, "unknown"),
+                post_observation: None,
+                error: Some(SidecarErrorBody {
+                    code: "invalid_action".to_string(),
+                    message: format!("request body is not valid JSON: {error}"),
+                    retryable: false,
+                    hint: None,
+                    details: serde_json::Value::Null,
+                }),
+            });
+        }
+    };
+
+    if let Some(action) = raw.get("action")
+        && let Err(message) = validate_action_fields(action)
+    {
+        let action_seq = raw
+            .get("action_seq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let kind = action
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        return Json(ActionResponse {
+            request_id,
+            session_id,
+            ok: false,
+            action_result: failed_action_result(action_seq, kind),
+            post_observation: None,
+            error: Some(SidecarErrorBody {
+                code: "invalid_action".to_string(),
+                message,
+                retryable: false,
+                hint: None,
+                details: serde_json::Value::Null,
+            }),
+        });
+    }
+
+    let req: ActionRequest = match serde_json::from_value(raw) {
+        Ok(req) => req,
+        Err(error) => {
+            return Json(ActionResponse {
+                request_id,
+                session_id,
+                ok: false,
+                action_result: failed_action_result(0, "unknown"),
+                post_observation: None,
+                error: Some(SidecarErrorBody {
+                    code: "invalid_action".to_string(),
+                    message: error.to_string(),
+                    retryable: false,
+                    hint: None,
+                    details: serde_json::Value::Null,
+                }),
+            });
+        }
+    };
 
     let Some(session) = state.sessions.get(&id).await else {
         return Json(ActionResponse {
             request_id,
             session_id,
             ok: false,
-            action_result: oxide_browser_contracts::ActionResult {
-                action_seq: req.action_seq,
-                kind: action_kind_str(&req.action),
-                status: ActionStatus::Failed,
-                duration_ms: 0,
-                technical_success: false,
-                hint: None,
-                result: None,
-            },
+            action_result: failed_action_result(
+                req.action_seq,
+                action_kind_str(&req.action).as_str(),
+            ),
             post_observation: None,
             error: Some(not_found_error()),
         });
@@ -505,6 +571,19 @@ fn not_found_error() -> SidecarErrorBody {
         retryable: false,
         hint: Some("start a new session".to_string()),
         details: serde_json::Value::Null,
+    }
+}
+
+/// Build a minimal `ActionResult` with `Failed` status for error envelopes.
+fn failed_action_result(action_seq: u64, kind: &str) -> oxide_browser_contracts::ActionResult {
+    oxide_browser_contracts::ActionResult {
+        action_seq,
+        kind: kind.to_string(),
+        status: ActionStatus::Failed,
+        duration_ms: 0,
+        technical_success: false,
+        hint: None,
+        result: None,
     }
 }
 

@@ -8,7 +8,7 @@ use super::types::{
     ActionRequest, BrowserAction, BrowserObservation, BrowserProfile, CloseReason,
     CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
     NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat,
-    ScreenshotQuery, Viewport,
+    ScreenshotQuery, Viewport, validate_action_fields,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -918,7 +918,7 @@ impl ToolExecutor for BrowserLiveToolExecutor {
                 (result.payload, result.image_attachment)
             }
             TOOL_BROWSER_EXECUTE => {
-                let args = parse_args::<ExecuteArgs>(&invocation)?;
+                let args = parse_execute_args(&invocation)?;
                 let result = self.provider.execute(&invocation, args).await?;
                 (result.payload, result.image_attachment)
             }
@@ -1049,6 +1049,24 @@ where
     T: for<'de> Deserialize<'de>,
 {
     serde_json::from_str(&invocation.raw_arguments)
+        .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))
+}
+
+/// Parses `browser_execute` arguments with human-readable action validation.
+///
+/// Pre-validates the `action` field via [`validate_action_fields`] before serde
+/// deserialization, so missing required fields produce actionable diagnostics
+/// (e.g. `action "fill" is missing required field "value"`) instead of raw
+/// serde positional errors (e.g. `missing field \`value\` at line 1 column 64`).
+fn parse_execute_args(invocation: &ToolInvocation) -> Result<ExecuteArgs, ToolRuntimeError> {
+    let raw: Value = serde_json::from_str(&invocation.raw_arguments)
+        .map_err(|error| ToolRuntimeError::InvalidArguments(format!("invalid JSON: {error}")))?;
+
+    if let Some(action) = raw.get("action") {
+        validate_action_fields(action).map_err(ToolRuntimeError::InvalidArguments)?;
+    }
+
+    serde_json::from_value::<ExecuteArgs>(raw)
         .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))
 }
 
@@ -2700,6 +2718,69 @@ mod tests {
             0,
             "test".to_string(),
         ))
+    }
+
+    #[test]
+    fn parse_execute_args_rejects_fill_without_value() {
+        let inv = invocation(
+            "browser_execute",
+            r##"{"session_id":"br-1","action":{"kind":"fill","selector":"#email"}}"##,
+        );
+        let err = parse_execute_args(&inv).expect_err("should fail");
+        let msg = match err {
+            ToolRuntimeError::InvalidArguments(msg) => msg,
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        };
+        assert!(
+            msg.contains(r#"action "fill" is missing required field "value""#),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_execute_args_rejects_unknown_kind() {
+        let inv = invocation(
+            "browser_execute",
+            r##"{"session_id":"br-1","action":{"kind":"type","selector":"#q","value":"hi"}}"##,
+        );
+        let err = parse_execute_args(&inv).expect_err("should fail");
+        let msg = match err {
+            ToolRuntimeError::InvalidArguments(msg) => msg,
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        };
+        assert!(msg.contains(r#"unknown action kind "type""#), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_execute_args_accepts_valid_fill() {
+        let inv = invocation(
+            "browser_execute",
+            r##"{"session_id":"br-1","action":{"kind":"fill","selector":"#email","value":"hi"}}"##,
+        );
+        let args = parse_execute_args(&inv).expect("should parse");
+        assert_eq!(args.session_id, "br-1");
+        assert_eq!(
+            args.action,
+            BrowserAction::Fill {
+                selector: "#email".to_string(),
+                value: "hi".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_execute_args_rejects_script_step_missing_field() {
+        let inv = invocation(
+            "browser_execute",
+            r##"{"session_id":"br-1","action":{"kind":"script","steps":[{"kind":"click_selector"}]}}"##,
+        );
+        let err = parse_execute_args(&inv).expect_err("should fail");
+        let msg = match err {
+            ToolRuntimeError::InvalidArguments(msg) => msg,
+            other => panic!("expected InvalidArguments, got {other:?}"),
+        };
+        assert!(msg.contains("script step 0:"), "got: {msg}");
+        assert!(msg.contains(r#"action "click_selector" is missing required field "selector""#));
     }
 
     async fn execute(executors: &[Arc<dyn ToolExecutor>], name: &str, args: &str) -> ToolOutput {
