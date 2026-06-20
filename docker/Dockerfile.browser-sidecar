@@ -52,11 +52,19 @@ RUN mkdir -p /opt/adblock \
     && curl -fsSL https://easylist.to/easylist/easyprivacy.txt -o /opt/adblock/easyprivacy.txt \
     && chown -R browser:browser /opt/adblock
 
+# Download Consent-O-Matic rules (204 CMP variants) for cookie consent
+# banner auto-dismissal. Enabled by default via CONSENT_AUTO_DISMISS.
+RUN mkdir -p /opt/consent \
+    && curl -fsSL https://raw.githubusercontent.com/cavi-au/Consent-O-Matic/master/Rules.json \
+        -o /opt/consent/rules.json \
+    && chown -R browser:browser /opt/consent
+
 COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
 
 ENV BROWSER_AGENT_SIDECAR_BIND=0.0.0.0:8787 \
     CHROMIUM_BIN=/usr/bin/chromium \
-    ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt
+    ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt \
+    CONSENT_FILTERS=/opt/consent/rules.json
 
 USER browser
 WORKDIR /home/browser
