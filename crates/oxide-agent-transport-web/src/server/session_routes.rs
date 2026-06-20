@@ -17,7 +17,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::persistence::WebSessionContextKeys;
-use crate::session::{WebSessionRuntimeOptions, web_session_sandbox_scope};
+use crate::session::{
+    WebSessionRuntimeOptions, web_session_sandbox_scope, web_task_pre_run_memory_flow_id,
+};
 
 use super::task_routes::{abort_task_handle, reject_active_task};
 use super::{
@@ -602,6 +604,18 @@ pub(crate) async fn api_delete_session(
             )
             .await
             .map_err(|error| backend_unavailable_response(error.to_string()))?;
+        for task in &tasks {
+            state
+                .session_manager
+                .storage()
+                .clear_agent_memory_for_flow(
+                    user.user_id,
+                    context_key.clone(),
+                    web_task_pre_run_memory_flow_id(&record.agent_flow_id, &task.task_id),
+                )
+                .await
+                .map_err(|error| backend_unavailable_response(error.to_string()))?;
+        }
         // Delete browser screenshot artifacts from Postgres BYTEA.
         state
             .session_manager

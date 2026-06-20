@@ -9,7 +9,7 @@ use axum::{
     response::Response,
 };
 use oxide_agent_core::agent::providers::sandbox::SandboxRuntime;
-use oxide_agent_core::agent::{AgentMessageAttachment, AgentUserInput};
+use oxide_agent_core::agent::{AgentMemory, AgentMessageAttachment, AgentUserInput};
 use oxide_agent_core::sandbox::SandboxFileOps;
 use oxide_agent_web_contracts::{
     CancelTaskResponse as ApiCancelTaskResponse, CreateTaskRequest as ApiCreateTaskRequest,
@@ -26,17 +26,17 @@ use std::path::Path as StdPath;
 use std::path::PathBuf as StdPathBuf;
 use std::time::Instant;
 
-use crate::session::{RunningTask, WebSessionRuntimeOptions};
+use crate::session::{RunningTask, WebSessionRuntimeOptions, web_task_pre_run_memory_flow_id};
 
 use super::task_executor::{self, TaskRunRequest, WebTaskPersistence};
 use super::{
     AppState, DEFAULT_TASK_EVENTS_LIMIT, EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, TaskEventsQuery,
     WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION, api_error, authenticated_user,
-    authenticated_user_with_csrf, auto_title, default_session_model_selection,
-    invalidate_session_summaries_cache, load_execution_profile_for_agent_profile_id,
-    load_owned_session, load_owned_task, markdown_preview, not_found_response,
-    store_error_response, task_detail_from_record, task_summary_from_record,
-    validate_task_input_with_attachments,
+    authenticated_user_with_csrf, auto_title, backend_unavailable_response,
+    default_session_model_selection, invalidate_session_summaries_cache,
+    load_execution_profile_for_agent_profile_id, load_owned_session, load_owned_task,
+    markdown_preview, not_found_response, store_error_response, task_detail_from_record,
+    task_summary_from_record, validate_task_input_with_attachments,
 };
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
@@ -243,59 +243,86 @@ async fn best_effort_copy_attachments_between_web_sandboxes(
     }
 }
 
-async fn best_effort_copy_agent_memory_between_contexts(
+async fn active_session_memory_snapshot(
+    state: &AppState,
+    session_id: &str,
+) -> Result<AgentMemory, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .session_manager
+        .clone_session_memory(session_id)
+        .await
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::BackendUnavailable,
+                "Runtime session memory is unavailable.",
+                true,
+            )
+        })
+}
+
+async fn save_agent_memory_snapshot_for_flow(
     state: &AppState,
     user_id: i64,
-    source_context_key: &str,
-    target_context_key: &str,
+    context_key: &str,
+    flow_id: String,
+    memory: &AgentMemory,
+    operation: &str,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(user_id, context_key.to_string(), flow_id, memory)
+        .await
+        .map_err(|error| backend_unavailable_response(format!("{operation}: {error}")))
+}
+
+async fn save_task_pre_run_memory_snapshot(
+    state: &AppState,
+    user_id: i64,
+    context_key: &str,
     agent_flow_id: &str,
-) {
-    if source_context_key == target_context_key {
-        return;
-    }
+    task_id: &str,
+    memory: &AgentMemory,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    save_agent_memory_snapshot_for_flow(
+        state,
+        user_id,
+        context_key,
+        web_task_pre_run_memory_flow_id(agent_flow_id, task_id),
+        memory,
+        "Failed to save task pre-run memory snapshot",
+    )
+    .await
+}
 
-    let storage = state.session_manager.storage();
-    let memory = match storage
-        .load_agent_memory_for_flow(
-            user_id,
-            source_context_key.to_string(),
-            agent_flow_id.to_string(),
-        )
+async fn load_task_pre_run_memory_snapshot(
+    state: &AppState,
+    user_id: i64,
+    context_key: &str,
+    agent_flow_id: &str,
+    task_id: &str,
+) -> Result<AgentMemory, (StatusCode, Json<ErrorEnvelope>)> {
+    let flow_id = web_task_pre_run_memory_flow_id(agent_flow_id, task_id);
+    let memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(user_id, context_key.to_string(), flow_id)
         .await
-    {
-        Ok(Some(memory)) => memory,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!(
-                user_id,
-                source_context_key,
-                target_context_key,
-                agent_flow_id,
-                error = %error,
-                "Could not load source web agent memory for task-version branch; continuing with empty branch memory"
-            );
-            return;
-        }
-    };
+        .map_err(|error| {
+            backend_unavailable_response(format!(
+                "Failed to load task pre-run memory snapshot: {error}"
+            ))
+        })?;
 
-    if let Err(error) = storage
-        .save_agent_memory_for_flow(
-            user_id,
-            target_context_key.to_string(),
-            agent_flow_id.to_string(),
-            &memory,
+    memory.ok_or_else(|| {
+        api_error(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            "Cannot edit this task because its pre-run memory snapshot is missing.",
+            false,
         )
-        .await
-    {
-        tracing::warn!(
-            user_id,
-            source_context_key,
-            target_context_key,
-            agent_flow_id,
-            error = %error,
-            "Could not save copied web agent memory for task-version branch; continuing with empty branch memory"
-        );
-    }
+    })
 }
 
 fn persisted_user_message_event(
@@ -661,9 +688,26 @@ pub(crate) async fn api_create_task(
     );
     phase_started_at = Instant::now();
 
+    let now = chrono::Utc::now();
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let pre_run_memory = active_session_memory_snapshot(&state, &session_id).await?;
+    save_task_pre_run_memory_snapshot(
+        &state,
+        user.user_id,
+        &session.context_key,
+        &session.agent_flow_id,
+        &task_id,
+        &pre_run_memory,
+    )
+    .await?;
+
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, execution_input.text_projection().to_string())
+        .register_task_with_id(
+            &session_id,
+            task_id.clone(),
+            execution_input.text_projection().to_string(),
+        )
         .await
     else {
         return Err(api_error(
@@ -682,8 +726,6 @@ pub(crate) async fn api_create_task(
         phase_started_at,
     );
 
-    let now = chrono::Utc::now();
-    let task_id = running_task.task_id.clone();
     phase_started_at = Instant::now();
 
     // Check whether this is the first task BEFORE saving the new one,
@@ -1137,7 +1179,34 @@ pub(crate) async fn api_create_task_version(
 
     let now = chrono::Utc::now();
     let source_context_key = session.context_key.clone();
+    let parent_pre_run_memory = load_task_pre_run_memory_snapshot(
+        &state,
+        user.user_id,
+        &source_context_key,
+        &session.agent_flow_id,
+        &parent_task.task_id,
+    )
+    .await?;
+    let version_task_id = uuid::Uuid::new_v4().to_string();
     let branch_context_key = web_task_version_context_key(&session_id);
+    save_agent_memory_snapshot_for_flow(
+        &state,
+        user.user_id,
+        &branch_context_key,
+        session.agent_flow_id.clone(),
+        &parent_pre_run_memory,
+        "Failed to seed task-version branch memory",
+    )
+    .await?;
+    save_task_pre_run_memory_snapshot(
+        &state,
+        user.user_id,
+        &branch_context_key,
+        &session.agent_flow_id,
+        &version_task_id,
+        &parent_pre_run_memory,
+    )
+    .await?;
     if session.context_keys.is_empty() {
         session.context_keys.push(session.context_key.clone());
     }
@@ -1153,20 +1222,16 @@ pub(crate) async fn api_create_task_version(
         &attachments,
     )
     .await;
-    best_effort_copy_agent_memory_between_contexts(
-        &state,
-        user.user_id,
-        &source_context_key,
-        &session.context_key,
-        &session.agent_flow_id,
-    )
-    .await;
     save_session_record(&state, session.clone()).await?;
 
     recreate_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, execution_input.text_projection().to_string())
+        .register_task_with_id(
+            &session_id,
+            version_task_id.clone(),
+            execution_input.text_projection().to_string(),
+        )
         .await
     else {
         return Err(api_error(
@@ -1185,7 +1250,6 @@ pub(crate) async fn api_create_task_version(
         .max()
         .unwrap_or(parent_task.effective_version_index())
         + 1;
-    let version_task_id = running_task.task_id.clone();
     let task = new_running_web_task_record(RunningWebTaskRecordInput {
         task_id: version_task_id.clone(),
         session_id: session_id.clone(),

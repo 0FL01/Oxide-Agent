@@ -280,18 +280,15 @@ impl MediaFileProvider {
 
             // Tier 2: Postgres BYTEA (browser-live screenshots persisted by
             // `BrowserLiveProvider::persist_latest_screenshot`).
-            if let Some(storage) = &self.storage {
-                if let Some(user_id) = self.user_id {
-                    let artifact =
-                        storage
-                            .load_browser_artifact(user_id, path)
-                            .await
-                            .map_err(|error| {
-                                anyhow!("Failed to load browser artifact {path}: {error}")
-                            })?;
-                    if let Some(data) = artifact {
-                        return Ok((path.to_string(), data.data, None));
-                    }
+            if let Some(storage) = &self.storage
+                && let Some(user_id) = self.user_id
+            {
+                let artifact = storage
+                    .load_browser_artifact(user_id, path)
+                    .await
+                    .map_err(|error| anyhow!("Failed to load browser artifact {path}: {error}"))?;
+                if let Some(data) = artifact {
+                    return Ok((path.to_string(), data.data, None));
                 }
             }
 

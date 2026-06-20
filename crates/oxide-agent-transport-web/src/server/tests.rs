@@ -68,7 +68,7 @@ use super::{
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task, api_update_session};
 use crate::auth::{login_user, register_user};
 use crate::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
-use crate::session::WebSessionManager;
+use crate::session::{WebSessionManager, web_task_pre_run_memory_flow_id};
 
 #[derive(Clone, Default)]
 struct FakeSandboxControl {
@@ -2538,7 +2538,11 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .expect("session exists");
     let original_context_key = original_session.context_key.clone();
     let agent_flow_id = original_session.agent_flow_id.clone();
-    let mut source_memory = AgentMemory::new(usize::MAX);
+    let mut pre_run_memory = AgentMemory::new(usize::MAX);
+    pre_run_memory.add_message(AgentMessage::user_task("Previous prompt"));
+    pre_run_memory.add_message(AgentMessage::assistant("Previous answer"));
+
+    let mut source_memory = pre_run_memory.clone();
     source_memory.add_message(AgentMessage::user_task("Original prompt"));
     source_memory.add_message(AgentMessage::assistant("Original answer"));
     state
@@ -2552,6 +2556,17 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         )
         .await
         .expect("save original flow memory");
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user_one.user_id,
+            original_context_key.clone(),
+            web_task_pre_run_memory_flow_id(&agent_flow_id, "task-completed"),
+            &pre_run_memory,
+        )
+        .await
+        .expect("save pre-run flow memory");
 
     let completed = task_record(
         user_one.user_id,
@@ -2606,15 +2621,39 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .load_agent_memory_for_flow(
             user_one.user_id,
             edited_session.context_key.clone(),
-            agent_flow_id,
+            agent_flow_id.clone(),
         )
         .await
         .expect("load branch flow memory")
-        .expect("branch memory should be copied from source context");
+        .expect("branch memory should be seeded from parent pre-run snapshot");
     let branch_messages = branch_memory.get_messages();
     assert!(branch_messages.len() >= 2);
-    assert_eq!(branch_messages[0].content, "Original prompt");
-    assert_eq!(branch_messages[1].content, "Original answer");
+    assert_eq!(branch_messages[0].content, "Previous prompt");
+    assert_eq!(branch_messages[1].content, "Previous answer");
+    assert!(branch_messages.iter().all(
+        |message| message.content != "Original prompt" && message.content != "Original answer"
+    ));
+
+    let version_pre_run_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            edited_session.context_key.clone(),
+            web_task_pre_run_memory_flow_id(&agent_flow_id, &versioned.task.task_id),
+        )
+        .await
+        .expect("load version pre-run memory")
+        .expect("version pre-run memory should be saved");
+    assert_eq!(version_pre_run_memory.get_messages().len(), 2);
+    assert_eq!(
+        version_pre_run_memory
+            .get_messages()
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Previous prompt", "Previous answer"]
+    );
     assert!(
         sandbox_control
             .list_user_sandboxes(user_one.user_id)
@@ -2794,6 +2833,17 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
         )
         .await
         .expect("save original memory");
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user.user_id,
+            original_context_key.clone(),
+            web_task_pre_run_memory_flow_id(&flow_id, "task-completed"),
+            &memory,
+        )
+        .await
+        .expect("save original pre-run memory");
 
     let completed = task_record(
         user.user_id,
@@ -2809,7 +2859,7 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
         .await
         .expect("save completed task");
 
-    let axum::Json(_versioned) = api_create_task_version(
+    let axum::Json(versioned) = api_create_task_version(
         axum::extract::State(state.clone()),
         auth_headers(&token, Some(&auth_session.csrf_token)),
         axum::extract::Path((session_id.clone(), "task-completed".to_string())),
@@ -2862,6 +2912,23 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
                 .is_none(),
             "delete session should clear flow memory for context {context_key}"
         );
+
+        for task_id in ["task-completed", versioned.task.task_id.as_str()] {
+            assert!(
+                state
+                    .session_manager
+                    .storage()
+                    .load_agent_memory_for_flow(
+                        user.user_id,
+                        context_key.clone(),
+                        web_task_pre_run_memory_flow_id(&flow_id, task_id),
+                    )
+                    .await
+                    .expect("load pre-run memory")
+                    .is_none(),
+                "delete session should clear pre-run memory for context {context_key} task {task_id}"
+            );
+        }
     }
     let destroyed_names = sandbox_control
         .destroyed_scopes()
@@ -3472,6 +3539,12 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     .await
     .expect("create session");
     let session_id = created_session.session.session_id;
+    let created_session_record = state
+        .web_store
+        .load_session(user_one.user_id, &session_id)
+        .await
+        .expect("load created session")
+        .expect("created session exists");
 
     let axum::Json(created_task) = api_create_task(
         axum::extract::State(state.clone()),
@@ -3486,6 +3559,23 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     .await
     .expect("create task");
     let task_id = created_task.task.task_id;
+    let pre_run_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            created_session_record.context_key.clone(),
+            web_task_pre_run_memory_flow_id(&created_session_record.agent_flow_id, &task_id),
+        )
+        .await
+        .expect("load created task pre-run memory")
+        .expect("created task should persist pre-run memory");
+    assert!(
+        pre_run_memory
+            .get_messages()
+            .iter()
+            .all(|message| message.content != "Summarize this" && message.content != "ok")
+    );
 
     let completed = wait_for_task_status(
         &state,

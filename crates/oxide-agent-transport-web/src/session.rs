@@ -229,6 +229,10 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
+pub(crate) fn web_task_pre_run_memory_flow_id(agent_flow_id: &str, task_id: &str) -> String {
+    format!("{agent_flow_id}:web-task-pre-run:{task_id}")
+}
+
 fn parse_web_model_id(value: &str) -> Option<(String, String)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
@@ -534,6 +538,13 @@ impl WebSessionManager {
                         .is_none_or(std::vec::Vec::is_empty)
             })
             .map(|message| message.content.trim().to_string())
+    }
+
+    pub(crate) async fn clone_session_memory(&self, session_id: &str) -> Option<AgentMemory> {
+        let sid = self.resolve_session_id(session_id).await?;
+        let executor_arc = self.registry.get(&sid).await?;
+        let executor = executor_arc.read().await;
+        Some(executor.session().memory.clone())
     }
 
     // --- Session CRUD ---
@@ -871,6 +882,20 @@ impl WebSessionManager {
     ///
     /// Does NOT start execution — use `start_task_execution` for that.
     pub async fn register_task(&self, session_id: &str, task_text: String) -> Option<RunningTask> {
+        let task_id = Uuid::new_v4().to_string();
+        self.register_task_with_id(session_id, task_id, task_text)
+            .await
+    }
+
+    /// Register a new task with a caller-owned id and return the RunningTask handle.
+    ///
+    /// Does NOT start execution — use `start_task_execution` for that.
+    pub async fn register_task_with_id(
+        &self,
+        session_id: &str,
+        task_id: String,
+        task_text: String,
+    ) -> Option<RunningTask> {
         if let Some(sid) = self.resolve_session_id(session_id).await {
             self.registry.renew_cancellation_token(&sid).await;
         }
@@ -886,11 +911,10 @@ impl WebSessionManager {
             }
         }
 
-        let task_id = Uuid::new_v4().to_string();
         let task_meta = TaskMeta {
             task_id: task_id.clone(),
             session_id: session_id.to_string(),
-            task_text: task_text.clone(),
+            task_text,
             status: TaskStatus::Running,
             created_at: Utc::now(),
             finished_at: None,
