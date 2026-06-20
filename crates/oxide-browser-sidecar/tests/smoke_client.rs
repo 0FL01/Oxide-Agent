@@ -131,6 +131,7 @@ async fn smoke_test_browser_sidecar_client_contract() {
         force_reload: false,
         wait_until: WaitUntil::Load,
         timeout_ms: 30000,
+        action_seq: 1,
         capture_after: true,
     };
     let resp: Value = http

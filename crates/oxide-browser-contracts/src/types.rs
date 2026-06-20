@@ -164,6 +164,9 @@ pub struct GotoRequest {
     pub url: String,
     pub wait_until: WaitUntil,
     pub timeout_ms: u64,
+    /// Action sequence number from the core, used to stamp the post-navigation
+    /// observation so it can be correlated with the originating action.
+    pub action_seq: u64,
     #[serde(default)]
     pub capture_after: bool,
     /// Force a full page reload before navigating to the target URL.

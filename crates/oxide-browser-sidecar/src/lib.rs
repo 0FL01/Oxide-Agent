@@ -194,7 +194,7 @@ async fn goto(
 
     // Build observation if capture_after is true.
     let observation = if req.capture_after {
-        Some(observe::build_observation(&session, 0, true, true, true, true, 20).await)
+        Some(observe::build_observation(&session, req.action_seq, true, true, true, true, 20).await)
     } else {
         None
     };

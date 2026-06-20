@@ -32,6 +32,7 @@ pub fn plan_browser_action(
                 url,
                 wait_until: WaitUntil::DomContentLoaded,
                 timeout_ms: request_timeout_ms,
+                action_seq,
                 capture_after: true,
                 force_reload,
             })

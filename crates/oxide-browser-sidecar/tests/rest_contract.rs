@@ -95,6 +95,7 @@ async fn full_rest_contract_on_real_chromium() {
         url: TEST_PAGE.to_string(),
         wait_until: WaitUntil::Load,
         timeout_ms: 30_000,
+        action_seq: 1,
         capture_after: true,
         force_reload: false,
     };
@@ -342,6 +343,7 @@ async fn goto_force_reload_works() {
         url: TEST_PAGE.to_string(),
         wait_until: WaitUntil::Load,
         timeout_ms: 30_000,
+        action_seq: 1,
         capture_after: true,
         force_reload: true,
     };

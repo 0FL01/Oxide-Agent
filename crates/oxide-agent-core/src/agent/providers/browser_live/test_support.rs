@@ -276,6 +276,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
             let session = state.session_mut(session_id)?;
             session.url.clone_from(&request.url);
             session.title = title_for_url(&request.url);
+            session.action_seq = request.action_seq;
             session.observation_seq += 1;
             session.observation(session_id)
         };
@@ -725,6 +726,7 @@ mod tests {
                     url: "https://example.test/dashboard".to_string(),
                     wait_until: WaitUntil::DomContentLoaded,
                     timeout_ms: 5_000,
+                    action_seq: 0,
                     capture_after: true,
                     force_reload: false,
                 },

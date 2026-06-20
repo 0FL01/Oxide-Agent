@@ -98,6 +98,7 @@ async fn goto_with_capture(
         url: url.to_string(),
         wait_until: WaitUntil::Load,
         timeout_ms: 15_000,
+        action_seq: 0,
         capture_after: true,
         force_reload: false,
     };
