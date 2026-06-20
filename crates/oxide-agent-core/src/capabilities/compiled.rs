@@ -465,7 +465,8 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
             "tool/browser-observe",
             "tool/browser-step",
             "tool/browser-debug",
-            "tool/browser-close"
+            "tool/browser-close",
+            "tool/browser-save-screenshot"
         ]
     );
     push_module_with_requires!(
@@ -652,6 +653,7 @@ mod tests {
                 "tool/browser-close",
                 "tool/browser-debug",
                 "tool/browser-observe",
+                "tool/browser-save-screenshot",
                 "tool/browser-start",
                 "tool/browser-step"
             ]

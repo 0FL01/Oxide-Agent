@@ -19,6 +19,7 @@ use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
     ToolOutputImageAttachment, ToolRuntimeConfig, ToolRuntimeError,
 };
+use crate::sandbox::SandboxFileOps;
 use crate::storage::{BrowserArtifactRecord, StorageProvider};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -42,6 +43,8 @@ pub const TOOL_BROWSER_EXTRACT: &str = "browser_extract";
 pub const TOOL_BROWSER_DEBUG: &str = "browser_debug";
 /// `browser_close` tool name.
 pub const TOOL_BROWSER_CLOSE: &str = "browser_close";
+/// `browser_save_screenshot` tool name.
+pub const TOOL_BROWSER_SAVE_SCREENSHOT: &str = "browser_save_screenshot";
 
 /// Browser Live provider backing native tool executors.
 #[derive(Clone)]
@@ -58,6 +61,9 @@ pub struct BrowserLiveProvider {
     user_id: i64,
     /// Transport-agnostic session identifier for artifact deletion.
     context_key: String,
+    /// Sandbox file operations for saving screenshots to the sandbox.
+    /// `None` when no sandbox is available (tool returns an error).
+    fileops: Option<Arc<dyn SandboxFileOps>>,
 }
 
 /// Result returned by the `browser_observe` tool executor.
@@ -132,6 +138,7 @@ impl BrowserLiveProvider {
         storage: Arc<dyn StorageProvider>,
         user_id: i64,
         context_key: String,
+        fileops: Option<Arc<dyn SandboxFileOps>>,
     ) -> Result<Self, BrowserSidecarError> {
         Ok(Self::new(
             Arc::new(BrowserSidecarClient::new(base_url, token)?),
@@ -140,6 +147,7 @@ impl BrowserLiveProvider {
             Some(storage),
             user_id,
             context_key,
+            fileops,
         ))
     }
 
@@ -152,6 +160,7 @@ impl BrowserLiveProvider {
         storage: Option<Arc<dyn StorageProvider>>,
         user_id: i64,
         context_key: String,
+        fileops: Option<Arc<dyn SandboxFileOps>>,
     ) -> Self {
         Self {
             sidecar,
@@ -162,6 +171,7 @@ impl BrowserLiveProvider {
             storage,
             user_id,
             context_key,
+            fileops,
         }
     }
 
@@ -181,6 +191,7 @@ impl BrowserLiveProvider {
             TOOL_BROWSER_EXTRACT,
             TOOL_BROWSER_DEBUG,
             TOOL_BROWSER_CLOSE,
+            TOOL_BROWSER_SAVE_SCREENSHOT,
         ]
         .into_iter()
         .map(|tool| {
@@ -886,6 +897,90 @@ impl BrowserLiveProvider {
             "metrics": metrics,
         }))
     }
+
+    /// Save the latest screenshot of a browser session to the sandbox.
+    ///
+    /// Fetches raw JPEG bytes from the sidecar and writes them to the sandbox
+    /// filesystem via `SandboxFileOps`. This bridges browser-live screenshots
+    /// to sandbox-based tooling (ffmpeg, OCR, `describe_image_file`, etc.).
+    #[instrument(
+        name = "browser_save_screenshot",
+        skip(self, invocation, args),
+        fields(session_id = %args.session_id)
+    )]
+    async fn save_screenshot(
+        &self,
+        invocation: &ToolInvocation,
+        args: SaveScreenshotArgs,
+    ) -> Result<Value, ToolRuntimeError> {
+        ensure_not_cancelled(invocation)?;
+
+        let fileops = self.fileops.as_ref().ok_or_else(|| {
+            ToolRuntimeError::Failure("sandbox file operations are not available".to_string())
+        })?;
+
+        // Fetch latest screenshot bytes from sidecar.
+        let bytes = self
+            .measure_sidecar(self.sidecar.latest_screenshot_bytes(
+                &args.session_id,
+                &ScreenshotQuery {
+                    format: ScreenshotFormat::Binary,
+                    max_width: None,
+                    redacted: false,
+                },
+            ))
+            .await
+            .map_err(sidecar_runtime_error)?;
+
+        if bytes.is_empty() {
+            return Err(ToolRuntimeError::Failure(
+                "no screenshot available for this session".to_string(),
+            ));
+        }
+
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let byte_size = bytes.len() as u64;
+
+        // Determine target path and action_seq from session state.
+        let (action_seq, path) = {
+            let states = self.states.lock().await;
+            let state = states.get(&args.session_id).ok_or_else(|| {
+                ToolRuntimeError::Failure("browser session is not started".to_string())
+            })?;
+            let seq = state.action_seq();
+            let path = args
+                .path
+                .unwrap_or_else(|| format!("/workspace/browser-screenshots/step-{seq:04}.jpg"));
+            (seq, path)
+        };
+
+        fileops.write_file(&path, &bytes).await.map_err(|error| {
+            ToolRuntimeError::Failure(format!("failed to write screenshot to sandbox: {error}"))
+        })?;
+
+        self.emit_progress(format!(
+            "Browser screenshot saved session_id={} path={} bytes={}",
+            args.session_id, path, byte_size
+        ))
+        .await;
+
+        tracing::info!(
+            session_id = %args.session_id,
+            path = %path,
+            bytes = byte_size,
+            action_seq,
+            "browser screenshot saved to sandbox"
+        );
+
+        Ok(json!({
+            "status": "saved",
+            "session_id": args.session_id,
+            "path": path,
+            "bytes_written": byte_size,
+            "sha256": sha256,
+            "action_seq": action_seq,
+        }))
+    }
 }
 
 struct BrowserLiveToolExecutor {
@@ -934,6 +1029,13 @@ impl ToolExecutor for BrowserLiveToolExecutor {
             TOOL_BROWSER_CLOSE => {
                 let args = parse_args::<CloseArgs>(&invocation)?;
                 (self.provider.close(&invocation, args).await?, None)
+            }
+            TOOL_BROWSER_SAVE_SCREENSHOT => {
+                let args = parse_args::<SaveScreenshotArgs>(&invocation)?;
+                (
+                    self.provider.save_screenshot(&invocation, args).await?,
+                    None,
+                )
             }
             other => {
                 return Err(ToolRuntimeError::Internal(format!(
@@ -1043,6 +1145,13 @@ struct CloseArgs {
     keep_artifacts: Option<bool>,
     #[serde(default)]
     reason: Option<CloseReason>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveScreenshotArgs {
+    session_id: String,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 fn parse_args<T>(invocation: &ToolInvocation) -> Result<T, ToolRuntimeError>
@@ -1475,6 +1584,18 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                 "additionalProperties": false
             }),
         ),
+        TOOL_BROWSER_SAVE_SCREENSHOT => (
+            "Save the latest screenshot of a browser session to the sandbox filesystem as a JPEG file. Use this to make screenshots available to sandbox tools (ffmpeg, OCR, describe_image_file, etc.) or to download them later. Call browser_observe or browser_execute first to capture a screenshot.",
+            json!({
+                "type": "object",
+                "required": ["session_id"],
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "path": {"type": "string", "description": "Destination path in the sandbox (relative or absolute). Defaults to /workspace/browser-screenshots/step-NNNN.jpg"}
+                },
+                "additionalProperties": false
+            }),
+        ),
         _ => ("Unknown browser tool.", json!({"type": "object"})),
     };
     crate::llm::ToolDefinition {
@@ -1735,7 +1856,8 @@ mod tests {
                 TOOL_BROWSER_EXECUTE,
                 TOOL_BROWSER_EXTRACT,
                 TOOL_BROWSER_DEBUG,
-                TOOL_BROWSER_CLOSE
+                TOOL_BROWSER_CLOSE,
+                TOOL_BROWSER_SAVE_SCREENSHOT
             ]
         );
         assert!(
@@ -1827,6 +1949,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -1875,6 +1998,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -1932,6 +2056,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2227,6 +2352,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2264,6 +2390,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2442,6 +2569,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ));
         let executors = provider.tool_runtime_executors();
         let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
@@ -2518,6 +2646,7 @@ mod tests {
                 None,
                 0,
                 "test".to_string(),
+                None,
             ));
             provider.tool_runtime_executors()
         };
@@ -2597,6 +2726,7 @@ mod tests {
                 Arc::new(crate::testing::mock_storage_noop()),
                 0,
                 "e2e-test".to_string(),
+                None,
             )
             .expect("live sidecar client"),
         );
@@ -2716,6 +2846,7 @@ mod tests {
             None,
             0,
             "test".to_string(),
+            None,
         ))
     }
 

@@ -20,6 +20,8 @@ use crate::config::AgentSettings;
 use crate::llm::LlmClient;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::llm::ToolDefinition;
+#[cfg(feature = "tool-browser-live")]
+use crate::sandbox::SandboxFileOps;
 use crate::sandbox::SandboxScope;
 #[cfg(feature = "tool-webfetch-md")]
 use async_trait::async_trait;
@@ -383,6 +385,7 @@ impl BrowserLiveToolModule {
         let base_url = browser.sidecar_base_url.as_deref()?;
         let token = browser.sidecar_token.as_deref()?;
         let live_ctx = ctx.browser_live_context()?;
+        let fileops: Arc<dyn SandboxFileOps> = ctx.sandbox_runtime();
         BrowserLiveProvider::from_sidecar_config(
             base_url,
             token,
@@ -391,6 +394,7 @@ impl BrowserLiveToolModule {
             live_ctx.storage(),
             live_ctx.user_id(),
             live_ctx.context_key().to_string(),
+            Some(fileops),
         )
         .ok()
     }

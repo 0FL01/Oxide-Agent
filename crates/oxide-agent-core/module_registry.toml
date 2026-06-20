@@ -154,7 +154,7 @@ profiles = ["full", "web-embedded-opencode-local", "search-only"]
 id = "tool/browser-live"
 cargo_feature = "tool-browser-live"
 kind = "Browser"
-provides = ["tool/browser-start", "tool/browser-observe", "tool/browser-step", "tool/browser-debug", "tool/browser-close"]
+provides = ["tool/browser-start", "tool/browser-observe", "tool/browser-step", "tool/browser-debug", "tool/browser-close", "tool/browser-save-screenshot"]
 profiles = ["full", "web-embedded-opencode-local"]
 
 [[modules]]
