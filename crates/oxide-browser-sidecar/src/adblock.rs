@@ -152,10 +152,20 @@ pub fn cdp_type_to_adblock(cdp_type: &str) -> &'static str {
     }
 }
 
-/// `Fetch.enable` patterns for all non-Document resource types.
+/// `Fetch.enable` patterns for non-Document resource types.
 ///
 /// Navigation (Document) requests are never paused. Each pattern specifies
 /// only `resourceType` (no URL filter — intercept all URLs of that type).
+///
+/// Only includes `Network.ResourceType` values that Chromium's `Fetch.enable`
+/// implementation universally accepts. Some types (`WebSocket`, `EventSource`,
+/// `Manifest`, `CSPViolationReport`, `Prefetch`, `SignedExchange`) are not
+/// accepted by `Fetch.enable`'s pattern parser in all Chromium versions and
+/// cause "Unknown resource type in fetch filter" errors. `Ping` is not a
+/// valid `Network.ResourceType` at all. Requests of these excluded types are
+/// still intercepted if they match a broader pattern — but since we use
+/// type-specific patterns, they simply pass through unpaused (fail-open for
+/// ad blocking, never break the page).
 pub const FETCH_PATTERNS: &[(&str, &str)] = &[
     ("resourceType", "Script"),
     ("resourceType", "Stylesheet"),
@@ -164,13 +174,6 @@ pub const FETCH_PATTERNS: &[(&str, &str)] = &[
     ("resourceType", "Media"),
     ("resourceType", "XHR"),
     ("resourceType", "Fetch"),
-    ("resourceType", "WebSocket"),
-    ("resourceType", "Ping"),
-    ("resourceType", "EventSource"),
-    ("resourceType", "Manifest"),
-    ("resourceType", "CSPViolationReport"),
-    ("resourceType", "Prefetch"),
-    ("resourceType", "SignedExchange"),
     ("resourceType", "Other"),
 ];
 
@@ -289,7 +292,7 @@ mod tests {
 
     #[test]
     fn fetch_patterns_include_key_types() {
-        let types: Vec<&str> = FETCH_PATTERNS.iter().map(|(_, v)| *v).collect();
+        let types: Vec<&str> = FETCH_PATTERNS.iter().map(|&(_, v)| v).collect();
         assert!(types.contains(&"Script"));
         assert!(types.contains(&"Image"));
         assert!(types.contains(&"XHR"));
@@ -297,7 +300,21 @@ mod tests {
         assert!(types.contains(&"Stylesheet"));
         assert!(types.contains(&"Font"));
         assert!(types.contains(&"Media"));
-        assert!(types.contains(&"WebSocket"));
+        assert!(types.contains(&"Other"));
+    }
+
+    #[test]
+    fn fetch_patterns_exclude_unsupported_types() {
+        let types: Vec<&str> = FETCH_PATTERNS.iter().map(|&(_, v)| v).collect();
+        // These types cause "Unknown resource type in fetch filter" errors
+        // in Chromium's Fetch.enable pattern parser.
+        assert!(!types.contains(&"WebSocket"));
+        assert!(!types.contains(&"Ping"));
+        assert!(!types.contains(&"EventSource"));
+        assert!(!types.contains(&"Manifest"));
+        assert!(!types.contains(&"CSPViolationReport"));
+        assert!(!types.contains(&"Prefetch"));
+        assert!(!types.contains(&"SignedExchange"));
     }
 
     // ── from_env ────────────────────────────────────────────────────────
