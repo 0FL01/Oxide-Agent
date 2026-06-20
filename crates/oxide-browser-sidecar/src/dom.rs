@@ -74,28 +74,27 @@ const DOM_SNAPSHOT_SCRIPT: &str = r#"
 })()
 "#;
 
-/// Capture a DOM snapshot via `Runtime.evaluate`.
+/// Capture a DOM snapshot via eval in the isolated world (with main-world
+/// fallback).
 ///
 /// Returns `(snapshot, error)` — exactly one is `Some`. On success, `snapshot`
 /// is a `Vec<DomSnapshotNode>`. On failure, `error` is a `SidecarErrorBody`
 /// matching the Python sidecar's error codes.
+///
+/// Running in the isolated world hides the `querySelectorAll` call from page
+/// JS. `document.querySelectorAll` is a DOM method accessible from any world
+/// (it operates on the shared C++ DOM tree), but page JS that monkey-patches
+/// `document.querySelectorAll` in the main world does NOT affect the
+/// isolated world's fresh DOM wrappers.
 pub async fn capture_dom_snapshot(
     cdp: &CdpClient,
+    context_id: Option<u64>,
 ) -> (Option<Vec<DomSnapshotNode>>, Option<SidecarErrorBody>) {
-    let result = cdp
-        .send_command(
-            "Runtime.evaluate",
-            serde_json::json!({
-                "expression": DOM_SNAPSHOT_SCRIPT,
-                "returnByValue": true,
-                "awaitPromise": true,
-            }),
-            DOM_TIMEOUT,
-        )
-        .await;
-
-    let result = match result {
-        Ok(r) => r,
+    let value = match cdp
+        .eval_readonly(context_id, DOM_SNAPSHOT_SCRIPT, DOM_TIMEOUT)
+        .await
+    {
+        Ok(v) => v,
         Err(e) => {
             return (
                 None,
@@ -103,22 +102,6 @@ pub async fn capture_dom_snapshot(
                     "dom_snapshot_failed",
                     &format!("CDP error evaluating DOM snapshot script: {e}"),
                     "inspect action_result and browser_debug output before retrying",
-                    Value::Null,
-                )),
-            );
-        }
-    };
-
-    // Runtime.evaluate returns {result: {type, value}}.
-    let value = match result.get("result").and_then(|r| r.get("value")) {
-        Some(v) => v.clone(),
-        None => {
-            return (
-                None,
-                Some(dom_snapshot_error(
-                    "dom_snapshot_empty_result",
-                    "DOM snapshot script returned no value",
-                    "retry after the page has finished rendering",
                     Value::Null,
                 )),
             );

@@ -28,15 +28,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Execute a `BrowserAction` via CDP and return an `ActionResult`.
 ///
 /// `action_seq` is set by the caller (the REST handler in CP6).
+/// `context_id` is the isolated world execution context, used for read-only
+/// DOM queries. Page-interacting actions ignore it and use the main world.
 pub async fn execute_action(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     action: &BrowserAction,
     timeout: Duration,
 ) -> ActionResult {
     let started = Instant::now();
     let kind = action_kind(action);
 
-    let (status, result) = run_action(cdp, action, timeout).await;
+    let (status, result) = run_action(cdp, context_id, action, timeout).await;
 
     let duration_ms = started.elapsed().as_millis() as u64;
     let technical_success = matches!(status, ActionStatus::Executed | ActionStatus::NoOp);
@@ -53,21 +56,31 @@ pub async fn execute_action(
 }
 
 /// Dispatch a `BrowserAction` to the appropriate CDP translation.
+///
+/// `context_id` is passed to read-only actions (click_selector's query,
+/// get_element_value, wait_for_selector, wait_for_text) which run in the
+/// isolated world. Page-interacting actions (fill, press, scroll,
+/// execute_javascript) ignore it and use the main world.
 async fn run_action(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     action: &BrowserAction,
     timeout: Duration,
 ) -> (ActionStatus, Option<String>) {
     match action {
         BrowserAction::ClickXy { x, y, .. } => click_xy(cdp, *x, *y).await,
-        BrowserAction::ClickSelector { selector } => click_selector(cdp, selector).await,
+        BrowserAction::ClickSelector { selector } => {
+            click_selector(cdp, context_id, selector).await
+        }
         BrowserAction::Fill { selector, value } => semantic_input(cdp, selector, value, true).await,
         BrowserAction::TypeText { selector, value } => {
             semantic_input(cdp, selector, value, false).await
         }
         BrowserAction::Press { key } => press(cdp, key).await,
         BrowserAction::Scroll { delta_x, delta_y } => scroll(cdp, *delta_x, *delta_y).await,
-        BrowserAction::GetElementValue { selector } => get_element_value(cdp, selector).await,
+        BrowserAction::GetElementValue { selector } => {
+            get_element_value(cdp, context_id, selector).await
+        }
         BrowserAction::ExecuteJavaScript { expression } => {
             execute_javascript(cdp, expression).await
         }
@@ -75,11 +88,11 @@ async fn run_action(
         BrowserAction::WaitForSelector {
             selector,
             timeout_ms,
-        } => wait_for_selector(cdp, selector, *timeout_ms).await,
+        } => wait_for_selector(cdp, context_id, selector, *timeout_ms).await,
         BrowserAction::WaitForText { text, timeout_ms } => {
-            wait_for_text(cdp, text, *timeout_ms).await
+            wait_for_text(cdp, context_id, text, *timeout_ms).await
         }
-        BrowserAction::Script { steps } => script(cdp, steps, timeout).await,
+        BrowserAction::Script { steps } => script(cdp, context_id, steps, timeout).await,
         BrowserAction::Navigate { .. } => (
             ActionStatus::Failed,
             Some("navigate must be sent to /goto endpoint".to_string()),
@@ -146,6 +159,31 @@ async fn eval_js(cdp: &CdpClient, expression: &str) -> Result<String, String> {
     }
 }
 
+/// Evaluate a read-only JS expression in the isolated world (with main-world
+/// fallback). Same return convention as `eval_js`.
+///
+/// Used for DOM queries that don't interact with the page: `querySelector`,
+/// `getBoundingClientRect`, `textContent` reads, etc. Running in the
+/// isolated world hides these reads from page JS that may have monkey-patched
+/// DOM methods to detect automation.
+async fn eval_js_readonly(
+    cdp: &CdpClient,
+    context_id: Option<u64>,
+    expression: &str,
+) -> Result<String, String> {
+    match cdp.eval_readonly(context_id, expression, CDP_TIMEOUT).await {
+        Ok(value) => {
+            let string_value = value_to_string(&value);
+            if string_value.starts_with("Error:") {
+                Err(string_value)
+            } else {
+                Ok(string_value)
+            }
+        }
+        Err(e) => Err(format!("Error: CDP command failed: {e}")),
+    }
+}
+
 /// Convert a `serde_json::Value` to a display string.
 fn value_to_string(value: &Value) -> String {
     match value {
@@ -185,8 +223,17 @@ async fn click_xy(cdp: &CdpClient, x: u32, y: u32) -> (ActionStatus, Option<Stri
 }
 
 /// Click an element by CSS selector — get center coordinates via JS
-/// `getBoundingClientRect`, then dispatch a real CDP mouse click.
-async fn click_selector(cdp: &CdpClient, selector: &str) -> (ActionStatus, Option<String>) {
+/// `getBoundingClientRect` in the isolated world, then dispatch a real CDP
+/// mouse click.
+///
+/// The JS query (querySelector + getBoundingClientRect) is read-only and
+/// runs in the isolated world to hide it from page JS. The actual click is
+/// `Input.dispatchMouseEvent` — a CDP command, not detectable by page JS.
+async fn click_selector(
+    cdp: &CdpClient,
+    context_id: Option<u64>,
+    selector: &str,
+) -> (ActionStatus, Option<String>) {
     let selector_json = json_str(selector);
     let expr = format!(
         "(() => {{ const el = document.querySelector({selector_json}); \
@@ -195,7 +242,7 @@ async fn click_selector(cdp: &CdpClient, selector: &str) -> (ActionStatus, Optio
          return JSON.stringify({{ x: r.x + r.width/2, y: r.y + r.height/2 }}); }})()"
     );
 
-    match eval_js(cdp, &expr).await {
+    match eval_js_readonly(cdp, context_id, &expr).await {
         Ok(coords) => {
             let parsed: Value = match serde_json::from_str(&coords) {
                 Ok(v) => v,
@@ -257,8 +304,15 @@ async fn scroll(cdp: &CdpClient, dx: i32, dy: i32) -> (ActionStatus, Option<Stri
     }
 }
 
-/// Get the value of an element by CSS selector.
-async fn get_element_value(cdp: &CdpClient, selector: &str) -> (ActionStatus, Option<String>) {
+/// Get the value of an element by CSS selector via the isolated world.
+///
+/// Read-only DOM query — runs in the isolated world to hide the
+/// `querySelector` call from page JS.
+async fn get_element_value(
+    cdp: &CdpClient,
+    context_id: Option<u64>,
+    selector: &str,
+) -> (ActionStatus, Option<String>) {
     let selector_json = json_str(selector);
     let expr = format!(
         "(() => {{ const el = document.querySelector({selector_json}); \
@@ -268,7 +322,7 @@ async fn get_element_value(cdp: &CdpClient, selector: &str) -> (ActionStatus, Op
          if (tag === 'input' && (type === 'checkbox' || type === 'radio')) return String(el.checked); \
          return el.value !== undefined ? el.value : el.textContent; }})()"
     );
-    match eval_js(cdp, &expr).await {
+    match eval_js_readonly(cdp, context_id, &expr).await {
         Ok(result) => (ActionStatus::Executed, Some(result)),
         Err(e) => (ActionStatus::Failed, Some(e)),
     }
@@ -293,14 +347,18 @@ async fn wait(timeout_ms: u64) -> (ActionStatus, Option<String>) {
 }
 
 /// Poll until an element matching `selector` exists in the DOM.
+///
+/// Read-only DOM query — runs in the isolated world to hide the
+/// `querySelector` call from page JS.
 async fn wait_for_selector(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     selector: &str,
     timeout_ms: u64,
 ) -> (ActionStatus, Option<String>) {
     let selector_json = json_str(selector);
     let expr = format!("document.querySelector({selector_json}) !== null");
-    match poll_condition(cdp, &expr, timeout_ms).await {
+    match poll_condition(cdp, context_id, &expr, timeout_ms).await {
         Ok(true) => (
             ActionStatus::Executed,
             Some(format!("selector '{selector}' found")),
@@ -320,14 +378,17 @@ async fn wait_for_selector(
 /// Uses `textContent` (not `innerText`) because `innerText` requires a
 /// reflow to compute, which may not happen between CDP commands in headless
 /// mode. `textContent` reads directly from the DOM and is always current.
+///
+/// Read-only DOM query — runs in the isolated world.
 async fn wait_for_text(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     text: &str,
     timeout_ms: u64,
 ) -> (ActionStatus, Option<String>) {
     let text_json = json_str(text);
     let expr = format!("document.body.textContent.includes({text_json})");
-    match poll_condition(cdp, &expr, timeout_ms).await {
+    match poll_condition(cdp, context_id, &expr, timeout_ms).await {
         Ok(true) => (ActionStatus::Executed, Some(format!("text '{text}' found"))),
         Ok(false) => (
             ActionStatus::Failed,
@@ -342,6 +403,7 @@ async fn wait_for_text(
 /// Execute a script (sequence of action steps), breaking on first failure.
 async fn script(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     steps: &[BrowserAction],
     timeout: Duration,
 ) -> (ActionStatus, Option<String>) {
@@ -356,7 +418,7 @@ async fn script(
     for step in steps {
         // Box::pin breaks the async fn recursion cycle
         // (run_action → script → run_action).
-        let (status, result) = Box::pin(run_action(cdp, step, timeout)).await;
+        let (status, result) = Box::pin(run_action(cdp, context_id, step, timeout)).await;
         if status == ActionStatus::Failed {
             return (ActionStatus::Failed, result);
         }
@@ -371,8 +433,10 @@ async fn script(
 /// Poll a JS boolean expression until it returns `true` or the timeout expires.
 ///
 /// Returns `Ok(true)` if the condition became true, `Ok(false)` if it timed out.
+/// Uses the isolated world (with main-world fallback) for read-only DOM queries.
 async fn poll_condition(
     cdp: &CdpClient,
+    context_id: Option<u64>,
     condition_expr: &str,
     timeout_ms: u64,
 ) -> Result<bool, String> {
@@ -381,7 +445,7 @@ async fn poll_condition(
     let check_expr = format!("({condition_expr})");
 
     loop {
-        let result = eval_js(cdp, &check_expr).await?;
+        let result = eval_js_readonly(cdp, context_id, &check_expr).await?;
         if result == "true" {
             return Ok(true);
         }

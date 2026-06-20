@@ -238,6 +238,45 @@ impl CdpClient {
         parse_eval_result(&result)
     }
 
+    /// Evaluate a read-only expression, preferring an isolated world when
+    /// available. Falls back to main-world eval if the context is `None` or
+    /// stale (e.g., after a client-side navigation destroyed the frame
+    /// without going through our `navigate()` method).
+    ///
+    /// Both paths return the extracted result value (via `parse_eval_result`).
+    /// Does NOT require `Runtime.enable` — `Runtime.evaluate` is a command,
+    /// not an event subscription.
+    pub async fn eval_readonly(
+        &self,
+        context_id: Option<u64>,
+        expression: &str,
+        timeout: Duration,
+    ) -> Result<Value, CdpError> {
+        if let Some(ctx) = context_id {
+            match self.eval_in_context(ctx, expression, timeout).await {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "isolated world eval failed, falling back to main world"
+                    );
+                }
+            }
+        }
+        let raw = self
+            .send_command(
+                "Runtime.evaluate",
+                json!({
+                    "expression": expression,
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                }),
+                timeout,
+            )
+            .await?;
+        parse_eval_result(&raw)
+    }
+
     /// Whether the underlying connection is still alive (writer channel open).
     #[allow(dead_code)]
     pub fn is_alive(&self) -> bool {

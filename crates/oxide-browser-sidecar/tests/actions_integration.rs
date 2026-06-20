@@ -63,8 +63,9 @@ async fn actions_on_real_chromium() {
         .await
         .expect("launch Chromium");
 
-    // Navigate to test page with stealth.
-    navigate_to(&cdp, &test_page_url(), Duration::from_secs(15), true)
+    // Navigate to test page with stealth.  Capture the isolated world
+    // context_id so read-only actions use the isolated world path.
+    let context_id = navigate_to(&cdp, &test_page_url(), Duration::from_secs(15), true)
         .await
         .expect("navigate to test page");
 
@@ -74,7 +75,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::ClickSelector {
         selector: "#click-btn".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert!(result.technical_success);
     // Verify the button text changed.
@@ -86,7 +87,7 @@ async fn actions_on_real_chromium() {
         selector: "#text-input".to_string(),
         value: "hello world".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert!(result.technical_success);
     let input_val = eval(&cdp, "document.getElementById('text-input').value").await;
@@ -96,7 +97,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::GetElementValue {
         selector: "#text-input".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert_eq!(result.result.as_deref(), Some("hello world"));
 
@@ -105,7 +106,7 @@ async fn actions_on_real_chromium() {
         selector: "#text-input".to_string(),
         value: "foo".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     let input_val = eval(&cdp, "document.getElementById('text-input').value").await;
     assert_eq!(input_val, "foo", "type_text replaces value (not append)");
@@ -114,7 +115,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::Press {
         key: "Enter".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert!(
         result
@@ -130,7 +131,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::Press {
         key: "ctrl+a".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert!(result.result.as_deref().unwrap_or("").contains("ctrl+a"));
 
@@ -139,7 +140,7 @@ async fn actions_on_real_chromium() {
         delta_x: 0,
         delta_y: 500,
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     // Verify scroll position (use documentElement.scrollTop as primary,
     // window.scrollY as fallback — some headless modes report differently).
@@ -156,7 +157,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::ExecuteJavaScript {
         expression: "1 + 2".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     assert_eq!(result.result.as_deref(), Some("3"));
 
@@ -164,7 +165,7 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::ExecuteJavaScript {
         expression: "undefinedVar".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Failed);
     assert!(!result.technical_success);
 
@@ -174,14 +175,14 @@ async fn actions_on_real_chromium() {
     let action = BrowserAction::ExecuteJavaScript {
         expression: "(document.getElementById('dynamic').textContent = 'Dynamic loaded', document.getElementById('dynamic').style.display = 'block', 'added')".to_string(),
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
 
     let action = BrowserAction::WaitForText {
         text: "Dynamic loaded".to_string(),
         timeout_ms: 2000,
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
 
     // Negative test: text that doesn't exist should time out → Failed.
@@ -189,7 +190,7 @@ async fn actions_on_real_chromium() {
         text: "Nonexistent text".to_string(),
         timeout_ms: 500,
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Failed);
 
     // ── wait_for_selector ───────────────────────────────────────────
@@ -197,12 +198,12 @@ async fn actions_on_real_chromium() {
         selector: "#dynamic".to_string(),
         timeout_ms: 1000,
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
 
     // ── wait ────────────────────────────────────────────────────────
     let action = BrowserAction::Wait { timeout_ms: 100 };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::NoOp);
     assert!(result.duration_ms >= 90);
 
@@ -217,7 +218,7 @@ async fn actions_on_real_chromium() {
             },
         ],
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Executed);
     // The last step is get_element_value on <title> — but <title> is not a
     // typical form element. The JS eval returns textContent for non-input
@@ -230,7 +231,7 @@ async fn actions_on_real_chromium() {
         url: "https://example.com".to_string(),
         force_reload: false,
     };
-    let result = execute_action(&cdp, &action, timeout).await;
+    let result = execute_action(&cdp, context_id, &action, timeout).await;
     assert_eq!(result.status, ActionStatus::Failed);
     assert!(!result.technical_success);
 

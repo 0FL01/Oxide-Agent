@@ -282,9 +282,10 @@ async fn action(
     };
 
     let cdp = session.cdp().await;
+    let context_id = session.isolated_context_id().await;
     let timeout = Duration::from_millis(req.timeout_ms.max(100));
 
-    let mut action_result = actions::execute_action(&cdp, &req.action, timeout).await;
+    let mut action_result = actions::execute_action(&cdp, context_id, &req.action, timeout).await;
     action_result.action_seq = req.action_seq;
 
     let ok = action_result.technical_success;

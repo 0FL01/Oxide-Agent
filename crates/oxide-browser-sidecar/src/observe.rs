@@ -73,32 +73,21 @@ fn is_quiescent_signal(
     current_fp.is_some() && current_fp == last_fp && pending == 0
 }
 
-/// Evaluate the DOM fingerprint expression via `Runtime.evaluate`.
+/// Evaluate the DOM fingerprint expression in the isolated world (with
+/// main-world fallback).
 ///
 /// Returns `None` on CDP error or JS exception (page navigating, execution
-/// context destroyed). `None` is treated as "not stable" by the quiescence loop.
-async fn get_dom_fingerprint(cdp: &CdpClient) -> Option<String> {
-    let result = cdp
-        .send_command(
-            "Runtime.evaluate",
-            serde_json::json!({
-                "expression": DOM_FINGERPRINT_EXPR,
-                "returnByValue": true,
-            }),
-            EVAL_TIMEOUT,
-        )
+/// context destroyed). `None` is treated as "not stable" by the quiescence
+/// loop.
+///
+/// Running in the isolated world hides the `querySelectorAll` / DOM query
+/// from page JS that may have monkey-patched `document.querySelectorAll` to
+/// detect automation.
+async fn get_dom_fingerprint(cdp: &CdpClient, context_id: Option<u64>) -> Option<String> {
+    cdp.eval_readonly(context_id, DOM_FINGERPRINT_EXPR, EVAL_TIMEOUT)
         .await
-        .ok()?;
-
-    if result.get("exceptionDetails").is_some() {
-        return None;
-    }
-
-    result
-        .get("result")
-        .and_then(|r| r.get("value"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
 }
 
 /// Wait for page quiescence: DOM fingerprint stable for `QUIESCENCE_QUIET_WINDOW`
@@ -113,13 +102,17 @@ async fn get_dom_fingerprint(cdp: &CdpClient) -> Option<String> {
 /// On timeout, proceeds with the current state — does not fail the observation.
 /// This handles pages with persistent connections (SSE, long-polling) where
 /// `pending_request_count` never reaches zero.
-async fn wait_for_page_quiescence(cdp: &CdpClient, capture: &capture::CaptureCollector) {
+async fn wait_for_page_quiescence(
+    cdp: &CdpClient,
+    capture: &capture::CaptureCollector,
+    context_id: Option<u64>,
+) {
     let deadline = tokio::time::Instant::now() + QUIESCENCE_TIMEOUT;
     let mut last_fp: Option<String> = None;
     let mut last_change = tokio::time::Instant::now();
 
     loop {
-        let fp = get_dom_fingerprint(cdp).await;
+        let fp = get_dom_fingerprint(cdp, context_id).await;
         let pending = capture.pending_request_count();
 
         if !is_quiescent_signal(&fp, &last_fp, pending) {
@@ -163,11 +156,12 @@ pub async fn build_observation(
     let cdp = session.cdp().await;
     let capture = session.capture().await;
     let viewport = session.viewport;
+    let context_id = session.isolated_context_id().await;
 
     // Wait for page quiescence before capturing — DOM fingerprint stable +
     // network idle. Prevents racy snapshots on SPA pages where interactive
     // elements appear after `Page.loadEventFired`.
-    wait_for_page_quiescence(&cdp, &capture).await;
+    wait_for_page_quiescence(&cdp, &capture, context_id).await;
 
     // Concurrent: a11y snapshot + screenshot + URL/title eval.
     let screenshot_id = format!("shot-{}-{}", session.id, session.next_screenshot_seq());
@@ -175,7 +169,7 @@ pub async fn build_observation(
     let (snapshot_result, screenshot_result, url_title) = tokio::join!(
         snapshot::take_snapshot(&cdp),
         screenshot::capture_screenshot(&cdp, viewport, &session.artifact_root, &screenshot_id),
-        get_url_title(&cdp),
+        get_url_title(&cdp, context_id),
     );
 
     let (screenshot_artifact, screenshot_bytes) = screenshot_result;
@@ -213,14 +207,18 @@ pub async fn build_observation(
 
     // DOM snapshot (if requested) — runs after concurrent batch.
     let (dom_snapshot, dom_snapshot_error) = if include_dom {
-        dom::capture_dom_snapshot(&cdp).await
+        dom::capture_dom_snapshot(&cdp, context_id).await
     } else {
         (Some(Vec::<DomSnapshotNode>::new()), None)
     };
 
     // Drain network + console from capture collector.
     // Network: from CDP Network.* events accumulated by the background loop.
-    // Console: from Log.entryAdded (drain_console) + JS interceptor (drain_console_js).
+    // Console: from Log.entryAdded (drain_console) + JS interceptor
+    // (drain_console_js). The JS drain stays in the main world because the
+    // interceptor stores entries in `window.__oxideConsoleCapture` — a
+    // main-world JS variable not accessible from the isolated world (each
+    // world has its own global object; only the DOM is shared).
     let net_items = capture.drain_network();
     let con_items: Vec<_> = capture::drain_console_js(&cdp)
         .await
@@ -283,30 +281,18 @@ pub async fn build_observation(
     observation
 }
 
-/// Get URL and title via a single `Runtime.evaluate` call.
+/// Get URL and title via a single eval call in the isolated world (with
+/// main-world fallback).
 ///
 /// Returns `(url, title)` — empty strings on failure.
-async fn get_url_title(cdp: &CdpClient) -> (String, String) {
+///
+/// Running in the isolated world hides this read from page JS. Both
+/// `window.location.href` and `document.title` are standard DOM properties
+/// accessible from any world (they read from the shared C++ DOM objects).
+async fn get_url_title(cdp: &CdpClient, context_id: Option<u64>) -> (String, String) {
     let expr = r#"JSON.stringify({url: window.location.href || document.URL || '', title: document.title || ''})"#;
-    let result = cdp
-        .send_command(
-            "Runtime.evaluate",
-            serde_json::json!({
-                "expression": expr,
-                "returnByValue": true,
-                "awaitPromise": true,
-            }),
-            EVAL_TIMEOUT,
-        )
-        .await;
-
-    let json_str = match result {
-        Ok(resp) => resp
-            .get("result")
-            .and_then(|r| r.get("value"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+    let json_str = match cdp.eval_readonly(context_id, expr, EVAL_TIMEOUT).await {
+        Ok(value) => value.as_str().unwrap_or("").to_string(),
         Err(_) => return (String::new(), String::new()),
     };
 

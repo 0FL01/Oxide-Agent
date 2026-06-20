@@ -88,17 +88,17 @@ None. All requirements derivable from RECON + donor code.
 
 ### G5: Read-only internal JS moved to isolated world
 - Source: framesPatch.ts — internal JS (DOM queries, snapshots) runs in isolated world
-- Acceptance: DOM fingerprint (observe.rs), URL/title (observe.rs), DOM snapshot (dom.rs), console drain (capture.rs) execute via `eval_in_context` with isolated world context_id. NOT via main-world `Runtime.evaluate`.
-- Evidence required: code review confirms all read-only eval sites use isolated world; `cargo test -p oxide-browser-sidecar` green
-- Status: pending
-- Evidence collected:
+- Acceptance: DOM fingerprint (observe.rs), URL/title (observe.rs), DOM snapshot (dom.rs) execute via `eval_readonly` with isolated world context_id (with main-world fallback on stale context). Actions.rs read-only queries (click_selector's querySelector, get_element_value, wait_for_selector, wait_for_text) also use isolated world. Console drain (capture.rs) stays in main world — isolated worlds have separate global objects and cannot access `window.__oxideDrainConsole` defined in the main world. NOT via main-world `Runtime.evaluate` (except fallback).
+- Evidence required: code review confirms all DOM-based read-only eval sites use `eval_readonly`; `cargo test -p oxide-browser-sidecar` green
+- Status: verified
+- Evidence collected: `cdp.rs::eval_readonly` implements try-isolated-fall-back-to-main pattern; observe.rs `get_dom_fingerprint` + `get_url_title` use `eval_readonly`; dom.rs `capture_dom_snapshot` uses `eval_readonly`; actions.rs `eval_js_readonly` wraps `eval_readonly` for `click_selector`, `get_element_value`, `poll_condition` (used by `wait_for_selector` + `wait_for_text`); `drain_console_js` stays main world (documented: isolated worlds can't access main-world JS variables); 126 tests green
 
 ### G6: Page-interacting JS stays in main world
 - Source: RECON — actions that dispatch events must run in main world
-- Acceptance: click, fill, press, scroll, semantic_input, execute_javascript, SPA hash nav (lib.rs) use main-world `Runtime.evaluate`. Console interceptor (capture.rs:53-78) stays in main world via `Page.addScriptToEvaluateOnNewDocument`. Stealth patches (stealth.rs) stay in main world.
+- Acceptance: click (Input.dispatchMouseEvent — CDP command, no JS), fill/semantic_input, press, scroll, execute_javascript, SPA hash nav (lib.rs) use main-world `Runtime.evaluate` via `eval_js`. Console interceptor (capture.rs:53-78) stays in main world via `Page.addScriptToEvaluateOnNewDocument`. Stealth patches (stealth.rs) stay in main world. Console drain (capture.rs) stays in main world (isolated worlds can't access main-world JS variables).
 - Evidence required: code review confirms no page-interacting action moved to isolated world; `cargo test -p oxide-browser-sidecar` green
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: actions.rs `eval_js` (main world) used by `semantic_input`, `press`, `scroll`, `execute_javascript`; `eval_js_readonly` (isolated) used only by `click_selector` (read-only query part), `get_element_value`, `poll_condition`; stealth.rs `apply_stealth` uses `Page.addScriptToEvaluateOnNewDocument` (main world); capture.rs `CONSOLE_INTERCEPTOR_JS` via `Page.addScriptToEvaluateOnNewDocument` (main world); `drain_console_js` uses `send_command("Runtime.evaluate")` (main world, no contextId); lib.rs SPA hash nav uses `send_command("Runtime.evaluate")` (main world); 126 tests green
 
 ### G7: navigator.serviceWorker.register patched
 - Source: browserContextPatch.ts:31
@@ -111,15 +111,15 @@ None. All requirements derivable from RECON + donor code.
 - Source: AGENTS.md — implementation bias
 - Acceptance: No new Cargo dependencies added to `oxide-browser-sidecar`. Isolated world support implemented in existing `cdp.rs`.
 - Evidence required: `Cargo.toml` diff shows no new deps; `cargo check -p oxide-browser-sidecar` green
-- Status: verified (for checkpoints 1-3)
+- Status: verified (for checkpoints 1-4)
 - Evidence collected: no Cargo.toml changes; `cargo check -p oxide-browser-sidecar` green
 
 ### Q2: Architectural invariants preserved
 - Source: AGENTS.md — never call `Runtime.enable` or `Target.*`
 - Acceptance: No `Runtime.enable`, `Target.setAutoAttach`, `Target.attachToTarget`, `Console.enable` calls added. Existing tests for these invariants still pass.
 - Evidence required: `cargo test -p oxide-browser-sidecar` green; `git grep` confirms no new calls
-- Status: verified (for checkpoints 1-3)
-- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 126 tests green; no new `Target.*` or `Console.enable` calls; `Runtime.evaluate` with `contextId` used in `eval_in_context` — this is a command, NOT `Runtime.enable` (event subscription); `git grep` confirms no actual `Runtime.enable`/`Target.*`/`Console.enable` calls
+- Status: verified (for checkpoints 1-4)
+- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 126 tests green; no new `Target.*` or `Console.enable` calls; `Runtime.evaluate` with `contextId` used in `eval_in_context`/`eval_readonly` — this is a command, NOT `Runtime.enable` (event subscription); `git grep` confirms no actual `Runtime.enable`/`Target.*`/`Console.enable` calls; `eval_readonly` fallback path uses `Runtime.evaluate` without `contextId` — same command, not `Runtime.enable`
 
 ### Q3: clippy + fmt clean
 - Source: AGENTS.md — CI enforces both
@@ -217,8 +217,9 @@ None. All requirements derivable from RECON + donor code.
 
 - 2026-06-20: Phase 1 flag `--disable-blink-features=AutomationControlled` makes JS webdriver override harmful (changes `false`→`undefined`, detectable). Override removed entirely. Blink flag handles `navigator.webdriver = false` at C++ level, undetectable.
 - 2026-06-20: Script-tag injection (Patchright crPagePatch.ts) NOT adopted. `Page.addScriptToEvaluateOnNewDocument` stays for stealth patches. Rationale: diminishing returns vs complexity; with Phase 1 (flags) + Phase 3 (isolated worlds) main detection vectors closed; route interception itself is a detection surface.
-- 2026-06-20: Console interceptor MUST stay in main world (needs to override page's `console.*`). Only console drain (reading captured array) moves to isolated world.
+- 2026-06-20: Console interceptor MUST stay in main world (needs to override page's `console.*`). Console drain (`drain_console_js`) also stays in main world — isolated worlds have separate global objects and cannot access `window.__oxideDrainConsole` / `window.__oxideConsoleCapture` defined in the main world. Only the DOM is shared across worlds; custom JS properties on the window wrapper are not.
 - 2026-06-20: `CHROMIUM_BIN` env override has highest priority when set, then auto-detect google-chrome variants, then fallback to `chromium`.
+- 2026-06-20: `eval_readonly` method on CdpClient implements the "try isolated world, fall back to main world" pattern. This handles stale context_id (after client-side navigation that destroys the frame without going through our `navigate()`) gracefully — degraded stealth but functional. The fallback uses `parse_eval_result` for consistent value extraction on both paths.
 
 ## Progress Log
 
@@ -249,6 +250,13 @@ None. All requirements derivable from RECON + donor code.
   - Commands: cargo check --all-targets, cargo test, cargo clippy --all-targets, cargo fmt
   - Audit IDs updated: G4 verified, Q1 verified (CP3), Q2 verified (CP3)
   - Next: Checkpoint 4
+
+- 2026-06-20 01:15: Checkpoint 4 — move read-only JS to isolated world
+  - Changed: `cdp.rs` (added `CdpClient::eval_readonly(context_id, expr, timeout)` — tries isolated world, falls back to main world with `parse_eval_result`); `observe.rs` (`get_dom_fingerprint` + `get_url_title` + `wait_for_page_quiescence` accept `context_id`, use `eval_readonly`; `build_observation` fetches `session.isolated_context_id()` and passes through; `drain_console_js` call unchanged with documented rationale); `dom.rs` (`capture_dom_snapshot` accepts `context_id`, uses `eval_readonly`); `actions.rs` (added `eval_js_readonly`; `execute_action` + `run_action` + `script` accept `context_id`; `click_selector` + `get_element_value` + `poll_condition` use `eval_js_readonly`; `wait_for_selector` + `wait_for_text` pass `context_id` to `poll_condition`); `lib.rs` (action handler passes `session.isolated_context_id()` to `execute_action`); `tests/actions_integration.rs` (captures `context_id` from `navigate_to`, passes to `execute_action`)
+  - Evidence: `cargo test -p oxide-browser-sidecar` → 126 passed, 0 failed; `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` clean; `cargo fmt --all -- --check` clean; `git grep` confirms no `Runtime.enable`/`Target.*`/`Console.enable` calls added; blast radius: all callers of changed functions are within sidecar crate (oxide-agent-core `execute_action` is a different HTTP client method)
+  - Commands: cargo check, cargo test, cargo clippy --all-targets, cargo fmt
+  - Audit IDs updated: G5 verified, G6 verified, Q1 verified (CP4), Q2 verified (CP4)
+  - Next: Checkpoint 5
 
 ## Risks and Blockers
 
