@@ -132,16 +132,18 @@ zero stealth impact.
 
 ### Configuration
 
-Ad blocking is **opt-in**. Set these env vars on the browser-sidecar service:
+Ad blocking is **enabled by default** when filter lists are available. The
+Docker image includes EasyList and EasyPrivacy at `/opt/adblock/` and sets
+`ADBLOCK_FILTERS` in the Dockerfile — ad blocking activates automatically.
+
+To disable ad blocking, set:
 
 ```bash
-ADBLOCK_ENABLED=true
-ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt
+ADBLOCK_ENABLED=false
 ```
 
-The Docker image includes EasyList and EasyPrivacy filter lists at
-`/opt/adblock/`. `ADBLOCK_FILTERS` is pre-set in the Dockerfile; only
-`ADBLOCK_ENABLED=true` needs to be set at runtime.
+`ADBLOCK_FILTERS` is pre-set in the Dockerfile. Only `ADBLOCK_ENABLED=false`
+needs to be set at runtime to opt out.
 
 ### What it blocks
 

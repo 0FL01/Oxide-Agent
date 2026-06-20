@@ -7,9 +7,10 @@
 //! `Arc<AdblockEngine>` provides shared read-only access across all sessions
 //! without a `Mutex`.
 //!
-//! Ad blocking is **opt-in**: `ADBLOCK_ENABLED=true` activates it. When
-//! disabled (default), no filter lists are loaded and no `Fetch.enable` is
-//! sent — zero behavior change, zero stealth impact.
+//! Ad blocking is **enabled by default** when filter lists are available
+//! (`ADBLOCK_FILTERS` env). Set `ADBLOCK_ENABLED=false` to disable. When
+//! disabled, no filter lists are loaded and no `Fetch.enable` is sent —
+//! zero behavior change, zero stealth impact.
 
 use adblock::{Engine, FilterSet, lists::ParseOptions, request::Request};
 use tracing::{info, warn};
@@ -36,15 +37,19 @@ impl AdblockEngine {
 
     /// Build from environment variables.
     ///
-    /// - `ADBLOCK_ENABLED`: must be `"true"` or `"1"` to activate.
+    /// - `ADBLOCK_ENABLED`: enabled by default. Set to `"false"` or `"0"` to
+    ///   disable.
     /// - `ADBLOCK_FILTERS`: comma-separated paths to filter list files.
+    ///   Required — without filter lists, ad blocking cannot activate.
     ///
     /// Returns `None` if adblocking is disabled or no filter lists could be
     /// loaded. Missing/unreadable files are logged as warnings but do not
     /// prevent the engine from starting with whatever lists did load.
     pub fn from_env() -> Option<Self> {
-        let enabled = std::env::var("ADBLOCK_ENABLED").is_ok_and(|v| v == "true" || v == "1");
+        let enabled =
+            adblock_enabled_from_env_var(std::env::var("ADBLOCK_ENABLED").ok().as_deref());
         if !enabled {
+            info!("adblocking disabled by ADBLOCK_ENABLED=false");
             return None;
         }
 
@@ -99,6 +104,19 @@ impl AdblockEngine {
             }
         };
         self.engine.check_network_request(&request).matched
+    }
+}
+
+/// Determine whether ad blocking is enabled based on the `ADBLOCK_ENABLED`
+/// env var value.
+///
+/// Enabled by default (when the var is unset or any value other than
+/// `"false"`/`"0"`). Extracted as a pure function for testability —
+/// `unsafe_code = "forbid"` prevents `std::env::set_var` in tests.
+fn adblock_enabled_from_env_var(value: Option<&str>) -> bool {
+    match value {
+        Some(v) => v != "false" && v != "0",
+        None => true,
     }
 }
 
@@ -353,6 +371,32 @@ mod tests {
             "https://example.com/",
             "script"
         ));
+    }
+
+    // ── adblock_enabled_from_env_var ───────────────────────────────────
+
+    #[test]
+    fn enabled_by_default_when_unset() {
+        assert!(adblock_enabled_from_env_var(None));
+    }
+
+    #[test]
+    fn enabled_when_true() {
+        assert!(adblock_enabled_from_env_var(Some("true")));
+        assert!(adblock_enabled_from_env_var(Some("1")));
+        assert!(adblock_enabled_from_env_var(Some("yes")));
+    }
+
+    #[test]
+    fn disabled_when_false_or_zero() {
+        assert!(!adblock_enabled_from_env_var(Some("false")));
+        assert!(!adblock_enabled_from_env_var(Some("0")));
+    }
+
+    #[test]
+    fn enabled_when_empty_string() {
+        // Empty string is not "false" or "0" — enabled by default
+        assert!(adblock_enabled_from_env_var(Some("")));
     }
 
     // ── Send + Sync ─────────────────────────────────────────────────────
