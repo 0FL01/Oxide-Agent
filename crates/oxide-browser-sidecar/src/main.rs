@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use oxide_browser_sidecar::{
-    AppState, adblock::AdblockEngine, create_app, session::SessionManager,
+    AppState, adblock::AdblockEngine, consent::ConsentConfig, create_app, session::SessionManager,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -18,12 +18,17 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("BROWSER_AGENT_SIDECAR_BIND").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
 
-    // Build ad blocking engine from env (opt-in: ADBLOCK_ENABLED=true).
-    // When disabled (default), returns None — zero behavior change.
+    // Build ad blocking engine from env (enabled by default).
+    // When disabled, returns None — zero behavior change.
     let adblock = AdblockEngine::from_env().map(std::sync::Arc::new);
 
+    // Build consent auto-dismiss injection script from env (enabled by
+    // default). When disabled, returns None — zero behavior change.
+    let consent_script =
+        ConsentConfig::from_env().map(|c| std::sync::Arc::new(c.injection_script().to_string()));
+
     let state = AppState {
-        sessions: std::sync::Arc::new(SessionManager::new(adblock)),
+        sessions: std::sync::Arc::new(SessionManager::new(adblock, consent_script)),
     };
 
     let app = create_app(state, token);

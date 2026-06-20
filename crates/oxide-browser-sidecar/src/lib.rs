@@ -8,6 +8,7 @@ pub mod adblock;
 pub mod browser;
 pub mod capture;
 pub mod cdp;
+pub mod consent;
 pub mod dom;
 pub mod observe;
 pub mod scope;

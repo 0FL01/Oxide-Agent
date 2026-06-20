@@ -67,6 +67,10 @@ pub struct BrowserSession {
     /// Ad blocking engine. Stored outside `BrowserInner` so it survives
     /// `force_reload`. `None` when ad blocking is disabled.
     adblock: Option<Arc<AdblockEngine>>,
+    /// Consent auto-dismiss injection script. Stored outside `BrowserInner`
+    /// so it survives `force_reload`. `None` when consent dismissal is
+    /// disabled.
+    consent_script: Option<Arc<String>>,
 }
 
 impl BrowserSession {
@@ -79,6 +83,7 @@ impl BrowserSession {
         req: &CreateSessionRequest,
         session_id: &str,
         adblock: Option<Arc<AdblockEngine>>,
+        consent_script: Option<Arc<String>>,
     ) -> Result<Self> {
         let (chromium, cdp) = ChromiumProcess::launch(&req.viewport)
             .await
@@ -89,7 +94,10 @@ impl BrowserSession {
         // Start capture collector before navigation so we catch the initial
         // page load's network events. Runs on the same CDP WebSocket (G3)
         // and never sends Runtime enable (G4).
-        let capture = Arc::new(CaptureCollector::new(adblock.clone()));
+        let capture = Arc::new(CaptureCollector::new(
+            adblock.clone(),
+            consent_script.clone(),
+        ));
         CaptureCollector::start(&cdp, capture.clone())
             .await
             .context("start capture collector")?;
@@ -138,6 +146,7 @@ impl BrowserSession {
             network_history: StdMutex::new(Vec::new()),
             console_history: StdMutex::new(Vec::new()),
             adblock,
+            consent_script,
         })
     }
 
@@ -195,8 +204,12 @@ impl BrowserSession {
 
         let new_page_id = new_chromium.page_target_id().to_string();
 
-        // Start fresh capture collector (reuse the same adblock engine).
-        let new_capture = Arc::new(CaptureCollector::new(self.adblock.clone()));
+        // Start fresh capture collector (reuse the same adblock engine
+        // and consent script).
+        let new_capture = Arc::new(CaptureCollector::new(
+            self.adblock.clone(),
+            self.consent_script.clone(),
+        ));
         CaptureCollector::start(&new_cdp, new_capture.clone())
             .await
             .context("force_reload: start capture collector")?;
@@ -439,14 +452,20 @@ pub struct SessionManager {
     /// Shared ad blocking engine. `None` when ad blocking is disabled.
     /// Cloned (cheap `Arc` clone) into each new `BrowserSession`.
     adblock: Option<Arc<AdblockEngine>>,
+    /// Shared consent auto-dismiss injection script. `None` when consent
+    /// dismissal is disabled. Cloned (cheap `Arc` clone) into each new
+    /// `BrowserSession`.
+    consent_script: Option<Arc<String>>,
 }
 
 impl SessionManager {
-    /// Create a session manager with an optional ad blocking engine.
-    pub fn new(adblock: Option<Arc<AdblockEngine>>) -> Self {
+    /// Create a session manager with optional ad blocking and consent
+    /// auto-dismissal.
+    pub fn new(adblock: Option<Arc<AdblockEngine>>, consent_script: Option<Arc<String>>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             adblock,
+            consent_script,
         }
     }
 
@@ -455,7 +474,14 @@ impl SessionManager {
         let session_id = new_session_id();
         let request_id = new_request_id();
 
-        match BrowserSession::new(&req, &session_id, self.adblock.clone()).await {
+        match BrowserSession::new(
+            &req,
+            &session_id,
+            self.adblock.clone(),
+            self.consent_script.clone(),
+        )
+        .await
+        {
             Ok(session) => {
                 let viewport = session.viewport;
                 let artifact_root = session.artifact_root.clone();

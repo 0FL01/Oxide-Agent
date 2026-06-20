@@ -149,21 +149,28 @@ pub struct CaptureCollector {
     /// and `Fetch.requestPaused` events are handled. When `None`, no Fetch
     /// domain commands are sent — zero behavior change.
     engine: Option<Arc<AdblockEngine>>,
+    /// Consent auto-dismiss injection script. When `Some`, injected via
+    /// `Page.addScriptToEvaluateOnNewDocument` with `worldName: "consent"`
+    /// in `start()`. When `None`, no consent script is injected.
+    consent_script: Option<Arc<String>>,
 }
 
 impl CaptureCollector {
-    /// Create a collector with an optional ad blocking engine.
+    /// Create a collector with optional ad blocking and consent auto-dismiss.
     ///
-    /// Pass `None` to disable ad blocking (default behavior). Pass
-    /// `Some(Arc<AdblockEngine>)` to enable network-level request
-    /// interception via CDP `Fetch.enable`.
-    pub fn new(engine: Option<Arc<AdblockEngine>>) -> Self {
+    /// Pass `None` for either to disable that feature (default behavior).
+    /// Pass `Some(Arc<AdblockEngine>)` to enable network-level request
+    /// interception via CDP `Fetch.enable`. Pass `Some(Arc<String>)` for
+    /// `consent_script` to enable cookie consent banner auto-dismissal via
+    /// `Page.addScriptToEvaluateOnNewDocument`.
+    pub fn new(engine: Option<Arc<AdblockEngine>>, consent_script: Option<Arc<String>>) -> Self {
         Self {
             network_items: std::sync::Mutex::new(Vec::new()),
             console_items: std::sync::Mutex::new(Vec::new()),
             pending_requests: std::sync::Mutex::new(HashMap::new()),
             current_url: std::sync::Mutex::new(None),
             engine,
+            consent_script,
         }
     }
 
@@ -226,6 +233,33 @@ impl CaptureCollector {
             )
             .await;
         debug!("console interceptor injected");
+
+        // Inject consent auto-dismiss engine via Page.addScriptToEvaluateOnNewDocument
+        // in a named isolated world ("consent") for stealth — page JS cannot see
+        // the engine code, only the DOM effects (button clicks, class additions).
+        // The engine auto-detects CMP banners via CSS selectors and dismisses them
+        // by clicking through the CMP's own UI (reject all consent categories).
+        //
+        // No Runtime.evaluate — the script runs on every navigation via
+        // addScriptToEvaluateOnNewDocument. Runtime.evaluate would create a
+        // duplicate in the main world (different worldName).
+        //
+        // Runs at document_start (before any page JS), survives navigations.
+        // Stealth-safe: Fetch.enable (ad blocking) and Page domains are
+        // independent; this injection has zero interaction with them.
+        if let Some(script) = &collector.consent_script {
+            let _ = cdp
+                .send_command(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({
+                        "source": script.as_str(),
+                        "worldName": "consent"
+                    }),
+                    CAPTURE_TIMEOUT,
+                )
+                .await;
+            info!("consent auto-dismiss engine injected (world: consent)");
+        }
 
         // Spawn background task to process CDP events.
         let cdp_clone = cdp.clone();
@@ -565,7 +599,7 @@ impl CaptureCollector {
 
 impl Default for CaptureCollector {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 
