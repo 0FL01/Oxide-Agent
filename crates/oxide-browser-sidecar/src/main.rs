@@ -1,7 +1,9 @@
 //! Native browser sidecar binary entry point.
 
 use anyhow::Context;
-use oxide_browser_sidecar::{AppState, create_app, session::SessionManager};
+use oxide_browser_sidecar::{
+    AppState, adblock::AdblockEngine, create_app, session::SessionManager,
+};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -16,8 +18,12 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("BROWSER_AGENT_SIDECAR_BIND").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
 
+    // Build ad blocking engine from env (opt-in: ADBLOCK_ENABLED=true).
+    // When disabled (default), returns None — zero behavior change.
+    let adblock = AdblockEngine::from_env().map(std::sync::Arc::new);
+
     let state = AppState {
-        sessions: std::sync::Arc::new(SessionManager::default()),
+        sessions: std::sync::Arc::new(SessionManager::new(adblock)),
     };
 
     let app = create_app(state, token);

@@ -22,6 +22,7 @@ use oxide_browser_contracts::{
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use crate::adblock::AdblockEngine;
 use crate::browser::ChromiumProcess;
 use crate::capture::CaptureCollector;
 use crate::cdp::CdpClient;
@@ -63,11 +64,22 @@ pub struct BrowserSession {
     last_observation: StdMutex<Option<BrowserObservation>>,
     network_history: StdMutex<Vec<(NetworkItem, u64)>>,
     console_history: StdMutex<Vec<(ConsoleItem, u64)>>,
+    /// Ad blocking engine. Stored outside `BrowserInner` so it survives
+    /// `force_reload`. `None` when ad blocking is disabled.
+    adblock: Option<Arc<AdblockEngine>>,
 }
 
 impl BrowserSession {
     /// Launch Chromium, connect CDP, start capture, navigate to `start_url`.
-    pub async fn new(req: &CreateSessionRequest, session_id: &str) -> Result<Self> {
+    ///
+    /// `adblock` — optional shared ad blocking engine. When `Some`, the
+    /// capture collector enables CDP `Fetch.enable` and blocks matching
+    /// requests. When `None`, no ad blocking occurs.
+    pub async fn new(
+        req: &CreateSessionRequest,
+        session_id: &str,
+        adblock: Option<Arc<AdblockEngine>>,
+    ) -> Result<Self> {
         let (chromium, cdp) = ChromiumProcess::launch(&req.viewport)
             .await
             .context("launch Chromium")?;
@@ -76,8 +88,8 @@ impl BrowserSession {
 
         // Start capture collector before navigation so we catch the initial
         // page load's network events. Runs on the same CDP WebSocket (G3)
-        // and never sends Runtime.enable (G4).
-        let capture = Arc::new(CaptureCollector::new(None));
+        // and never sends Runtime enable (G4).
+        let capture = Arc::new(CaptureCollector::new(adblock.clone()));
         CaptureCollector::start(&cdp, capture.clone())
             .await
             .context("start capture collector")?;
@@ -125,6 +137,7 @@ impl BrowserSession {
             last_observation: StdMutex::new(None),
             network_history: StdMutex::new(Vec::new()),
             console_history: StdMutex::new(Vec::new()),
+            adblock,
         })
     }
 
@@ -182,8 +195,8 @@ impl BrowserSession {
 
         let new_page_id = new_chromium.page_target_id().to_string();
 
-        // Start fresh capture collector.
-        let new_capture = Arc::new(CaptureCollector::new(None));
+        // Start fresh capture collector (reuse the same adblock engine).
+        let new_capture = Arc::new(CaptureCollector::new(self.adblock.clone()));
         CaptureCollector::start(&new_cdp, new_capture.clone())
             .await
             .context("force_reload: start capture collector")?;
@@ -423,15 +436,26 @@ async fn create_isolated_world_for_page(cdp: &CdpClient, timeout: Duration) -> R
 #[derive(Default)]
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, Arc<BrowserSession>>>,
+    /// Shared ad blocking engine. `None` when ad blocking is disabled.
+    /// Cloned (cheap `Arc` clone) into each new `BrowserSession`.
+    adblock: Option<Arc<AdblockEngine>>,
 }
 
 impl SessionManager {
+    /// Create a session manager with an optional ad blocking engine.
+    pub fn new(adblock: Option<Arc<AdblockEngine>>) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            adblock,
+        }
+    }
+
     /// Create a new browser session.
     pub async fn create(&self, req: CreateSessionRequest) -> CreateSessionResponse {
         let session_id = new_session_id();
         let request_id = new_request_id();
 
-        match BrowserSession::new(&req, &session_id).await {
+        match BrowserSession::new(&req, &session_id, self.adblock.clone()).await {
             Ok(session) => {
                 let viewport = session.viewport;
                 let artifact_root = session.artifact_root.clone();
