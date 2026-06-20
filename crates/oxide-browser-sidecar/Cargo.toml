@@ -30,6 +30,7 @@ thiserror = "2.0.18"
 tempfile = "3.27.0"
 base64 = "0.22"
 sha2 = "0.10.9"
+adblock = { version = "0.12", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 
 [[bin]]
 name = "oxide-browser-sidecar"

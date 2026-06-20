@@ -4,6 +4,7 @@
 //! with a single Rust binary speaking CDP directly.
 
 pub mod actions;
+pub mod adblock;
 pub mod browser;
 pub mod capture;
 pub mod cdp;
