@@ -195,18 +195,16 @@ impl CaptureCollector {
         // Enable Fetch domain for ad blocking if engine is present.
         // Fetch.enable does NOT require Runtime.enable — it is an independent
         // network-layer domain with zero JS-visible side effects.
+        //
+        // No patterns → intercept ALL requests (including navigation and
+        // Document). Navigation is handled in `on_fetch_request_paused` via
+        // `isNavigationRequest` / Document resource type check — immediate
+        // `continueRequest`. This ensures no resource type is silently
+        // excluded from ad blocking (e.g. Ping beacons, WebSocket trackers).
         if collector.engine.is_some() {
-            let patterns: Vec<Value> = crate::adblock::FETCH_PATTERNS
-                .iter()
-                .map(|&(key, val)| json!({ key: val }))
-                .collect();
-            cdp.send_command(
-                "Fetch.enable",
-                json!({ "patterns": patterns }),
-                CAPTURE_TIMEOUT,
-            )
-            .await
-            .map_err(|e| CaptureError::Cdp(e.to_string()))?;
+            cdp.send_command("Fetch.enable", json!({}), CAPTURE_TIMEOUT)
+                .await
+                .map_err(|e| CaptureError::Cdp(e.to_string()))?;
             info!("Fetch.enable sent for ad blocking");
         }
 
