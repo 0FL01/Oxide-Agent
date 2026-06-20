@@ -83,8 +83,8 @@ None. All requirements derivable from RECON + donor code.
 - Source: framesPatch.ts:244-252 — `Page.createIsolatedWorld` with `worldName`, `Runtime.evaluate` with `contextId`
 - Acceptance: `CdpClient` has `create_isolated_world(frame_id, world_name) -> Result<u64>` and `eval_in_context(context_id, expression, timeout) -> Result<Value>`. Isolated world context_id cached per session lifecycle.
 - Evidence required: unit test for create_isolated_world + eval_in_context; `cargo test -p oxide-browser-sidecar` green
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `parse_execution_context_id_extracts_id`, `parse_execution_context_id_errors_when_missing`, `parse_eval_result_extracts_value`, `parse_eval_result_returns_null_when_no_value`, `parse_eval_result_errors_on_exception` pass; `CdpClient::create_isolated_world` + `CdpClient::eval_in_context` implemented with pure parsing helpers; `navigate_to()` creates isolated world best-effort after load event; `BrowserInner.isolated_context_id` caches the ID; 126 tests green
 
 ### G5: Read-only internal JS moved to isolated world
 - Source: framesPatch.ts — internal JS (DOM queries, snapshots) runs in isolated world
@@ -111,15 +111,15 @@ None. All requirements derivable from RECON + donor code.
 - Source: AGENTS.md — implementation bias
 - Acceptance: No new Cargo dependencies added to `oxide-browser-sidecar`. Isolated world support implemented in existing `cdp.rs`.
 - Evidence required: `Cargo.toml` diff shows no new deps; `cargo check -p oxide-browser-sidecar` green
-- Status: verified (for checkpoints 1-2)
+- Status: verified (for checkpoints 1-3)
 - Evidence collected: no Cargo.toml changes; `cargo check -p oxide-browser-sidecar` green
 
 ### Q2: Architectural invariants preserved
 - Source: AGENTS.md — never call `Runtime.enable` or `Target.*`
 - Acceptance: No `Runtime.enable`, `Target.setAutoAttach`, `Target.attachToTarget`, `Console.enable` calls added. Existing tests for these invariants still pass.
 - Evidence required: `cargo test -p oxide-browser-sidecar` green; `git grep` confirms no new calls
-- Status: verified (for checkpoints 1)
-- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 114 tests green; no new `Target.*` or `Console.enable` calls
+- Status: verified (for checkpoints 1-3)
+- Evidence collected: webdriver `Runtime.evaluate` removed from `apply_stealth` (fewer Runtime calls, not more); 126 tests green; no new `Target.*` or `Console.enable` calls; `Runtime.evaluate` with `contextId` used in `eval_in_context` — this is a command, NOT `Runtime.enable` (event subscription); `git grep` confirms no actual `Runtime.enable`/`Target.*`/`Console.enable` calls
 
 ### Q3: clippy + fmt clean
 - Source: AGENTS.md — CI enforces both
@@ -242,6 +242,13 @@ None. All requirements derivable from RECON + donor code.
   - Commands: cargo check, cargo test, cargo clippy, cargo fmt
   - Audit IDs updated: G3 verified, Q1 verified (CP2)
   - Next: Checkpoint 3
+
+- 2026-06-20 00:50: Checkpoint 3 — isolated world support in CDP client
+  - Changed: `cdp.rs` (added `CdpClient::create_isolated_world()` + `CdpClient::eval_in_context()`; added pure helpers `parse_execution_context_id()` + `parse_eval_result()`; added 5 parsing unit tests); `session.rs` (added `isolated_context_id: Option<u64>` to `BrowserInner`; added `isolated_context_id()` getter; changed `navigate_to()` return type to `Result<Option<u64>>`; added `create_isolated_world_for_page()` helper; updated all 3 callers: `new()`, `navigate()`, `force_reload()`); `browser.rs` + `cdp.rs` (replaced all `.unwrap()`/`.unwrap_err()` in tests with `.expect()`/`.expect_err()` to fix pre-existing clippy `--all-targets` violations)
+  - Evidence: `cargo test -p oxide-browser-sidecar` → 126 passed, 0 failed; `cargo clippy --all-targets -p oxide-browser-sidecar -- -D warnings` clean; `cargo fmt --all -- --check` clean; `git grep` confirms no `Runtime.enable`/`Target.*`/`Console.enable` calls added
+  - Commands: cargo check --all-targets, cargo test, cargo clippy --all-targets, cargo fmt
+  - Audit IDs updated: G4 verified, Q1 verified (CP3), Q2 verified (CP3)
+  - Next: Checkpoint 4
 
 ## Risks and Blockers
 

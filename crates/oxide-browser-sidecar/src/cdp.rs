@@ -186,6 +186,58 @@ impl CdpClient {
         self.event_tx.subscribe()
     }
 
+    /// Create an isolated execution context (world) in the given frame.
+    ///
+    /// Isolated worlds have their own JavaScript heap (global object,
+    /// prototypes) but share the DOM.  Page JavaScript that monkey-patches
+    /// `document.querySelectorAll` or other DOM APIs does NOT affect code
+    /// running in the isolated world — each world gets fresh native wrappers.
+    ///
+    /// Returns the `executionContextId` to pass to `eval_in_context`.
+    ///
+    /// Does NOT require `Runtime.enable`.
+    pub async fn create_isolated_world(
+        &self,
+        frame_id: &str,
+        world_name: &str,
+        timeout: Duration,
+    ) -> Result<u64, CdpError> {
+        let params = json!({
+            "frameId": frame_id,
+            "worldName": world_name,
+        });
+        let result = self
+            .send_command("Page.createIsolatedWorld", params, timeout)
+            .await?;
+        parse_execution_context_id(&result)
+    }
+
+    /// Evaluate a JavaScript expression in a specific execution context
+    /// (isolated world) and return the value.
+    ///
+    /// `returnByValue` is true and `awaitPromise` is true, so the expression
+    /// may be async and the result is deserialized as JSON.
+    ///
+    /// Does NOT require `Runtime.enable` — `Runtime.evaluate` is a command,
+    /// not an event subscription.
+    pub async fn eval_in_context(
+        &self,
+        context_id: u64,
+        expression: &str,
+        timeout: Duration,
+    ) -> Result<Value, CdpError> {
+        let params = json!({
+            "expression": expression,
+            "contextId": context_id,
+            "returnByValue": true,
+            "awaitPromise": true,
+        });
+        let result = self
+            .send_command("Runtime.evaluate", params, timeout)
+            .await?;
+        parse_eval_result(&result)
+    }
+
     /// Whether the underlying connection is still alive (writer channel open).
     #[allow(dead_code)]
     pub fn is_alive(&self) -> bool {
@@ -236,6 +288,37 @@ impl CdpClient {
     }
 }
 
+/// Extract `executionContextId` from a `Page.createIsolatedWorld` response.
+fn parse_execution_context_id(result: &Value) -> Result<u64, CdpError> {
+    result
+        .get("executionContextId")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| CdpError::Json("missing executionContextId in response".into()))
+}
+
+/// Extract the value from a `Runtime.evaluate` response, or return an error
+/// if the evaluation threw an exception.
+fn parse_eval_result(result: &Value) -> Result<Value, CdpError> {
+    if let Some(exception) = result.get("exceptionDetails")
+        && !exception.is_null()
+    {
+        let text = exception
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        return Err(CdpError::Cdp {
+            code: 0,
+            message: format!("JS exception: {text}"),
+            data: exception.clone(),
+        });
+    }
+    Ok(result
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +337,53 @@ mod tests {
         };
         let cloned = event.clone();
         assert_eq!(event.method, cloned.method);
+    }
+
+    #[test]
+    fn parse_execution_context_id_extracts_id() {
+        let resp = json!({"executionContextId": 42});
+        assert_eq!(
+            parse_execution_context_id(&resp).expect("parse context id"),
+            42
+        );
+    }
+
+    #[test]
+    fn parse_execution_context_id_errors_when_missing() {
+        let resp = json!({"someOtherField": true});
+        assert!(parse_execution_context_id(&resp).is_err());
+    }
+
+    #[test]
+    fn parse_eval_result_extracts_value() {
+        let resp = json!({
+            "result": {"type": "string", "value": "hello"},
+            "exceptionDetails": null
+        });
+        assert_eq!(
+            parse_eval_result(&resp).expect("parse eval"),
+            json!("hello")
+        );
+    }
+
+    #[test]
+    fn parse_eval_result_returns_null_when_no_value() {
+        let resp = json!({
+            "result": {"type": "undefined"},
+        });
+        assert_eq!(parse_eval_result(&resp).expect("parse eval"), Value::Null);
+    }
+
+    #[test]
+    fn parse_eval_result_errors_on_exception() {
+        let resp = json!({
+            "result": {"type": "object"},
+            "exceptionDetails": {
+                "text": "SyntaxError: unexpected token",
+                "exceptionId": 1,
+            }
+        });
+        let err = parse_eval_result(&resp).expect_err("expected JS exception");
+        assert!(err.to_string().contains("SyntaxError"));
     }
 }

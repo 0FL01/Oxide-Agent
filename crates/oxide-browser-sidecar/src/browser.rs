@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn launch_args_include_anti_detection_flags() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let args = build_launch_args(&default_viewport(), dir.path());
 
         // Blink-level webdriver=false — undetectable, unlike JS override.
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn launch_args_exclude_fingerprint_flags() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let args = build_launch_args(&default_viewport(), dir.path());
 
         // These flags are fingerprints that distinguish automation from real
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn launch_args_include_window_size_and_user_data_dir() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let args = build_launch_args(&default_viewport(), dir.path());
 
         assert!(
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn launch_args_include_scale_factor_when_non_default() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let viewport = Viewport {
             width: 1280,
             height: 720,
@@ -458,14 +458,15 @@ mod tests {
 
     fn make_executable(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("set permissions");
     }
 
     #[test]
     fn resolve_prefers_env_override_over_system_chrome() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let chrome = dir.path().join("google-chrome");
-        std::fs::write(&chrome, "#!/bin/sh\n").unwrap();
+        std::fs::write(&chrome, "#!/bin/sh\n").expect("write chrome bin");
         make_executable(&chrome);
 
         let path_env = dir.path().to_string_lossy().to_string();
@@ -475,9 +476,9 @@ mod tests {
 
     #[test]
     fn resolve_prefers_google_chrome_over_chromium() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let chrome = dir.path().join("google-chrome");
-        std::fs::write(&chrome, "#!/bin/sh\n").unwrap();
+        std::fs::write(&chrome, "#!/bin/sh\n").expect("write chrome bin");
         make_executable(&chrome);
 
         let path_env = dir.path().to_string_lossy().to_string();
@@ -487,9 +488,9 @@ mod tests {
 
     #[test]
     fn resolve_uses_google_chrome_stable_when_google_chrome_absent() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let stable = dir.path().join("google-chrome-stable");
-        std::fs::write(&stable, "#!/bin/sh\n").unwrap();
+        std::fs::write(&stable, "#!/bin/sh\n").expect("write stable bin");
         make_executable(&stable);
 
         let path_env = dir.path().to_string_lossy().to_string();
@@ -511,9 +512,9 @@ mod tests {
 
     #[test]
     fn find_in_path_locates_executable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let bin = dir.path().join("mybin");
-        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").expect("write bin");
         make_executable(&bin);
 
         let path_env = dir.path().to_string_lossy().to_string();
@@ -523,9 +524,9 @@ mod tests {
 
     #[test]
     fn find_in_path_ignores_non_executable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         let bin = dir.path().join("mybin");
-        std::fs::write(&bin, "not executable").unwrap();
+        std::fs::write(&bin, "not executable").expect("write bin");
 
         let path_env = dir.path().to_string_lossy().to_string();
         let found = find_in_path("mybin", &path_env);

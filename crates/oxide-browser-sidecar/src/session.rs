@@ -35,6 +35,11 @@ struct BrowserInner {
     cdp: CdpClient,
     capture: Arc<CaptureCollector>,
     page_id: String,
+    /// Execution context ID for the isolated world used by read-only
+    /// internal JS (DOM queries, snapshots).  `None` if creation failed.
+    /// Recreated on every navigation (navigations destroy frames → old
+    /// context becomes invalid).
+    isolated_context_id: Option<u64>,
 }
 
 /// One browser session: Chromium process + CDP client + capture collector + metadata.
@@ -86,7 +91,7 @@ impl BrowserSession {
         }
 
         // Navigate to the start URL (with stealth patches on first navigation).
-        navigate_to(&cdp, &start_url, NAV_TIMEOUT, true)
+        let isolated_context_id = navigate_to(&cdp, &start_url, NAV_TIMEOUT, true)
             .await
             .context("initial navigation")?;
 
@@ -108,6 +113,7 @@ impl BrowserSession {
                 cdp,
                 capture,
                 page_id,
+                isolated_context_id,
             }),
             action_seq: AtomicU64::new(0),
             observation_seq: AtomicU64::new(0),
@@ -137,10 +143,21 @@ impl BrowserSession {
         self.inner.lock().await.page_id.clone()
     }
 
+    /// Get the isolated world execution context ID, if one was created.
+    ///
+    /// `None` if isolated world creation failed during the last navigation.
+    /// Read-only internal JS should check this and fall back to main-world
+    /// eval when `None`.
+    pub async fn isolated_context_id(&self) -> Option<u64> {
+        self.inner.lock().await.isolated_context_id
+    }
+
     /// Navigate to a URL via `Page.navigate` and wait for load event.
     pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<()> {
         let cdp = self.cdp().await;
-        navigate_to(&cdp, url, timeout, false).await
+        let context_id = navigate_to(&cdp, url, timeout, false).await?;
+        self.inner.lock().await.isolated_context_id = context_id;
+        Ok(())
     }
 
     /// Force a full browser reload: shut down Chromium, relaunch, reconnect CDP,
@@ -172,7 +189,7 @@ impl BrowserSession {
             .context("force_reload: start capture collector")?;
 
         // Navigate to the target URL (with stealth patches — fresh browser).
-        navigate_to(&new_cdp, url, NAV_TIMEOUT, true)
+        let isolated_context_id = navigate_to(&new_cdp, url, NAV_TIMEOUT, true)
             .await
             .context("force_reload: navigate")?;
 
@@ -189,6 +206,7 @@ impl BrowserSession {
         inner.cdp = new_cdp;
         inner.capture = new_capture;
         inner.page_id = new_page_id;
+        inner.isolated_context_id = isolated_context_id;
 
         info!(session_id = %self.id, url, "force_reload complete");
         Ok(())
@@ -324,12 +342,17 @@ impl BrowserSession {
 /// `BrowserSession` is fully assembled. When `stealth` is true, anti-detection
 /// patches are applied between `Page.enable` and `Page.navigate` (once per
 /// session — `Page.addScriptToEvaluateOnNewDocument` survives navigations).
+///
+/// After the load event, an isolated execution world is created (best-effort)
+/// for internal read-only JS.  Returns `Some(context_id)` on success, `None`
+/// if creation failed (read-only evals fall back to main world — less stealthy
+/// but functional).
 pub async fn navigate_to(
     cdp: &CdpClient,
     url: &str,
     timeout: Duration,
     stealth: bool,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     // Subscribe BEFORE sending commands to avoid missing the load event.
     let mut events = cdp.subscribe();
 
@@ -363,7 +386,37 @@ pub async fn navigate_to(
     })
     .await;
 
-    Ok(())
+    // Best-effort: create an isolated world for internal read-only JS.
+    // If this fails, read-only evals fall back to main world (less stealthy).
+    let context_id = match create_isolated_world_for_page(cdp, timeout).await {
+        Ok(id) => Some(id),
+        Err(e) => {
+            warn!("isolated world creation failed, falling back to main world: {e:#}");
+            None
+        }
+    };
+
+    Ok(context_id)
+}
+
+/// Get the main frame ID via `Page.getFrameTree` and create an isolated world
+/// in that frame.  Returns the `executionContextId` for the new world.
+async fn create_isolated_world_for_page(cdp: &CdpClient, timeout: Duration) -> Result<u64> {
+    let frame_tree = cdp
+        .send_command("Page.getFrameTree", serde_json::Value::Null, timeout)
+        .await
+        .map_err(|e| anyhow::anyhow!("Page.getFrameTree: {e}"))?;
+
+    let frame_id = frame_tree
+        .get("frameTree")
+        .and_then(|ft| ft.get("frame"))
+        .and_then(|f| f.get("id"))
+        .and_then(|id| id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing frame id in getFrameTree response"))?;
+
+    cdp.create_isolated_world(frame_id, "oxide_internal", timeout)
+        .await
+        .map_err(|e| anyhow::anyhow!("createIsolatedWorld: {e}"))
 }
 
 /// Shared session store keyed by session ID.
