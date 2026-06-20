@@ -6,6 +6,7 @@ use crate::agent::tool_runtime::{
 };
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
+use crate::storage::StorageProvider;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Url;
@@ -40,6 +41,11 @@ pub struct MediaFileProvider {
     llm_client: Arc<LlmClient>,
     fileops: Arc<dyn SandboxFileOps>,
     exec: Arc<dyn SandboxExec>,
+    /// Durable storage for resolving `artifact://` URIs (browser-live screenshots).
+    /// `None` when no browser-live context is available.
+    storage: Option<Arc<dyn StorageProvider>>,
+    /// User ID for `artifact://` ownership checks in durable storage.
+    user_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +91,26 @@ impl MediaFileProvider {
         Self::with_sandbox_backends(llm_client, fileops, exec)
     }
 
+    /// Create a new provider from the shared sandbox runtime with durable
+    /// storage for `artifact://` URI resolution (browser-live screenshots).
+    #[must_use]
+    pub fn from_runtime_with_storage(
+        llm_client: Arc<LlmClient>,
+        runtime: Arc<SandboxRuntime>,
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+    ) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        Self::with_sandbox_backends_and_storage(
+            llm_client,
+            fileops,
+            exec,
+            Some(storage),
+            Some(user_id),
+        )
+    }
+
     /// Create a provider from narrow sandbox capability traits.
     #[must_use]
     pub fn with_sandbox_backends(
@@ -92,10 +118,25 @@ impl MediaFileProvider {
         fileops: Arc<dyn SandboxFileOps>,
         exec: Arc<dyn SandboxExec>,
     ) -> Self {
+        Self::with_sandbox_backends_and_storage(llm_client, fileops, exec, None, None)
+    }
+
+    /// Create a provider from narrow sandbox capability traits with durable
+    /// storage for `artifact://` URI resolution (browser-live screenshots).
+    #[must_use]
+    pub fn with_sandbox_backends_and_storage(
+        llm_client: Arc<LlmClient>,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+        storage: Option<Arc<dyn StorageProvider>>,
+        user_id: Option<i64>,
+    ) -> Self {
         Self {
             llm_client,
             fileops,
             exec,
+            storage,
+            user_id,
         }
     }
 
@@ -216,26 +257,47 @@ impl MediaFileProvider {
         artifact_dir: Option<&Path>,
     ) -> Result<(String, Vec<u8>, Option<String>)> {
         if path.starts_with("artifact://") {
-            let artifact_dir = artifact_dir.ok_or_else(|| {
-                anyhow!("artifact:// URI requires a configured artifact directory")
-            })?;
-            let relative = path.strip_prefix("artifact://").unwrap_or(path);
-            let local_path = artifact_dir.join(relative);
-            let canonical_dir = std::fs::canonicalize(artifact_dir)
-                .ok()
-                .unwrap_or_else(|| artifact_dir.to_path_buf());
-            let canonical_path = std::fs::canonicalize(&local_path)
-                .ok()
-                .unwrap_or_else(|| local_path.clone());
-            if !canonical_path.starts_with(&canonical_dir) {
-                return Err(anyhow!(
-                    "artifact URI resolves outside the artifact directory"
-                ));
+            // Tier 1: filesystem (locally cached artifacts / backward compat).
+            if let Some(artifact_dir) = artifact_dir {
+                let relative = path.strip_prefix("artifact://").unwrap_or(path);
+                let local_path = artifact_dir.join(relative);
+                let canonical_dir = std::fs::canonicalize(artifact_dir)
+                    .ok()
+                    .unwrap_or_else(|| artifact_dir.to_path_buf());
+                let canonical_path = std::fs::canonicalize(&local_path)
+                    .ok()
+                    .unwrap_or_else(|| local_path.clone());
+                if !canonical_path.starts_with(&canonical_dir) {
+                    return Err(anyhow!(
+                        "artifact URI resolves outside the artifact directory"
+                    ));
+                }
+                if let Ok(bytes) = tokio::fs::read(&canonical_path).await {
+                    return Ok((canonical_path.to_string_lossy().to_string(), bytes, None));
+                }
+                // FS miss — fall through to durable storage.
             }
-            let bytes = tokio::fs::read(&canonical_path)
-                .await
-                .map_err(|error| anyhow!("Failed to read artifact {path}: {error}"))?;
-            return Ok((canonical_path.to_string_lossy().to_string(), bytes, None));
+
+            // Tier 2: Postgres BYTEA (browser-live screenshots persisted by
+            // `BrowserLiveProvider::persist_latest_screenshot`).
+            if let Some(storage) = &self.storage {
+                if let Some(user_id) = self.user_id {
+                    let artifact =
+                        storage
+                            .load_browser_artifact(user_id, path)
+                            .await
+                            .map_err(|error| {
+                                anyhow!("Failed to load browser artifact {path}: {error}")
+                            })?;
+                    if let Some(data) = artifact {
+                        return Ok((path.to_string(), data.data, None));
+                    }
+                }
+            }
+
+            return Err(anyhow!(
+                "artifact URI {path} not found on disk or in durable storage"
+            ));
         }
 
         if is_remote_url(path) {
@@ -926,6 +988,44 @@ mod tests {
         assert!(cleanup_path.is_none());
 
         let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+    }
+
+    #[tokio::test]
+    async fn artifact_uri_falls_back_to_durable_storage_when_fs_misses() {
+        use crate::storage::{BrowserArtifactData, MockStorageProvider};
+        use mockall::predicate::eq;
+
+        let uri = "artifact://browser/task-1/session-1/step-0001-milestone.jpg";
+        let fake_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+
+        let mut mock_storage = MockStorageProvider::new();
+        let expected_bytes = fake_jpeg.clone();
+        mock_storage
+            .expect_load_browser_artifact()
+            .with(eq(42i64), eq(uri.to_string()))
+            .returning(move |_, _| {
+                Ok(Some(BrowserArtifactData {
+                    mime_type: "image/jpeg".to_string(),
+                    data: expected_bytes.clone(),
+                    bytes: expected_bytes.len() as i64,
+                }))
+            });
+
+        let provider = MediaFileProvider::from_runtime_with_storage(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            Arc::new(SandboxRuntime::new(SandboxScope::from(42_i64))),
+            Arc::new(mock_storage),
+            42,
+        );
+
+        let (resolved_path, bytes, cleanup_path) = provider
+            .read_media_source(uri, Some(MediaKind::Image), None)
+            .await
+            .expect("resolve artifact URI from durable storage");
+
+        assert_eq!(resolved_path, uri);
+        assert_eq!(bytes, fake_jpeg);
+        assert!(cleanup_path.is_none());
     }
 
     mod media_resolver_tests {

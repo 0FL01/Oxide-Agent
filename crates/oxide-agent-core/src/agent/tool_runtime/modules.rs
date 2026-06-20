@@ -640,7 +640,15 @@ impl ToolModule for WikiMemoryToolModule {
     feature = "tool-media-video"
 ))]
 fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
-    MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime())
+    match ctx.browser_live_context() {
+        Some(live_ctx) => MediaFileProvider::from_runtime_with_storage(
+            ctx.llm_client(),
+            ctx.sandbox_runtime(),
+            live_ctx.storage(),
+            live_ctx.user_id(),
+        ),
+        None => MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime()),
+    }
 }
 
 /// Capability module for audio file transcription.
