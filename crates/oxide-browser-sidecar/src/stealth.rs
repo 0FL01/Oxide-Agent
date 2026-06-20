@@ -1,11 +1,12 @@
-//! Stealth anti-detection patches — ported from chrome-agent's `setup.rs`.
+//! Stealth anti-detection patches — hardened from Patchright donor.
 //!
 //! Applies CDP-level patches to make headless Chromium less detectable:
-//! - `navigator.webdriver` → `undefined`
+//! - `navigator.webdriver` → handled at C++ level via `--disable-blink-features=AutomationControlled`
 //! - `chrome.runtime` mock
 //! - Permissions API consistency fix
 //! - WebGL vendor/renderer mask
 //! - MouseEvent screenX/screenY leak fix
+//! - `navigator.serviceWorker.register` no-op (Patchright browserContextPatch.ts:31)
 //! - User-Agent override (removes "HeadlessChrome")
 //!
 //! **Critical:** `Runtime.enable` is NEVER called — it's a detection vector.
@@ -23,10 +24,15 @@ const STEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Stealth patches injected via `Page.addScriptToEvaluateOnNewDocument`.
 ///
-/// Ported verbatim from chrome-agent `setup.rs` `STEALTH_PATCHES_JS`.
-/// Runs before any page JS, survives navigations.
+/// Hardened from Patchright donor. Runs before any page JS, survives navigations.
+/// NOTE: `navigator.webdriver` is NOT patched here — the `--disable-blink-features=
+/// AutomationControlled` launch flag makes Blink set `navigator.webdriver = false`
+/// at C++ level, which is undetectable. A JS override would change `false`→
+/// `undefined` (detectable via `navigator.webdriver === false`) and install a
+/// custom getter on the prototype (detectable via descriptor inspection).
 const STEALTH_PATCHES_JS: &str = r#"
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // navigator.webdriver is handled by --disable-blink-features=AutomationControlled
+    // at the Blink/C++ level — no JS override needed (and one would be harmful).
     // Mask chrome.runtime (headless doesn't have it)
     if (!window.chrome) window.chrome = {};
     if (!window.chrome.runtime) window.chrome.runtime = { connect: () => {}, sendMessage: () => {} };
@@ -56,6 +62,8 @@ const STEALTH_PATCHES_JS: &str = r#"
             super(type, init);
         }
     };
+    // Patchright browserContextPatch.ts:31 — no-op service worker registration.
+    if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { };
 "#;
 
 /// User-Agent string that replaces the headless UA (removes "HeadlessChrome").
@@ -70,10 +78,12 @@ const STEALTH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 ///
 /// 1. `Page.addScriptToEvaluateOnNewDocument` — injects `STEALTH_PATCHES_JS`
 ///    before any page JS runs. Survives navigations.
-/// 2. `Runtime.evaluate` — patches `navigator.webdriver` on the current page
-///    (in case we connected mid-session). Does NOT enable the Runtime domain.
-/// 3. `Network.setUserAgentOverride` — replaces the User-Agent string to
+/// 2. `Network.setUserAgentOverride` — replaces the User-Agent string to
 ///    remove "HeadlessChrome".
+///
+/// `navigator.webdriver` is handled by the `--disable-blink-features=
+/// AutomationControlled` launch flag (Blink sets `false` at C++ level) —
+/// no JS patch needed.
 pub async fn apply_stealth(cdp: &CdpClient) {
     // 1. Inject stealth patches before any page JS runs (survives navigations).
     let _ = cdp
@@ -85,20 +95,7 @@ pub async fn apply_stealth(cdp: &CdpClient) {
         .await;
     debug!("injected stealth patches via addScriptToEvaluateOnNewDocument");
 
-    // 2. Patch the current page immediately (in case we connected mid-session).
-    //    Runtime.evaluate works WITHOUT Runtime.enable — verified in CP0.
-    let _ = cdp
-        .send_command(
-            "Runtime.evaluate",
-            json!({
-                "expression": "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-            }),
-            STEALTH_TIMEOUT,
-        )
-        .await;
-    debug!("patched navigator.webdriver on current page");
-
-    // 3. Override user-agent to remove "HeadlessChrome".
+    // 2. Override user-agent to remove "HeadlessChrome".
     let _ = cdp
         .send_command(
             "Network.setUserAgentOverride",
@@ -119,12 +116,33 @@ mod tests {
 
     #[test]
     fn stealth_patches_js_contains_key_patches() {
-        assert!(STEALTH_PATCHES_JS.contains("webdriver"));
         assert!(STEALTH_PATCHES_JS.contains("chrome.runtime"));
         assert!(STEALTH_PATCHES_JS.contains("Permissions"));
         assert!(STEALTH_PATCHES_JS.contains("WebGLRenderingContext"));
         assert!(STEALTH_PATCHES_JS.contains("screenX"));
         assert!(STEALTH_PATCHES_JS.contains("screenY"));
+        // serviceWorker.register no-op (Patchright browserContextPatch.ts:31)
+        assert!(STEALTH_PATCHES_JS.contains("navigator.serviceWorker.register"));
+    }
+
+    #[test]
+    fn stealth_patches_js_does_not_patch_webdriver() {
+        // navigator.webdriver is handled by --disable-blink-features=
+        // AutomationControlled at the C++ level. A JS override would be
+        // detectable (returns undefined instead of false, custom getter).
+        // Check for the actual override patterns, not comments mentioning it.
+        assert!(
+            !STEALTH_PATCHES_JS.contains("Object.defineProperty(navigator, 'webdriver'"),
+            "webdriver defineProperty override must not be present — Blink flag handles it"
+        );
+        assert!(
+            !STEALTH_PATCHES_JS.contains("navigator.webdriver ="),
+            "webdriver assignment override must not be present — Blink flag handles it"
+        );
+        assert!(
+            !STEALTH_PATCHES_JS.contains("navigator, 'webdriver'"),
+            "webdriver descriptor override must not be present — Blink flag handles it"
+        );
     }
 
     #[test]

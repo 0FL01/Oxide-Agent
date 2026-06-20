@@ -56,28 +56,7 @@ impl ChromiumProcess {
         let user_data_dir = tempfile::tempdir().context("create temp user-data-dir")?;
         let dir_path = user_data_dir.path().to_path_buf();
 
-        let mut args = vec![
-            "--headless=new".to_string(),
-            "--no-sandbox".to_string(),
-            "--disable-setuid-sandbox".to_string(),
-            "--disable-dev-shm-usage".to_string(),
-            "--disable-gpu".to_string(),
-            "--remote-debugging-port=0".to_string(),
-            "--remote-debugging-address=127.0.0.1".to_string(),
-            "--no-first-run".to_string(),
-            "--no-default-browser-check".to_string(),
-            "--disable-extensions".to_string(),
-            "--disable-popup-blocking".to_string(),
-            format!("--user-data-dir={}", dir_path.display()),
-            format!("--window-size={},{}", viewport.width, viewport.height),
-        ];
-
-        if viewport.device_scale_factor != 1.0 {
-            args.push(format!(
-                "--force-device-scale-factor={}",
-                viewport.device_scale_factor
-            ));
-        }
+        let args = build_launch_args(viewport, &dir_path);
 
         debug!(bin = %chromium_bin, args = ?args, "launching Chromium");
 
@@ -258,6 +237,45 @@ impl ChromiumProcess {
     }
 }
 
+/// Build Chromium launch arguments for the given viewport and user-data-dir.
+///
+/// Extracted from `ChromiumProcess::launch` for testability.
+///
+/// Anti-detection flags are aligned with Patchright (`chromiumSwitchesPatch.ts`):
+/// - `--disable-blink-features=AutomationControlled` — Blink sets
+///   `navigator.webdriver = false` at C++ level (undetectable, unlike a JS
+///   override which returns `undefined` and installs a custom getter).
+/// - `--disable-features=...` — removes automation-specific feature disables
+///   that real Chrome does not set.
+/// - Removed: `--disable-extensions`, `--disable-popup-blocking`,
+///   `--disable-gpu` — each is a fingerprint that distinguishes automation
+///   from real Chrome.
+fn build_launch_args(viewport: &Viewport, user_data_dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--headless=new".to_string(),
+        "--no-sandbox".to_string(),
+        "--disable-setuid-sandbox".to_string(),
+        "--disable-dev-shm-usage".to_string(),
+        "--disable-blink-features=AutomationControlled".to_string(),
+        "--disable-features=ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyComponentUpdater,AvoidUnnecessaryBeforeUnloadCheckSync,Translate,HttpsUpgrades,PaintHolding,ThirdPartyStoragePartitioning,LensOverlay,PlzDedicatedWorker".to_string(),
+        "--remote-debugging-port=0".to_string(),
+        "--remote-debugging-address=127.0.0.1".to_string(),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        format!("--user-data-dir={}", user_data_dir.display()),
+        format!("--window-size={},{}", viewport.width, viewport.height),
+    ];
+
+    if viewport.device_scale_factor != 1.0 {
+        args.push(format!(
+            "--force-device-scale-factor={}",
+            viewport.device_scale_factor
+        ));
+    }
+
+    args
+}
+
 impl Drop for ChromiumProcess {
     fn drop(&mut self) {
         // Best-effort kill if not already shut down.
@@ -268,5 +286,106 @@ impl Drop for ChromiumProcess {
             );
             let _ = self.child.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_browser_contracts::Viewport;
+
+    fn default_viewport() -> Viewport {
+        Viewport {
+            width: 1280,
+            height: 720,
+            device_scale_factor: 1.0,
+        }
+    }
+
+    #[test]
+    fn launch_args_include_anti_detection_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = build_launch_args(&default_viewport(), dir.path());
+
+        // Blink-level webdriver=false — undetectable, unlike JS override.
+        assert!(
+            args.iter()
+                .any(|a| a == "--disable-blink-features=AutomationControlled"),
+            "must include --disable-blink-features=AutomationControlled"
+        );
+
+        // Patchright --disable-features list (chromiumSwitchesPatch.ts:33).
+        let disable_features = args
+            .iter()
+            .find(|a| a.starts_with("--disable-features="))
+            .expect("must include --disable-features");
+        for feature in [
+            "ImprovedCookieControls",
+            "LazyFrameLoading",
+            "GlobalMediaControls",
+            "ThirdPartyStoragePartitioning",
+            "PlzDedicatedWorker",
+        ] {
+            assert!(
+                disable_features.contains(feature),
+                "--disable-features must contain {feature}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_args_exclude_fingerprint_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = build_launch_args(&default_viewport(), dir.path());
+
+        // These flags are fingerprints that distinguish automation from real
+        // Chrome.  Patchright removes them (chromiumSwitchesPatch.ts:20-33).
+        assert!(
+            !args.iter().any(|a| a == "--disable-extensions"),
+            "must NOT include --disable-extensions (fingerprint)"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--disable-popup-blocking"),
+            "must NOT include --disable-popup-blocking (fingerprint)"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--disable-gpu"),
+            "must NOT include --disable-gpu (headless giveaway)"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--enable-automation"),
+            "must NOT include --enable-automation (automation signal)"
+        );
+    }
+
+    #[test]
+    fn launch_args_include_window_size_and_user_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = build_launch_args(&default_viewport(), dir.path());
+
+        assert!(
+            args.iter().any(|a| a == "--window-size=1280,720"),
+            "must include window-size"
+        );
+        assert!(
+            args.iter().any(|a| a.starts_with("--user-data-dir=")),
+            "must include user-data-dir"
+        );
+    }
+
+    #[test]
+    fn launch_args_include_scale_factor_when_non_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let viewport = Viewport {
+            width: 1280,
+            height: 720,
+            device_scale_factor: 2.0,
+        };
+        let args = build_launch_args(&viewport, dir.path());
+
+        assert!(
+            args.iter().any(|a| a == "--force-device-scale-factor=2"),
+            "must include force-device-scale-factor when non-default"
+        );
     }
 }
