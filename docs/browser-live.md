@@ -92,6 +92,76 @@ event subscription) directly on the page target WebSocket.
 - Headless screen-dimension artifacts (`--headless=new` limitations).
 - Behavioral patterns (mouse movement, typing cadence) are agent-controlled.
 
+## Ad blocking
+
+The sidecar includes optional network-level ad blocking using the
+`adblock-rust` engine (Brave's Rust adblock engine) integrated with CDP
+`Fetch.enable` request interception. When enabled, ad and tracking requests
+are blocked at the network layer before they reach Chromium — improving agent
+decision quality (cleaner screenshots, cleaner DOM snapshots, faster page
+loads, privacy).
+
+### How it works
+
+1. At startup, `main.rs` builds an `AdblockEngine` from filter list files
+   (if `ADBLOCK_ENABLED=true`).
+2. The engine is shared via `Arc<AdblockEngine>` across all browser sessions
+   — built once, no per-session rebuild.
+3. When a session starts, `CaptureCollector::start()` sends `Fetch.enable`
+   with patterns for all non-Document resource types (navigation is never
+   paused).
+4. For each `Fetch.requestPaused` event, the handler:
+   - Skips navigation requests and Document resources (defense-in-depth).
+   - Builds an `adblock::Request` with the URL, current page URL as source,
+     and mapped resource type.
+   - Calls `engine.check_network_request()` — if matched, sends
+     `Fetch.failRequest` with `BlockedByClient` (same error as Brave/uBlock).
+   - If not matched, sends `Fetch.continueRequest` (pass through unmodified).
+   - Fail-open: on any error, `continueRequest` is sent (never hang requests).
+
+### Stealth interaction
+
+`Fetch.enable` is an independent CDP domain with zero JS-visible side
+effects. It does NOT call `Runtime.enable`, `Target.setAutoAttach`, or
+`Console.enable`. Page JS cannot detect Fetch interception — the only signal
+is that ads don't load (intended behavior, identical to Brave/uBlock).
+
+When ad blocking is disabled (`ADBLOCK_ENABLED` unset or `false`), no
+`Fetch.enable` is sent, no filter lists are loaded — zero behavior change,
+zero stealth impact.
+
+### Configuration
+
+Ad blocking is **opt-in**. Set these env vars on the browser-sidecar service:
+
+```bash
+ADBLOCK_ENABLED=true
+ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt
+```
+
+The Docker image includes EasyList and EasyPrivacy filter lists at
+`/opt/adblock/`. `ADBLOCK_FILTERS` is pre-set in the Dockerfile; only
+`ADBLOCK_ENABLED=true` needs to be set at runtime.
+
+### What it blocks
+
+- Ad scripts (doubleclick.net, googlesyndication.com, etc.)
+- Tracking pixels and beacons (google-analytics.com, facebook.net, etc.)
+- Third-party ad iframes and resources
+- Crypto mining scripts
+
+### What it does NOT block
+
+- Cosmetic ad elements already in the DOM (server-side rendered ads) — Phase 2
+- Scriptlet injection (uBlock Origin scriptlets) — Phase 2
+- Redirect resources (`$redirect=noopjs`) — Phase 2
+- Navigation requests — never intercepted
+
+### Filter list updates
+
+Filter lists are baked into the Docker image. To update, rebuild the image
+(the Dockerfile re-downloads from easylist.to). No runtime auto-update.
+
 ## Requirements
 
 - Docker with Compose
