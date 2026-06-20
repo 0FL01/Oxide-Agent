@@ -76,8 +76,8 @@ None. All requirements derivable from RECON + donor code.
 - Source: RECON — benchmark shows `channel=chrome` matters; browser.rs:16 defaults to `chromium`
 - Acceptance: Launch auto-detects `google-chrome` → `google-chrome-stable` → `$CHROMIUM_BIN` → `chromium`. `CHROMIUM_BIN` env override has highest priority when set.
 - Evidence required: unit test for resolution order; `cargo test -p oxide-browser-sidecar` green
-- Status: pending
-- Evidence collected:
+- Status: verified
+- Evidence collected: `resolve_prefers_env_override_over_system_chrome`, `resolve_prefers_google_chrome_over_chromium`, `resolve_uses_google_chrome_stable_when_google_chrome_absent`, `resolve_falls_back_to_chromium_when_no_system_chrome`, `resolve_ignores_empty_env_override`, `find_in_path_locates_executable`, `find_in_path_ignores_non_executable` all pass; 121 tests green; Docker sets `CHROMIUM_BIN=/usr/bin/chromium` (env override = no behavior change in Docker)
 
 ### G4: Isolated world support in CDP client
 - Source: framesPatch.ts:244-252 — `Page.createIsolatedWorld` with `worldName`, `Runtime.evaluate` with `contextId`
@@ -111,7 +111,7 @@ None. All requirements derivable from RECON + donor code.
 - Source: AGENTS.md — implementation bias
 - Acceptance: No new Cargo dependencies added to `oxide-browser-sidecar`. Isolated world support implemented in existing `cdp.rs`.
 - Evidence required: `Cargo.toml` diff shows no new deps; `cargo check -p oxide-browser-sidecar` green
-- Status: verified (for checkpoints 1)
+- Status: verified (for checkpoints 1-2)
 - Evidence collected: no Cargo.toml changes; `cargo check -p oxide-browser-sidecar` green
 
 ### Q2: Architectural invariants preserved
@@ -235,6 +235,13 @@ None. All requirements derivable from RECON + donor code.
   - Commands: cargo test, cargo clippy, cargo fmt
   - Audit IDs updated: G1 verified, G2 verified, G7 verified, Q1 verified (CP1), Q2 verified (CP1)
   - Next: Checkpoint 2
+
+- 2026-06-20 00:30: Checkpoint 2 — system Chrome binary preference
+  - Changed: `browser.rs` (added `SYSTEM_CHROME_CANDIDATES` constant; added `resolve_chromium_binary()` + `resolve_chromium_binary_impl()` + `find_in_path()`; replaced direct `env::var` in `launch()` with `resolve_chromium_binary()`; added 7 unit tests)
+  - Evidence: `cargo test -p oxide-browser-sidecar` → 121 passed, 0 failed; `cargo clippy -p oxide-browser-sidecar -- -D warnings` clean; `cargo fmt --all -- --check` clean; Docker `CHROMIUM_BIN=/usr/bin/chromium` env override preserved (no Docker regression)
+  - Commands: cargo check, cargo test, cargo clippy, cargo fmt
+  - Audit IDs updated: G3 verified, Q1 verified (CP2)
+  - Next: Checkpoint 3
 
 ## Risks and Blockers
 

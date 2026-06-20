@@ -1,6 +1,6 @@
 //! Chromium process lifecycle — launch, discover DevTools, connect CDP, shutdown.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -12,8 +12,14 @@ use tracing::{debug, info, warn};
 use crate::cdp::CdpClient;
 use oxide_browser_contracts::Viewport;
 
-/// Default Chromium binary name (overridable via `CHROMIUM_BIN` env var).
+/// Fallback Chromium binary name when no system Chrome is found and
+/// `CHROMIUM_BIN` is not set.
 const DEFAULT_CHROMIUM_BIN: &str = "chromium";
+
+/// System Chrome binary names to try (in priority order) when `CHROMIUM_BIN`
+/// is not set.  Real Chrome has a different binary fingerprint than bundled
+/// Chromium — the 2026 benchmark shows this matters as much as JS patches.
+const SYSTEM_CHROME_CANDIDATES: &[&str] = &["google-chrome", "google-chrome-stable"];
 
 /// Timeout for waiting Chromium DevTools to become ready.
 const DEVTOOLS_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,8 +56,7 @@ impl ChromiumProcess {
     ///
     /// Returns the process handle and a connected `CdpClient`.
     pub async fn launch(viewport: &Viewport) -> Result<(Self, CdpClient)> {
-        let chromium_bin =
-            std::env::var("CHROMIUM_BIN").unwrap_or_else(|_| DEFAULT_CHROMIUM_BIN.to_string());
+        let chromium_bin = resolve_chromium_binary();
 
         let user_data_dir = tempfile::tempdir().context("create temp user-data-dir")?;
         let dir_path = user_data_dir.path().to_path_buf();
@@ -237,6 +242,68 @@ impl ChromiumProcess {
     }
 }
 
+/// Resolve which Chromium binary to launch.
+///
+/// Resolution order:
+/// 1. `CHROMIUM_BIN` env var (if set and non-empty) — highest priority
+/// 2. `google-chrome` found in `PATH` — system Chrome preferred
+/// 3. `google-chrome-stable` found in `PATH`
+/// 4. `chromium` — fallback (assumes it is in `PATH`)
+fn resolve_chromium_binary() -> String {
+    let env_bin = std::env::var("CHROMIUM_BIN").ok().filter(|s| !s.is_empty());
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    resolve_chromium_binary_impl(env_bin.as_deref(), &path_env)
+}
+
+/// Pure resolution logic — extracted for testability without env mutation.
+fn resolve_chromium_binary_impl(env_bin: Option<&str>, path_env: &str) -> String {
+    if let Some(bin) = env_bin
+        && !bin.is_empty()
+    {
+        return bin.to_string();
+    }
+    for candidate in SYSTEM_CHROME_CANDIDATES {
+        if let Some(path) = find_in_path(candidate, path_env) {
+            return path.to_string_lossy().into_owned();
+        }
+    }
+    DEFAULT_CHROMIUM_BIN.to_string()
+}
+
+/// Search for an executable by name in the given PATH string (colon-separated).
+///
+/// If `name` contains `/`, it is treated as a direct path.  Otherwise each
+/// directory in `path_env` is checked for an executable file.
+fn find_in_path(name: &str, path_env: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_executable = |path: &Path| -> bool {
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+
+    if name.contains('/') {
+        let path = Path::new(name);
+        return if is_executable(path) {
+            Some(path.to_path_buf())
+        } else {
+            None
+        };
+    }
+
+    for dir in path_env.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = Path::new(dir).join(name);
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Build Chromium launch arguments for the given viewport and user-data-dir.
 ///
 /// Extracted from `ChromiumProcess::launch` for testability.
@@ -387,5 +454,81 @@ mod tests {
             args.iter().any(|a| a == "--force-device-scale-factor=2"),
             "must include force-device-scale-factor when non-default"
         );
+    }
+
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn resolve_prefers_env_override_over_system_chrome() {
+        let dir = tempfile::tempdir().unwrap();
+        let chrome = dir.path().join("google-chrome");
+        std::fs::write(&chrome, "#!/bin/sh\n").unwrap();
+        make_executable(&chrome);
+
+        let path_env = dir.path().to_string_lossy().to_string();
+        let result = resolve_chromium_binary_impl(Some("/custom/chrome"), &path_env);
+        assert_eq!(result, "/custom/chrome");
+    }
+
+    #[test]
+    fn resolve_prefers_google_chrome_over_chromium() {
+        let dir = tempfile::tempdir().unwrap();
+        let chrome = dir.path().join("google-chrome");
+        std::fs::write(&chrome, "#!/bin/sh\n").unwrap();
+        make_executable(&chrome);
+
+        let path_env = dir.path().to_string_lossy().to_string();
+        let result = resolve_chromium_binary_impl(None, &path_env);
+        assert_eq!(result, chrome.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn resolve_uses_google_chrome_stable_when_google_chrome_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let stable = dir.path().join("google-chrome-stable");
+        std::fs::write(&stable, "#!/bin/sh\n").unwrap();
+        make_executable(&stable);
+
+        let path_env = dir.path().to_string_lossy().to_string();
+        let result = resolve_chromium_binary_impl(None, &path_env);
+        assert_eq!(result, stable.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn resolve_falls_back_to_chromium_when_no_system_chrome() {
+        let result = resolve_chromium_binary_impl(None, "");
+        assert_eq!(result, DEFAULT_CHROMIUM_BIN);
+    }
+
+    #[test]
+    fn resolve_ignores_empty_env_override() {
+        let result = resolve_chromium_binary_impl(Some(""), "");
+        assert_eq!(result, DEFAULT_CHROMIUM_BIN);
+    }
+
+    #[test]
+    fn find_in_path_locates_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("mybin");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        make_executable(&bin);
+
+        let path_env = dir.path().to_string_lossy().to_string();
+        let found = find_in_path("mybin", &path_env);
+        assert_eq!(found, Some(bin));
+    }
+
+    #[test]
+    fn find_in_path_ignores_non_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("mybin");
+        std::fs::write(&bin, "not executable").unwrap();
+
+        let path_env = dir.path().to_string_lossy().to_string();
+        let found = find_in_path("mybin", &path_env);
+        assert_eq!(found, None);
     }
 }
