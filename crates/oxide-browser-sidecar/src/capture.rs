@@ -48,6 +48,16 @@ const MAX_HISTORY_ITEMS: usize = 1000;
 /// JS that overrides `console.log/warn/error/debug/info` and stores entries in
 /// a global array. Drained via `window.__oxideDrainConsole()`.
 ///
+/// Hardened against `toString()` detection: a `WeakMap`-backed
+/// `Function.prototype.toString` override makes every patched console method
+/// return its native string (`"function log() { [native code] }"`) under
+/// `console.log.toString()`, `Function.prototype.toString.call(console.log)`,
+/// and `String(console.log)`. Non-patched functions delegate to the real
+/// `toString`; the override itself is registered in the `WeakMap` so it too
+/// looks native. This closes the entire class of toString-based detection
+/// without per-instance `toString` patches (which are bypassed by
+/// `Function.prototype.toString.call`).
+///
 /// Injected via `Page.addScriptToEvaluateOnNewDocument` (survives navigations)
 /// and `Runtime.evaluate` (current page). Does **not** require `Runtime.enable`.
 const CONSOLE_INTERCEPTOR_JS: &str = r#"
@@ -55,10 +65,20 @@ const CONSOLE_INTERCEPTOR_JS: &str = r#"
   if (window.__oxideConsoleCapture) return;
   var capture = [];
   var levels = { log: 'info', info: 'info', warn: 'warning', error: 'error', debug: 'verbose' };
+
+  var nativeToString = Function.prototype.toString;
+  var toStringOverrides = new WeakMap();
+  var hardenedToString = function toString() {
+    if (toStringOverrides.has(this)) return toStringOverrides.get(this);
+    return nativeToString.call(this);
+  };
+  toStringOverrides.set(hardenedToString, nativeToString.call(nativeToString));
+  Function.prototype.toString = hardenedToString;
+
   for (var method in levels) {
     (function(m, lvl) {
       var orig = console[m] ? console[m].bind(console) : function() {};
-      console[m] = function() {
+      var patched = function() {
         var args = Array.prototype.slice.call(arguments);
         var text = args.map(function(a) {
           try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
@@ -67,6 +87,8 @@ const CONSOLE_INTERCEPTOR_JS: &str = r#"
         capture.push({ level: lvl, text: text, timestamp: Date.now() });
         orig.apply(console, arguments);
       };
+      toStringOverrides.set(patched, 'function ' + m + '() { [native code] }');
+      console[m] = patched;
     })(method, levels[method]);
   }
   window.__oxideConsoleCapture = capture;
@@ -1474,6 +1496,18 @@ mod tests {
     #[test]
     fn interceptor_js_no_runtime_enable() {
         assert!(!CONSOLE_INTERCEPTOR_JS.contains("Runtime.enable"));
+    }
+
+    #[test]
+    fn interceptor_js_hardens_function_to_string() {
+        // WeakMap-backed global override so patched functions return native strings
+        assert!(CONSOLE_INTERCEPTOR_JS.contains("WeakMap"));
+        assert!(CONSOLE_INTERCEPTOR_JS.contains("Function.prototype.toString"));
+        assert!(CONSOLE_INTERCEPTOR_JS.contains("toStringOverrides"));
+        // The override itself is registered to look native
+        assert!(CONSOLE_INTERCEPTOR_JS.contains("nativeToString.call(nativeToString)"));
+        // Each patched method gets a native toString string
+        assert!(CONSOLE_INTERCEPTOR_JS.contains("[native code]"));
     }
 
     // ── decode_response_body ────────────────────────────────────────────
