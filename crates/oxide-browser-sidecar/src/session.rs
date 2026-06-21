@@ -490,8 +490,8 @@ impl SessionManager {
             let current = self.sessions.lock().await.len();
             if current >= max {
                 warn!(
-                    current, max,
-                    "browser session creation rejected: sidecar at capacity"
+                    current,
+                    max, "browser session creation rejected: sidecar at capacity"
                 );
                 return CreateSessionResponse {
                     request_id,

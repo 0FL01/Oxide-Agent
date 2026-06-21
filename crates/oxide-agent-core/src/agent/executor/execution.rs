@@ -430,8 +430,8 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let (tool_runtime_registry, browser_cleanup) = self
-            .build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
+        let (tool_runtime_registry, browser_cleanup) =
+            self.build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
         let tool_runtime_registry = Arc::new(tool_runtime_registry);
         debug!(
             target: AGENT_LATENCY_TARGET,

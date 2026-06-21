@@ -597,10 +597,7 @@ impl DelegationProvider {
     /// browser tools with the parent's artifact storage scope.
     #[cfg(oxide_module_tool_browser_live)]
     #[must_use]
-    pub fn with_browser_live_context(
-        mut self,
-        ctx: Option<BrowserLiveModuleContext>,
-    ) -> Self {
+    pub fn with_browser_live_context(mut self, ctx: Option<BrowserLiveModuleContext>) -> Self {
         self.browser_live_context = ctx;
         self
     }
@@ -713,6 +710,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .collect()
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,

@@ -209,8 +209,7 @@ impl BrowserLiveProvider {
     /// prevent Chromium process leaks. Best-effort: individual close failures
     /// are logged but do not abort the remaining cleanup.
     pub async fn close_all_sessions(&self) {
-        let session_ids: Vec<String> =
-            self.states.lock().await.keys().cloned().collect();
+        let session_ids: Vec<String> = self.states.lock().await.keys().cloned().collect();
         if session_ids.is_empty() {
             return;
         }

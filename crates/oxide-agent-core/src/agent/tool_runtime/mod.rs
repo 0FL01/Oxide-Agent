@@ -32,9 +32,9 @@ pub use modules::AgentsMdToolModule;
 #[cfg(oxide_module_tool_brave_search)]
 pub use modules::BraveSearchToolModule;
 pub use modules::BrowserLiveModuleContext;
-pub use modules::BrowserSessionCleanup;
 #[cfg(oxide_module_tool_browser_live)]
 pub use modules::BrowserLiveToolModule;
+pub use modules::BrowserSessionCleanup;
 #[cfg(oxide_module_tool_compression)]
 pub use modules::CompressionToolModule;
 #[cfg(oxide_module_tool_crw)]
