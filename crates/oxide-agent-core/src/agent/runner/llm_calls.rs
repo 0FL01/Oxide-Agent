@@ -404,7 +404,7 @@ impl AgentRunner {
         loop {
             let Some(route_index) = self.select_model_route_index(ctx, &exhausted_routes) else {
                 let error = last_route_error.unwrap_or_else(|| {
-                    LlmError::Unknown("No healthy model routes available".to_string())
+                    LlmError::unknown("No healthy model routes available".to_string())
                 });
                 Self::emit_llm_error(ctx.progress_tx, &error).await;
                 return Err(anyhow!("LLM call failed: {error}"));

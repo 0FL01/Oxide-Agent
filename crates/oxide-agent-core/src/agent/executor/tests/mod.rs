@@ -126,14 +126,14 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
     provider
         .expect_complete_internal_text()
         .returning(|_, _, _, _, _| {
-            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+            Err(crate::llm::LlmError::unknown("Not implemented".to_string()))
         });
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());

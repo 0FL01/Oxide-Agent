@@ -30,7 +30,7 @@ impl LlmProvider for SuccessMock {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented".to_string()))
+        Err(LlmError::unknown("Not implemented".to_string()))
     }
 
     async fn analyze_image(
@@ -40,7 +40,7 @@ impl LlmProvider for SuccessMock {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented".to_string()))
+        Err(LlmError::unknown("Not implemented".to_string()))
     }
 
     async fn chat_with_tools<'a>(
@@ -89,7 +89,7 @@ impl LlmProvider for RetrySuccessMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in retry test".to_string(),
         ))
     }
@@ -171,7 +171,7 @@ impl LlmProvider for AlwaysFailMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in failure test".to_string(),
         ))
     }

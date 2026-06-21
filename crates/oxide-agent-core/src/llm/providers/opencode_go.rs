@@ -525,7 +525,7 @@ impl LlmProvider for OpenCodeGoProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(format!(
+        Err(LlmError::unknown(format!(
             "Audio transcription not supported by {}",
             self.profile.display_name
         )))

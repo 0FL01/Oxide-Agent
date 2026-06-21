@@ -137,7 +137,7 @@ impl LlmProvider for SequencedLlmProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("transcribe not implemented".to_string()))
+        Err(LlmError::unknown("transcribe not implemented".to_string()))
     }
 
     async fn analyze_image(
@@ -147,7 +147,7 @@ impl LlmProvider for SequencedLlmProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "analyze_image not implemented".to_string(),
         ))
     }

@@ -304,14 +304,14 @@ async fn executor_injects_configured_wiki_memory_context() {
     provider
         .expect_complete_internal_text()
         .returning(|_, _, _, _, _| {
-            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+            Err(crate::llm::LlmError::unknown("Not implemented".to_string()))
         });
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
@@ -345,10 +345,10 @@ async fn manual_compaction_uses_current_compaction_controller() {
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
@@ -429,10 +429,10 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
@@ -676,10 +676,10 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
         });
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));

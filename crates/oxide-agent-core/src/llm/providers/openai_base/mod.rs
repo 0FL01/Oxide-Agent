@@ -353,7 +353,7 @@ impl LlmProvider for OpenAIBaseProvider {
     ) -> Result<String, LlmError> {
         let profile = self.profile();
         let Some(audio_profile) = profile.audio_transcription else {
-            return Err(LlmError::Unknown(format!(
+            return Err(LlmError::unknown(format!(
                 "Audio transcription not supported by {} profile",
                 profile.label,
             )));

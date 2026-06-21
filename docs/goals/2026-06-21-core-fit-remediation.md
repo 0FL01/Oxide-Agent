@@ -98,7 +98,7 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 | A3.3 | Tool runtime correlation | SMELL | `ToolCallCorrelation` typed; call↔output pairing runtime-verified (`runtime.rs:267-302`), not type-invariant |
 | A3.4 | Schema versioning | SOUND | all 8 records carry `schema_version`; 2 bumped (binding v2, reminder v2); migrations runtime-path not embedded |
 | A3.5 | Race/concurrency | SOUND | atomic claim + `FOR UPDATE`; 2 `tokio::Mutex`-across-await serialize but correct; no `await_holding_lock` |
-| A3.6 | `LlmError` context-poor | SMELL | `ApiError{status,message}` no `provider`/`model` (`llm/error.rs:8`); retry-exhaustion bare string (`client.rs:701`) |
+| A3.6 | `LlmError` context-poor | SMELL → FIXED | `ApiError` now has `provider`/`model` fields; `Unknown` changed to struct variant with `provider`/`model`; `with_provider()`/`with_model()` methods; `LlmClient` wraps errors with context at all return sites |
 | A3.7 | `StorageProvider::check_connection` stringly-typed | SMELL (low) | `provider.rs:214` returns `Result<(), String>` |
 | A3.8 | Secret handling | SOUND | `SecretProbeReport` metadata-only by type; no central redaction net at tool-output boundary (caveat) |
 
@@ -198,8 +198,8 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Source: A3.6
   - Acceptance: `LlmError::ApiError` and `LlmError::Unknown` have `provider: Option<String>` and `model: Option<String>` fields; `LlmClient::chat_with_tools` wraps errors at `client.rs:696` with provider/model; retry-exhaustion error includes provider/model
   - Evidence required: `cargo test` green; new test asserts `ApiError.provider`/`.model` populated on wrapped error
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `ApiError` variant now has `provider: Option<String>` and `model: Option<String>` fields. `Unknown` variant changed from tuple `Unknown(String)` to struct `Unknown { message, provider, model }`. `with_provider()`/`with_model()` methods added — mutate only `ApiError`/`Unknown`, noop on other variants. `LlmClient::chat_with_tools` wraps errors at line 706 (`return Err(e.with_provider(&model_info.provider).with_model(&model_info.id))`) and retry-exhaustion at line 715. `chat_with_tools_single_attempt_for_model_info` wraps at line 544. `complete_internal_text` wraps at line 483. Capability-check errors wrapped at lines 544 and 633. `LlmError::unknown()` helper added for ergonomic construction. All `LlmError::Unknown(...)` construction sites across workspace migrated to `LlmError::unknown(...)`. All `ApiError` match sites already used `..` pattern — no changes needed. `llm_detector.rs:313` match pattern updated to `LlmError::Unknown { message: msg, .. }`. Tests: `api_error_carries_provider_model`, `unknown_carries_provider_model`, `with_provider_model_noop_on_other_variants`, `api_error_defaults_to_none` — all pass. 1306 tests pass, clippy clean, fmt clean.
 
 ### Quality requirements (Q*)
 
@@ -535,6 +535,13 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1302 pass, 0 fail); `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`
   - Audit IDs updated: G4 verified, A2.10 FIXED, A5.4 FIXED, A2.4 FIXED
   - Next: Phase 5 (LlmError provider/model context)
+
+- <2026-06-21>: Phase 5 — LlmError provider/model context (G5)
+  - Changed: `llm/error.rs` (added `provider`/`model` fields to `ApiError` and `Unknown`; `Unknown` changed from tuple to struct variant; added `unknown()` helper, `with_provider()`, `with_model()` methods; 4 new tests); `llm/client.rs` (wrapped errors at 5 sites: `chat_with_tools` retry-exhaustion + provider error, `chat_with_tools_single_attempt_for_model_info` capability check, `chat_with_tools` capability check, `complete_internal_text` error; retry-exhaustion in `chat_with_tools`); all `LlmError::Unknown(...)` construction sites migrated to `LlmError::unknown(...)` across workspace (oxide-agent-core, oxide-agent-transport-web, oxide-agent-transport-telegram); `llm_detector.rs` match pattern updated
+  - Evidence: `api_error_carries_provider_model` test asserts `ApiError.provider=Some("openrouter")`, `.model=Some("deepseek-v3.1")`; `unknown_carries_provider_model` test asserts `Unknown.provider`/`.model` populated; `with_provider_model_noop_on_other_variants` test asserts noop on `NetworkError`; `api_error_defaults_to_none` test asserts defaults; 1306 tests pass, 0 fail; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1306 pass, 0 fail); `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`
+  - Audit IDs updated: G5 verified, A3.6 FIXED
+  - Next: Phase 6 (Tests for remediated subsystems)
 
 ## Risks and Blockers
 

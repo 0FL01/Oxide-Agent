@@ -75,7 +75,7 @@ pub trait LlmProvider: Send + Sync {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Video analysis not supported by this provider".to_string(),
         ))
     }
@@ -88,7 +88,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Tool calling not supported by this provider".to_string(),
         ))
     }

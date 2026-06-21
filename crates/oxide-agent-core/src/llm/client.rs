@@ -480,7 +480,10 @@ impl LlmClient {
             );
         }
 
-        result
+        result.map_err(|e| {
+            e.with_provider(&model_info.provider)
+                .with_model(&model_info.id)
+        })
     }
 
     /// Perform a single chat completion request with tool calling (no retry).
@@ -538,7 +541,9 @@ impl LlmClient {
             return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
-            )));
+            ))
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id));
         }
 
         support::history::validate_tool_history(&messages, capabilities)?;
@@ -623,7 +628,9 @@ impl LlmClient {
             return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
-            )));
+            ))
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id));
         }
 
         support::history::validate_tool_history(&messages, capabilities)?;
@@ -699,12 +706,16 @@ impl LlmClient {
                         continue;
                     }
 
-                    return Err(e);
+                    return Err(e
+                        .with_provider(&model_info.provider)
+                        .with_model(&model_info.id));
                 }
             }
         }
 
-        Err(LlmError::api_error("All retry attempts exhausted"))
+        Err(LlmError::api_error("All retry attempts exhausted")
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id))
     }
 
     /// Maximum number of retry attempts for LLM calls.
@@ -849,7 +860,7 @@ impl LlmClient {
             .iter()
             .find(|(name, _)| name == model_name)
             .map(|(_, info)| info.clone())
-            .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
+            .ok_or_else(|| LlmError::unknown(format!("Model {model_name} not found")))
     }
 
     /// Execute an async operation with retry logic and exponential backoff.

@@ -102,7 +102,7 @@ impl LlmProvider for BudgetProbeProvider {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "delegation smoke test uses chat_with_tools".to_string(),
         ))
     }
@@ -162,7 +162,7 @@ impl LlmProvider for GatedProbeProvider {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "delegation async test uses chat_with_tools".to_string(),
         ))
     }
@@ -195,7 +195,7 @@ impl LlmProvider for GatedProbeProvider {
             release_rx
                 .changed()
                 .await
-                .map_err(|_| LlmError::Unknown("release channel closed".to_string()))?;
+                .map_err(|_| LlmError::unknown("release channel closed".to_string()))?;
         }
 
         Ok(ChatResponse {

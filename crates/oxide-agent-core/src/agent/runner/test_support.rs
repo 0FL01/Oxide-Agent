@@ -37,13 +37,13 @@ pub(super) fn final_structured_response() -> ChatResponse {
 pub(super) fn stub_non_chat_methods(provider: &mut MockLlmProvider) {
     provider
         .expect_complete_internal_text()
-        .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
 }
 
 pub(super) fn single_final_response_provider() -> MockLlmProvider {
@@ -95,10 +95,10 @@ pub(super) fn context_overflow_then_summary_then_final_provider() -> MockLlmProv
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
 }
 
@@ -117,10 +117,10 @@ pub(super) fn pre_sampling_summary_then_final_provider() -> MockLlmProvider {
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
 }
 

@@ -58,7 +58,7 @@ impl LlmProvider for JsonDecodeRetryMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in json decode test".to_string(),
         ))
     }

@@ -232,7 +232,7 @@ impl AgentRunner {
                         weight: 1,
                     })
                     .ok_or_else(|| {
-                        crate::llm::LlmError::Unknown(
+                        crate::llm::LlmError::unknown(
                             "No active model route available for compaction".to_string(),
                         )
                     })

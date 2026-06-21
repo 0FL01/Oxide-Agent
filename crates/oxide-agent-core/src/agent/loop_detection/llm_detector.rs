@@ -310,7 +310,9 @@ impl LlmLoopDetector {
     fn should_disable_on_error(err: &LlmError) -> bool {
         match err {
             LlmError::MissingConfig(_) => true,
-            LlmError::Unknown(msg) => msg.contains("Model") && msg.contains("not found"),
+            LlmError::Unknown { message: msg, .. } => {
+                msg.contains("Model") && msg.contains("not found")
+            }
             _ => false,
         }
     }
@@ -372,7 +374,7 @@ mod tests {
             let mut index = self
                 .index
                 .lock()
-                .map_err(|_| crate::llm::LlmError::Unknown("Mutex poisoned in mock".to_string()))?;
+                .map_err(|_| crate::llm::LlmError::unknown("Mutex poisoned in mock".to_string()))?;
             let response = self.responses.get(*index).cloned().unwrap_or_else(|| {
                 r#"{"is_stuck":false,"confidence":0.0,"reasoning":""}"#.to_string()
             });

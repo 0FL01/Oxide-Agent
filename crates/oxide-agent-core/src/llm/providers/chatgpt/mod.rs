@@ -217,7 +217,7 @@ impl LlmProvider for ChatGptProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Audio transcription not implemented for ChatGPT OAuth".to_string(),
         ))
     }
@@ -229,7 +229,7 @@ impl LlmProvider for ChatGptProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Image analysis not implemented for ChatGPT OAuth".to_string(),
         ))
     }

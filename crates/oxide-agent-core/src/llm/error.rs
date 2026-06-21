@@ -11,6 +11,12 @@ pub enum LlmError {
         status: Option<u16>,
         /// Human-readable error message.
         message: String,
+        /// Provider that produced the error (e.g. `"openrouter"`, `"mistral"`).
+        /// Set by `LlmClient` when wrapping provider errors.
+        provider: Option<String>,
+        /// Model identifier that produced the error.
+        /// Set by `LlmClient` when wrapping provider errors.
+        model: Option<String>,
     },
     /// Provider returned a successful response envelope without usable content.
     #[error("API error: Empty response{0}")]
@@ -41,8 +47,15 @@ pub enum LlmError {
     #[error("Repairable history error: {0}")]
     RepairableHistory(String),
     /// Any other unexpected error
-    #[error("Unknown error: {0}")]
-    Unknown(String),
+    #[error("Unknown error: {message}")]
+    Unknown {
+        /// Human-readable error message.
+        message: String,
+        /// Provider that produced the error, if known.
+        provider: Option<String>,
+        /// Model identifier that produced the error, if known.
+        model: Option<String>,
+    },
 }
 
 impl LlmError {
@@ -55,6 +68,8 @@ impl LlmError {
         Self::ApiError {
             status: None,
             message: message.into(),
+            provider: None,
+            model: None,
         }
     }
 
@@ -64,7 +79,43 @@ impl LlmError {
         Self::ApiError {
             status: Some(status),
             message: message.into(),
+            provider: None,
+            model: None,
         }
+    }
+
+    /// Construct an `Unknown` error without provider/model context.
+    #[must_use]
+    pub fn unknown(message: impl Into<String>) -> Self {
+        Self::Unknown {
+            message: message.into(),
+            provider: None,
+            model: None,
+        }
+    }
+
+    /// Attach the provider name to `ApiError` or `Unknown` variants.
+    /// Other variants are returned unchanged.
+    #[must_use]
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        match &mut self {
+            Self::ApiError { provider: p, .. } => *p = Some(provider.into()),
+            Self::Unknown { provider: p, .. } => *p = Some(provider.into()),
+            _ => {}
+        }
+        self
+    }
+
+    /// Attach the model identifier to `ApiError` or `Unknown` variants.
+    /// Other variants are returned unchanged.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        match &mut self {
+            Self::ApiError { model: m, .. } => *m = Some(model.into()),
+            Self::Unknown { model: m, .. } => *m = Some(model.into()),
+            _ => {}
+        }
+        self
     }
 
     /// Classify a `reqwest::Error` into `RequestBuilder` (deterministic) or `NetworkError`
@@ -77,6 +128,74 @@ impl LlmError {
             Self::RequestBuilder(e.to_string())
         } else {
             Self::NetworkError(e.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmError;
+
+    #[test]
+    fn api_error_carries_provider_model() {
+        let error = LlmError::api_error("test error")
+            .with_provider("openrouter")
+            .with_model("deepseek-v3.1");
+
+        match error {
+            LlmError::ApiError {
+                provider,
+                model,
+                message,
+                ..
+            } => {
+                assert_eq!(provider.as_deref(), Some("openrouter"));
+                assert_eq!(model.as_deref(), Some("deepseek-v3.1"));
+                assert_eq!(message, "test error");
+            }
+            _ => panic!("expected ApiError"),
+        }
+    }
+
+    #[test]
+    fn unknown_carries_provider_model() {
+        let error = LlmError::unknown("something went wrong")
+            .with_provider("mistral")
+            .with_model("mistral-small-latest");
+
+        match error {
+            LlmError::Unknown {
+                provider,
+                model,
+                message,
+            } => {
+                assert_eq!(provider.as_deref(), Some("mistral"));
+                assert_eq!(model.as_deref(), Some("mistral-small-latest"));
+                assert_eq!(message, "something went wrong");
+            }
+            _ => panic!("expected Unknown"),
+        }
+    }
+
+    #[test]
+    fn with_provider_model_noop_on_other_variants() {
+        let error = LlmError::NetworkError("timeout".to_string())
+            .with_provider("test")
+            .with_model("test");
+
+        assert!(matches!(error, LlmError::NetworkError(_)));
+    }
+
+    #[test]
+    fn api_error_defaults_to_none() {
+        let error = LlmError::api_error("test");
+        match error {
+            LlmError::ApiError {
+                provider: None,
+                model: None,
+                ..
+            } => {}
+            _ => panic!("expected ApiError with None provider/model"),
         }
     }
 }
