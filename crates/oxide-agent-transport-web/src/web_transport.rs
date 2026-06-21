@@ -20,6 +20,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// Returns the snake_case variant name of an AgentEvent.
@@ -500,6 +501,48 @@ pub async fn collect_events(
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
 ) -> EventCollectionResult {
+    collect_events_inner(
+        event_log,
+        &mut rx,
+        browser_event_scope,
+        browser_file_store,
+        live_event_tx,
+        live_progress_tx,
+        None,
+    )
+    .await
+}
+
+pub async fn collect_events_until_shutdown(
+    event_log: TaskEventLog,
+    mut rx: mpsc::Receiver<AgentEvent>,
+    browser_event_scope: Option<BrowserEventScope>,
+    browser_file_store: Option<Arc<dyn WebUiStore>>,
+    live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
+    live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    shutdown_rx: oneshot::Receiver<()>,
+) -> EventCollectionResult {
+    collect_events_inner(
+        event_log,
+        &mut rx,
+        browser_event_scope,
+        browser_file_store,
+        live_event_tx,
+        live_progress_tx,
+        Some(shutdown_rx),
+    )
+    .await
+}
+
+async fn collect_events_inner(
+    event_log: TaskEventLog,
+    rx: &mut mpsc::Receiver<AgentEvent>,
+    browser_event_scope: Option<BrowserEventScope>,
+    browser_file_store: Option<Arc<dyn WebUiStore>>,
+    live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
+    live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    mut shutdown_rx: Option<oneshot::Receiver<()>>,
+) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
 
     let mut state = ProgressState::new(100); // max_iterations, can be overridden
@@ -509,7 +552,23 @@ pub async fn collect_events(
     let mut persisted_events = Vec::new();
     let mut next_seq = 1;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = if let Some(mut shutdown) = shutdown_rx.take() {
+            tokio::select! {
+                biased;
+                _ = &mut shutdown => {
+                    rx.close();
+                    continue;
+                }
+                event = rx.recv() => {
+                    shutdown_rx = Some(shutdown);
+                    event
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else { break };
         let event_received_at = chrono::Utc::now();
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
@@ -656,9 +715,6 @@ pub async fn collect_events(
             timestamps.finished_at = Some(chrono::Utc::now());
         }
     }
-
-    // Close the event log — signals SSE subscribers to stop.
-    event_log.close().await;
 
     EventCollectionResult {
         state,
@@ -1616,7 +1672,7 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 mod tests {
     use super::{
         BrowserEventScope, TaskEventLog, TaskEventLogMessage, browser_display_payload,
-        collect_events, event_variant_name,
+        collect_events, collect_events_until_shutdown, event_variant_name,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
@@ -1627,7 +1683,7 @@ mod tests {
         PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus,
     };
     use std::sync::Arc;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     #[test]
     fn runtime_compaction_events_use_stable_web_event_names() {
@@ -1740,6 +1796,61 @@ mod tests {
                 .as_deref()
                 .is_some_and(|status| status.contains("Compaction: compacted history"))
         );
+    }
+
+    #[tokio::test]
+    async fn collect_events_does_not_close_event_log() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(2);
+
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send finished event");
+        drop(tx);
+
+        let _ = collect_events(event_log.clone(), rx, None, None, None, None).await;
+
+        assert!(!event_log.is_closed().await);
+    }
+
+    #[tokio::test]
+    async fn collect_events_until_shutdown_finishes_with_live_sender_and_drains_buffered_event() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let live_sender = tx.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send buffered finished event");
+
+        let handle = tokio::spawn(collect_events_until_shutdown(
+            event_log.clone(),
+            rx,
+            None,
+            None,
+            None,
+            None,
+            shutdown_rx,
+        ));
+        shutdown_tx.send(()).expect("send shutdown");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("collector should not wait for live sender")
+            .expect("collector task should not panic");
+
+        assert!(result.state.is_finished);
+        assert!(!event_log.is_closed().await);
+        assert!(live_sender.send(AgentEvent::Finished).await.is_err());
+
+        let event_names: Vec<String> = event_log
+            .drain()
+            .await
+            .into_iter()
+            .map(|entry| entry.event_name)
+            .collect();
+        assert_eq!(event_names, vec!["finished".to_string()]);
     }
 
     #[tokio::test]

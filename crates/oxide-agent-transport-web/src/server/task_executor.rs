@@ -10,7 +10,7 @@ use super::{
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
-use crate::web_transport::{BrowserEventScope, TaskEventLog, collect_events};
+use crate::web_transport::{BrowserEventScope, TaskEventLog, collect_events_until_shutdown};
 use oxide_agent_core::agent::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
     PendingUserInput,
@@ -22,7 +22,7 @@ use oxide_agent_web_contracts::{
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
@@ -58,6 +58,7 @@ struct ExecutorTaskCtx {
     queued_at: Instant,
     web_task: Option<WebTaskPersistence>,
     event_collector_handle: tokio::task::JoinHandle<()>,
+    event_collector_shutdown: oneshot::Sender<()>,
 }
 
 pub(crate) enum TaskRunRequest {
@@ -268,9 +269,11 @@ async fn execute_agent_task(
     let (tx, rx) = mpsc::channel::<oxide_agent_core::agent::AgentEvent>(100);
 
     let tid = task_id.to_string();
+    let (event_collector_shutdown, event_collector_shutdown_rx) = oneshot::channel();
     let event_collector_handle = spawn_event_collector(
         event_log,
         rx,
+        event_collector_shutdown_rx,
         ctx.task_progress.clone(),
         ctx.task_timeline.clone(),
         tid.clone(),
@@ -297,6 +300,7 @@ async fn execute_agent_task(
     .await;
 
     if probe_outcome.cancelled || cancellation_token.is_cancelled() {
+        let _ = event_collector_shutdown.send(());
         drop(tx);
         if let Err(error) = event_collector_handle.await {
             warn!(
@@ -325,12 +329,14 @@ async fn execute_agent_task(
         queued_at: ctx.queued_at,
         web_task: ctx.web_task,
         event_collector_handle,
+        event_collector_shutdown,
     });
 }
 
 fn spawn_event_collector(
     event_log: crate::web_transport::TaskEventLog,
     rx: mpsc::Receiver<oxide_agent_core::agent::AgentEvent>,
+    shutdown_rx: oneshot::Receiver<()>,
     progress_map: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     task_id: String,
@@ -355,13 +361,14 @@ fn spawn_event_collector(
                 let (tx, rx) = mpsc::unbounded_channel();
                 (Some(tx), Some(spawn_live_progress_persister(web_task, rx)))
             });
-        let collected = collect_events(
+        let collected = collect_events_until_shutdown(
             event_log,
             rx,
             browser_event_scope,
             web_task.as_ref().map(|web_task| web_task.web_store.clone()),
             live_event_tx,
             live_progress_tx,
+            shutdown_rx,
         )
         .await;
         let progress = SerializableProgress::from_state(&collected.state);
@@ -438,6 +445,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             queued_at,
             web_task,
             event_collector_handle,
+            event_collector_shutdown,
         } = ctx;
 
         let result = {
@@ -503,6 +511,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             }
         };
 
+        let _ = event_collector_shutdown.send(());
         if let Err(error) = event_collector_handle.await {
             warn!(
                 task_id = %task_id,

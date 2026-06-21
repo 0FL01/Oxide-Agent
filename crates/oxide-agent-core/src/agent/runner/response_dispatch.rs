@@ -286,11 +286,23 @@ impl AgentRunner {
             .unwrap_or(true);
 
         if content_empty && response.tool_calls.is_empty() {
-            warn!(
-                model = %ctx.config.model_name,
-                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
-                "Model returned empty content"
-            );
+            if let Some(reasoning) = response.reasoning_content.take()
+                && !reasoning.trim().is_empty()
+            {
+                warn!(
+                    model = %ctx.config.model_name,
+                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    reasoning_len = reasoning.len(),
+                    "Model returned empty content with non-empty reasoning; promoting reasoning to content"
+                );
+                response.content = Some(reasoning);
+            } else {
+                warn!(
+                    model = %ctx.config.model_name,
+                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    "Model returned empty content"
+                );
+            }
         }
     }
 }
@@ -500,5 +512,102 @@ mod tests {
 
         assert_eq!(ctx.agent.memory().token_count(), estimated_tokens);
         assert_eq!(ctx.agent.memory().api_token_count(), Some(9_512));
+    }
+
+    #[tokio::test]
+    async fn preprocess_promotes_reasoning_to_content_when_content_empty() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "test reasoning promotion",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "reasoning-promotion",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 1, 1, 30, 256),
+        };
+        let mut response = ChatResponse {
+            content: None,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("The full answer is here in reasoning".to_string()),
+            usage: None,
+        };
+
+        runner
+            .preprocess_llm_response(&mut response, &mut ctx)
+            .await;
+
+        assert_eq!(
+            response.content.as_deref(),
+            Some("The full answer is here in reasoning")
+        );
+        assert!(response.reasoning_content.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_llm_response_uses_reasoning_as_final_answer_when_content_empty() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Find laptops"));
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Find laptops",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "reasoning-as-answer",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go"),
+        };
+        let mut state = RunState::new();
+        let response = ChatResponse {
+            content: None,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("5 laptops found: ThinkPad, Dell, HP, Asus, Acer".to_string()),
+            usage: None,
+        };
+
+        let result = runner
+            .handle_llm_response(response, &mut ctx, &mut state)
+            .await
+            .expect("runner succeeds");
+
+        match result {
+            Some(AgentRunResult::Final(answer)) => {
+                assert_eq!(answer, "5 laptops found: ThinkPad, Dell, HP, Asus, Acer");
+            }
+            _ => panic!("expected Final with reasoning content, got non-Final result"),
+        }
     }
 }
