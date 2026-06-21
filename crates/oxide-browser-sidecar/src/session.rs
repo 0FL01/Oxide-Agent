@@ -456,6 +456,9 @@ pub struct SessionManager {
     /// dismissal is disabled. Cloned (cheap `Arc` clone) into each new
     /// `BrowserSession`.
     consent_script: Option<Arc<String>>,
+    /// Maximum number of concurrent browser sessions. `None` = unlimited.
+    /// Enforced before launching Chromium to prevent OOM under load.
+    max_sessions: Option<usize>,
 }
 
 impl SessionManager {
@@ -466,13 +469,56 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             adblock,
             consent_script,
+            max_sessions: None,
         }
+    }
+
+    /// Set the maximum number of concurrent browser sessions.
+    #[must_use]
+    pub fn with_max_sessions(mut self, max: usize) -> Self {
+        self.max_sessions = Some(max);
+        self
     }
 
     /// Create a new browser session.
     pub async fn create(&self, req: CreateSessionRequest) -> CreateSessionResponse {
         let session_id = new_session_id();
         let request_id = new_request_id();
+
+        // Enforce session cap before launching Chromium to prevent OOM.
+        if let Some(max) = self.max_sessions {
+            let current = self.sessions.lock().await.len();
+            if current >= max {
+                warn!(
+                    current, max,
+                    "browser session creation rejected: sidecar at capacity"
+                );
+                return CreateSessionResponse {
+                    request_id,
+                    session_id,
+                    ok: false,
+                    browser: oxide_browser_contracts::BrowserDescriptor {
+                        browser_id: String::new(),
+                        page_id: String::new(),
+                        cdp_connected: false,
+                    },
+                    viewport: req.viewport,
+                    artifact_root: String::new(),
+                    error: Some(SidecarErrorBody {
+                        code: "sidecar_at_capacity".to_string(),
+                        message: format!(
+                            "browser sidecar is at capacity ({current}/{max} sessions)"
+                        ),
+                        retryable: true,
+                        hint: Some(format!(
+                            "close an existing browser session with browser_close before \
+                             retrying, or increase BROWSER_AGENT_SIDECAR_MAX_SESSIONS (currently {max})"
+                        )),
+                        details: serde_json::json!({ "current": current, "max": max }),
+                    }),
+                };
+            }
+        }
 
         match BrowserSession::new(
             &req,

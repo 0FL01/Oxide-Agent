@@ -128,6 +128,7 @@ fn stable_code_kind(code: &str) -> &'static str {
         "cdp_error" => "browser_sidecar_cdp_error",
         "stale_session" => "browser_sidecar_stale_session",
         "rate_limited" => "browser_sidecar_rate_limited",
+        "sidecar_at_capacity" => "browser_sidecar_at_capacity",
         _ => "browser_sidecar_api_failure",
     }
 }

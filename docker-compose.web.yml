@@ -109,6 +109,7 @@ services:
     environment:
       - TZ=Europe/Moscow
       - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
+      - BROWSER_AGENT_SIDECAR_MAX_SESSIONS=${BROWSER_AGENT_SIDECAR_MAX_SESSIONS:-8}
     ports:
       - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
     shm_size: "1gb"

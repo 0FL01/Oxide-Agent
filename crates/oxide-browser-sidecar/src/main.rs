@@ -18,6 +18,11 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("BROWSER_AGENT_SIDECAR_BIND").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
 
+    let max_sessions = std::env::var("BROWSER_AGENT_SIDECAR_MAX_SESSIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(8);
+
     // Build ad blocking engine from env (enabled by default).
     // When disabled, returns None — zero behavior change.
     let adblock = AdblockEngine::from_env().map(std::sync::Arc::new);
@@ -28,7 +33,9 @@ async fn main() -> anyhow::Result<()> {
         ConsentConfig::from_env().map(|c| std::sync::Arc::new(c.injection_script().to_string()));
 
     let state = AppState {
-        sessions: std::sync::Arc::new(SessionManager::new(adblock, consent_script)),
+        sessions: std::sync::Arc::new(
+            SessionManager::new(adblock, consent_script).with_max_sessions(max_sessions),
+        ),
     };
 
     let app = create_app(state, token);
