@@ -198,35 +198,15 @@ impl LlmLoopDetector {
         Ok(self.validate_detection(&parsed))
     }
 
-    /// Validate detection requires both high confidence AND specific evidence.
+    /// Validate detection requires high confidence from the structured scout response.
+    ///
+    /// The scout prompt already requests `is_stuck` (bool) and `confidence` (0.0-1.0)
+    /// as structured JSON fields. We trust those fields directly — the prompt
+    /// instructs the model to only set `is_stuck=true` with specific evidence.
+    /// Adding a keyword filter over the free-form `reasoning` text would reject
+    /// valid detections with non-English or differently-phrased reasoning.
     fn validate_detection(&self, parsed: &LlmLoopResponse) -> bool {
-        if !parsed.is_stuck {
-            return false;
-        }
-
-        if parsed.confidence < self.confidence_threshold {
-            return false;
-        }
-
-        // Require specific evidence in reasoning
-        let reasoning_lower = parsed.reasoning.to_lowercase();
-        let has_evidence = parsed.reasoning.len() > 20
-            && (reasoning_lower.contains("times")
-                || reasoning_lower.contains("repeated")
-                || reasoning_lower.contains("same file")
-                || reasoning_lower.contains("identical")
-                || reasoning_lower.contains("loop"));
-
-        if !has_evidence {
-            warn!(
-                confidence = parsed.confidence,
-                reasoning = %parsed.reasoning,
-                "LLM detected loop but reasoning lacks specific evidence, ignoring"
-            );
-            return false;
-        }
-
-        true
+        parsed.is_stuck && parsed.confidence >= self.confidence_threshold
     }
 
     fn update_interval(&mut self, confidence: f64) {

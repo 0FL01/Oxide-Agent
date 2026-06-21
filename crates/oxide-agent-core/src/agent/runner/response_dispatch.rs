@@ -6,6 +6,7 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::loop_detection::LoopDetectionOutcome;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
@@ -77,14 +78,9 @@ impl AgentRunner {
             let final_answer =
                 final_answer.unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
-            if self.content_loop_detected(final_answer.as_str()).await {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        state,
-                        crate::agent::loop_detection::LoopType::ContentLoop,
-                    )
-                    .await);
+            let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+            if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+                return self.handle_loop_outcome(ctx, state, content_outcome).await;
             }
 
             let input = FinalResponseInput {
@@ -95,14 +91,9 @@ impl AgentRunner {
             return self.handle_final_response(ctx, state, input).await;
         }
 
-        if self.tool_loop_detected(&tool_calls).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ToolCallLoop,
-                )
-                .await);
+        let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+        if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
         if ctx.tool_runtime_registry.is_none() {
@@ -127,14 +118,9 @@ impl AgentRunner {
     ) -> Result<Option<AgentRunResult>> {
         let tool_calls = std::mem::take(&mut response.tool_calls);
 
-        if self.tool_loop_detected(&tool_calls).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ToolCallLoop,
-                )
-                .await);
+        let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+        if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
         if ctx.tool_runtime_registry.is_some() {
@@ -195,14 +181,9 @@ impl AgentRunner {
                 let final_answer = final_answer
                     .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
-                if self.content_loop_detected(final_answer.as_str()).await {
-                    return Err(self
-                        .loop_detected_error(
-                            ctx,
-                            state,
-                            crate::agent::loop_detection::LoopType::ContentLoop,
-                        )
-                        .await);
+                let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+                if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+                    return self.handle_loop_outcome(ctx, state, content_outcome).await;
                 }
 
                 let input = FinalResponseInput {
@@ -213,14 +194,9 @@ impl AgentRunner {
                 return self.handle_final_response(ctx, state, input).await;
             }
 
-            if self.tool_loop_detected(&tool_calls).await {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        state,
-                        crate::agent::loop_detection::LoopType::ToolCallLoop,
-                    )
-                    .await);
+            let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+            if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+                return self.handle_loop_outcome(ctx, state, tool_outcome).await;
             }
 
             return self
@@ -240,14 +216,9 @@ impl AgentRunner {
             raw_output.clone()
         };
 
-        if self.content_loop_detected(final_answer.as_str()).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ContentLoop,
-                )
-                .await);
+        let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+        if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, content_outcome).await;
         }
 
         let input = FinalResponseInput {

@@ -79,13 +79,13 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 | A2.1 | `sanitize_xml_tags` regex over LLM output | HIGH (live) | `recovery.rs:455-458`; called from `runner/tools.rs:294,359`, `response_dispatch.rs:129` |
 | A2.2 | `sanitize_tool_call` PATTERN 1/2 `contains` over LLM tool-name | HIGH (live) | `recovery.rs:469,496`; special-cased to `write_todos` |
 | A2.3 | `try_parse_malformed_tool_call` + 12 hardcoded tool names | MEDIUM (dead) | `recovery.rs:673-703`; 0 callers outside tests |
-| A2.4 | `validate_detection` English keyword gate over scout reasoning | HIGH (live) | `llm_detector.rs:212-218` — overrides `is_stuck=true`+high-confidence unless `reasoning` contains one of 5 English words |
+| A2.4 | `validate_detection` English keyword gate over scout reasoning | HIGH (live) → FIXED | `llm_detector.rs:212-218` — removed; `validate_detection` now trusts `is_stuck=true` + `confidence >= threshold` directly |
 | A2.5 | `extract_reasoning_summary` regex strip English filler | MEDIUM (live) | `thoughts.rs:146-151` |
 | A2.6 | `should_salvage_structured_output_failure` accepts prose as final | HIGH (live) | `responses.rs:288-313`, `:31-42` |
 | A2.7 | `>=3` fail-fast cap accepts raw after 3 JSON failures | MEDIUM (live) | `responses.rs:44-69` |
 | A2.8 | Divergent `looks_like_prose` vs `should_salvage` duplicates | MEDIUM (latent bug) | `structured_output.rs:223-240` vs `responses.rs:288-313` — same logic, different edge cases |
 | A2.9 | 3+ JSON-extractor variants with behavior gaps | MEDIUM | `recovery.rs:574` (brace+serde), `llm_detector.rs:338` (brace, no serde), `executor/execution.rs:1084` (naive find/rfind) |
-| A2.10 | `is_recovered=true` bypasses tool loop detector | MEDIUM | `runner/loop_detection.rs:93-99` |
+| A2.10 | `is_recovered=true` bypasses tool loop detector | MEDIUM → FIXED | `runner/loop_detection.rs:93-99` — bypass removed; all tool calls feed into detector |
 | A2.11 | 0 `TODO`/`FIXME`/`HACK`/`unimplemented!` markers | POSITIVE | grep clean |
 | A2.12 | Compaction is class-closing | POSITIVE | typed `AgentMessageKind`, deterministic budget, externalized payloads, atomic replacement |
 
@@ -123,7 +123,7 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 | A5.1 | tool_call_id integrity | SOUND | typed `ToolCallCorrelation`, pre-request `validate_tool_history` (`history.rs:202-243`), typed repair before retry |
 | A5.2 | Structured output parsing | FIXED | `should_use_native_json_mode` gate removed; `json_object` enforced provider-side with tools; prose-wrap removed; salvage removed; hard-error after 3 retries |
 | A5.3 | Recovery from malformed responses | FIXED | history repair SOUND (class-closing, kept); content sanitization removed (`sanitize_xml_tags`, `sanitize_tool_call`, all dead-code extractors) |
-| A5.4 | Loop detection class-closing | SMELL | deterministic layers catch consecutive-identical + lexical-chunks; A-B-A-B evades; all layers halt-only; LLM layer is unreliable-judging-unreliable gated by keyword allowlist |
+| A5.4 | Loop detection class-closing | SMELL → FIXED | cycle detection (A-B-A-B detected via periodicity check); re-prompt remediation (inject context + continue, not halt-only); LLM keyword gate removed |
 | A5.5 | Route failover & 429 quarantine | SOUND | typed time-based quarantine (`model_routes.rs:126`), count-then-quarantine |
 | A5.6 | Prompt cache hit architecture | SOUND | static `base` + volatile `date_suffix`; fold pipeline (`history.rs:56-80`); minor: wiki_context in base |
 | A5.7 | Compaction design | SOUND | typed classes, deterministic budget, externalized payloads, atomic replacement |
@@ -191,8 +191,8 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Source: A2.10, A5.4
   - Acceptance: tool-call sequence analyzed as cycle (A-B-A-B detected); `is_recovered=true` calls no longer bypass tool detector; cycle detected → re-prompt with "you are looping, change approach" + context injection, not halt-only
   - Evidence required: new test `detects_abab_cycle` passes; `is_recovered` bypass removed; re-prompt remediation path asserted
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `tool_detector.rs` rewritten with cycle detection: bounded `Vec<String>` history of SHA-256 hashes, `detect_cycle()` checks if last `threshold` entries are periodic with any period `p` from 1 to `threshold/2` via `is_periodic()` — catches A-A-A-A-A (p=1), A-B-A-B-A (p=2), A-B-C-A-B-C (p=3). `is_recovered=true` bypass removed from `runner/loop_detection.rs:tool_loop_outcome` (grep confirms no `is_recovered` in code, only doc comment). `llm_detector.rs:validate_detection` simplified to `parsed.is_stuck && parsed.confidence >= self.confidence_threshold` — English keyword gate removed. `LoopDetectionOutcome` enum (NoLoop/RePrompt/Halt) added to `types.rs`. `LoopDetectionService` tracks `re_prompt_count`/`max_re_prompts=2`: first detection → RePrompt (inject "you are looping" system context + reset detectors + continue iterating), second detection → RePrompt again, third → Halt (cancel + error). `handle_loop_outcome` in runner injects re-prompt as `AgentMessage::system_context` (persists to memory, visible on next LLM call). `response_dispatch.rs` and `execution.rs` all 6 call sites updated. Tests: `detects_abab_cycle`, `detects_abc_abc_cycle`, `recovered_calls_detected`, `tool_call_detection_re_prompts_then_halts`, `re_prompt_includes_loop_type` — all pass. 1302 tests pass, clippy clean, fmt clean.
 
 - G5: `LlmError` carries provider/model context
   - Source: A3.6
@@ -528,6 +528,13 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Commands: `cargo run -p xtask -- module-registry check`; `cargo check -p oxide-agent-core --no-default-features --features profile-full`; `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features profile-full` (1295 pass, 0 fail)
   - Audit IDs updated: G3 verified, A1.3 FIXED, A4.1 FIXED
   - Next: Phase 4 (Loop detection class-closing)
+
+- <2026-06-21>: Phase 4 — Loop detection cycle-DAG + re-prompt (G4)
+  - Changed: `loop_detection/tool_detector.rs` (rewritten: cycle detection via periodicity check on bounded hash history); `loop_detection/service.rs` (rewritten: `LoopDetectionOutcome` enum, re-prompt remediation with `re_prompt_count`/`max_re_prompts=2`, `handle_detection` resets detectors on re-prompt); `loop_detection/types.rs` (added `LoopDetectionOutcome`); `loop_detection/llm_detector.rs` (removed English keyword gate in `validate_detection`); `loop_detection/mod.rs` (export `LoopDetectionOutcome`); `runner/loop_detection.rs` (rewritten: removed `is_recovered` bypass, methods return `LoopDetectionOutcome`, added `handle_loop_outcome`); `runner/response_dispatch.rs` (6 call sites updated); `runner/execution.rs` (LLM loop check updated)
+  - Evidence: `detects_abab_cycle` test passes (A-B-A-B-A detected as p=2 cycle); `detects_abc_abc_cycle` test passes (A-B-C-A-B-C detected as p=3 cycle); `recovered_calls_detected` test passes (is_recovered bypass removed); `tool_call_detection_re_prompts_then_halts` test passes (RePrompt → RePrompt → Halt); `re_prompt_includes_loop_type` test passes; grep confirms no `is_recovered` in runner code (only doc comment); grep confirms no English keyword `contains` in `validate_detection`; 1302 tests pass, 0 fail; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1302 pass, 0 fail); `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`
+  - Audit IDs updated: G4 verified, A2.10 FIXED, A5.4 FIXED, A2.4 FIXED
+  - Next: Phase 5 (LlmError provider/model context)
 
 ## Risks and Blockers
 

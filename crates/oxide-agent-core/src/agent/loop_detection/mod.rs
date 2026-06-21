@@ -11,4 +11,4 @@ mod types;
 
 pub use config::LoopDetectionConfig;
 pub use service::LoopDetectionService;
-pub use types::{LoopDetectedEvent, LoopDetectionError, LoopType};
+pub use types::{LoopDetectedEvent, LoopDetectionError, LoopDetectionOutcome, LoopType};

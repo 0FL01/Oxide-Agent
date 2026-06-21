@@ -82,22 +82,22 @@ impl AgentRunner {
             }
 
             let cancellation_token = ctx.agent.cancellation_token().clone();
-            let Some(loop_detected) = Self::await_until_cancelled(
-                cancellation_token,
-                self.llm_loop_detected(ctx, &state),
-            )
-            .await
+            let Some(loop_outcome) =
+                Self::await_until_cancelled(cancellation_token, self.llm_loop_outcome(ctx, &state))
+                    .await
             else {
                 return Err(self.cancelled_error(ctx).await);
             };
-            if loop_detected {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        &state,
-                        crate::agent::loop_detection::LoopType::CognitiveLoop,
-                    )
-                    .await);
+            if !matches!(
+                loop_outcome,
+                crate::agent::loop_detection::LoopDetectionOutcome::NoLoop
+            ) {
+                if let Some(result) = self.handle_loop_outcome(ctx, &state, loop_outcome).await? {
+                    return Ok(result);
+                }
+                // RePrompt: skip LLM call, go to next iteration.
+                // The re-prompt context was injected into memory by handle_loop_outcome.
+                continue;
             }
 
             let cancellation_token = ctx.agent.cancellation_token().clone();

@@ -1,63 +1,68 @@
-//! Tool call loop detector.
+//! Tool call loop detector with cycle detection.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use tracing::debug;
 
-/// Detects consecutive identical tool calls using hashing.
+/// Maximum number of hashes retained for cycle analysis.
+const MAX_HISTORY_MULTIPLIER: usize = 2;
+
+/// Detects tool call loops by checking for repeating cycles in the call sequence.
+///
+/// Unlike a consecutive-identical detector, this catches cycles of any period
+/// (e.g. A-B-A-B with period 2, A-B-C-A-B-C with period 3), not just A-A-A-A.
 pub struct ToolCallDetector {
-    last_key: Option<String>,
-    repetition_count: usize,
+    history: Vec<String>,
     threshold: usize,
 }
 
 impl ToolCallDetector {
     /// Create a new tool call detector with a threshold.
+    ///
+    /// The threshold is the minimum number of entries in the history that must
+    /// form a repeating periodic pattern before a loop is reported.
     #[must_use]
     pub fn new(threshold: usize) -> Self {
         Self {
-            last_key: None,
-            repetition_count: 0,
-            threshold: threshold.max(1),
+            history: Vec::new(),
+            threshold: threshold.max(2),
         }
     }
 
     /// Check if the given tool call forms a loop.
     pub fn check(&mut self, tool_name: &str, args: &str) -> bool {
         let key = Self::hash_tool_call(tool_name, args);
-        let prev_key = self
-            .last_key
-            .as_ref()
-            .map(|k| k[..8.min(k.len())].to_string());
         let args_preview: String = args.chars().take(100).collect();
 
-        let is_repeat = self.last_key.as_deref() == Some(&key);
-        if is_repeat {
-            self.repetition_count = self.repetition_count.saturating_add(1);
-        } else {
-            self.last_key = Some(key.clone());
-            self.repetition_count = 1;
+        self.history.push(key.clone());
+        // Bound history to threshold * multiplier so we have enough data for
+        // cycle detection without unbounded growth.
+        let max_len = self.threshold * MAX_HISTORY_MULTIPLIER;
+        if self.history.len() > max_len {
+            self.history.drain(0..(self.history.len() - max_len));
         }
 
-        debug!(
-            tool_name,
-            args_preview,
-            current_hash = &key[..8.min(key.len())],
-            prev_hash = ?prev_key,
-            repetition_count = self.repetition_count,
-            threshold = self.threshold,
-            is_repeat,
-            "tool_detector: checking tool call"
-        );
+        let detected = self.detect_cycle();
+        let hash_preview = &key[..8.min(key.len())];
 
-        let detected = self.repetition_count >= self.threshold;
         if detected {
             debug!(
                 tool_name,
-                repetition_count = self.repetition_count,
+                args_preview,
+                hash = hash_preview,
+                history_len = self.history.len(),
                 threshold = self.threshold,
-                "tool_detector: THRESHOLD REACHED - loop detected!"
+                "tool_detector: CYCLE DETECTED"
+            );
+        } else {
+            debug!(
+                tool_name,
+                args_preview,
+                hash = hash_preview,
+                history_len = self.history.len(),
+                threshold = self.threshold,
+                "tool_detector: no cycle"
             );
         }
 
@@ -66,13 +71,51 @@ impl ToolCallDetector {
 
     /// Reset the detector state.
     pub fn reset(&mut self) {
-        self.last_key = None;
-        self.repetition_count = 0;
+        self.history.clear();
     }
 
-    #[cfg(test)]
-    fn repetition_count(&self) -> usize {
-        self.repetition_count
+    /// Check if the history tail is periodic with the given period.
+    ///
+    /// Returns true if the last `threshold` entries repeat with period `p`,
+    /// i.e. `entry[i] == entry[i - p]` for all `i` in `[p, threshold)`.
+    fn is_periodic(tail: &[String], p: usize) -> bool {
+        if p == 0 || tail.len() < p + 1 {
+            return false;
+        }
+        for i in p..tail.len() {
+            if tail[i] != tail[i - p] {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check the history for a repeating cycle of any period.
+    ///
+    /// Takes the last `threshold` entries and checks if they are periodic
+    /// with any period `p` from 1 to `threshold / 2`. This catches:
+    /// - `p=1`: consecutive identical calls (A-A-A-A-A)
+    /// - `p=2`: alternating cycles (A-B-A-B-A)
+    /// - `p=n`: arbitrary repeating patterns
+    fn detect_cycle(&self) -> bool {
+        let n = self.history.len();
+        if n < self.threshold {
+            return false;
+        }
+        let start = n - self.threshold;
+        let tail = &self.history[start..];
+        for p in 1..=self.threshold / 2 {
+            if Self::is_periodic(tail, p) {
+                debug!(
+                    period = p,
+                    history_len = n,
+                    threshold = self.threshold,
+                    "tool_detector: periodic pattern found"
+                );
+                return true;
+            }
+        }
+        false
     }
 
     fn hash_tool_call(tool_name: &str, args: &str) -> String {
@@ -116,7 +159,7 @@ mod tests {
     use super::{ToolCallDetector, canonicalize_tool_call_args};
 
     #[test]
-    fn detects_at_threshold() {
+    fn detects_consecutive_identical_at_threshold() {
         let mut detector = ToolCallDetector::new(5);
         for _ in 0..4 {
             assert!(!detector.check("test_tool", r#"{"param": "value"}"#));
@@ -130,7 +173,7 @@ mod tests {
         assert!(!detector.check("tool_a", r#"{"a":1}"#));
         assert!(!detector.check("tool_a", r#"{"a":1}"#));
         assert!(!detector.check("tool_b", r#"{"a":1}"#));
-        assert_eq!(detector.repetition_count(), 1);
+        // History is [A, A, B] — not periodic with any period
     }
 
     #[test]
@@ -138,7 +181,41 @@ mod tests {
         let mut detector = ToolCallDetector::new(3);
         assert!(!detector.check("tool_a", r#"{"a":1}"#));
         assert!(!detector.check("tool_a", r#"{"a":2}"#));
-        assert_eq!(detector.repetition_count(), 1);
+        // History is [hash(1), hash(2)] — not periodic
+    }
+
+    #[test]
+    fn detects_abab_cycle() {
+        let mut detector = ToolCallDetector::new(5);
+        // A-B-A-B-A: period 2, 5 entries
+        assert!(!detector.check("tool_a", r#"{"x":1}"#)); // [A]
+        assert!(!detector.check("tool_b", r#"{"y":2}"#)); // [A,B]
+        assert!(!detector.check("tool_a", r#"{"x":1}"#)); // [A,B,A]
+        assert!(!detector.check("tool_b", r#"{"y":2}"#)); // [A,B,A,B]
+        assert!(detector.check("tool_a", r#"{"x":1}"#)); // [A,B,A,B,A] — periodic with p=2
+    }
+
+    #[test]
+    fn detects_abc_abc_cycle() {
+        let mut detector = ToolCallDetector::new(6);
+        // A-B-C-A-B-C: period 3, 6 entries
+        assert!(!detector.check("tool_a", r#"{"x":1}"#));
+        assert!(!detector.check("tool_b", r#"{"y":2}"#));
+        assert!(!detector.check("tool_c", r#"{"z":3}"#));
+        assert!(!detector.check("tool_a", r#"{"x":1}"#));
+        assert!(!detector.check("tool_b", r#"{"y":2}"#));
+        assert!(detector.check("tool_c", r#"{"z":3}"#)); // [A,B,C,A,B,C] — periodic with p=3
+    }
+
+    #[test]
+    fn does_not_detect_non_repeating_sequence() {
+        let mut detector = ToolCallDetector::new(5);
+        assert!(!detector.check("tool_a", r#"{"x":1}"#));
+        assert!(!detector.check("tool_b", r#"{"y":2}"#));
+        assert!(!detector.check("tool_c", r#"{"z":3}"#));
+        assert!(!detector.check("tool_a", r#"{"x":4}"#));
+        assert!(!detector.check("tool_b", r#"{"y":5}"#));
+        // [A,B,C,A',B'] — not periodic (A≠A', B≠B')
     }
 
     #[test]
@@ -149,5 +226,14 @@ mod tests {
             .expect("right canonical args");
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn detects_reordered_args_as_identical() {
+        let mut detector = ToolCallDetector::new(3);
+        assert!(!detector.check("tool", r#"{"a":1,"b":2}"#));
+        assert!(!detector.check("tool", r#"{"b":2,"a":1}"#));
+        // Canonicalized to same hash → consecutive identical
+        assert!(detector.check("tool", r#"{"a":1,"b":2}"#));
     }
 }

@@ -4,17 +4,22 @@ use super::config::LoopDetectionConfig;
 use super::content_detector::ContentLoopDetector;
 use super::llm_detector::{LlmLoopDetector, LoopScoutClient};
 use super::tool_detector::ToolCallDetector;
-use super::types::{LoopDetectedEvent, LoopDetectionError, LoopType};
+use super::types::{LoopDetectedEvent, LoopDetectionError, LoopDetectionOutcome, LoopType};
 use crate::agent::memory::AgentMemory;
 use chrono::Utc;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+/// Default maximum re-prompt attempts before halting.
+const DEFAULT_MAX_RE_PROMPTS: usize = 2;
+
 /// Central coordinator for loop detection.
 pub struct LoopDetectionService {
     config: Arc<LoopDetectionConfig>,
     session_id: String,
-    loop_detected: bool,
+    re_prompt_count: usize,
+    max_re_prompts: usize,
+    halted: bool,
     disabled_for_session: bool,
     tool_detector: ToolCallDetector,
     content_detector: ContentLoopDetector,
@@ -33,9 +38,11 @@ impl LoopDetectionService {
                 config.max_history_length,
             ),
             llm_detector: LlmLoopDetector::new(client, &config),
+            max_re_prompts: DEFAULT_MAX_RE_PROMPTS,
             config,
             session_id: String::new(),
-            loop_detected: false,
+            re_prompt_count: 0,
+            halted: false,
             disabled_for_session: false,
         }
     }
@@ -46,7 +53,8 @@ impl LoopDetectionService {
         self.tool_detector.reset();
         self.content_detector.reset();
         self.llm_detector.reset(&self.config);
-        self.loop_detected = false;
+        self.re_prompt_count = 0;
+        self.halted = false;
         self.disabled_for_session = false;
     }
 
@@ -60,19 +68,21 @@ impl LoopDetectionService {
         self.content_detector.reset_tracking();
     }
 
+    /// Current re-prompt count (for testing/logging).
+    #[cfg(test)]
+    pub(crate) fn re_prompt_count(&self) -> usize {
+        self.re_prompt_count
+    }
+
     /// Check a tool call for repetition.
     pub fn check_tool_call(
         &mut self,
         tool_name: &str,
         args: &str,
-    ) -> Result<bool, LoopDetectionError> {
-        if !self.is_enabled() {
-            debug!(session_id = %self.session_id, "loop_service: detection disabled");
-            return Ok(false);
-        }
-        if self.loop_detected {
-            debug!(session_id = %self.session_id, "loop_service: already detected loop");
-            return Ok(true);
+    ) -> Result<LoopDetectionOutcome, LoopDetectionError> {
+        if !self.is_enabled() || self.halted {
+            debug!(session_id = %self.session_id, "loop_service: detection disabled or halted");
+            return Ok(LoopDetectionOutcome::NoLoop);
         }
 
         self.content_detector.reset_tracking();
@@ -82,22 +92,23 @@ impl LoopDetectionService {
             warn!(
                 session_id = %self.session_id,
                 tool_name,
-                loop_type = "ToolCallLoop",
-                "loop_service: LOOP DETECTED via tool_detector"
+                re_prompt_count = self.re_prompt_count,
+                max_re_prompts = self.max_re_prompts,
+                "loop_service: tool call cycle detected"
             );
+            return Ok(self.handle_detection(LoopType::ToolCallLoop));
         }
 
-        self.loop_detected = detected;
-        Ok(detected)
+        Ok(LoopDetectionOutcome::NoLoop)
     }
 
     /// Check content for repetition loops.
-    pub fn check_content(&mut self, content: &str) -> Result<bool, LoopDetectionError> {
-        if !self.is_enabled() {
-            return Ok(false);
-        }
-        if self.loop_detected {
-            return Ok(true);
+    pub fn check_content(
+        &mut self,
+        content: &str,
+    ) -> Result<LoopDetectionOutcome, LoopDetectionError> {
+        if !self.is_enabled() || self.halted {
+            return Ok(LoopDetectionOutcome::NoLoop);
         }
 
         let content_preview: String = content.chars().take(80).collect();
@@ -113,13 +124,14 @@ impl LoopDetectionService {
         if detected {
             warn!(
                 session_id = %self.session_id,
-                loop_type = "ContentLoop",
-                "loop_service: LOOP DETECTED via content_detector"
+                re_prompt_count = self.re_prompt_count,
+                max_re_prompts = self.max_re_prompts,
+                "loop_service: content loop detected"
             );
+            return Ok(self.handle_detection(LoopType::ContentLoop));
         }
 
-        self.loop_detected = detected;
-        Ok(detected)
+        Ok(LoopDetectionOutcome::NoLoop)
     }
 
     /// Run the LLM loop detector if needed.
@@ -127,12 +139,9 @@ impl LoopDetectionService {
         &mut self,
         memory: &AgentMemory,
         iteration: usize,
-    ) -> Result<bool, LoopDetectionError> {
-        if !self.is_enabled() {
-            return Ok(false);
-        }
-        if self.loop_detected {
-            return Ok(true);
+    ) -> Result<LoopDetectionOutcome, LoopDetectionError> {
+        if !self.is_enabled() || self.halted {
+            return Ok(LoopDetectionOutcome::NoLoop);
         }
 
         if !self.llm_detector.should_check(iteration) {
@@ -141,7 +150,7 @@ impl LoopDetectionService {
                 iteration,
                 "loop_service: skipping LLM check (not due yet)"
             );
-            return Ok(false);
+            return Ok(LoopDetectionOutcome::NoLoop);
         }
 
         debug!(
@@ -156,13 +165,42 @@ impl LoopDetectionService {
             warn!(
                 session_id = %self.session_id,
                 iteration,
-                loop_type = "LlmLoop",
-                "loop_service: LOOP DETECTED via llm_detector"
+                re_prompt_count = self.re_prompt_count,
+                max_re_prompts = self.max_re_prompts,
+                "loop_service: LLM cognitive loop detected"
             );
+            return Ok(self.handle_detection(LoopType::CognitiveLoop));
         }
 
-        self.loop_detected = detected;
-        Ok(detected)
+        Ok(LoopDetectionOutcome::NoLoop)
+    }
+
+    /// Handle a loop detection: either re-prompt (inject context, reset detectors)
+    /// or halt (max re-prompts exhausted).
+    fn handle_detection(&mut self, loop_type: LoopType) -> LoopDetectionOutcome {
+        if self.re_prompt_count >= self.max_re_prompts {
+            self.halted = true;
+            return LoopDetectionOutcome::Halt { loop_type };
+        }
+
+        self.re_prompt_count += 1;
+
+        // Reset detectors so we can detect new loops after the re-prompt.
+        self.tool_detector.reset();
+        self.content_detector.reset();
+
+        LoopDetectionOutcome::RePrompt {
+            context: Self::re_prompt_message(loop_type),
+            loop_type,
+        }
+    }
+
+    fn re_prompt_message(loop_type: LoopType) -> String {
+        match loop_type {
+            LoopType::ToolCallLoop => "You are repeating the same tool calls in a cycle. Try a different approach, use different arguments, or stop if the task is complete.".to_string(),
+            LoopType::ContentLoop => "You are repeating the same content. Try a different approach or provide a concise final answer.".to_string(),
+            LoopType::CognitiveLoop => "You appear to be stuck in a loop. Try a different approach, use different tools, or ask the user for help.".to_string(),
+        }
     }
 
     /// Create a loop detection event for logging and UI.
@@ -185,8 +223,10 @@ impl LoopDetectionService {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::LoopDetectionOutcome;
     use super::LoopDetectionService;
     use crate::agent::loop_detection::LoopDetectionConfig;
+    use crate::agent::loop_detection::LoopType;
     use crate::llm::LlmError;
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -210,17 +250,110 @@ mod tests {
         let config = LoopDetectionConfig::default();
         let mut service = LoopDetectionService::new(Arc::new(MockScout), Arc::new(config));
         service.disable_for_session();
-        assert!(!service.check_tool_call("tool", "{}").unwrap_or(false));
+        let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
     }
 
     #[test]
-    fn tool_call_detection_triggers() {
+    fn tool_call_detection_re_prompts_then_halts() {
         let config = LoopDetectionConfig::default();
         let mut service = LoopDetectionService::new(Arc::new(MockScout), Arc::new(config));
         service.reset("session".to_string());
+
+        // First 4 calls: no detection (threshold=5)
         for _ in 0..4 {
-            assert!(!service.check_tool_call("tool", "{}").unwrap_or(false));
+            let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+            assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
         }
-        assert!(service.check_tool_call("tool", "{}").unwrap_or(false));
+
+        // 5th call: first detection → RePrompt
+        let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::RePrompt { .. }));
+        assert_eq!(service.re_prompt_count(), 1);
+
+        // Detector was reset, so next 4 calls: no detection
+        for _ in 0..4 {
+            let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+            assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
+        }
+
+        // 5th call again: second detection → RePrompt
+        let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::RePrompt { .. }));
+        assert_eq!(service.re_prompt_count(), 2);
+
+        // Detector was reset again, next 4 calls: no detection
+        for _ in 0..4 {
+            let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+            assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
+        }
+
+        // 5th call: third detection → Halt (max_re_prompts=2 exhausted)
+        let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::Halt { .. }));
+    }
+
+    #[test]
+    fn tool_call_abab_cycle_detected() {
+        let config = LoopDetectionConfig::default();
+        let mut service = LoopDetectionService::new(Arc::new(MockScout), Arc::new(config));
+        service.reset("session".to_string());
+
+        // A-B-A-B-A: should be detected as a cycle
+        let calls = [
+            ("tool_a", r#"{"x":1}"#),
+            ("tool_b", r#"{"y":2}"#),
+            ("tool_a", r#"{"x":1}"#),
+            ("tool_b", r#"{"y":2}"#),
+        ];
+        for (name, args) in &calls {
+            let outcome = service.check_tool_call(name, args).expect("loop check");
+            assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
+        }
+        let outcome = service
+            .check_tool_call("tool_a", r#"{"x":1}"#)
+            .expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::RePrompt { .. }));
+    }
+
+    #[test]
+    fn re_prompt_includes_loop_type() {
+        let config = LoopDetectionConfig::default();
+        let mut service = LoopDetectionService::new(Arc::new(MockScout), Arc::new(config));
+        service.reset("session".to_string());
+
+        for _ in 0..4 {
+            service.check_tool_call("tool", "{}").expect("loop check");
+        }
+        let outcome = service.check_tool_call("tool", "{}").expect("loop check");
+        if let LoopDetectionOutcome::RePrompt { loop_type, .. } = outcome {
+            assert_eq!(loop_type, LoopType::ToolCallLoop);
+        } else {
+            panic!("expected RePrompt");
+        }
+    }
+
+    #[test]
+    fn recovered_calls_detected() {
+        // Simulates the scenario where is_recovered=true tool calls are fed
+        // into the detector. Before Phase 4, these were bypassed in the runner.
+        // Now all tool calls go through the detector regardless of is_recovered.
+        let config = LoopDetectionConfig::default();
+        let mut service = LoopDetectionService::new(Arc::new(MockScout), Arc::new(config));
+        service.reset("session".to_string());
+
+        // The detector only sees tool_name + args, not is_recovered.
+        // If the same call repeats threshold times, it's detected —
+        // whether or not the call was recovered.
+        for _ in 0..4 {
+            let outcome = service
+                .check_tool_call("recovered_tool", r#"{"arg":1}"#)
+                .expect("loop check");
+            assert!(matches!(outcome, LoopDetectionOutcome::NoLoop));
+        }
+        let outcome = service
+            .check_tool_call("recovered_tool", r#"{"arg":1}"#)
+            .expect("loop check");
+        assert!(matches!(outcome, LoopDetectionOutcome::RePrompt { .. }));
     }
 }
