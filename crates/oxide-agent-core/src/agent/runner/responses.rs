@@ -14,8 +14,20 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+/// Maximum consecutive structured-output parse failures before the run
+/// fails loudly.  With provider-side `json_object` enforcement, reaching
+/// this limit indicates a provider bug or a fundamentally incompatible
+/// model — not a recoverable condition.
+const MAX_STRUCTURED_OUTPUT_RETRIES: usize = 3;
+
 impl AgentRunner {
     /// Handle malformed structured output responses.
+    ///
+    /// With provider-side `json_object` enforcement, the model cannot return
+    /// prose — it must return valid JSON.  If parsing still fails (provider
+    /// bug, control-character noise), we re-prompt with a corrective system
+    /// message.  After `MAX_STRUCTURED_OUTPUT_RETRIES` consecutive failures
+    /// the run fails loudly instead of silently accepting raw prose.
     pub(super) async fn handle_structured_output_error(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -28,44 +40,19 @@ impl AgentRunner {
             "Structured output validation failed"
         );
 
-        if should_salvage_structured_output_failure(&failure.raw_json) {
-            warn!(
-                raw_preview = %crate::utils::truncate_str(&failure.raw_json, 200),
-                "Structured output failed but response looks like a final prose answer; salvaging without retry"
-            );
-            state.structured_output_failures = 0;
-            let input = FinalResponseInput {
-                final_answer: failure.raw_json,
-                reasoning: None,
-            };
-            return self.handle_final_response(ctx, state, input).await;
-        }
-
         state.structured_output_failures += 1;
 
-        // Fail-fast: if we have too many consecutive failures, treat raw response as final answer
-        if state.structured_output_failures >= 3 {
-            warn!(
-                failures = state.structured_output_failures,
-                "Too many structured output failures, accepting raw response as final answer"
-            );
-
-            if let Some(tx) = ctx.progress_tx {
-                let _ = tx
-                    .send(AgentEvent::Continuation {
-                        source: AgentEventSource::Root,
-                        reason: "Too many JSON errors, falling back to raw response".to_string(),
-                        count: state.continuation_count,
-                    })
-                    .await;
-            }
-
-            let input = FinalResponseInput {
-                final_answer: failure.raw_json.clone(),
-                reasoning: None,
-            };
-
-            return self.handle_final_response(ctx, state, input).await;
+        // Hard-fail: provider-side json_object enforcement should make
+        // persistent non-JSON impossible.  If we still see repeated failures,
+        // surface the error instead of silently accepting prose.
+        if state.structured_output_failures >= MAX_STRUCTURED_OUTPUT_RETRIES {
+            return Err(anyhow::anyhow!(
+                "Model failed to produce valid structured output after {} consecutive attempts. \
+                 Last error: {}. Raw preview: {}",
+                state.structured_output_failures,
+                failure.error.message(),
+                crate::utils::truncate_str(&failure.raw_json, 200),
+            ));
         }
 
         state.continuation_count += 1;
@@ -285,33 +272,6 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
     }
 }
 
-fn should_salvage_structured_output_failure(raw: &str) -> bool {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    if trimmed.starts_with('{')
-        || trimmed.starts_with('[')
-        || trimmed.starts_with("```")
-        || trimmed.starts_with("<")
-        || trimmed.starts_with("[SYSTEM:")
-    {
-        return false;
-    }
-
-    let has_sentence_content = trimmed.chars().filter(|ch| !ch.is_whitespace()).count() >= 24
-        && trimmed.chars().any(char::is_alphabetic);
-    if !has_sentence_content {
-        return false;
-    }
-
-    let unfinished_tail = ['{', '[', ':', ',', '-', '"']
-        .iter()
-        .any(|tail| trimmed.ends_with(*tail));
-    !unfinished_tail
-}
-
 async fn sync_todos_from_arc(memory: &mut AgentMemory, todos_arc: &Arc<Mutex<TodoList>>) {
     let current_todos = todos_arc.lock().await;
     memory.todos = (*current_todos).clone();
@@ -329,25 +289,6 @@ mod tests {
     use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
     use std::sync::Arc;
     use tokio::sync::Mutex;
-
-    #[test]
-    fn salvage_detector_accepts_plain_final_prose() {
-        assert!(should_salvage_structured_output_failure(
-            "**TL;DR**\n\nВ Молдове есть официальный режим для digital nomad с минимальным доходом около 52 200 MDL в месяц."
-        ));
-    }
-
-    #[test]
-    fn salvage_detector_rejects_json_like_or_truncated_content() {
-        assert!(!should_salvage_structured_output_failure(
-            r#"{"final_answer":"hello"}"#
-        ));
-        assert!(!should_salvage_structured_output_failure(
-            "```json\n{}\n```"
-        ));
-        assert!(!should_salvage_structured_output_failure("tool_call:"));
-        assert!(!should_salvage_structured_output_failure("short answer"));
-    }
 
     #[tokio::test]
     async fn forced_final_response_is_saved_as_undelivered_draft() {

@@ -1069,7 +1069,8 @@ fn build_wiki_memory_writer_user_prompt(job: &WikiMemoryFlushJob) -> String {
 
 fn parse_wiki_memory_writer_response(response: &str) -> Result<Vec<ToolDerivedMemoryDraft>> {
     let extraction: WikiMemoryWriterExtraction = serde_json::from_str(response).or_else(|_| {
-        extract_json_object(response)
+        crate::agent::recovery::extract_first_json(response)
+            .as_deref()
             .map_or_else(|| serde_json::from_str(response), serde_json::from_str)
     })?;
     let now = chrono::Utc::now();
@@ -1079,12 +1080,6 @@ fn parse_wiki_memory_writer_response(response: &str) -> Result<Vec<ToolDerivedMe
         .take(WIKI_MEMORY_WRITER_MAX_CANDIDATES)
         .filter_map(|candidate| wiki_memory_candidate_to_draft(candidate, now))
         .collect())
-}
-
-fn extract_json_object(response: &str) -> Option<&str> {
-    let start = response.find('{')?;
-    let end = response.rfind('}')?;
-    (start <= end).then_some(&response[start..=end])
 }
 
 fn wiki_memory_candidate_to_draft(

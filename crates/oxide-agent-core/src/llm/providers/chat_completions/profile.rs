@@ -355,7 +355,7 @@ impl ChatCompletionsProfile {
             message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
             tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::Omit,
-            json_mode: JsonModePolicy::None,
+            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
             reasoning: ChatReasoningPolicy::None,
             streaming: ChatStreamingPolicy::NonStreaming,

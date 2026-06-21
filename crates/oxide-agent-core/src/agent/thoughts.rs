@@ -3,8 +3,6 @@
 //! Generates human-readable descriptions of what the agent is doing
 //! based on tool names and their arguments.
 
-use lazy_regex::regex_replace_all;
-
 /// Templates for generating thoughts from tool calls
 const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("read_file", "Reading file {path}"),
@@ -139,22 +137,13 @@ pub fn infer_thought_from_command(command: &str) -> String {
 /// Extract reasoning summary from full reasoning content
 #[must_use]
 pub fn extract_reasoning_summary(reasoning: &str, max_len: usize) -> String {
-    // Clean up the reasoning text
     let cleaned = reasoning.trim();
-
-    // Remove common prefixes like "I need to", "Let me", etc.
-    let cleaned: String = regex_replace_all!(
-        r"^(I need to|Let me|I will|I should|First,?|Now,?|Next,?)\s*",
-        cleaned,
-        ""
-    )
-    .into_owned();
 
     // Get first sentence or first N characters
     let first_sentence = cleaned
         .split(['.', '!', '?', '\n'])
         .next()
-        .unwrap_or(&cleaned)
+        .unwrap_or(cleaned)
         .trim();
 
     if first_sentence.len() <= max_len {
@@ -262,7 +251,7 @@ mod tests {
     fn test_extract_reasoning_summary() {
         let reasoning = "I need to analyze the file structure first. Then I will look for hooks.";
         let summary = extract_reasoning_summary(reasoning, 50);
-        assert_eq!(summary, "analyze the file structure first");
+        assert_eq!(summary, "I need to analyze the file structure first");
     }
 
     #[test]

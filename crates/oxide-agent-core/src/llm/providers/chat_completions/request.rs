@@ -352,13 +352,17 @@ pub(crate) fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
     media::infer_image_mime_type(image_bytes)
 }
 
+/// Decide whether to set `response_format: {type: "json_object"}` in the
+/// request body.  P0.5 probes confirm all ChatCompletions-profile providers
+/// accept `json_object` together with `tools`, so structured output is
+/// enforced provider-side even when tools are present.
 #[must_use]
 pub(crate) fn should_use_native_json_mode(
     profile: ChatCompletionsProfile,
     json_mode: bool,
-    has_tools: bool,
+    _has_tools: bool,
 ) -> bool {
-    matches!(profile.json_mode, JsonModePolicy::Standard) && json_mode && !has_tools
+    matches!(profile.json_mode, JsonModePolicy::Standard) && json_mode
 }
 
 fn prepare_generic_messages(
@@ -999,7 +1003,9 @@ mod tests {
 
         assert_eq!(body["provider"], json!({"require_parameters": true}));
         assert!(body.get("tool_choice").is_none());
-        assert!(body.get("response_format").is_none());
+        // OpenRouter now has JsonModePolicy::Standard; json_mode=true with
+        // tools sets response_format (P0.5 probes confirm support).
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
         assert!(body.get("stream").is_none());
     }
 

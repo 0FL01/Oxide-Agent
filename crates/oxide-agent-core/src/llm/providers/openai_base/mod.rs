@@ -595,7 +595,8 @@ mod tests {
         assert_eq!(body["tool_choice"], json!("auto"));
         assert!(body.get("tools").is_some());
         assert!(body.get("parallel_tool_calls").is_none());
-        assert!(body.get("response_format").is_none());
+        // json_mode=true with tools now sets response_format (P0.5 probes confirm support).
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 
     #[test]
@@ -1241,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn zai_json_with_tools_does_not_use_native_json_mode() {
+    fn zai_json_with_tools_uses_native_json_mode() {
         let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
@@ -1255,9 +1256,12 @@ mod tests {
             &mut mapper,
         );
 
-        assert_eq!(body["stream"], json!(true));
-        assert_eq!(body["thinking"], json!({"type": "enabled"}));
-        assert!(body.get("response_format").is_none());
+        // P0.5 probes confirm json_object + tools is accepted by ZAI.
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
+        // ZaiUnlessNativeJsonMode: stream=false when native_json_mode=true
+        assert_eq!(body["stream"], json!(false));
+        // ZaiEnabledUnlessJsonMode: thinking disabled when native_json_mode=true
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
     }
 
     #[test]
@@ -1591,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn json_mode_not_added_when_tools_present() {
+    fn json_mode_added_with_tools_for_mistral_profile() {
         let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
@@ -1605,8 +1609,8 @@ mod tests {
             &mut mapper,
         );
 
-        // response_format should NOT be present when tools are present
-        assert!(body.get("response_format").is_none());
+        // P0.5 probes confirm json_object + tools is accepted by Mistral.
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 
     #[test]

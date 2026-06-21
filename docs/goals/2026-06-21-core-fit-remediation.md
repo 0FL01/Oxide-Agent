@@ -121,8 +121,8 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 | # | Area | Verdict | Evidence |
 |---|---|---|---|
 | A5.1 | tool_call_id integrity | SOUND | typed `ToolCallCorrelation`, pre-request `validate_tool_history` (`history.rs:202-243`), typed repair before retry |
-| A5.2 | Structured output parsing | SMELL | `should_use_native_json_mode = json_mode && !has_tools` (`request.rs:356`); JSON enforced by prompt text only; `parse_structured_output` cascades fence-strip→control-strip→prose-wrap→brace-extract |
-| A5.3 | Recovery from malformed responses | SPLIT | history repair SOUND (class-closing); content sanitization symptom-patching (`sanitize_xml_tags`, `sanitize_tool_call`) |
+| A5.2 | Structured output parsing | FIXED | `should_use_native_json_mode` gate removed; `json_object` enforced provider-side with tools; prose-wrap removed; salvage removed; hard-error after 3 retries |
+| A5.3 | Recovery from malformed responses | FIXED | history repair SOUND (class-closing, kept); content sanitization removed (`sanitize_xml_tags`, `sanitize_tool_call`, all dead-code extractors) |
 | A5.4 | Loop detection class-closing | SMELL | deterministic layers catch consecutive-identical + lexical-chunks; A-B-A-B evades; all layers halt-only; LLM layer is unreliable-judging-unreliable gated by keyword allowlist |
 | A5.5 | Route failover & 429 quarantine | SOUND | typed time-based quarantine (`model_routes.rs:126`), count-then-quarantine |
 | A5.6 | Prompt cache hit architecture | SOUND | static `base` + volatile `date_suffix`; fold pipeline (`history.rs:56-80`); minor: wiki_context in base |
@@ -138,9 +138,9 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 
 | File | Current lines | Target after remediation | Phase |
 |---|---|---|---|
-| `src/agent/recovery.rs` | 1544 | ~600-900 (history-repair stays, content-sanitization removed) | Phase 1 |
-| `src/agent/structured_output.rs` | 558 | ~350 (recovery paths removed, typed parse stays) | Phase 1 |
-| `src/agent/runner/responses.rs` | 724 | ~600 (salvage/give-up removed, re-request stays) | Phase 1 |
+| `src/agent/recovery.rs` | 1544 → 805 | ~600-900 (history-repair stays, content-sanitization removed) | Phase 1 ✅ |
+| `src/agent/structured_output.rs` | 558 → 475 | ~350 (recovery paths removed, typed parse stays) | Phase 1 ✅ |
+| `src/agent/runner/responses.rs` | 724 → 665 | ~600 (salvage/give-up removed, re-request stays) | Phase 1 ✅ |
 | `src/sandbox/manager.rs` | 3118 | ~3120 (typing changes, not deletion) | Phase 2 |
 | `src/sandbox/broker.rs` | 1399 | ~1400 (typing changes, not deletion) | Phase 2 |
 | `src/sandbox/traits.rs` | 373 | ~390 (SandboxError added) | Phase 2 |
@@ -169,8 +169,8 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Source: A2.1, A2.2, A2.6, A2.7, A2.8, A5.2
   - Acceptance: when tools present and provider supports structured-output mode, `response_format`/tool-forced-schema is set; non-JSON response → hard-error + re-request (not prose-wrap, not salvage, not `>=3` accept)
   - Evidence required: `cargo test -p oxide-agent-core --no-default-features --features profile-full` green; `structured_output.rs` has no `looks_like_prose`; `responses.rs` has no `should_salvage_structured_output_failure`; `recovery.rs` has no `sanitize_xml_tags`/`sanitize_tool_call` (history-repair half stays)
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: P0.5 probes confirmed `json_object` + `tools` accepted by OpenCode Go (200), ZAI (200), OpenRouter (200), Mistral (docs). `should_use_native_json_mode` gate `!has_tools` removed (`request.rs:361`). OpenRouter `JsonModePolicy::None`→`Standard` (`profile.rs:358`). `looks_like_prose` removed from `structured_output.rs`. `should_salvage_structured_output_failure` and `>=3` accept-raw cap removed from `responses.rs`, replaced with `MAX_STRUCTURED_OUTPUT_RETRIES` hard error. `sanitize_xml_tags`, `sanitize_tool_call`, `sanitize_tool_calls`, `sanitize_leaked_xml`, `try_parse_malformed_tool_call`, `looks_like_tool_call_text` + 12 dead-code helpers removed from `recovery.rs`. `thoughts.rs` regex strip removed. `execution.rs` naive `extract_json_object` replaced with shared `extract_first_json`. 921 tests pass, clippy clean, fmt clean, grep 0. `recovery.rs` 1544→805 lines.
 
 - G2: `SandboxError` typed enum introduced
   - Source: A1.4, A3.1
@@ -476,13 +476,32 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Audit IDs updated: none (baseline supplement)
   - Next: commit + user review
 
+- 2026-06-21: Phase 1 — structured output → provider-side mode (G1 verified)
+  - Changed: `llm/providers/chat_completions/request.rs` — `should_use_native_json_mode` gate `!has_tools` removed; `json_object` now set when `json_mode=true` even with tools
+  - Changed: `llm/providers/chat_completions/profile.rs` — OpenRouter `JsonModePolicy::None`→`Standard` (probe confirmed support)
+  - Changed: `agent/structured_output.rs` — `looks_like_prose` and prose-wrapper branch removed; deterministic lexer fixes (fence-strip, control-strip, JSON extraction) kept
+  - Changed: `agent/runner/responses.rs` — `should_salvage_structured_output_failure` removed; `>=3` accept-raw cap replaced with `MAX_STRUCTURED_OUTPUT_RETRIES` hard error
+  - Changed: `agent/recovery.rs` — 22 functions removed (sanitize_xml_tags, sanitize_tool_call, sanitize_tool_calls, sanitize_leaked_xml, contains_xml_tags, control_xml_tag_pattern, normalize_tool_name, try_parse_malformed_tool_call, extract_malformed_tool_arguments, is_valid_argument, build_recovered_tool_call, extract_tag_value, extract_token_after_tool_name, 8 extract_*_arguments, looks_like_tool_call_text); 1544→805 lines
+  - Changed: `agent/runner/tools.rs` — sanitize_xml_tags calls removed from progress events
+  - Changed: `agent/runner/response_dispatch.rs` — sanitize_tool_calls call removed from tool dispatch
+  - Changed: `agent/providers/todos.rs` — sanitize_xml_tags call removed
+  - Changed: `agent/mod.rs` — `pub use sanitize_xml_tags` removed
+  - Changed: `agent/thoughts.rs` — regex strip of English filler prefixes removed
+  - Changed: `agent/executor/execution.rs` — naive `extract_json_object` replaced with shared `extract_first_json`
+  - Changed: `tests/proptest_recovery.rs` — deleted (tested removed function)
+  - Changed: `transport-telegram/tests/agent_xml_leak_prevention.rs` — `bugfix_agent_2026_001_tests` module removed (tested removed function)
+  - Evidence: P0.5 probes — OpenCode Go `json_object`+`tools`→200, ZAI→200, OpenRouter→200; `json_schema`+`tools`→400 for OpenCode Go, 200 for ZAI/OpenRouter. Mistral docs confirm support. 921 tests pass, clippy clean, fmt clean, grep 0. `recovery.rs` 1544→805.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local` (921 pass, 0 fail); `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
+  - Audit IDs updated: G1 verified, A5.2 FIXED, A5.3 FIXED
+  - Next: Phase 2 (SandboxError typed enum)
+
 ## Risks and Blockers
 
 - R1: Provider structured-output-with-tools support unknown
   - Impact: G1 design depends on whether providers (OpenRouter, ChatGPT, Anthropic, OpenCode Go) accept `response_format` + `tools` together or require tool-forced-schema
-  - Evidence: `should_use_native_json_mode = json_mode && !has_tools` (`request.rs:356`) suggests historical incompatibility, but not verified per-provider
-  - Mitigation: П0.5 — live probe each provider's structured-output-with-tools behavior before committing Phase 1 design. If a provider lacks both modes, hard-error + re-request is the class-closing fallback (task fails loudly > silently accepts prose).
-  - Audit IDs affected: G1
+  - Evidence: RESOLVED — P0.5 probes confirmed `json_object`+`tools` accepted by OpenCode Go (200), ZAI (200), OpenRouter (200); Mistral docs confirm support; Anthropic uses Messages API (no response_format, tool input_schema instead); ChatGPT uses Responses API (separate path)
+  - Mitigation: applied — `!has_tools` gate removed, `json_object` forced provider-side; hard-error after 3 retries for non-JSON
+  - Audit IDs affected: G1 (verified)
 
 - R2: `recovery.rs` removal may break callers not found by audit
   - Impact: `sanitize_xml_tags` is exported (`agent/mod.rs:92`) and may have callers outside `runner/tools.rs` and `response_dispatch.rs`

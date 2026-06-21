@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn json_mode_with_tools_does_not_set_response_format() {
+    fn json_mode_with_tools_sets_response_format() {
         let tools = vec![read_file_tool()];
         let body = build_tool_chat_body(
             "system",
@@ -1317,7 +1317,8 @@ mod tests {
             None,
         );
 
-        assert!(body.get("response_format").is_none());
+        // P0.5 probes confirm json_object + tools is accepted by OpenCode Go.
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
     }
 

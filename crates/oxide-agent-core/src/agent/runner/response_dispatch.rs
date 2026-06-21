@@ -7,7 +7,6 @@ use super::types::{
 };
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
-use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
 use anyhow::{Result, anyhow};
@@ -126,7 +125,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
-        let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
+        let tool_calls = std::mem::take(&mut response.tool_calls);
 
         if self.tool_loop_detected(&tool_calls).await {
             return Err(self

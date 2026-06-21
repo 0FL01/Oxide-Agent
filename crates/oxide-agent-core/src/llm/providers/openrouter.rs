@@ -364,7 +364,9 @@ mod tests {
         let body = request_body(&request_rx.await.expect("request captured"));
         assert_eq!(body["provider"], json!({"require_parameters": true}));
         assert!(body.get("tool_choice").is_none());
-        assert!(body.get("response_format").is_none());
+        // OpenRouter now has JsonModePolicy::Standard; json_mode=true with
+        // tools sets response_format (P0.5 probes confirm support).
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 
     #[test]

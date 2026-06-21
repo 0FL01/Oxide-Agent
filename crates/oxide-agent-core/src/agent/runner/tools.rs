@@ -8,7 +8,6 @@ use crate::agent::identity::SessionId;
 use crate::agent::memory::{AgentMessage, AgentMessageAttachment};
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TOOL_COMPRESS;
-use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
     ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallRuntime,
@@ -291,8 +290,8 @@ impl AgentRunner {
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
         let Some(tx) = ctx.progress_tx else { return };
-        let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
-        let sanitized_args = sanitize_xml_tags(&tool_call.function.arguments);
+        let name = tool_call.function.name.clone();
+        let args = tool_call.function.arguments.clone();
         let command_preview = if tool_call.function.name == "execute_command" {
             Self::extract_command_preview(&tool_call.function.arguments)
         } else {
@@ -302,8 +301,8 @@ impl AgentRunner {
             .send(AgentEvent::ToolCall {
                 id: tool_call.invocation_id().into_inner(),
                 source: AgentEventSource::Root,
-                name: sanitized_name,
-                input: sanitized_args,
+                name,
+                input: args,
                 command_preview,
             })
             .await;
@@ -356,7 +355,7 @@ impl AgentRunner {
                 .send(AgentEvent::ToolResult {
                     id: output.invocation_id.as_str().to_string(),
                     source: AgentEventSource::Root,
-                    name: sanitize_xml_tags(&tool_name),
+                    name: tool_name.clone(),
                     output: content.clone(),
                     success: output.success,
                 })
