@@ -12,6 +12,9 @@ mod url;
 
 use error::{webfetch_failure_message, webfetch_failure_payload};
 
+pub(crate) use convert::{OutputWindow, WindowedOutput};
+pub(crate) use fetch::{FetchedMarkdownDocument, window_markdown_document};
+
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,

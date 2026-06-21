@@ -3,7 +3,6 @@ use reqwest::Url;
 use serde_json::Value;
 
 use super::KnownMarkdownSource;
-use crate::agent::providers::webfetch_md::convert::{OutputWindow, WindowedOutput};
 
 const MAX_GIST_FILES: usize = 5;
 
@@ -59,19 +58,6 @@ pub(in crate::agent::providers::webfetch_md) struct GistParts<'a> {
     pub(in crate::agent::providers::webfetch_md) gist_id: &'a str,
     pub(in crate::agent::providers::webfetch_md) comment: Option<GistCommentPlan>,
     pub(in crate::agent::providers::webfetch_md) mode: &'static str,
-}
-
-pub(in crate::agent::providers::webfetch_md) struct GistRender<'a> {
-    pub(in crate::agent::providers::webfetch_md) source_url: &'a Url,
-    pub(in crate::agent::providers::webfetch_md) api_url: &'a Url,
-    pub(in crate::agent::providers::webfetch_md) mode: &'a str,
-    pub(in crate::agent::providers::webfetch_md) owner: &'a str,
-    pub(in crate::agent::providers::webfetch_md) gist_id: &'a str,
-    pub(in crate::agent::providers::webfetch_md) comment_id: Option<&'a str>,
-    pub(in crate::agent::providers::webfetch_md) files: &'a [String],
-    pub(in crate::agent::providers::webfetch_md) bytes_read: usize,
-    pub(in crate::agent::providers::webfetch_md) output_window: OutputWindow,
-    pub(in crate::agent::providers::webfetch_md) windowed: &'a WindowedOutput,
 }
 
 pub(in crate::agent::providers::webfetch_md) fn gist_parts(
@@ -149,44 +135,6 @@ pub(in crate::agent::providers::webfetch_md) fn parse_gist_comment_body(
         .filter(|body| !body.is_empty())
         .context("GitHub Gist comment JSON did not include a usable body")?;
     Ok(body.to_string())
-}
-
-pub(in crate::agent::providers::webfetch_md) fn render_gist(render: GistRender<'_>) -> String {
-    let mut output = format!(
-        "## Web Markdown\n\nURL: {}\nSource-URL: {}\nMode: {}\nOwner: {}\nGist-ID: {}\nFiles: {}\nFetched-Bytes: {}\nMax-Chars: {}\nOffset-Chars: {}\nMarkdown-Chars: {}\nReturned-Chars: {}\nRemaining-Chars: {}\nNext-Offset-Chars: {}\nTruncated: {}",
-        render.api_url,
-        render.source_url,
-        render.mode,
-        render.owner,
-        render.gist_id,
-        render.files.join(", "),
-        render.bytes_read,
-        render.output_window.max_chars,
-        render.output_window.offset_chars,
-        render.windowed.markdown_chars,
-        render.windowed.returned_chars,
-        render.windowed.remaining_chars,
-        next_offset_label(render.windowed),
-        truncated_label(render.windowed)
-    );
-    if let Some(comment_id) = render.comment_id {
-        output.push_str("\nComment-ID: ");
-        output.push_str(comment_id);
-    }
-    output.push_str("\n\n### Content\n\n");
-    output.push_str(&render.windowed.text);
-    output
-}
-
-fn next_offset_label(windowed: &WindowedOutput) -> String {
-    windowed
-        .next_offset_chars
-        .map(|offset| offset.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn truncated_label(windowed: &WindowedOutput) -> &'static str {
-    if windowed.was_truncated { "yes" } else { "no" }
 }
 
 fn parse_gist_file(value: &Value) -> Option<GistFileContent> {

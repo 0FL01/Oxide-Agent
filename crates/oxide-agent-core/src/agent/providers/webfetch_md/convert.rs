@@ -12,12 +12,13 @@ pub(super) fn html_to_markdown(html: &str) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::agent::providers::webfetch_md) struct OutputWindow {
+pub(crate) struct OutputWindow {
     pub max_chars: usize,
     pub offset_chars: usize,
 }
 
-pub(in crate::agent::providers::webfetch_md) struct WindowedOutput {
+#[derive(Debug, Clone)]
+pub(crate) struct WindowedOutput {
     pub text: String,
     pub markdown_chars: usize,
     pub returned_chars: usize,

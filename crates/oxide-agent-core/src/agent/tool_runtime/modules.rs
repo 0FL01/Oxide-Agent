@@ -28,6 +28,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 #[cfg(oxide_module_tool_webfetch_md)]
 use serde_json::{Value, json};
+#[cfg(oxide_module_tool_webfetch_md)]
+use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(oxide_module_integration_ssh_mcp)]
 use std::sync::OnceLock;
@@ -75,6 +77,10 @@ use crate::agent::providers::YtdlpProvider;
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::webfetch_md::WebMarkdownArgs;
+#[cfg(oxide_module_tool_webfetch_md)]
+use crate::agent::providers::webfetch_md::{
+    FetchedMarkdownDocument, OutputWindow, WindowedOutput, window_markdown_document,
+};
 #[cfg(oxide_module_tool_browser_live)]
 use crate::agent::providers::{BrowserArtifactSettings, BrowserLiveProvider};
 #[cfg(oxide_module_integration_mcp_jira)]
@@ -890,11 +896,20 @@ impl ToolModule for WebCrawlerToolModule {
 const TOOL_WEB_CRAWLER: &str = "web_crawler";
 #[cfg(oxide_module_tool_webfetch_md)]
 const WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS: u64 = 10;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_DEFAULT_INLINE_CHARS: usize = 60_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_MIN_INLINE_CHARS: usize = 1_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_MAX_INLINE_CHARS: usize = 100_000;
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[derive(Debug, Deserialize, Clone, Default)]
 struct WebCrawlerArgs {
-    url: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    read: Option<String>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     #[serde(default)]
@@ -910,10 +925,41 @@ struct WebCrawlerArgs {
 #[cfg(oxide_module_tool_webfetch_md)]
 struct WebCrawlerToolExecutor {
     webfetch: WebFetchMdProvider,
+    documents: Mutex<WebCrawlerDocumentCache>,
     #[cfg(oxide_module_tool_crw)]
     crw: Option<Arc<CrwProvider>>,
     name: ToolName,
     spec: ToolDefinition,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Default)]
+struct WebCrawlerDocumentCache {
+    documents: HashMap<WebCrawlerDocumentKey, WebCrawlerCachedDocument>,
+    last_by_session: HashMap<i64, WebCrawlerDocumentKey>,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WebCrawlerDocumentKey {
+    session_id: i64,
+    url: String,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone)]
+struct WebCrawlerCachedDocument {
+    document: FetchedMarkdownDocument,
+    next_offset_chars: Option<usize>,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone)]
+struct WebCrawlerWindowResult {
+    url: String,
+    document: FetchedMarkdownDocument,
+    output_window: OutputWindow,
+    windowed: WindowedOutput,
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
@@ -927,6 +973,7 @@ impl WebCrawlerToolExecutor {
 
         Self {
             webfetch: WebFetchMdProvider::new(),
+            documents: Mutex::new(WebCrawlerDocumentCache::default()),
             #[cfg(oxide_module_tool_crw)]
             crw,
             name: ToolName::from(TOOL_WEB_CRAWLER),
@@ -944,28 +991,59 @@ impl WebCrawlerToolExecutor {
             artifact_dir: invocation.execution_context.artifact_dir.clone(),
             ..ToolRuntimeConfig::default()
         });
+        if web_crawler_read_mode(&args)? == WebCrawlerReadMode::Next {
+            return self
+                .execute_cached_next(invocation, &normalizer, &args)
+                .await;
+        }
+
+        let url = args
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| {
+                ToolRuntimeError::InvalidArguments(
+                    "web_crawler requires url unless read is \"next\"".to_string(),
+                )
+            })?
+            .to_string();
         let webfetch_args = WebMarkdownArgs {
-            url: args.url.clone(),
+            url: url.clone(),
             timeout_secs: Some(web_crawler_webfetch_timeout_secs(&args)),
-            max_chars: args.max_chars,
-            offset_chars: args.offset_chars,
+            max_chars: None,
+            offset_chars: None,
         };
 
         match self
             .webfetch
-            .fetch_markdown(webfetch_args.clone(), Some(&invocation.cancellation_token))
+            .fetch_markdown_document(webfetch_args.clone(), Some(&invocation.cancellation_token))
             .await
         {
-            Ok(markdown) => {
-                let stdout = web_crawler_output("webfetch_md", None, &args.url, None, &markdown);
-                let mut output = normalizer.success(invocation, &stdout, "");
-                output.structured_payload = Some(web_crawler_success_payload(
+            Ok(document) => {
+                let window = self
+                    .store_document_window(
+                        invocation.session_id.as_i64(),
+                        url.clone(),
+                        document,
+                        web_crawler_output_window(&args, args.offset_chars.unwrap_or(0)),
+                    )
+                    .await;
+                let final_url = web_crawler_document_metadata(&window.document, "URL");
+                let stdout = web_crawler_window_output(
                     "webfetch_md",
                     None,
-                    &args.url,
+                    &url,
+                    final_url.as_deref(),
+                    &window,
+                );
+                let mut output = normalizer.success(invocation, &stdout, "");
+                output.structured_payload = Some(web_crawler_document_success_payload(
+                    "webfetch_md",
                     None,
-                    &markdown,
-                    None,
+                    &url,
+                    final_url.as_deref(),
+                    &window,
                     None,
                     None,
                 ));
@@ -997,6 +1075,115 @@ impl WebCrawlerToolExecutor {
         }
     }
 
+    async fn execute_cached_next(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        args: &WebCrawlerArgs,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let Some(window) = self
+            .next_document_window(
+                invocation.session_id.as_i64(),
+                args.url.as_deref(),
+                web_crawler_output_window(args, 0),
+            )
+            .await
+        else {
+            let mut output = normalizer.failure(
+                invocation,
+                "web_crawler has no cached page to continue in this session; call web_crawler with url first",
+            );
+            output.structured_payload = Some(json!({
+                "provider": TOOL_WEB_CRAWLER,
+                "backend": "webfetch_md",
+                "error_kind": "no_cached_document",
+                "retryable": false,
+                "success": false
+            }));
+            return Ok(output);
+        };
+
+        let final_url = web_crawler_document_metadata(&window.document, "URL");
+        let stdout = web_crawler_window_output(
+            "webfetch_md",
+            None,
+            &window.url,
+            final_url.as_deref(),
+            &window,
+        );
+        let mut output = normalizer.success(invocation, &stdout, "");
+        output.structured_payload = Some(web_crawler_document_success_payload(
+            "webfetch_md",
+            None,
+            &window.url,
+            final_url.as_deref(),
+            &window,
+            None,
+            None,
+        ));
+        Ok(output)
+    }
+
+    async fn store_document_window(
+        &self,
+        session_id: i64,
+        url: String,
+        document: FetchedMarkdownDocument,
+        output_window: OutputWindow,
+    ) -> WebCrawlerWindowResult {
+        let windowed = window_markdown_document(&document, output_window);
+        let key = WebCrawlerDocumentKey {
+            session_id,
+            url: url.clone(),
+        };
+        let mut cache = self.documents.lock().await;
+        cache.documents.insert(
+            key.clone(),
+            WebCrawlerCachedDocument {
+                document: document.clone(),
+                next_offset_chars: windowed.next_offset_chars,
+            },
+        );
+        cache.last_by_session.insert(session_id, key);
+        WebCrawlerWindowResult {
+            url,
+            document,
+            output_window,
+            windowed,
+        }
+    }
+
+    async fn next_document_window(
+        &self,
+        session_id: i64,
+        url: Option<&str>,
+        mut output_window: OutputWindow,
+    ) -> Option<WebCrawlerWindowResult> {
+        let mut cache = self.documents.lock().await;
+        let key = if let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) {
+            WebCrawlerDocumentKey {
+                session_id,
+                url: url.to_string(),
+            }
+        } else {
+            cache.last_by_session.get(&session_id)?.clone()
+        };
+        let cached = cache.documents.get_mut(&key)?;
+        output_window.offset_chars = cached
+            .next_offset_chars
+            .unwrap_or_else(|| cached.document.markdown.chars().count());
+        let windowed = window_markdown_document(&cached.document, output_window);
+        cached.next_offset_chars = windowed.next_offset_chars;
+        let document = cached.document.clone();
+        cache.last_by_session.insert(session_id, key.clone());
+        Some(WebCrawlerWindowResult {
+            url: key.url,
+            document,
+            output_window,
+            windowed,
+        })
+    }
+
     async fn execute_rendered_fallback(
         &self,
         invocation: &ToolInvocation,
@@ -1025,7 +1212,7 @@ impl WebCrawlerToolExecutor {
 
         let mut output = normalizer.failure(
             invocation,
-            web_crawler_fallback_unavailable_message(&args.url),
+            web_crawler_fallback_unavailable_message(&webfetch_args.url),
         );
         output.structured_payload = Some(web_crawler_no_fallback_payload(
             &webfetch_args,
@@ -1053,7 +1240,7 @@ impl WebCrawlerToolExecutor {
         use crate::agent::providers::crw::CrwScrapeArgs;
 
         let scrape_args = CrwScrapeArgs {
-            url: args.url.clone(),
+            url: webfetch_args.url.clone(),
         };
 
         match crw.client().scrape(&scrape_args).await {
@@ -1065,7 +1252,7 @@ impl WebCrawlerToolExecutor {
                 let stdout = web_crawler_output(
                     "crw_scrape",
                     Some(fallback_reason),
-                    &args.url,
+                    &webfetch_args.url,
                     final_url,
                     markdown,
                 );
@@ -1073,7 +1260,7 @@ impl WebCrawlerToolExecutor {
                 output.structured_payload = Some(web_crawler_success_payload(
                     "crw_scrape",
                     Some(fallback_reason),
-                    &args.url,
+                    &webfetch_args.url,
                     final_url,
                     markdown,
                     status_code,
@@ -1089,7 +1276,7 @@ impl WebCrawlerToolExecutor {
                     "web_crawler lightweight fetch failed for {} ({}); \
                      CRW scrape fallback also failed: {}. \
                      This path is closed for this task; use another source.",
-                    args.url, fallback_reason, crw_error_message
+                    webfetch_args.url, fallback_reason, crw_error_message
                 );
                 let mut output = normalizer.failure(invocation, message);
                 output.structured_payload = Some(web_crawler_crw_failure_payload(
@@ -1148,7 +1335,12 @@ fn web_crawler_tool_definition() -> ToolDefinition {
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Fully-qualified public http/https URL to fetch"
+                    "description": "Fully-qualified public http/https URL to fetch. Required unless read is \"next\"."
+                },
+                "read": {
+                    "type": "string",
+                    "enum": ["auto", "next"],
+                    "description": "auto fetches the URL and starts reading; next continues the last cached page in this session without requiring offset_chars"
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -1171,7 +1363,6 @@ fn web_crawler_tool_definition() -> ToolDefinition {
                     "description": "If true, bypass cache on rendered fallback; default false"
                 }
             },
-            "required": ["url"],
             "additionalProperties": false
         }),
     }
@@ -1190,6 +1381,40 @@ fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebCrawlerReadMode {
+    Auto,
+    Next,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_read_mode(args: &WebCrawlerArgs) -> Result<WebCrawlerReadMode, ToolRuntimeError> {
+    match args
+        .read
+        .as_deref()
+        .map(str::trim)
+        .filter(|read| !read.is_empty())
+    {
+        None | Some("auto") => Ok(WebCrawlerReadMode::Auto),
+        Some("next") => Ok(WebCrawlerReadMode::Next),
+        Some(other) => Err(ToolRuntimeError::InvalidArguments(format!(
+            "invalid web_crawler read mode '{other}'; expected 'auto' or 'next'"
+        ))),
+    }
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_output_window(args: &WebCrawlerArgs, offset_chars: usize) -> OutputWindow {
+    OutputWindow {
+        max_chars: args
+            .max_chars
+            .unwrap_or(WEB_CRAWLER_DEFAULT_INLINE_CHARS)
+            .clamp(WEB_CRAWLER_MIN_INLINE_CHARS, WEB_CRAWLER_MAX_INLINE_CHARS),
+        offset_chars,
+    }
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     let message = error.to_string();
     if message.contains("invalid web_crawler arguments") {
@@ -1199,7 +1424,7 @@ fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     }
 }
 
-#[cfg(oxide_module_tool_webfetch_md)]
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
 fn web_crawler_output(
     backend: &str,
     fallback_reason: Option<&str>,
@@ -1232,6 +1457,107 @@ fn web_crawler_output(
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_window_output(
+    backend: &str,
+    fallback_reason: Option<&str>,
+    url: &str,
+    final_url: Option<&str>,
+    window: &WebCrawlerWindowResult,
+) -> String {
+    let mut output = String::from("## Web Crawler\n\n");
+    output.push_str("Backend: ");
+    output.push_str(backend);
+    output.push('\n');
+    if let Some(reason) = fallback_reason {
+        output.push_str("Fallback-Reason: ");
+        output.push_str(reason);
+        output.push('\n');
+    }
+    output.push_str("URL: ");
+    output.push_str(url);
+    output.push('\n');
+    if let Some(final_url) = final_url {
+        output.push_str("Final-URL: ");
+        output.push_str(final_url);
+        output.push('\n');
+    }
+    output.push_str("Range-Chars: ");
+    output.push_str(&window.output_window.offset_chars.to_string());
+    output.push_str("..");
+    output.push_str(
+        &(window.output_window.offset_chars + window.windowed.returned_chars).to_string(),
+    );
+    output.push('\n');
+    output.push_str("Markdown-Chars: ");
+    output.push_str(&window.windowed.markdown_chars.to_string());
+    output.push('\n');
+    output.push_str("Truncated: ");
+    output.push_str(if window.windowed.was_truncated {
+        "yes"
+    } else {
+        "no"
+    });
+    output.push_str("\n\n---\n\n");
+    output.push_str(&window.windowed.text);
+    output
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_document_metadata(document: &FetchedMarkdownDocument, key: &str) -> Option<String> {
+    document
+        .metadata
+        .iter()
+        .find_map(|(metadata_key, value)| (metadata_key == key).then(|| value.clone()))
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_document_success_payload(
+    backend: &str,
+    fallback_reason: Option<&str>,
+    url: &str,
+    final_url: Option<&str>,
+    window: &WebCrawlerWindowResult,
+    status_code: Option<u64>,
+    raw_payload: Option<&Value>,
+) -> Value {
+    let start_chars = window.output_window.offset_chars;
+    let end_chars = start_chars + window.windowed.returned_chars;
+    let has_more = window.windowed.was_truncated;
+    let continue_with = has_more.then(|| {
+        json!({
+            "tool": TOOL_WEB_CRAWLER,
+            "args": { "read": "next" }
+        })
+    });
+
+    json!({
+        "provider": TOOL_WEB_CRAWLER,
+        "backend": backend,
+        "fallback_reason": fallback_reason,
+        "url": url,
+        "final_url": final_url,
+        "status_code": status_code,
+        "markdown": window.windowed.text,
+        "chars": window.windowed.markdown_chars,
+        "markdown_chars": window.windowed.markdown_chars,
+        "returned_chars": window.windowed.returned_chars,
+        "remaining_chars": window.windowed.remaining_chars,
+        "next_offset_chars": window.windowed.next_offset_chars,
+        "truncated": has_more,
+        "complete": start_chars == 0 && !has_more,
+        "range": {
+            "start_chars": start_chars,
+            "end_chars": end_chars,
+            "total_chars": window.windowed.markdown_chars,
+            "has_more": has_more
+        },
+        "continue_with": continue_with,
+        "raw_payload": raw_payload,
+        "success": true
+    })
+}
+
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
 fn web_crawler_success_payload(
     backend: &str,
     fallback_reason: Option<&str>,
@@ -1405,7 +1731,7 @@ mod web_crawler_tests {
     #[test]
     fn web_crawler_webfetch_timeout_defaults_to_ten_seconds() {
         let args = WebCrawlerArgs {
-            url: "https://example.test".to_string(),
+            url: Some("https://example.test".to_string()),
             ..WebCrawlerArgs::default()
         };
 
@@ -1415,12 +1741,100 @@ mod web_crawler_tests {
     #[test]
     fn web_crawler_webfetch_timeout_preserves_explicit_value() {
         let args = WebCrawlerArgs {
-            url: "https://example.test".to_string(),
+            url: Some("https://example.test".to_string()),
             timeout_secs: Some(3),
             ..WebCrawlerArgs::default()
         };
 
         assert_eq!(web_crawler_webfetch_timeout_secs(&args), 3);
+    }
+
+    #[test]
+    fn web_crawler_read_next_does_not_require_url() {
+        let args = WebCrawlerArgs {
+            read: Some("next".to_string()),
+            ..WebCrawlerArgs::default()
+        };
+
+        assert_eq!(
+            web_crawler_read_mode(&args).expect("valid read mode"),
+            WebCrawlerReadMode::Next
+        );
+    }
+
+    #[test]
+    fn web_crawler_window_payload_reports_honest_continuation() {
+        let document = FetchedMarkdownDocument {
+            metadata: vec![("URL".to_string(), "https://example.test/page".to_string())],
+            fetched_bytes: Some(42),
+            markdown: "abcdef".to_string(),
+        };
+        let output_window = OutputWindow {
+            max_chars: 3,
+            offset_chars: 0,
+        };
+        let window = WebCrawlerWindowResult {
+            url: "https://example.test/page".to_string(),
+            windowed: window_markdown_document(&document, output_window),
+            document,
+            output_window,
+        };
+
+        let payload = web_crawler_document_success_payload(
+            "webfetch_md",
+            None,
+            "https://example.test/page",
+            Some("https://example.test/page"),
+            &window,
+            None,
+            None,
+        );
+
+        assert_eq!(payload["truncated"], true);
+        assert_eq!(payload["complete"], false);
+        assert_eq!(payload["markdown_chars"], 6);
+        assert_eq!(payload["returned_chars"], 3);
+        assert_eq!(payload["remaining_chars"], 3);
+        assert_eq!(payload["next_offset_chars"], 3);
+        assert_eq!(payload["continue_with"]["args"]["read"], "next");
+    }
+
+    #[tokio::test]
+    async fn web_crawler_cached_next_advances_without_llm_offset() {
+        let executor = WebCrawlerToolExecutor::new();
+        let document = FetchedMarkdownDocument {
+            metadata: vec![("URL".to_string(), "https://example.test/page".to_string())],
+            fetched_bytes: Some(42),
+            markdown: "abcdef".to_string(),
+        };
+        let first = executor
+            .store_document_window(
+                7,
+                "https://example.test/page".to_string(),
+                document,
+                OutputWindow {
+                    max_chars: 3,
+                    offset_chars: 0,
+                },
+            )
+            .await;
+        assert_eq!(first.windowed.next_offset_chars, Some(3));
+
+        let next = executor
+            .next_document_window(
+                7,
+                None,
+                OutputWindow {
+                    max_chars: 3,
+                    offset_chars: 0,
+                },
+            )
+            .await
+            .expect("cached document");
+
+        assert_eq!(next.output_window.offset_chars, 3);
+        assert_eq!(next.windowed.text, "def");
+        assert_eq!(next.windowed.next_offset_chars, None);
     }
 
     #[test]
