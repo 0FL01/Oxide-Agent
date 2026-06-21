@@ -574,7 +574,9 @@ mod tests {
     use crate::config::ModuleRuntimeConfig;
     #[cfg(feature = "llm-openrouter")]
     use crate::llm::MockLlmProvider;
-    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
+    use crate::sandbox::{
+        SandboxBackend, SandboxBackendId, SandboxCapability, SandboxError, SandboxFileListing,
+    };
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -607,7 +609,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SandboxFileOps for RecordingSandboxFileOps {
-        async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), SandboxError> {
             self.writes
                 .lock()
                 .expect("writes mutex poisoned")
@@ -615,7 +617,7 @@ mod tests {
             Ok(())
         }
 
-        async fn read_file(&self, _path: &str) -> Result<Vec<u8>> {
+        async fn read_file(&self, _path: &str) -> Result<Vec<u8>, SandboxError> {
             Ok(Vec::new())
         }
 
@@ -623,11 +625,11 @@ mod tests {
             &self,
             _path: &str,
             _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-        ) -> Result<u64> {
+        ) -> Result<u64, SandboxError> {
             Ok(0)
         }
 
-        async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+        async fn list_files(&self, path: &str) -> Result<SandboxFileListing, SandboxError> {
             Ok(SandboxFileListing {
                 path: path.to_string(),
                 listing: String::new(),
@@ -640,8 +642,10 @@ mod tests {
             &self,
             _path: &str,
             _edit: crate::sandbox::SandboxFileEdit,
-        ) -> Result<crate::sandbox::SandboxApplyFileEditResult> {
-            anyhow::bail!("test sandbox file edit is not implemented")
+        ) -> Result<crate::sandbox::SandboxApplyFileEditResult, SandboxError> {
+            Err(SandboxError::Other(
+                "test sandbox file edit is not implemented".to_string(),
+            ))
         }
     }
 
@@ -686,7 +690,7 @@ mod tests {
             &self,
             command: &str,
             _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-        ) -> Result<ExecResult> {
+        ) -> Result<ExecResult, SandboxError> {
             self.commands
                 .lock()
                 .expect("commands mutex poisoned")

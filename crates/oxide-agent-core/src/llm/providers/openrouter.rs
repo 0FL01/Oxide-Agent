@@ -228,7 +228,7 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             temperature,
-            json_mode: _,
+            json_mode,
             reasoning_effort: _,
         } = request;
         let body = chat_request::build_tool_body(
@@ -238,7 +238,7 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             temperature,
-            false,
+            json_mode,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
             None,
         );

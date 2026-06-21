@@ -14,6 +14,7 @@ pub mod admin;
 pub mod broker;
 #[cfg(feature = "tool-stack-logs")]
 pub mod diagnostics;
+pub mod error;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -43,6 +44,7 @@ pub use broker::SandboxBrokerClient;
 pub use broker::SandboxBrokerServer;
 #[cfg(feature = "tool-stack-logs")]
 pub use diagnostics::SandboxDiagnosticsRuntime;
+pub use error::SandboxError;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -86,6 +88,6 @@ pub use traits::{
 /// This is intentionally fail-fast only for explicitly configured backends so
 /// profiles without sandbox tools can still start when no sandbox backend is
 /// configured.
-pub async fn preflight_sandbox_backend() -> anyhow::Result<()> {
+pub async fn preflight_sandbox_backend() -> Result<(), SandboxError> {
     Ok(())
 }

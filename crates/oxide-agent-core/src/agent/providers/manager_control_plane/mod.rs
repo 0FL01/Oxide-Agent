@@ -452,14 +452,20 @@ impl ManagerTopicSandboxCleanup for SandboxAdminTopicSandboxCleanup {
             ManagerControlPlaneProvider::forum_topic_context_key(topic.chat_id, topic.thread_id),
         )
         .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
-        self.admin.destroy_scope(scope).await
+        self.admin
+            .destroy_scope(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }
 
 #[async_trait]
 impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
     async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
-        self.admin.list_user_sandboxes(user_id).await
+        self.admin
+            .list_user_sandboxes(user_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn get_topic_sandbox(
@@ -470,20 +476,28 @@ impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
         self.admin
             .inspect_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        self.admin.ensure_scope_sandbox(scope).await
+        self.admin
+            .ensure_scope_sandbox(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        self.admin.recreate_scope_sandbox(scope).await
+        self.admin
+            .recreate_scope_sandbox(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
         self.admin
             .delete_sandbox_by_name(scope.owner_id(), &scope.container_name())
             .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_topic_sandbox_by_name(
@@ -494,6 +508,7 @@ impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
         self.admin
             .delete_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 }
 

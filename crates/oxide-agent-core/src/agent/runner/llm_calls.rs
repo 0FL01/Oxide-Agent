@@ -50,7 +50,7 @@ where
     T: SandboxFileOps + ?Sized,
 {
     async fn read_native_image_file(&self, path: &str) -> Result<Vec<u8>> {
-        self.read_file(path).await
+        self.read_file(path).await.map_err(anyhow::Error::from)
     }
 }
 

@@ -93,7 +93,7 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 
 | # | Area | Verdict | Evidence |
 |---|---|---|---|
-| A3.1 | thiserror/anyhow in sandbox | VIOLATION | 69 non-test lib files use anyhow; no `SandboxError` enum |
+| A3.1 | thiserror/anyhow in sandbox | FIXED | `SandboxError` enum introduced; anyhow removed from all sandbox files |
 | A3.2 | Provider contracts (sender knows all it supplies) | SOUND | `claim_reminder_job` atomic UPDATE with precondition inside receiver (`sqlx/mod.rs:1711-1746`) |
 | A3.3 | Tool runtime correlation | SMELL | `ToolCallCorrelation` typed; call↔output pairing runtime-verified (`runtime.rs:267-302`), not type-invariant |
 | A3.4 | Schema versioning | SOUND | all 8 records carry `schema_version`; 2 bumped (binding v2, reminder v2); migrations runtime-path not embedded |
@@ -158,8 +158,8 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 
 | Metric | Current | Target |
 |---|---|---|
-| `anyhow` in `src/sandbox/**/*.rs` (non-test) | ~70 uses across 3 files | 0 |
-| `SandboxError` enum | does not exist | introduced with typed variants |
+| `anyhow` in `src/sandbox/**/*.rs` (non-test) | ~~70 uses across 3 files~~ → 0 | 0 ✓ |
+| `SandboxError` enum | ~~does not exist~~ → introduced with 13 typed variants | ✓ |
 
 ## Completion Audit
 
@@ -174,10 +174,10 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 
 - G2: `SandboxError` typed enum introduced
   - Source: A1.4, A3.1
-  - Acceptance: `SandboxError` enum exists with variants (NotRunning, ContainerNotFound, ExecTimeout, ImagePull, BrokerUnavailable, Docker(_), Io(_)); `SandboxBackend` trait methods return `Result<_, SandboxError>`; `anyhow` removed from `sandbox/manager.rs`, `sandbox/broker.rs`, `sandbox/traits.rs`
+  - Acceptance: `SandboxError` enum exists with variants (NotRunning, ContainerNotFound, ExecTimeout, Cancelled, FileNotFound, BackendNotCompiled, Broker, Protocol, InvalidEdit, ReadGuardMismatch, Docker(#[from]), Io(#[from]), Other); `SandboxBackend` trait methods return `Result<_, SandboxError>`; `anyhow` removed from `sandbox/manager.rs`, `sandbox/broker.rs`, `sandbox/traits.rs`, `sandbox/admin.rs`, `sandbox/diagnostics.rs`, `sandbox/manager_stub.rs`, `sandbox/mod.rs`
   - Evidence required: `cargo check` green; grep `anyhow` in `src/sandbox/**/*.rs` returns 0; `cargo clippy` clean
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `src/sandbox/error.rs` created with 13-variant `SandboxError` enum (thiserror). All sandbox trait methods (`SandboxExec`, `SandboxFileOps`, `SandboxLifecycle`, `SandboxAdmin`, `SandboxDiagnostics`) return `Result<_, SandboxError>`. `manager.rs`: 30+ `anyhow!`/`.context()` converted to typed variants. `broker.rs`: 40+ `anyhow!` converted; `SandboxBrokerResponse::Error` → `SandboxError::Broker`; encoding errors → `SandboxError::Protocol`. `manager_stub.rs`: `BackendNotCompiled` variant. `admin.rs`, `diagnostics.rs`: trait impls updated. Callers updated: `agent/providers/sandbox.rs` (trait impls + `.map_err(anyhow::Error::from)` at tool-output boundary), `agent/providers/tts/provider.rs`, `silero_tts/provider.rs`, `manager_control_plane/mod.rs`, `agent/runner/llm_calls.rs`, `agent/preprocessor.rs`, `agent/providers/ytdlp.rs` (FakeSandbox test), `agent/providers/stack_logs.rs` (FakeDiagnostics test), `transport-web/src/server/types.rs`, `transport-web/tests/e2e/setup.rs`. Also fixed Phase 1 bug: OpenRouter `chat_with_tools` was ignoring `json_mode` parameter (hardcoded `false`), now passes it through. 1295 tests pass, clippy clean, fmt clean, grep `anyhow` in sandbox = 0.
 
 - G3: cfg-alias migration complete
   - Source: A1.3, A4.1
@@ -494,6 +494,29 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local` (921 pass, 0 fail); `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
   - Audit IDs updated: G1 verified, A5.2 FIXED, A5.3 FIXED
   - Next: Phase 2 (SandboxError typed enum)
+
+- 2026-06-21: Phase 2 — SandboxError typed enum (G2 verified)
+  - Changed: `src/sandbox/error.rs` — new `SandboxError` enum (13 variants: NotRunning, ContainerNotFound, ExecTimeout, Cancelled, FileNotFound, BackendNotCompiled, Broker, Protocol, InvalidEdit, ReadGuardMismatch, Docker(#[from] bollard), Io(#[from] std::io), Other)
+  - Changed: `src/sandbox/mod.rs` — `pub mod error`, re-export `SandboxError`, `preflight_sandbox_backend` returns `Result<(), SandboxError>`
+  - Changed: `src/sandbox/traits.rs` — all trait methods return `Result<_, SandboxError>`; `apply_sandbox_file_edit`/`validate_edit_read_guard`/`apply_exact_text_edit` use typed variants
+  - Changed: `src/sandbox/manager.rs` — 30+ `anyhow!`/`.context()` converted to typed variants; `#[from]` for bollard; `.parse()` errors → `SandboxError::Other`
+  - Changed: `src/sandbox/broker.rs` — 40+ `anyhow!` converted; `SandboxBrokerResponse::Error` → `SandboxError::Broker`; encoding → `SandboxError::Protocol`; `UnixListener::bind` sync fix; test code updated
+  - Changed: `src/sandbox/manager_stub.rs` — `BackendNotCompiled` variant; all methods return `Result<_, SandboxError>`
+  - Changed: `src/sandbox/admin.rs`, `diagnostics.rs` — trait impls updated
+  - Changed: `agent/providers/sandbox.rs` — `SandboxRuntime` trait impls return `Result<_, SandboxError>`; `.map_err(anyhow::Error::from)` at tool-output boundary; `apply_exact_text_edit` test helper uses typed variants
+  - Changed: `agent/providers/tts/provider.rs`, `silero_tts/provider.rs` — `.map_err(anyhow::Error::from)` on `write_file`
+  - Changed: `agent/providers/manager_control_plane/mod.rs` — `.map_err(anyhow::Error::from)` on 7 `SandboxAdmin` delegations
+  - Changed: `agent/runner/llm_calls.rs` — `NativeImageFileReader` impl `.map_err(anyhow::Error::from)`
+  - Changed: `agent/preprocessor.rs` — `RecordingSandboxFileOps`/`RecordingSandboxExec` test impls updated
+  - Changed: `agent/providers/ytdlp.rs` — `FakeSandbox` test impl updated
+  - Changed: `agent/providers/stack_logs.rs` — `FakeDiagnostics` test impl updated
+  - Changed: `transport-web/src/server/types.rs` — `.map_err(anyhow::Error::from)` on 3 `SandboxAdmin` delegations
+  - Changed: `transport-web/tests/e2e/setup.rs` — `.map_err(anyhow::Error::from)` on `delete_sandbox_by_name`
+  - Fixed: OpenRouter `chat_with_tools` was ignoring `json_mode` (hardcoded `false`); now passes it through (Phase 1 bug)
+  - Evidence: 1295 tests pass, clippy clean, fmt clean, grep `anyhow` in `src/sandbox/**/*.rs` = 0
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full` (1295 pass, 0 fail); `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
+  - Audit IDs updated: G2 verified, A3.1 FIXED
+  - Next: Phase 3 (cfg-alias migration)
 
 ## Risks and Blockers
 

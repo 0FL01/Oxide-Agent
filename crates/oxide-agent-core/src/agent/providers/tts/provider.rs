@@ -250,7 +250,10 @@ impl KokoroTtsProvider {
             .ok_or_else(|| anyhow::anyhow!("Sandbox fileops is not configured for Kokoro TTS"))?;
 
         ensure_parent_dir(exec, path).await?;
-        fileops.write_file(path, content).await
+        fileops
+            .write_file(path, content)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     /// Execute English text-to-speech synthesis and send to user

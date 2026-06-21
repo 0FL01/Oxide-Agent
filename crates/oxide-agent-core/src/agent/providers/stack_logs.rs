@@ -331,7 +331,7 @@ mod tests {
         ResolvedStackLogsSelector, StackLogSource, StackLogsFetchResponse,
         StackLogsListSourcesResponse, StackLogsWindow,
     };
-    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability};
+    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxError};
     use chrono::Utc;
     use tokio_util::sync::CancellationToken;
 
@@ -352,7 +352,7 @@ mod tests {
         async fn list_stack_log_sources(
             &self,
             request: StackLogsListSourcesRequest,
-        ) -> Result<StackLogsListSourcesResponse> {
+        ) -> Result<StackLogsListSourcesResponse, SandboxError> {
             Ok(StackLogsListSourcesResponse {
                 stack_selector: ResolvedStackLogsSelector {
                     compose_project: request
@@ -373,7 +373,7 @@ mod tests {
         async fn fetch_stack_logs(
             &self,
             _request: StackLogsFetchRequest,
-        ) -> Result<StackLogsFetchResponse> {
+        ) -> Result<StackLogsFetchResponse, SandboxError> {
             Ok(StackLogsFetchResponse {
                 window: StackLogsWindow {
                     since: None,

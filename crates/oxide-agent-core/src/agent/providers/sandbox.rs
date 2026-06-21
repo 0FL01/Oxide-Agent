@@ -11,8 +11,8 @@ use crate::agent::tool_runtime::{
 use crate::llm::ToolDefinition;
 use crate::sandbox::{
     ExecResult, SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability,
-    SandboxEditReadGuard, SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps,
-    SandboxLifecycle, SandboxManager, SandboxScope,
+    SandboxEditReadGuard, SandboxError, SandboxExec, SandboxFileEdit, SandboxFileListing,
+    SandboxFileOps, SandboxLifecycle, SandboxManager, SandboxScope,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -80,7 +80,7 @@ impl SandboxRuntime {
         self.read_snapshots.lock().await.clear();
     }
 
-    pub(crate) async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
+    pub(crate) async fn get_or_create_sandbox(&self) -> Result<SandboxManager, SandboxError> {
         let mut guard = self.sandbox.lock().await;
 
         if guard.as_ref().is_none_or(|sandbox| !sandbox.is_running()) {
@@ -93,7 +93,7 @@ impl SandboxRuntime {
         guard
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+            .ok_or_else(|| SandboxError::Other("Sandbox not initialized".to_string()))
     }
 
     /// Returns the progress channel associated with this runtime, if any.
@@ -102,7 +102,7 @@ impl SandboxRuntime {
         self.progress_tx.as_ref()
     }
 
-    async fn get_or_init_sandbox_manager(&self) -> Result<SandboxManager> {
+    async fn get_or_init_sandbox_manager(&self) -> Result<SandboxManager, SandboxError> {
         let mut guard = self.sandbox.lock().await;
 
         if guard.is_none() {
@@ -116,7 +116,7 @@ impl SandboxRuntime {
         guard
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+            .ok_or_else(|| SandboxError::Other("Sandbox not initialized".to_string()))
     }
 }
 
@@ -136,7 +136,7 @@ impl SandboxExec for SandboxRuntime {
         &self,
         command: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         sandbox.exec_command(command, cancellation_token).await
@@ -145,7 +145,7 @@ impl SandboxExec for SandboxRuntime {
 
 #[async_trait]
 impl SandboxFileOps for SandboxRuntime {
-    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), SandboxError> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         let result = sandbox.write_file(path, bytes).await;
@@ -155,7 +155,7 @@ impl SandboxFileOps for SandboxRuntime {
         result
     }
 
-    async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+    async fn read_file(&self, path: &str) -> Result<Vec<u8>, SandboxError> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         let bytes = sandbox.read_file(path).await?;
@@ -173,13 +173,13 @@ impl SandboxFileOps for SandboxRuntime {
         &self,
         path: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         sandbox.file_size_bytes(path, cancellation_token).await
     }
 
-    async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+    async fn list_files(&self, path: &str) -> Result<SandboxFileListing, SandboxError> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         sandbox.list_files(path).await
@@ -189,7 +189,7 @@ impl SandboxFileOps for SandboxRuntime {
         &self,
         path: &str,
         edit: SandboxFileEdit,
-    ) -> Result<SandboxApplyFileEditResult> {
+    ) -> Result<SandboxApplyFileEditResult, SandboxError> {
         let _exclusive = self.execution_gate.write().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         let read_guard =
@@ -217,7 +217,7 @@ impl SandboxFileOps for SandboxRuntime {
 
 #[async_trait]
 impl SandboxLifecycle for SandboxRuntime {
-    async fn recreate(&self) -> Result<()> {
+    async fn recreate(&self) -> Result<(), SandboxError> {
         let _exclusive = self.execution_gate.write().await;
         let mut sandbox = self.get_or_init_sandbox_manager().await?;
         let result = sandbox.recreate().await;
@@ -270,13 +270,15 @@ impl SandboxToolHandlers {
                     .await;
                 Ok(typed_simple_result(
                     invocation,
-                    result.map(|()| {
-                        json!({
-                            "ok": true,
-                            "path": args.path,
-                            "bytes_written": args.content.len(),
+                    result
+                        .map(|()| {
+                            json!({
+                                "ok": true,
+                                "path": args.path,
+                                "bytes_written": args.content.len(),
+                            })
                         })
-                    }),
+                        .map_err(anyhow::Error::from),
                 ))
             }
             "read_file" => {
@@ -338,7 +340,7 @@ impl SandboxToolHandlers {
                             "status": "recreated",
                             "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
                         })
-                    }),
+                    }).map_err(anyhow::Error::from),
                 ))
             }
             other => Err(ToolRuntimeError::Internal(format!(
@@ -516,63 +518,69 @@ fn validate_edit_read_guard(
     current_sha256: &str,
     current_bytes: usize,
     snapshot: Option<&ReadSnapshot>,
-) -> Result<()> {
+) -> Result<(), SandboxError> {
     if current_bytes == 0 {
         return Ok(());
     }
 
     let snapshot = snapshot.ok_or_else(|| {
-        anyhow::anyhow!(
+        SandboxError::ReadGuardMismatch(format!(
             "file must be read with read_file before apply_file_edit; empty files are exempt: {path}"
-        )
+        ))
     })?;
 
     if snapshot.sha256 != current_sha256 {
-        anyhow::bail!(
+        return Err(SandboxError::ReadGuardMismatch(format!(
             "file changed after last read; call read_file again before editing: {path} (last_read_sha256={}, current_sha256={}, last_read_bytes={}, current_bytes={})",
-            snapshot.sha256,
-            current_sha256,
-            snapshot.bytes,
-            current_bytes
-        );
+            snapshot.sha256, current_sha256, snapshot.bytes, current_bytes
+        )));
     }
 
     Ok(())
 }
 
 #[cfg(test)]
-fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
+fn apply_exact_text_edit(
+    current: &[u8],
+    edit: &SandboxFileEdit,
+) -> Result<(Vec<u8>, usize), SandboxError> {
     if bytes_look_binary(current) {
-        anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
+        return Err(SandboxError::InvalidEdit(
+            "apply_file_edit only supports text files; binary content was detected".to_string(),
+        ));
     }
 
-    let current_text = std::str::from_utf8(current)
-        .map_err(|error| anyhow::anyhow!("apply_file_edit only supports UTF-8 text: {error}"))?;
+    let current_text = std::str::from_utf8(current).map_err(|error| {
+        SandboxError::InvalidEdit(format!("apply_file_edit only supports UTF-8 text: {error}"))
+    })?;
 
     if edit.expected_replacements == 0 {
-        anyhow::bail!("expected_replacements must be greater than zero");
+        return Err(SandboxError::InvalidEdit(
+            "expected_replacements must be greater than zero".to_string(),
+        ));
     }
 
     if edit.search.is_empty() {
         if current.is_empty() {
             if edit.expected_replacements != 1 {
-                anyhow::bail!(
+                return Err(SandboxError::InvalidEdit(format!(
                     "expected {} replacements, found 1 for empty-file insert; file was not modified",
                     edit.expected_replacements
-                );
+                )));
             }
             return Ok((edit.replace.as_bytes().to_vec(), 1));
         }
-        anyhow::bail!("search must not be empty for non-empty files");
+        return Err(SandboxError::InvalidEdit(
+            "search must not be empty for non-empty files".to_string(),
+        ));
     }
 
     let replacements = current_text.matches(&edit.search).count();
     if replacements != edit.expected_replacements {
-        anyhow::bail!(
+        return Err(SandboxError::InvalidEdit(format!(
             "expected {} replacements, found {}; file was not modified",
-            edit.expected_replacements,
-            replacements
-        );
+            edit.expected_replacements, replacements
+        )));
     }
 
     Ok((

@@ -127,6 +127,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/browser-live"
       },
       {
+        "id": "tool/browser-save-screenshot",
+        "module": "tool/browser-live"
+      },
+      {
         "id": "tool/browser-start",
         "module": "tool/browser-live"
       },
@@ -664,6 +668,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/browser-close",
           "tool/browser-debug",
           "tool/browser-observe",
+          "tool/browser-save-screenshot",
           "tool/browser-start",
           "tool/browser-step"
         ],
@@ -997,6 +1002,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/browser-close",
       "tool/browser-debug",
       "tool/browser-observe",
+      "tool/browser-save-screenshot",
       "tool/browser-start",
       "tool/browser-step",
       "tool/compression",

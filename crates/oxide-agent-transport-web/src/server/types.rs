@@ -101,17 +101,24 @@ struct RuntimeWebSandboxControl {
 #[async_trait]
 impl WebSandboxControl for RuntimeWebSandboxControl {
     async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()> {
-        self.admin.destroy_scope(scope).await
+        self.admin
+            .destroy_scope(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
-        self.admin.list_user_sandboxes(user_id).await
+        self.admin
+            .list_user_sandboxes(user_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool> {
         self.admin
             .delete_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 }
 
