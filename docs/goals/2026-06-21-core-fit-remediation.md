@@ -58,6 +58,8 @@ None. All findings are evidence-backed with file:line citations from the audit.
 
 ## Audit Baseline (evidence locked, 2026-06-21)
 
+Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-06-21-core-fit-audit-evidence.md` (referred to as "evidence doc" below). Condensed tables here; full verdicts there.
+
 ### A1 — Architectural invariants
 
 | # | Invariant | Verdict | Evidence |
@@ -127,6 +129,37 @@ None. All findings are evidence-backed with file:line citations from the audit.
 | A5.7 | Compaction design | SOUND | typed classes, deterministic budget, externalized payloads, atomic replacement |
 | A5.8 | Provider capability negotiation | SOUND | default-deny static allowlist, model-level verified policy |
 | A5.9 | Hot context health hook | SOUND | typed `HookResult`, deterministic thresholds |
+
+Full audit evidence with reasoning, traces, and design assessments: `docs/goals/2026-06-21-core-fit-audit-evidence.md`
+
+## Current-State Baselines (measured 2026-06-21)
+
+### File line counts
+
+| File | Current lines | Target after remediation | Phase |
+|---|---|---|---|
+| `src/agent/recovery.rs` | 1544 | ~600-900 (history-repair stays, content-sanitization removed) | Phase 1 |
+| `src/agent/structured_output.rs` | 558 | ~350 (recovery paths removed, typed parse stays) | Phase 1 |
+| `src/agent/runner/responses.rs` | 724 | ~600 (salvage/give-up removed, re-request stays) | Phase 1 |
+| `src/sandbox/manager.rs` | 3118 | ~3120 (typing changes, not deletion) | Phase 2 |
+| `src/sandbox/broker.rs` | 1399 | ~1400 (typing changes, not deletion) | Phase 2 |
+| `src/sandbox/traits.rs` | 373 | ~390 (SandboxError added) | Phase 2 |
+| `src/llm/error.rs` | 82 | ~110 (provider/model fields on ApiError/Unknown) | Phase 5 |
+
+### cfg gate counts
+
+| Metric | Current | Target |
+|---|---|---|
+| `#[cfg(feature = "<module-feature>")]` (raw, attribute form) | 490 simple + 13 compound = ~503 | 0 module-level (profile-level stays) |
+| `#[cfg(oxide_module_<id>)]` (aliased) | 107 (+1 compound) | ~610 (all module gates) |
+| `#[cfg(feature = "profile-*")]` (allowed raw) | 0 attribute, 11 `cfg!()` macro | unchanged |
+
+### anyhow usage in sandbox
+
+| Metric | Current | Target |
+|---|---|---|
+| `anyhow` in `src/sandbox/**/*.rs` (non-test) | ~70 uses across 3 files | 0 |
+| `SandboxError` enum | does not exist | introduced with typed variants |
 
 ## Completion Audit
 
@@ -246,6 +279,29 @@ None. All findings are evidence-backed with file:line citations from the audit.
 
 ### Phase 1 — Structured output → provider-side mode (G1)
 - Audit IDs: G1, A2.1, A2.2, A2.6, A2.7, A2.8, A2.9, A5.2, A5.3
+- П0.5 Каркас (must run BEFORE design):
+  - **Question:** does each provider accept `response_format` + `tools` simultaneously? Current code says no (`!has_tools` gate is universal). Verify per-provider with live probe.
+  - **Provider matrix (from source, see evidence doc):**
+
+    | Provider | `JsonModePolicy` | `supports_structured_output` (default) | `response_format` set when | Live-probe endpoint |
+    |---|---|---|---|---|
+    | Mistral | `Standard` | `true` | `json_mode && !has_tools` | `https://api.mistral.ai/v1/chat/completions` |
+    | ZAI/Zhipu | `Standard` | `false` (per-model override) | `json_mode && !has_tools` | `https://api.z.ai/api/coding/paas/v4/chat/completions` |
+    | OpenRouter | `None` (json_mode disabled) | `false` (per-model override in `openrouter/module.rs:84-114`) | **never** | `https://openrouter.ai/api/v1/chat/completions` |
+    | OpenCode Go | `Standard` | `false` | `json_mode && !has_tools` | `https://opencode.ai/zen/go/v1/chat/completions` |
+    | OpenCode Zen | `Standard` | `false` (inferred) | `json_mode && !has_tools` | `https://opencode.ai/zen/v1/chat/completions` |
+    | Generic | `Standard` | `true` | `json_mode && !has_tools` | (configured) |
+    | ChatGPT/Codex | n/a (Responses API) | n/a | `if json_mode && tools.is_empty()` | `https://api.openai.com/v1/responses` |
+    | Anthropic | **ignored** (`json_mode: _`) | n/a | **never** | `https://api.anthropic.com/v1/messages` |
+
+  - **Live-probe plan (П0.5):** for each provider, send minimal request with both `response_format: {type: "json_object"}` (or `json_schema`) AND `tools: [{type: "function", function: {...}}]`. Record: HTTP status, response body, whether response is valid JSON. Gate env: `RUN_LLM_E2E_CHECKS=1` + valid API key per provider. Fixtures in `tests/phase1_provider_probe.rs` (new). Expected outcomes to verify:
+    1. Mistral: docs claim `response_format` + `tools` supported. Verify.
+    2. ZAI: `zai_supports_structured_output` (`profile.rs:504`) is per-model. Verify which GLM models accept both.
+    3. OpenRouter: `JsonModePolicy::None` — verify whether per-model structured-output is available with tools.
+    4. OpenCode Go/Zen: `supports_structured_output: false` — verify if this is a real API limitation or conservative default.
+    5. ChatGPT: Responses API — verify `text.format` parameter with tools present.
+    6. Anthropic: no json_mode — verify tool-forced-schema alternative (tool with `input_schema` enforcing JSON structure).
+  - **Design decision after probes:** if provider accepts both → force structured output mode when tools present. If provider rejects both → hard-error + re-request is class-closing fallback (task fails loudly > silently accepts prose). If provider accepts tool-forced-schema only → use that.
 - Expected changes:
   - `llm/providers/chat_completions/request.rs:356` — replace `should_use_native_json_mode = json_mode && !has_tools` with mode negotiation that forces structured output when provider supports it, even with tools
   - `llm/providers/chat_completions/profile.rs` — extend `StructuredOutputPolicy` to cover tools-present case
@@ -281,6 +337,51 @@ None. All findings are evidence-backed with file:line citations from the audit.
 
 ### Phase 3 — cfg-alias migration (G3)
 - Audit IDs: G3, A1.3, A4.1
+- Mapping table (`cargo_feature` → `oxide_module_<id>` cfg alias, from `module_registry.toml`):
+
+  | `cargo_feature` | `oxide_module_<id>` cfg alias | Raw gates to migrate |
+  |---|---|---|
+  | `transport-telegram` | `oxide_module_transport_telegram` | (check) |
+  | `transport-web` | `oxide_module_transport_web` | (check) |
+  | `storage-sqlx` | `oxide_module_storage_sqlx` | (check) |
+  | `llm-chatgpt` | `oxide_module_llm_provider_openai_chatgpt` | (check) |
+  | `llm-mistral` | `oxide_module_llm_provider_mistral` | (check) |
+  | `llm-minimax` | `oxide_module_llm_provider_anthropic` | (check) |
+  | `llm-openai-base` | `oxide_module_llm_provider_openai_base` | (check) |
+  | `llm-opencode-go` | `oxide_module_llm_provider_opencode_go` + `oxide_module_llm_provider_opencode_zen` | 33 |
+  | `llm-openrouter` | `oxide_module_llm_provider_openrouter` | 14 |
+  | `tool-todos` | `oxide_module_tool_todos` | (check) |
+  | `tool-compression` | `oxide_module_tool_compression` | (check) |
+  | `tool-delegation` | `oxide_module_tool_delegation` | (check) |
+  | `tool-agents-md` | `oxide_module_tool_agents_md` | (check) |
+  | `tool-reminder` | `oxide_module_tool_reminder` | (check) |
+  | `tool-wiki-memory` | `oxide_module_tool_wiki_memory` | (check) |
+  | `tool-webfetch-md` | `oxide_module_tool_webfetch_md` + `oxide_module_tool_web_crawler` | 44 |
+  | `tool-tavily` | `oxide_module_tool_tavily` | (check) |
+  | `tool-brave-search` | `oxide_module_tool_brave_search` | (check) |
+  | `tool-crw` | `oxide_module_tool_crw` | 19 |
+  | `tool-browser-live` | `oxide_module_tool_browser_live` | (check) |
+  | `tool-sandbox-fileops` | `oxide_module_tool_sandbox_fileops` | (check) |
+  | `tool-sandbox-exec` | `oxide_module_tool_sandbox_exec` | (check) |
+  | `tool-sandbox-recreate` | `oxide_module_tool_sandbox_recreate` | (check) |
+  | `tool-file-delivery` | `oxide_module_tool_file_delivery` | (check) |
+  | `tool-media-audio` | `oxide_module_tool_media_audio` | (check) |
+  | `tool-media-image` | `oxide_module_tool_media_image` | (check) |
+  | `tool-media-video` | `oxide_module_tool_media_video` | (check) |
+  | `tool-ytdlp` | `oxide_module_tool_ytdlp` | (check) |
+  | `tool-tts-kokoro` | `oxide_module_tool_tts_kokoro` | (check) |
+  | `tool-tts-silero` | `oxide_module_tool_tts_silero` | (check) |
+  | `tool-stack-logs` | `oxide_module_tool_stack_logs` | 15 |
+  | `sandbox-backend-docker-direct` | `oxide_module_sandbox_backend_docker_direct` | 94 |
+  | `sandbox-backend-sandboxd-client` | `oxide_module_sandbox_backend_sandboxd_client` | 29 |
+  | `sandbox-daemon` | `oxide_module_sandbox_daemon_sandboxd` | (check) |
+  | `integration-mcp-jira` | `oxide_module_integration_mcp_jira` | (check) |
+  | `integration-mcp-mattermost` | `oxide_module_integration_mcp_mattermost` | (check) |
+  | `integration-ssh-mcp` | `oxide_module_integration_ssh_mcp` | 22 |
+  | `manager-control-plane` | `oxide_module_manager_control_plane` | (check) |
+
+  Note: `llm-opencode-go` and `tool-webfetch-md` map to TWO module IDs each (one Cargo feature → multiple modules). Both aliases must be used when migrating gates for these features. The exact alias name is derived from the module `id` field in `module_registry.toml` with `/` → `_`.
+
 - Expected changes:
   - mechanical find-replace: `#[cfg(feature = "tool-todos")]` → `#[cfg(oxide_module_tool_todos)]` etc., guided by `module_registry.toml` mapping
   - batch by feature name to keep diffs reviewable (one commit per feature group)
@@ -366,6 +467,13 @@ None. All findings are evidence-backed with file:line citations from the audit.
   - Commands: 5 parallel `general` subagents, 285 .rs files inspected
   - Audit IDs updated: all A* locked as baseline
   - Next: Phase 1 (structured output → provider-side mode) after user review
+
+- 2026-06-21: Phase 0 — evidence doc + baselines + П0.5 каркас
+  - Changed: `docs/goals/2026-06-21-core-fit-audit-evidence.md` created (full A1–A5 evidence with reasoning, traces, design assessments, provider profile matrix)
+  - Changed: goal doc supplemented with Current-State Baselines (file line counts, cfg gate counts, anyhow usage counts), Phase 1 П0.5 Каркас (provider matrix + live-probe plan), Phase 3 mapping table (38 feature→module-ID rows from `module_registry.toml`)
+  - Evidence: provider profiles read from `llm/providers/chat_completions/profile.rs:208-449`, `chatgpt/mod.rs:295`, `anthropic/client.rs:95`; `module_registry.toml` parsed for mapping
+  - Audit IDs updated: none (baseline supplement)
+  - Next: commit + user review
 
 ## Risks and Blockers
 
