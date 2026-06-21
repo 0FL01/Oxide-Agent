@@ -1062,7 +1062,25 @@ impl AgentSettings {
     }
 
     /// Returns the configured weighted routes for the sub-agent.
+    ///
+    /// Falls back to the main-agent routes when no explicit sub-agent model is
+    /// configured. Use [`explicit_sub_agent_model_routes`] when you need to
+    /// distinguish "explicitly configured" from "inherited/fallback".
     pub fn get_configured_sub_agent_model_routes(&self) -> Vec<ModelInfo> {
+        let routes = self.explicit_sub_agent_model_routes();
+        if !routes.is_empty() {
+            return routes;
+        }
+        self.get_configured_agent_model_routes()
+    }
+
+    /// Returns the explicitly configured sub-agent routes (env/config only).
+    ///
+    /// Unlike [`get_configured_sub_agent_model_routes`], this does NOT fall back
+    /// to the main-agent routes. The delegation provider uses this to decide
+    /// whether to use an explicit sub-agent model, an inherited parent session
+    /// model, or the global agent-route fallback.
+    pub fn explicit_sub_agent_model_routes(&self) -> Vec<ModelInfo> {
         let routes = self
             .sub_agent_model_routes
             .as_deref()
@@ -1083,7 +1101,7 @@ impl AgentSettings {
         if self.sub_agent_model_spec().is_some() {
             vec![self.resolve_execution_model(true)]
         } else {
-            self.get_configured_agent_model_routes()
+            Vec::new()
         }
     }
 
@@ -1147,6 +1165,19 @@ impl AgentSettings {
     pub fn get_sub_agent_internal_context_budget_tokens(&self) -> usize {
         resolve_internal_context_budget_tokens(
             self.get_configured_sub_agent_model().context_window_tokens,
+            self.get_agent_internal_context_budget_tokens(),
+        )
+    }
+
+    /// Returns the internal sub-agent context budget for a specific model,
+    /// using the main-agent budget as the default floor.
+    ///
+    /// This allows sub-agents that inherit the parent session's model (e.g. a
+    /// web UI model selection) to compute the context budget from the inherited
+    /// model's context window rather than the global sub-agent configuration.
+    pub fn sub_agent_internal_context_budget_for_model(&self, model: &ModelInfo) -> usize {
+        resolve_internal_context_budget_tokens(
+            model.context_window_tokens,
             self.get_agent_internal_context_budget_tokens(),
         )
     }

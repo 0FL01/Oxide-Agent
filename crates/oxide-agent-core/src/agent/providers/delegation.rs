@@ -184,6 +184,7 @@ pub struct DelegationProvider {
     settings: Arc<crate::config::AgentSettings>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
     browser_live_context: Option<BrowserLiveModuleContext>,
+    inherited_model: Option<crate::config::ModelInfo>,
     jobs: Arc<SubAgentJobStore>,
 }
 
@@ -570,6 +571,7 @@ impl DelegationProvider {
             settings,
             topic_agents_md_context: None,
             browser_live_context: None,
+            inherited_model: None,
             jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
     }
@@ -599,6 +601,14 @@ impl DelegationProvider {
     #[must_use]
     pub fn with_browser_live_context(mut self, ctx: Option<BrowserLiveModuleContext>) -> Self {
         self.browser_live_context = ctx;
+        self
+    }
+
+    /// Inherit the parent session's effective model so sub-agents use it when
+    /// no explicit sub-agent model is configured.
+    #[must_use]
+    pub fn with_inherited_model(mut self, model: Option<crate::config::ModelInfo>) -> Self {
+        self.inherited_model = model;
         self
     }
 
@@ -819,6 +829,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             wiki_memory_store: None,
             memory_scope: _memory_scope,
             progress_tx: progress_tx.cloned(),
+            inherited_model: None,
         })
     }
 
@@ -1046,7 +1057,26 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         }
     }
 
-    fn build_sub_agent_runner_config(&self, model: &crate::config::ModelInfo) -> AgentRunnerConfig {
+    /// Resolve sub-agent model routes with priority:
+    /// 1. Explicit sub-agent config (env/config)
+    /// 2. Inherited parent session model (e.g. web UI selection)
+    /// 3. Global agent routes fallback
+    fn resolve_sub_agent_model_routes(&self) -> Vec<crate::config::ModelInfo> {
+        let explicit = self.settings.explicit_sub_agent_model_routes();
+        if !explicit.is_empty() {
+            return explicit;
+        }
+        if let Some(inherited) = self.inherited_model.clone() {
+            return vec![inherited];
+        }
+        self.settings.get_configured_agent_model_routes()
+    }
+
+    fn build_sub_agent_runner_config(
+        &self,
+        model: &crate::config::ModelInfo,
+        model_routes: Vec<crate::config::ModelInfo>,
+    ) -> AgentRunnerConfig {
         AgentRunnerConfig::new(
             model.id.clone(),
             get_sub_agent_max_iterations(),
@@ -1055,7 +1085,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             model.max_output_tokens,
         )
         .with_model_provider(model.provider.clone())
-        .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
+        .with_model_routes(model_routes)
         .with_sub_agent(true)
     }
 
@@ -1075,12 +1105,14 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let task_uuid = Uuid::new_v4();
         let task_id = format!("sub-{task_uuid}");
         let name = self.unique_sub_agent_display_name(task_uuid, reserved_names);
-        let model_routes = self.settings.get_configured_sub_agent_model_routes();
+        let model_routes = self.resolve_sub_agent_model_routes();
         let model = model_routes
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_sub_agent_model());
-        let sub_agent_context_budget = self.settings.get_sub_agent_internal_context_budget_tokens();
+        let sub_agent_context_budget = self
+            .settings
+            .sub_agent_internal_context_budget_for_model(&model);
         let topic_agents_md = self.load_topic_agents_md().await?;
         let sub_session = Self::build_sub_agent_session(
             task.as_str(),
@@ -1123,7 +1155,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             todos_arc,
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
-            runner_config: self.build_sub_agent_runner_config(&model),
+            runner_config: self.build_sub_agent_runner_config(&model, model_routes),
             compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
@@ -1658,7 +1690,7 @@ mod tests {
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
     };
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{InvocationId, LlmClient};
     use crate::storage::MockStorageProvider;
     use chrono::Utc;
@@ -2347,6 +2379,77 @@ mod tests {
         assert!(report.contains(r#""status": "timeout""#));
         assert!(report.contains("Sub-agent hard timed out after 75 seconds"));
         assert!(report.contains(r#""timeout_secs": 45"#));
+    }
+
+    #[test]
+    fn sub_agent_inherits_parent_model_when_no_explicit_sub_agent_config() {
+        let settings = Arc::new(AgentSettings::default());
+        let inherited = ModelInfo {
+            id: "opencode-go/mimo-v2.5".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 8192,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_inherited_model(Some(inherited));
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/mimo-v2.5");
+        assert_eq!(routes[0].context_window_tokens, 128_000);
+    }
+
+    #[test]
+    fn sub_agent_explicit_config_overrides_inherited_parent_model() {
+        let explicit = ModelInfo {
+            id: "opencode-go/sub-model".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 64_000,
+            weight: 1,
+        };
+        let settings = Arc::new(AgentSettings {
+            sub_agent_model_routes: Some(vec![explicit]),
+            ..AgentSettings::default()
+        });
+        let inherited = ModelInfo {
+            id: "opencode-go/mimo-v2.5".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 8192,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_inherited_model(Some(inherited));
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/sub-model");
+    }
+
+    #[test]
+    fn sub_agent_falls_back_to_agent_routes_without_inherited_model() {
+        let agent_route = ModelInfo {
+            id: "opencode-go/deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 64_000,
+            weight: 1,
+        };
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![agent_route]),
+            ..AgentSettings::default()
+        });
+        // No inherited model — simulates Telegram or a session without override.
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

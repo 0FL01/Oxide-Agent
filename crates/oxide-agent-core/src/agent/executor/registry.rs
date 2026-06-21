@@ -403,6 +403,9 @@ impl AgentExecutor {
             wiki_memory_store: self.wiki_memory_store.clone(),
             memory_scope: self.session.memory_scope().clone(),
             progress_tx: progress_tx.cloned(),
+            inherited_model: self
+                .model_routes_override()
+                .and_then(|routes| routes.first().cloned()),
         })
     }
 

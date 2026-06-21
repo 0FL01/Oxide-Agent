@@ -234,6 +234,7 @@ pub struct ToolModuleContext {
     wiki_memory_store: Option<WikiStore>,
     memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
+    inherited_model: Option<crate::config::ModelInfo>,
 }
 
 /// Constructor arguments for [`ToolModuleContext`].
@@ -264,6 +265,11 @@ pub struct ToolModuleContextParts {
     pub memory_scope: AgentMemoryScope,
     /// Optional progress sender.
     pub progress_tx: Option<Sender<AgentEvent>>,
+    /// Parent session's effective model, inherited by sub-agents when no
+    /// explicit sub-agent model is configured. `None` when no per-session
+    /// override is active (e.g. Telegram, or web sessions using the bootstrap
+    /// default).
+    pub inherited_model: Option<crate::config::ModelInfo>,
 }
 
 impl ToolModuleContext {
@@ -284,6 +290,7 @@ impl ToolModuleContext {
             wiki_memory_store: parts.wiki_memory_store,
             memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
+            inherited_model: parts.inherited_model,
         }
     }
 
@@ -370,6 +377,17 @@ impl ToolModuleContext {
     #[must_use]
     pub fn progress_tx(&self) -> Option<Sender<AgentEvent>> {
         self.progress_tx.clone()
+    }
+
+    /// Parent session's effective model for sub-agent inheritance.
+    ///
+    /// Returns the per-execution model override (e.g. from a web UI model
+    /// selection) that sub-agents should inherit when no explicit sub-agent
+    /// model is configured. `None` when no override is active.
+    #[cfg_attr(not(oxide_module_tool_delegation), allow(dead_code))]
+    #[must_use]
+    pub fn inherited_model(&self) -> Option<crate::config::ModelInfo> {
+        self.inherited_model.clone()
     }
 }
 
@@ -516,7 +534,7 @@ impl DelegationToolModule {
         #[cfg(oxide_module_tool_browser_live)]
         let provider = provider.with_browser_live_context(ctx.browser_live_context());
 
-        provider
+        provider.with_inherited_model(ctx.inherited_model())
     }
 }
 
