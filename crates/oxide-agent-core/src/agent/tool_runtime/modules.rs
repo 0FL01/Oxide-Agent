@@ -23,7 +23,6 @@ use crate::llm::ToolDefinition;
 #[cfg(oxide_module_tool_browser_live)]
 use crate::sandbox::SandboxFileOps;
 use crate::sandbox::SandboxScope;
-#[cfg(oxide_module_tool_webfetch_md)]
 use async_trait::async_trait;
 #[cfg(oxide_module_tool_webfetch_md)]
 use serde::Deserialize;
@@ -164,6 +163,19 @@ impl SshMcpModuleContext {
             config,
         }
     }
+}
+
+/// RAII cleanup contract for browser session lifecycle.
+///
+/// Implemented by `BrowserLiveProvider` when the browser-live module is
+/// compiled. Held by sub-agent execution to ensure all browser sessions
+/// are closed when the sub-agent ends (success, timeout, cancel, or error),
+/// preventing Chromium process leaks at the sidecar.
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
+#[async_trait]
+pub trait BrowserSessionCleanup: Send + Sync {
+    /// Close all browser sessions tracked by this provider.
+    async fn close_all_sessions(&self);
 }
 
 /// Context required by browser-live tools: durable storage for screenshot
@@ -398,6 +410,16 @@ impl BrowserLiveToolModule {
         )
         .ok()
     }
+
+    /// Build a shared browser-live provider wrapped in `Arc`.
+    ///
+    /// Unlike `tool_runtime_executors`, this exposes the `Arc<BrowserLiveProvider>`
+    /// so callers (e.g. sub-agent delegation) can hold it for RAII cleanup via
+    /// [`BrowserSessionCleanup::close_all_sessions`].
+    #[must_use]
+    pub fn shared_provider(&self, ctx: &ToolModuleContext) -> Option<Arc<BrowserLiveProvider>> {
+        self.provider(ctx).map(Arc::new)
+    }
 }
 
 #[cfg(oxide_module_tool_browser_live)]
@@ -490,6 +512,9 @@ impl DelegationToolModule {
         } else {
             provider
         };
+
+        #[cfg(oxide_module_tool_browser_live)]
+        let provider = provider.with_browser_live_context(ctx.browser_live_context());
 
         provider
     }

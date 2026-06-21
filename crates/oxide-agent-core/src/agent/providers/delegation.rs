@@ -18,8 +18,9 @@ use crate::agent::runner::{
 };
 use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
-    OutputNormalizer, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
-    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolExecutor,
+    ToolInvocation, ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
+    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
     AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
@@ -43,6 +44,8 @@ use uuid::Uuid;
 
 #[cfg(oxide_module_tool_brave_search)]
 use crate::agent::tool_runtime::BraveSearchToolModule;
+#[cfg(oxide_module_tool_browser_live)]
+use crate::agent::tool_runtime::BrowserLiveToolModule;
 #[cfg(oxide_module_tool_crw)]
 use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(oxide_module_tool_sandbox_exec)]
@@ -57,6 +60,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     oxide_module_tool_sandbox_exec,
     oxide_module_tool_sandbox_fileops,
     oxide_module_tool_brave_search,
+    oxide_module_tool_browser_live,
     oxide_module_tool_crw,
     oxide_module_tool_tavily,
     oxide_module_tool_todos,
@@ -179,6 +183,7 @@ pub struct DelegationProvider {
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
+    browser_live_context: Option<BrowserLiveModuleContext>,
     jobs: Arc<SubAgentJobStore>,
 }
 
@@ -204,6 +209,7 @@ struct PreparedSubAgentExecution {
     compaction_controller: CompactionController,
     progress_tx: Option<mpsc::Sender<AgentEvent>>,
     progress_relay_task: Option<JoinHandle<()>>,
+    browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -563,6 +569,7 @@ impl DelegationProvider {
             sandbox_scope: sandbox_scope.into(),
             settings,
             topic_agents_md_context: None,
+            browser_live_context: None,
             jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
     }
@@ -583,6 +590,18 @@ impl DelegationProvider {
                 topic_id,
             });
         }
+        self
+    }
+
+    /// Inherit the parent's browser-live context so sub-agents can use
+    /// browser tools with the parent's artifact storage scope.
+    #[cfg(oxide_module_tool_browser_live)]
+    #[must_use]
+    pub fn with_browser_live_context(
+        mut self,
+        ctx: Option<BrowserLiveModuleContext>,
+    ) -> Self {
+        self.browser_live_context = ctx;
         self
     }
 
@@ -699,7 +718,10 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
         memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Vec<Arc<dyn ToolExecutor>> {
+    ) -> (
+        Vec<Arc<dyn ToolExecutor>>,
+        Option<Arc<dyn BrowserSessionCleanup>>,
+    ) {
         let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
         let module_ctx =
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
@@ -708,6 +730,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             oxide_module_tool_sandbox_exec,
             oxide_module_tool_sandbox_fileops,
             oxide_module_tool_brave_search,
+            oxide_module_tool_browser_live,
             oxide_module_tool_crw,
             oxide_module_tool_tavily,
             oxide_module_tool_todos,
@@ -743,9 +766,33 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(oxide_module_tool_crw)]
         self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
 
+        #[cfg(oxide_module_tool_browser_live)]
+        let browser_cleanup = self.push_sub_agent_browser_module(&mut executors, &module_ctx);
+
+        #[cfg(not(oxide_module_tool_browser_live))]
+        let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
+
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
-        executors
+        (executors, browser_cleanup)
+    }
+
+    /// Register browser-live tools for a sub-agent and return the shared
+    /// provider `Arc` for RAII cleanup.
+    #[cfg(oxide_module_tool_browser_live)]
+    fn push_sub_agent_browser_module(
+        &self,
+        executors: &mut Vec<Arc<dyn ToolExecutor>>,
+        ctx: &ToolModuleContext,
+    ) -> Option<Arc<dyn BrowserSessionCleanup>> {
+        let module = BrowserLiveToolModule;
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            return None;
+        }
+        let provider = module.shared_provider(ctx)?;
+        executors.extend(provider.tool_runtime_executors());
+        Some(provider)
     }
 
     fn build_sub_agent_tool_module_context(
@@ -769,7 +816,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             agents_md_context: None,
             manager_control_plane_context: None,
             ssh_mcp_context: None,
-            browser_live_context: None,
+            browser_live_context: self.browser_live_context.clone(),
             reminder_context: None,
             wiki_memory_store: None,
             memory_scope: _memory_scope,
@@ -1046,7 +1093,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
             spawn_sub_agent_progress_relay(progress_tx, task_id.clone(), name.clone());
-        let executors = self.build_sub_agent_tool_runtime_executors(
+        let (executors, browser_cleanup) = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
             AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
             sub_agent_progress_tx.as_ref(),
@@ -1082,6 +1129,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
+            browser_cleanup,
         })
     }
 
@@ -1369,6 +1417,13 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         };
         let status = Self::status_for_timed_run_result(&outcome);
         Self::finish_sub_agent_progress_relay(&mut prepared).await;
+
+        // RAII cleanup: close any browser sessions the sub-agent left open.
+        // Runs on every outcome (success, timeout, cancel, error) to prevent
+        // Chromium process leaks at the sidecar.
+        if let Some(cleanup) = &prepared.browser_cleanup {
+            cleanup.close_all_sessions().await;
+        }
 
         let output = Self::shape_sub_agent_terminal_output_for_settings(
             &settings,
@@ -2206,7 +2261,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
+        let (executors, _browser_cleanup) =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
@@ -2222,7 +2277,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
+        let (executors, _browser_cleanup) =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()

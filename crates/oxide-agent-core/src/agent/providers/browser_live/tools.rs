@@ -16,7 +16,7 @@ use super::verification::{
 };
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
-    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
+    BrowserSessionCleanup, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
     ToolOutputImageAttachment, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::sandbox::SandboxFileOps;
@@ -201,6 +201,59 @@ impl BrowserLiveProvider {
             }) as Arc<dyn ToolExecutor>
         })
         .collect()
+    }
+
+    /// Close all browser sessions tracked by this provider (RAII cleanup).
+    ///
+    /// Called when an agent session ends (e.g. sub-agent timeout/cancel) to
+    /// prevent Chromium process leaks. Best-effort: individual close failures
+    /// are logged but do not abort the remaining cleanup.
+    pub async fn close_all_sessions(&self) {
+        let session_ids: Vec<String> =
+            self.states.lock().await.keys().cloned().collect();
+        if session_ids.is_empty() {
+            return;
+        }
+        tracing::info!(
+            session_count = session_ids.len(),
+            "RAII cleanup: closing all browser sessions"
+        );
+        for session_id in &session_ids {
+            let key = match IdempotencyKey::new(format!("raii-cleanup:{session_id}")) {
+                Ok(k) => k,
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %error,
+                        "RAII cleanup: skipping session with invalid idempotency key"
+                    );
+                    continue;
+                }
+            };
+            let request = CloseSessionRequest {
+                purge_profile: true,
+                keep_artifacts: true,
+                reason: CloseReason::Cancelled,
+            };
+            match self
+                .measure_sidecar(self.sidecar.close_session(session_id, &request, &key))
+                .await
+            {
+                Ok(response) => tracing::info!(
+                    session_id = %session_id,
+                    closed = response.closed,
+                    profile_purged = response.profile_purged,
+                    "RAII cleanup closed browser session"
+                ),
+                Err(error) => tracing::warn!(
+                    session_id = %session_id,
+                    error = %error,
+                    "RAII cleanup failed to close browser session"
+                ),
+            }
+        }
+        self.states.lock().await.clear();
+        tracing::info!("RAII browser session cleanup complete");
     }
 
     async fn emit_progress(&self, summary: impl Into<String>) {
@@ -995,6 +1048,13 @@ impl BrowserLiveProvider {
             "sha256": sha256,
             "action_seq": action_seq,
         }))
+    }
+}
+
+#[async_trait]
+impl BrowserSessionCleanup for BrowserLiveProvider {
+    async fn close_all_sessions(&self) {
+        BrowserLiveProvider::close_all_sessions(self).await;
     }
 }
 
