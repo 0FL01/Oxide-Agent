@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    SessionDetail, SessionSummary, TaskDetail, TaskStatus, TaskSummary,
+    PersistedTaskEvent, SessionDetail, SessionSummary, TaskDetail, TaskEventKind, TaskStatus,
+    TaskSummary,
 };
+use serde_json::Value;
 
 pub(super) fn artifact_image_url(session_id: &str, task_id: &str, artifact_uri: &str) -> String {
     let path = artifact_uri
@@ -214,6 +216,53 @@ pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummar
             .then_with(|| a.task_id.cmp(&b.task_id))
     });
 }
+
+/// Derive the pinned Activity todos snapshot from per-task persisted events.
+///
+/// Todos are a durable per-task artifact: `TodosUpdated` events are persisted
+/// for every web task and survive page reloads. Building the pinned todos card
+/// from events (instead of the single shared global `progress` signal) keeps it
+/// correct for any selected task — including terminal tasks after reload,
+/// where `active_task` is `None` and the previous `live_owner` gate hid the
+/// card — and avoids cross-task contamination from `progress`.
+///
+/// `task_events` are expected to already be filtered to a single task and
+/// sorted chronologically (the caller in `ActivityDrawer` does this).
+///
+/// Falls back to the last `write_todos` tool-call input when no `TodosUpdated`
+/// event is present (e.g. the task ended before the first update was emitted).
+pub(super) fn latest_pinned_todos(task_events: &[PersistedTaskEvent]) -> Option<Value> {
+    // Primary: last TodosUpdated event carries the structured TodoList.
+    let from_todos_updated = task_events
+        .iter()
+        .rev()
+        .find(|event| event.kind == TaskEventKind::TodosUpdated)
+        .and_then(|event| event.payload.get("todos").cloned());
+    if from_todos_updated.is_some() {
+        return from_todos_updated;
+    }
+    // Fallback: last write_todos tool-call input_preview (JSON string).
+    task_events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.kind == TaskEventKind::ToolCall
+                && event
+                    .payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| name == "write_todos")
+        })
+        .and_then(|event| {
+            event
+                .payload
+                .get("input_preview")
+                .and_then(|v| v.as_str())
+                .and_then(|input| serde_json::from_str::<Value>(input).ok())
+        })
+        .and_then(|input| input.get("todos").cloned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +372,130 @@ mod tests {
             &visible
         ));
         assert!(should_render_global_activity_chip(Some("task-3"), &visible));
+    }
+
+    fn task_event(seq: u64, kind: TaskEventKind, payload: Value) -> PersistedTaskEvent {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "user_id": 1,
+            "seq": seq,
+            "created_at": "2026-06-21T00:00:00Z",
+            "kind": kind,
+            "summary": "test",
+            "payload": payload,
+            "redacted": false,
+            "truncated": false,
+        }))
+        .expect("event JSON is valid")
+    }
+
+    fn todos_updated_event(seq: u64, items: &[(&str, &str)]) -> PersistedTaskEvent {
+        let items: Vec<Value> = items
+            .iter()
+            .map(|(desc, status)| serde_json::json!({ "description": desc, "status": status }))
+            .collect();
+        task_event(
+            seq,
+            TaskEventKind::TodosUpdated,
+            serde_json::json!({ "source": "root", "todos": { "items": items } }),
+        )
+    }
+
+    fn write_todos_call_event(seq: u64, items: &[(&str, &str)]) -> PersistedTaskEvent {
+        let items: Vec<Value> = items
+            .iter()
+            .map(|(desc, status)| serde_json::json!({ "description": desc, "status": status }))
+            .collect();
+        let input_preview = serde_json::to_string(&serde_json::json!({ "todos": items }))
+            .expect("input_preview serializes");
+        task_event(
+            seq,
+            TaskEventKind::ToolCall,
+            serde_json::json!({
+                "id": format!("call_{seq}"),
+                "source": "root",
+                "name": "write_todos",
+                "input_preview": input_preview,
+                "command_preview": null,
+            }),
+        )
+    }
+
+    #[test]
+    fn latest_pinned_todos_returns_last_todos_updated() {
+        let events = vec![
+            todos_updated_event(1, &[("First", "completed"), ("Second", "in_progress")]),
+            todos_updated_event(2, &[("First", "completed"), ("Second", "completed")]),
+        ];
+        let todos = latest_pinned_todos(&events).expect("todos present");
+        let items = todos
+            .get("items")
+            .and_then(Value::as_array)
+            .expect("items array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["status"], "completed");
+    }
+
+    #[test]
+    fn latest_pinned_todos_falls_back_to_write_todos_call_input() {
+        let events = vec![
+            task_event(
+                1,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "thinking" }),
+            ),
+            write_todos_call_event(2, &[("Research", "in_progress")]),
+        ];
+        let todos = latest_pinned_todos(&events).expect("fallback todos present");
+        let items = todos.as_array().expect("todos is array from input_preview");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["description"], "Research");
+    }
+
+    #[test]
+    fn latest_pinned_todos_returns_none_when_no_todo_events() {
+        let events = vec![
+            task_event(
+                1,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "thinking" }),
+            ),
+            task_event(
+                2,
+                TaskEventKind::ToolCall,
+                serde_json::json!({ "name": "execute_command", "input_preview": "ls" }),
+            ),
+        ];
+        assert!(latest_pinned_todos(&events).is_none());
+    }
+
+    #[test]
+    fn latest_pinned_todos_returns_empty_todolist_when_last_update_has_no_items() {
+        let events = vec![todos_updated_event(1, &[])];
+        let todos = latest_pinned_todos(&events).expect("todos present");
+        let items = todos
+            .get("items")
+            .and_then(Value::as_array)
+            .expect("items array");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn latest_pinned_todos_ignores_non_write_todos_tool_calls_in_fallback() {
+        let events = vec![
+            task_event(
+                1,
+                TaskEventKind::ToolCall,
+                serde_json::json!({ "name": "execute_command", "input_preview": "{\"todos\":[]}" }),
+            ),
+            task_event(
+                2,
+                TaskEventKind::ToolResult,
+                serde_json::json!({ "name": "execute_command" }),
+            ),
+        ];
+        assert!(latest_pinned_todos(&events).is_none());
     }
 }

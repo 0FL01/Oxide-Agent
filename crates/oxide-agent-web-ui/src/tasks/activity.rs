@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
 use super::state::{
-    ActivityTiming, activity_elapsed_seconds, format_duration, should_render_global_activity_chip,
+    ActivityTiming, activity_elapsed_seconds, format_duration, latest_pinned_todos,
+    should_render_global_activity_chip,
 };
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
@@ -166,14 +167,7 @@ pub(super) fn ActivityDrawer(
                         .collect();
                     let task_is_terminal = activity_task_status(&task_id, active_task, tasks)
                         .is_some_and(|status| status.is_terminal());
-                    let live_owner = active_task
-                        .get()
-                        .is_some_and(|task| task.task_id == task_id);
-                    let todos = if live_owner {
-                        progress.get().and_then(|snapshot| snapshot.current_todos)
-                    } else {
-                        None
-                    };
+                    let todos = latest_pinned_todos(&task_events);
                     let items = group_activity_events(task_events, task_is_terminal);
                     if items.is_empty() && todos.is_none() {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
