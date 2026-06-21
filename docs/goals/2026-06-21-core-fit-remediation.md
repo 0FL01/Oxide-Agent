@@ -281,18 +281,19 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 - Audit IDs: G1, A2.1, A2.2, A2.6, A2.7, A2.8, A2.9, A5.2, A5.3
 - П0.5 Каркас (must run BEFORE design):
   - **Question:** does each provider accept `response_format` + `tools` simultaneously? Current code says no (`!has_tools` gate is universal). Verify per-provider with live probe.
-  - **Provider matrix (from source, see evidence doc):**
+  - **Full provider matrix:** see `docs/goals/2026-06-21-core-fit-audit-evidence.md` § "Provider Profile Matrix" (8 providers, `JsonModePolicy` / `StructuredOutputPolicy` / `supports_structured_output` / `response_format` set-when / source file:line)
+  - **Live-probe endpoints (new info, not in evidence doc):**
 
-    | Provider | `JsonModePolicy` | `supports_structured_output` (default) | `response_format` set when | Live-probe endpoint |
-    |---|---|---|---|---|
-    | Mistral | `Standard` | `true` | `json_mode && !has_tools` | `https://api.mistral.ai/v1/chat/completions` |
-    | ZAI/Zhipu | `Standard` | `false` (per-model override) | `json_mode && !has_tools` | `https://api.z.ai/api/coding/paas/v4/chat/completions` |
-    | OpenRouter | `None` (json_mode disabled) | `false` (per-model override in `openrouter/module.rs:84-114`) | **never** | `https://openrouter.ai/api/v1/chat/completions` |
-    | OpenCode Go | `Standard` | `false` | `json_mode && !has_tools` | `https://opencode.ai/zen/go/v1/chat/completions` |
-    | OpenCode Zen | `Standard` | `false` (inferred) | `json_mode && !has_tools` | `https://opencode.ai/zen/v1/chat/completions` |
-    | Generic | `Standard` | `true` | `json_mode && !has_tools` | (configured) |
-    | ChatGPT/Codex | n/a (Responses API) | n/a | `if json_mode && tools.is_empty()` | `https://api.openai.com/v1/responses` |
-    | Anthropic | **ignored** (`json_mode: _`) | n/a | **never** | `https://api.anthropic.com/v1/messages` |
+    | Provider | Live-probe endpoint |
+    |---|---|
+    | Mistral | `https://api.mistral.ai/v1/chat/completions` |
+    | ZAI/Zhipu | `https://api.z.ai/api/coding/paas/v4/chat/completions` |
+    | OpenRouter | `https://openrouter.ai/api/v1/chat/completions` |
+    | OpenCode Go | `https://opencode.ai/zen/go/v1/chat/completions` |
+    | OpenCode Zen | `https://opencode.ai/zen/v1/chat/completions` |
+    | Generic | (configured) |
+    | ChatGPT/Codex | `https://api.openai.com/v1/responses` |
+    | Anthropic | `https://api.anthropic.com/v1/messages` |
 
   - **Live-probe plan (П0.5):** for each provider, send minimal request with both `response_format: {type: "json_object"}` (or `json_schema`) AND `tools: [{type: "function", function: {...}}]`. Record: HTTP status, response body, whether response is valid JSON. Gate env: `RUN_LLM_E2E_CHECKS=1` + valid API key per provider. Fixtures in `tests/phase1_provider_probe.rs` (new). Expected outcomes to verify:
     1. Mistral: docs claim `response_format` + `tools` supported. Verify.
