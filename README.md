@@ -764,7 +764,6 @@ page. Full setup details and warnings are in
 - **reqwest** (0.12/0.13) - HTTP client with multipart and streaming support
 - **serde_json** (1.0) - JSON serialization/deserialization
 - **tiktoken-rs** (0.9) - token counting for various models
-- **claudius** (0.19) - MiniMax Anthropic SDK
 - **rmcp** (1.2) - MCP client for Jira/SSH/Mattermost
 - **moka** (0.12) - high-performance cache with TTL
 - **chrono** (0.4) - date and time handling
