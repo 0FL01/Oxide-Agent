@@ -177,6 +177,15 @@ impl FakeBrowserSidecar {
         self.state().crash_next_request = true;
     }
 
+    /// Count sessions that have not been closed.
+    pub(crate) fn open_session_count(&self) -> usize {
+        self.state()
+            .sessions
+            .values()
+            .filter(|session| !session.closed)
+            .count()
+    }
+
     fn state(&self) -> MutexGuard<'_, FakeState> {
         self.state.lock().expect("fake sidecar state lock")
     }

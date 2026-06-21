@@ -664,3 +664,77 @@ pub fn safe(value: &str) -> String {
         sanitized
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_browser_contracts::{BrowserProfile, CloseReason, CreateSessionRequest, Viewport};
+
+    #[tokio::test]
+    async fn create_rejects_at_capacity_without_launching_chromium() {
+        let manager = SessionManager::new(None, None).with_max_sessions(0);
+        let req = CreateSessionRequest {
+            task_id: "test-cap".to_string(),
+            profile: BrowserProfile::Ephemeral,
+            viewport: Viewport::default(),
+            timezone: None,
+            locale: None,
+            record_console: false,
+            record_network: false,
+            allow_downloads: false,
+            allow_uploads: false,
+            start_url: None,
+        };
+        let response = manager.create(req).await;
+        assert!(!response.ok);
+        let error = response.error.expect("error body should be present");
+        assert_eq!(error.code, "sidecar_at_capacity");
+        assert!(error.retryable, "capacity error should be retryable");
+        assert!(
+            error.message.contains("0/0"),
+            "error message should show current/max: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn create_allows_when_under_cap() {
+        // max_sessions=1 but 0 current → should NOT reject at cap.
+        // Session creation may succeed (if Chromium is available) or fail
+        // for other reasons — either way, the failure must NOT be
+        // sidecar_at_capacity.
+        let manager = SessionManager::new(None, None).with_max_sessions(1);
+        let req = CreateSessionRequest {
+            task_id: "test-cap-ok".to_string(),
+            profile: BrowserProfile::Ephemeral,
+            viewport: Viewport::default(),
+            timezone: None,
+            locale: None,
+            record_console: false,
+            record_network: false,
+            allow_downloads: false,
+            allow_uploads: false,
+            start_url: None,
+        };
+        let response = manager.create(req).await;
+        if response.ok {
+            // Session was created — clean it up.
+            manager
+                .close(
+                    &response.session_id,
+                    CloseSessionRequest {
+                        purge_profile: true,
+                        keep_artifacts: true,
+                        reason: CloseReason::Done,
+                    },
+                )
+                .await;
+        } else {
+            let error = response.error.expect("error body should be present");
+            assert_ne!(
+                error.code, "sidecar_at_capacity",
+                "should not reject at capacity when under cap"
+            );
+        }
+    }
+}

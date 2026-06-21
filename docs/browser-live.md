@@ -333,6 +333,45 @@ Tool output includes `post_observation_diagnostics` with:
 - The agent is allowed to submit forms, type secrets, and interact with any
   page it can reach. Review agent actions before trusting them on sensitive sites.
 
+## Sub-agent access
+
+Browser tools are available to sub-agents when the parent agent explicitly
+requests them in the `allowed_tools` whitelist of a `spawn_sub_agents` call.
+Sub-agents inherit the parent's `browser_live_context` (storage, user ID,
+context key) so screenshot artifacts are stored under the parent's session
+scope, not the ephemeral sub-agent scope.
+
+When browser is disabled (feature not compiled or `BROWSER_AGENT_ENABLED=false`),
+no browser tools are registered for sub-agents and the context is `None` — zero
+behavioral change.
+
+## RAII session cleanup
+
+Browser sessions are closed automatically when an agent run ends, regardless of
+the outcome (success, timeout, cancel, or error). This prevents Chromium process
+leaks at the sidecar.
+
+- **Parent agent**: after `run_with_timeout` returns, any sessions left open are
+  closed via `close_all_sessions` on the provider. The `browser_close` tool is
+  an early-release optimization, not the only cleanup path.
+- **Sub-agent**: after the sub-agent's `run_with_timeout` returns, the same
+  cleanup runs. This covers the common leak scenario: sub-agent opens a browser
+  session, then times out or is cancelled before calling `browser_close`.
+
+## Sidecar session cap
+
+The sidecar enforces a maximum number of concurrent browser sessions to prevent
+OOM under load. When the cap is reached, new `browser_start` calls are rejected
+with a `sidecar_at_capacity` error. The agent receives a human-readable message
+advising it to close an existing session before retrying.
+
+Configuration:
+
+- `BROWSER_AGENT_SIDECAR_MAX_SESSIONS` — env var on the sidecar binary (default
+  `8`). Set in `docker-compose.web.yml` as `BROWSER_AGENT_SIDECAR_MAX_SESSIONS`.
+- `None` (unset via `SessionManager::default()`) means unlimited — backward
+  compatible for tests.
+
 ## Troubleshooting
 
 - **App fails to start with `BROWSER_AGENT_ENABLED=true requires BROWSER_AGENT_SIDECAR_TOKEN`**
@@ -367,6 +406,12 @@ Tool output includes `post_observation_diagnostics` with:
   value setters and framework-visible events (`focus`, `focusin`, `beforeinput`,
   `input`, `change`, `keyup`). If an input still fails, check the selector and
   the post-action DOM snapshot diagnostics.
+
+- **`browser_start` fails with `sidecar_at_capacity`**
+  The sidecar has reached its maximum concurrent session count
+  (`BROWSER_AGENT_SIDECAR_MAX_SESSIONS`, default 8). Close an existing browser
+  session with `browser_close` before retrying, or increase the cap in the
+  sidecar environment.
 
 - **DOM value extraction returns `found: false`**
   Check `attribute_source` in the diagnostics. The selector may not match, or

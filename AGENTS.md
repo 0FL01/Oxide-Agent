@@ -82,7 +82,7 @@ Default branch: `dev`.
 ### Hooks and sub-agents
 - Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) are registered unconditionally but gated internally by `HookAccessPolicy` flags; sub-agents are short-circuited. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
 - Loop detection has content, tool-sequence, and LLM layers; do not bypass in runner changes.
-- Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`.
+- Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`. Browser tools available via `allowed_tools` whitelist with RAII cleanup on run end.
 - Do not reintroduce embedding-selected skills.
 
 ### Prompt cache hit
@@ -109,6 +109,9 @@ Default branch: `dev`.
 - Provider in `agent/providers/browser_live/`; sidecar binary in `oxide-browser-sidecar`, shared REST types in `oxide-browser-contracts`.
 - Tools: `browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over a CDP WebSocket to a headless Chromium.
 - Runs in Yolo mode (agent may type secrets and submit forms); disabled by default via `BROWSER_AGENT_ENABLED`. Details: `docs/browser-live.md`.
+- Available to sub-agents via `allowed_tools` whitelist in `spawn_sub_agents`; inherits parent's `browser_live_context` for artifact storage scope.
+- RAII session cleanup: `close_all_sessions` runs after every agent run end (parent and sub-agent) on any outcome (success/timeout/cancel/error) to prevent Chromium process leaks.
+- Sidecar session cap: `BROWSER_AGENT_SIDECAR_MAX_SESSIONS` (default 8) rejects new sessions at capacity with `sidecar_at_capacity` error.
 
 ### Storage and LLM
 - Storage facade and SQLx/Postgres backend in `storage/`; context-scoped APIs for transport state.

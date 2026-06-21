@@ -3028,4 +3028,58 @@ mod tests {
             started_at: Some(Utc::now()),
         }
     }
+
+    #[tokio::test]
+    async fn close_all_sessions_drains_every_open_session() {
+        let fake = FakeBrowserSidecar::new();
+        let fake_clone = fake.clone();
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+            None,
+            0,
+            "test".to_string(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+
+        // Start two sessions.
+        let r1 = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"t1"}"#).await;
+        let r2 = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"t2"}"#).await;
+        let sid1 = r1.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("sid")
+            .to_string();
+        let sid2 = r2.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("sid")
+            .to_string();
+        assert_ne!(sid1, sid2, "sessions should be distinct");
+        assert_eq!(fake_clone.open_session_count(), 2);
+
+        // RAII cleanup — should close both sessions.
+        provider.close_all_sessions().await;
+        assert_eq!(
+            fake_clone.open_session_count(),
+            0,
+            "all sessions should be closed after close_all_sessions"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_all_sessions_is_noop_when_no_sessions_exist() {
+        let fake = FakeBrowserSidecar::new();
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+            None,
+            0,
+            "test".to_string(),
+            None,
+        ));
+        // Should not panic or send any sidecar requests.
+        provider.close_all_sessions().await;
+    }
 }
