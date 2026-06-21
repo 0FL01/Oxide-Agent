@@ -80,13 +80,13 @@ pub(super) fn webfetch_failure_payload(
     error: &anyhow::Error,
 ) -> serde_json::Value {
     let error_kind = webfetch_error_kind(error);
-    let host = args.and_then(|args| webfetch_host_from_url(&args.url));
+    let host = args.and_then(|args| args.url.as_deref().and_then(webfetch_host_from_url));
     let retryable = webfetch_error_retryable(error_kind, error);
 
     json!({
         "provider": "web_markdown",
         "kind": "fetch",
-        "url": args.map(|args| args.url.as_str()),
+        "url": args.and_then(|args| args.url.as_deref()),
         "host": host,
         "error_kind": error_kind,
         "status_code": webfetch_http_status_code(error),
@@ -102,7 +102,9 @@ pub(super) fn webfetch_failure_message(
 ) -> String {
     let error_kind = webfetch_error_kind(error);
     if error_kind == "anti_bot" {
-        if let Some(host) = args.and_then(|args| webfetch_host_from_url(&args.url)) {
+        if let Some(host) =
+            args.and_then(|args| args.url.as_deref().and_then(webfetch_host_from_url))
+        {
             return format!(
                 "web_markdown blocked by anti-bot protection at {host}; this lightweight fetcher cannot solve JS/CAPTCHA/PoW challenges. Do not retry this host in this task; use another source."
             );

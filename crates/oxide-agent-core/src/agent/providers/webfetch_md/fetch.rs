@@ -16,10 +16,11 @@ use super::reddit::{
 };
 use super::url::{parse_web_url, reject_media_url, reject_unsafe_url};
 use super::{
-    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_OFFSET_CHARS,
-    MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECS,
-    MIN_OUTPUT_CHARS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
+    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_RESPONSE_BYTES,
+    MAX_TIMEOUT_SECS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
 };
+#[cfg(test)]
+use super::{MAX_OFFSET_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MIN_OUTPUT_CHARS};
 
 struct FetchResult {
     final_url: Url,
@@ -60,6 +61,7 @@ struct FetchOptions<'a> {
 }
 
 impl WebFetchMdProvider {
+    #[cfg(test)]
     pub(crate) async fn fetch_markdown(
         &self,
         args: WebMarkdownArgs,
@@ -82,7 +84,13 @@ impl WebFetchMdProvider {
         args: WebMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<FetchedMarkdownDocument> {
-        let url = parse_web_url(&args.url)?;
+        let url_text = args
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .context("web_markdown requires url unless read is \"next\"")?;
+        let url = parse_web_url(url_text)?;
         reject_media_url(&url)?;
         reject_unsafe_url(&url)?;
 
@@ -1199,6 +1207,7 @@ pub(crate) fn format_markdown_document_output(
     output
 }
 
+#[cfg(test)]
 fn resolve_output_window(args: &WebMarkdownArgs) -> OutputWindow {
     OutputWindow {
         max_chars: args

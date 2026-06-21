@@ -236,6 +236,48 @@ async fn typed_runtime_executor_fetches_web_markdown() {
     assert!(stdout.contains("Readable page."));
 }
 
+#[tokio::test]
+async fn typed_runtime_executor_continues_web_markdown_without_offset() {
+    let body = Box::leak("a".repeat(1500).into_boxed_str());
+    let addr = serve_http_once(body, "text/plain; charset=utf-8").await;
+    let client = reqwest::Client::builder()
+        .resolve("example.test", addr)
+        .build()
+        .expect("test client");
+    let provider = Arc::new(WebFetchMdProvider::with_client(client));
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .find(|executor| executor.name().as_str() == TOOL_WEB_MARKDOWN)
+        .expect("typed web_markdown executor registered");
+
+    let first = executor
+        .execute(runtime_invocation(
+            r#"{"url":"http://example.test/long","timeout_secs":5,"max_chars":1000}"#,
+        ))
+        .await
+        .expect("first web_markdown succeeds");
+    assert_eq!(first.status, ToolOutputStatus::Success);
+    let first_payload = first.structured_payload.as_ref().expect("first payload");
+    assert_eq!(first_payload["truncated"], true);
+    assert_eq!(first_payload["continue_with"]["args"]["read"], "next");
+
+    let next = executor
+        .execute(runtime_invocation(r#"{"read":"next","max_chars":1000}"#))
+        .await
+        .expect("next web_markdown succeeds from cache");
+
+    assert_eq!(next.status, ToolOutputStatus::Success);
+    let stdout = next.stdout.text.as_deref().expect("stdout text");
+    assert!(stdout.contains("Offset-Chars: 1000"));
+    assert!(stdout.contains("Returned-Chars: 500"));
+    assert!(stdout.contains("Truncated: no"));
+    let next_payload = next.structured_payload.as_ref().expect("next payload");
+    assert_eq!(next_payload["range"]["start_chars"], 1000);
+    assert_eq!(next_payload["returned_chars"], 500);
+    assert_eq!(next_payload["truncated"], false);
+}
+
 #[test]
 fn converts_html_to_markdown_and_skips_chrome_tags() {
     let markdown = html_to_markdown(
@@ -429,10 +471,11 @@ async fn fetch_markdown_applies_max_chars_and_offset_window() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://example.test/long.txt".to_string(),
+                url: Some("http://example.test/long.txt".to_string()),
                 timeout_secs: Some(5),
                 max_chars: Some(10),
                 offset_chars: Some(10),
+                ..WebMarkdownArgs::default()
             },
             None,
         )
@@ -461,10 +504,11 @@ async fn fetch_markdown_reports_empty_window_when_offset_is_past_end() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://example.test/short.txt".to_string(),
+                url: Some("http://example.test/short.txt".to_string()),
                 timeout_secs: Some(5),
                 max_chars: Some(8_000),
                 offset_chars: Some(50),
+                ..WebMarkdownArgs::default()
             },
             None,
         )
@@ -698,7 +742,7 @@ async fn fetches_reddit_thread_via_rss_fast_path() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
+                url: Some("http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -727,7 +771,7 @@ async fn reddit_rss_failure_does_not_fall_back_to_html() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string(),
+                url: Some("http://www.reddit.com/r/LocalLLaMA/comments/1tqqebc/stepfun_37_flash_speed_benchmark_in_m5_max/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -816,7 +860,7 @@ async fn fetches_google_devsite_article_with_simple_user_agent() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://ai.google.dev/gemma/docs/core".to_string(),
+                url: Some("http://ai.google.dev/gemma/docs/core".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -848,7 +892,7 @@ async fn google_devsite_404_is_not_reported_as_redirect_loop() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://ai.google.dev/gemma/docs/gemma-4".to_string(),
+                url: Some("http://ai.google.dev/gemma/docs/gemma-4".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -915,7 +959,7 @@ async fn fetches_google_blog_article_fast_path() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string(),
+                url: Some("http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -963,7 +1007,7 @@ async fn google_blog_prefers_body_over_css_marker_and_share_chrome() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string(),
+                url: Some("http://blog.google/innovation-and-ai/technology/developers-tools/diffusion-gemma-faster-text-generation/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -994,7 +1038,7 @@ async fn google_blog_without_article_body_returns_clear_error() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://blog.google/innovation-and-ai/example/".to_string(),
+                url: Some("http://blog.google/innovation-and-ai/example/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1119,7 +1163,7 @@ async fn fetches_habr_article_via_json_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://habr.com/ru/articles/911280/".to_string(),
+                url: Some("http://habr.com/ru/articles/911280/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1164,7 +1208,7 @@ async fn habr_article_json_failure_falls_back_to_article_html() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://habr.com/ru/articles/911280/".to_string(),
+                url: Some("http://habr.com/ru/articles/911280/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1205,7 +1249,7 @@ async fn fetches_habr_comments_via_json_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://habr.com/ru/news/1013616/comments/".to_string(),
+                url: Some("http://habr.com/ru/news/1013616/comments/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1244,7 +1288,7 @@ async fn habr_comments_json_failure_falls_back_to_comments_html() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://habr.com/ru/articles/911280/comments/".to_string(),
+                url: Some("http://habr.com/ru/articles/911280/comments/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1611,7 +1655,7 @@ async fn fetches_crates_io_readme_via_metadata_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://crates.io/crates/demo".to_string(),
+                url: Some("http://crates.io/crates/demo".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1654,7 +1698,7 @@ async fn fetches_github_repo_readme_via_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://github.com/owner/repo".to_string(),
+                url: Some("http://github.com/owner/repo".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1689,7 +1733,7 @@ async fn github_repo_readme_api_failure_does_not_fall_back_to_html() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://github.com/google-gemma/gemma4".to_string(),
+                url: Some("http://github.com/google-gemma/gemma4".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1742,7 +1786,7 @@ async fn fetches_github_gist_files_and_permalink_comment_via_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304".to_string(),
+                url: Some("http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0?permalink_comment_id=5946304".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1795,8 +1839,10 @@ async fn fetches_github_gist_truncated_file_from_raw_url() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0"
-                    .to_string(),
+                url: Some(
+                    "http://gist.github.com/DocShotgun/a02a4c0c0a57e43ff4f038b46ca66ae0"
+                        .to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1837,8 +1883,10 @@ async fn fetches_huggingface_blog_content_despite_waf_markers() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
-                    .to_string(),
+                url: Some(
+                    "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
+                        .to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1872,7 +1920,9 @@ async fn fetches_huggingface_tree_via_json_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main".to_string(),
+                url: Some(
+                    "http://huggingface.co/stepfun-ai/Step-3.7-Flash-GGUF/tree/main".to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1909,8 +1959,10 @@ async fn fetches_huggingface_text_blob_via_resolve_url() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
-                    .to_string(),
+                url: Some(
+                    "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+                        .to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1944,8 +1996,10 @@ async fn huggingface_resolve_failure_does_not_fall_back_to_html() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
-                    .to_string(),
+                url: Some(
+                    "http://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json"
+                        .to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -1984,8 +2038,10 @@ async fn huggingface_blog_without_blog_content_falls_back_to_antibot_failure() {
     let error = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
-                    .to_string(),
+                url: Some(
+                    "http://huggingface.co/blog/junafinity/flash-load-step-37-flash-q8-mlx-100gb-ram"
+                        .to_string(),
+                ),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
@@ -2021,7 +2077,7 @@ async fn fetches_pypi_project_description_via_json_api() {
     let output = provider
         .fetch_markdown(
             WebMarkdownArgs {
-                url: "http://pypi.org/project/demo-pkg/".to_string(),
+                url: Some("http://pypi.org/project/demo-pkg/".to_string()),
                 timeout_secs: Some(5),
                 ..Default::default()
             },
