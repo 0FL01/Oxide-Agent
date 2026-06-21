@@ -47,6 +47,7 @@ pub(super) struct PreparedExecution {
     pub(super) date_suffix: String,
     pub(super) messages: Vec<Message>,
     pub(super) runner_config: AgentRunnerConfig,
+    pub(super) browser_cleanup: Option<Arc<dyn crate::agent::tool_runtime::BrowserSessionCleanup>>,
 }
 
 pub(super) struct RunnerContextServices<'a> {

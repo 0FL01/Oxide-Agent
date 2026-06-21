@@ -238,11 +238,16 @@ impl AgentExecutor {
             "Dispatching agent runner"
         );
 
-        Ok(
-            run_with_timeout(&mut self.runner, &mut ctx, timeout_duration)
-                .await
-                .into(),
-        )
+        let outcome = run_with_timeout(&mut self.runner, &mut ctx, timeout_duration).await;
+
+        // RAII cleanup: close any browser sessions the agent left open.
+        // Runs on every outcome (success, timeout, cancel, error) to prevent
+        // Chromium process leaks at the sidecar.
+        if let Some(cleanup) = &prepared.browser_cleanup {
+            cleanup.close_all_sessions().await;
+        }
+
+        Ok(outcome.into())
     }
 
     fn apply_execution_transition(
@@ -425,8 +430,9 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let tool_runtime_registry =
-            Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
+        let (tool_runtime_registry, browser_cleanup) = self
+            .build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
+        let tool_runtime_registry = Arc::new(tool_runtime_registry);
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
@@ -590,6 +596,7 @@ impl AgentExecutor {
             .with_model_routes(model_routes)
             .with_search_limit(search_limit)
             .with_reasoning_effort(options.reasoning_effort()),
+            browser_cleanup,
         }
     }
 

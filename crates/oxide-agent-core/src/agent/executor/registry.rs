@@ -91,7 +91,8 @@ use crate::agent::tool_runtime::YtdlpToolModule;
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::agent::tool_runtime::{
-    ToolExecutor, ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
+    BrowserSessionCleanup, ToolExecutor, ToolModuleContext, ToolModuleContextParts,
+    ToolRegistry as RuntimeToolRegistry,
 };
 #[cfg(test)]
 use crate::config::ModelInfo;
@@ -114,19 +115,31 @@ impl AgentExecutor {
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> RuntimeToolRegistry {
+        self.build_tool_runtime_registry_with_cleanup(todos_arc, progress_tx)
+            .0
+    }
+
+    /// Build the tool runtime registry together with a browser session cleanup
+    /// handle for RAII cleanup after the parent agent run ends.
+    #[must_use]
+    pub(super) fn build_tool_runtime_registry_with_cleanup(
+        &self,
+        todos_arc: Arc<Mutex<TodoList>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> (RuntimeToolRegistry, Option<Arc<dyn BrowserSessionCleanup>>) {
         let mut registry = RuntimeToolRegistry::new();
 
         let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
-        self.register_tool_runtime_modules(&mut registry, &module_ctx);
+        let browser_cleanup = self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
-        registry
+        (registry, browser_cleanup)
     }
 
     fn register_tool_runtime_modules(
         &self,
         registry: &mut RuntimeToolRegistry,
         ctx: &ToolModuleContext,
-    ) {
+    ) -> Option<Arc<dyn BrowserSessionCleanup>> {
         #[cfg(not(any(
             oxide_module_tool_sandbox_exec,
             oxide_module_tool_sandbox_fileops,
@@ -181,8 +194,13 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(oxide_module_tool_brave_search)]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
+
         #[cfg(oxide_module_tool_browser_live)]
-        self.register_tool_runtime_module(registry, &BrowserLiveToolModule, ctx);
+        let browser_cleanup = self.register_browser_live_module(registry, ctx);
+
+        #[cfg(not(oxide_module_tool_browser_live))]
+        let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
+
         #[cfg(oxide_module_tool_crw)]
         self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
         #[cfg(oxide_module_integration_ssh_mcp)]
@@ -211,6 +229,26 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &SandboxFileOpsToolModule, ctx);
         #[cfg(oxide_module_tool_sandbox_recreate)]
         self.register_tool_runtime_module(registry, &SandboxRecreateToolModule, ctx);
+
+        browser_cleanup
+    }
+
+    /// Register browser-live tools and return the shared provider `Arc` for
+    /// RAII cleanup after the parent agent run ends.
+    #[cfg(oxide_module_tool_browser_live)]
+    fn register_browser_live_module(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        ctx: &ToolModuleContext,
+    ) -> Option<Arc<dyn BrowserSessionCleanup>> {
+        let module = BrowserLiveToolModule;
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            return None;
+        }
+        let provider = module.shared_provider(ctx)?;
+        self.register_tool_runtime_executors(registry, provider.tool_runtime_executors());
+        Some(provider)
     }
 
     #[cfg(any(
