@@ -157,6 +157,7 @@ fn sort_json_value(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{ToolCallDetector, canonicalize_tool_call_args};
+    use proptest::prop_assert_eq;
 
     #[test]
     fn detects_consecutive_identical_at_threshold() {
@@ -235,5 +236,46 @@ mod tests {
         assert!(!detector.check("tool", r#"{"b":2,"a":1}"#));
         // Canonicalized to same hash → consecutive identical
         assert!(detector.check("tool", r#"{"a":1,"b":2}"#));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_canonicalize_idempotent(json in proptest::string::string_regex("[a-z0-9{}\\[\\]:,\"]*").expect("valid regex")) {
+            // canonicalize(canonicalize(x)) == canonicalize(x) for any valid JSON
+            if let Some(first) = canonicalize_tool_call_args(&json)
+                && let Some(second) = canonicalize_tool_call_args(&first)
+            {
+                prop_assert_eq!(first, second);
+            }
+        }
+
+        #[test]
+        fn proptest_canonicalize_key_order_independent(
+            pairs in proptest::collection::vec(("[a-z]{1,3}", "[0-9]{1,3}"), 1..5)
+        ) {
+            // Deduplicate by key
+            let mut unique: Vec<(String, String)> = pairs.into_iter().collect();
+            unique.sort_by(|a, b| a.0.cmp(&b.0));
+            unique.dedup_by(|a, b| a.0 == b.0);
+            if unique.is_empty() {
+                return Ok(());
+            }
+
+            let mut reversed = unique.clone();
+            reversed.reverse();
+
+            let json_a = format!(
+                "{{{}}}",
+                unique.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect::<Vec<_>>().join(",")
+            );
+            let json_b = format!(
+                "{{{}}}",
+                reversed.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect::<Vec<_>>().join(",")
+            );
+
+            let canon_a = canonicalize_tool_call_args(&json_a);
+            let canon_b = canonicalize_tool_call_args(&json_b);
+            prop_assert_eq!(canon_a, canon_b, "canonical forms differ for same key-value pairs");
+        }
     }
 }
