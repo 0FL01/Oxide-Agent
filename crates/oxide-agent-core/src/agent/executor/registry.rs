@@ -2,91 +2,91 @@ use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::tool_runtime::AgentsMdModuleContext;
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 use crate::agent::tool_runtime::AgentsMdToolModule;
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 use crate::agent::tool_runtime::BraveSearchToolModule;
 use crate::agent::tool_runtime::BrowserLiveModuleContext;
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 use crate::agent::tool_runtime::CompressionToolModule;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 use crate::agent::tool_runtime::CrwSearchToolModule;
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 use crate::agent::tool_runtime::DelegationToolModule;
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 use crate::agent::tool_runtime::JiraMcpToolModule;
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 use crate::agent::tool_runtime::KokoroTtsToolModule;
 use crate::agent::tool_runtime::ManagerControlPlaneModuleContext;
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 use crate::agent::tool_runtime::ManagerControlPlaneToolModule;
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 use crate::agent::tool_runtime::MattermostMcpToolModule;
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 use crate::agent::tool_runtime::MediaAudioToolModule;
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 use crate::agent::tool_runtime::MediaImageToolModule;
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 use crate::agent::tool_runtime::MediaVideoToolModule;
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 use crate::agent::tool_runtime::ReminderToolModule;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 use crate::agent::tool_runtime::SileroTtsToolModule;
 use crate::agent::tool_runtime::SshMcpModuleContext;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use crate::agent::tool_runtime::SshMcpToolModule;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 use crate::agent::tool_runtime::StackLogsToolModule;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 use crate::agent::tool_runtime::TavilyToolModule;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-recreate",
-    feature = "manager-control-plane",
-    feature = "integration-ssh-mcp",
-    feature = "integration-mcp-jira",
-    feature = "integration-mcp-mattermost",
-    feature = "tool-agents-md",
-    feature = "tool-compression",
-    feature = "tool-delegation",
-    feature = "tool-file-delivery",
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video",
-    feature = "tool-reminder",
-    feature = "tool-brave-search",
-    feature = "tool-browser-live",
-    feature = "tool-crw",
-    feature = "tool-stack-logs",
-    feature = "tool-tavily",
-    feature = "tool-todos",
-    feature = "tool-tts-kokoro",
-    feature = "tool-tts-silero",
-    feature = "tool-webfetch-md",
-    feature = "tool-wiki-memory",
-    feature = "tool-ytdlp",
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_recreate,
+    oxide_module_manager_control_plane,
+    oxide_module_integration_ssh_mcp,
+    oxide_module_integration_mcp_jira,
+    oxide_module_integration_mcp_mattermost,
+    oxide_module_tool_agents_md,
+    oxide_module_tool_compression,
+    oxide_module_tool_delegation,
+    oxide_module_tool_file_delivery,
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video,
+    oxide_module_tool_reminder,
+    oxide_module_tool_brave_search,
+    oxide_module_tool_browser_live,
+    oxide_module_tool_crw,
+    oxide_module_tool_stack_logs,
+    oxide_module_tool_tavily,
+    oxide_module_tool_todos,
+    oxide_module_tool_tts_kokoro,
+    oxide_module_tool_tts_silero,
+    oxide_module_tool_webfetch_md,
+    oxide_module_tool_wiki_memory,
+    oxide_module_tool_ytdlp,
 ))]
 use crate::agent::tool_runtime::ToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebCrawlerToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 use crate::agent::tool_runtime::WikiMemoryToolModule;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::tool_runtime::YtdlpToolModule;
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
@@ -128,118 +128,118 @@ impl AgentExecutor {
         ctx: &ToolModuleContext,
     ) {
         #[cfg(not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-sandbox-recreate",
-            feature = "manager-control-plane",
-            feature = "integration-ssh-mcp",
-            feature = "integration-mcp-jira",
-            feature = "integration-mcp-mattermost",
-            feature = "tool-agents-md",
-            feature = "tool-compression",
-            feature = "tool-delegation",
-            feature = "tool-file-delivery",
-            feature = "tool-media-audio",
-            feature = "tool-media-image",
-            feature = "tool-media-video",
-            feature = "tool-reminder",
-            feature = "tool-brave-search",
-            feature = "tool-browser-live",
-            feature = "tool-crw",
-            feature = "tool-stack-logs",
-            feature = "tool-tavily",
-            feature = "tool-todos",
-            feature = "tool-tts-kokoro",
-            feature = "tool-tts-silero",
-            feature = "tool-webfetch-md",
-            feature = "tool-wiki-memory",
-            feature = "tool-ytdlp"
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_sandbox_recreate,
+            oxide_module_manager_control_plane,
+            oxide_module_integration_ssh_mcp,
+            oxide_module_integration_mcp_jira,
+            oxide_module_integration_mcp_mattermost,
+            oxide_module_tool_agents_md,
+            oxide_module_tool_compression,
+            oxide_module_tool_delegation,
+            oxide_module_tool_file_delivery,
+            oxide_module_tool_media_audio,
+            oxide_module_tool_media_image,
+            oxide_module_tool_media_video,
+            oxide_module_tool_reminder,
+            oxide_module_tool_brave_search,
+            oxide_module_tool_browser_live,
+            oxide_module_tool_crw,
+            oxide_module_tool_stack_logs,
+            oxide_module_tool_tavily,
+            oxide_module_tool_todos,
+            oxide_module_tool_tts_kokoro,
+            oxide_module_tool_tts_silero,
+            oxide_module_tool_webfetch_md,
+            oxide_module_tool_wiki_memory,
+            oxide_module_tool_ytdlp
         )))]
         let _ = (registry, ctx);
 
-        #[cfg(feature = "tool-agents-md")]
+        #[cfg(oxide_module_tool_agents_md)]
         self.register_tool_runtime_module(registry, &AgentsMdToolModule, ctx);
-        #[cfg(feature = "integration-mcp-jira")]
+        #[cfg(oxide_module_integration_mcp_jira)]
         self.register_tool_runtime_module(registry, &JiraMcpToolModule, ctx);
-        #[cfg(feature = "manager-control-plane")]
+        #[cfg(oxide_module_manager_control_plane)]
         self.register_tool_runtime_module(registry, &ManagerControlPlaneToolModule, ctx);
-        #[cfg(feature = "integration-mcp-mattermost")]
+        #[cfg(oxide_module_integration_mcp_mattermost)]
         self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
-        #[cfg(feature = "tool-compression")]
+        #[cfg(oxide_module_tool_compression)]
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
-        #[cfg(feature = "tool-delegation")]
+        #[cfg(oxide_module_tool_delegation)]
         self.register_tool_runtime_module(registry, &DelegationToolModule, ctx);
-        #[cfg(feature = "tool-file-delivery")]
+        #[cfg(oxide_module_tool_file_delivery)]
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
-        #[cfg(feature = "tool-media-audio")]
+        #[cfg(oxide_module_tool_media_audio)]
         self.register_tool_runtime_module(registry, &MediaAudioToolModule, ctx);
-        #[cfg(feature = "tool-media-image")]
+        #[cfg(oxide_module_tool_media_image)]
         self.register_tool_runtime_module(registry, &MediaImageToolModule, ctx);
-        #[cfg(feature = "tool-media-video")]
+        #[cfg(oxide_module_tool_media_video)]
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
-        #[cfg(feature = "tool-reminder")]
+        #[cfg(oxide_module_tool_reminder)]
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
-        #[cfg(feature = "tool-brave-search")]
+        #[cfg(oxide_module_tool_brave_search)]
         self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
-        #[cfg(feature = "tool-browser-live")]
+        #[cfg(oxide_module_tool_browser_live)]
         self.register_tool_runtime_module(registry, &BrowserLiveToolModule, ctx);
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
-        #[cfg(feature = "integration-ssh-mcp")]
+        #[cfg(oxide_module_integration_ssh_mcp)]
         self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
-        #[cfg(feature = "tool-stack-logs")]
+        #[cfg(oxide_module_tool_stack_logs)]
         self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
-        #[cfg(feature = "tool-tavily")]
+        #[cfg(oxide_module_tool_tavily)]
         self.register_tool_runtime_module(registry, &TavilyToolModule, ctx);
-        #[cfg(feature = "tool-todos")]
+        #[cfg(oxide_module_tool_todos)]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
-        #[cfg(feature = "tool-tts-kokoro")]
+        #[cfg(oxide_module_tool_tts_kokoro)]
         self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
-        #[cfg(feature = "tool-tts-silero")]
+        #[cfg(oxide_module_tool_tts_silero)]
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.register_tool_runtime_module(registry, &WebCrawlerToolModule, ctx);
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
-        #[cfg(feature = "tool-wiki-memory")]
+        #[cfg(oxide_module_tool_wiki_memory)]
         self.register_tool_runtime_module(registry, &WikiMemoryToolModule, ctx);
-        #[cfg(feature = "tool-ytdlp")]
+        #[cfg(oxide_module_tool_ytdlp)]
         self.register_tool_runtime_module(registry, &YtdlpToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-exec")]
+        #[cfg(oxide_module_tool_sandbox_exec)]
         self.register_tool_runtime_module(registry, &SandboxExecToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-fileops")]
+        #[cfg(oxide_module_tool_sandbox_fileops)]
         self.register_tool_runtime_module(registry, &SandboxFileOpsToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-recreate")]
+        #[cfg(oxide_module_tool_sandbox_recreate)]
         self.register_tool_runtime_module(registry, &SandboxRecreateToolModule, ctx);
     }
 
     #[cfg(any(
-        feature = "tool-sandbox-exec",
-        feature = "tool-sandbox-fileops",
-        feature = "tool-sandbox-recreate",
-        feature = "manager-control-plane",
-        feature = "integration-ssh-mcp",
-        feature = "integration-mcp-jira",
-        feature = "integration-mcp-mattermost",
-        feature = "tool-agents-md",
-        feature = "tool-compression",
-        feature = "tool-delegation",
-        feature = "tool-file-delivery",
-        feature = "tool-media-audio",
-        feature = "tool-media-image",
-        feature = "tool-media-video",
-        feature = "tool-reminder",
-        feature = "tool-brave-search",
-        feature = "tool-browser-live",
-        feature = "tool-crw",
-        feature = "tool-stack-logs",
-        feature = "tool-tavily",
-        feature = "tool-todos",
-        feature = "tool-tts-kokoro",
-        feature = "tool-tts-silero",
-        feature = "tool-webfetch-md",
-        feature = "tool-wiki-memory",
-        feature = "tool-ytdlp"
+        oxide_module_tool_sandbox_exec,
+        oxide_module_tool_sandbox_fileops,
+        oxide_module_tool_sandbox_recreate,
+        oxide_module_manager_control_plane,
+        oxide_module_integration_ssh_mcp,
+        oxide_module_integration_mcp_jira,
+        oxide_module_integration_mcp_mattermost,
+        oxide_module_tool_agents_md,
+        oxide_module_tool_compression,
+        oxide_module_tool_delegation,
+        oxide_module_tool_file_delivery,
+        oxide_module_tool_media_audio,
+        oxide_module_tool_media_image,
+        oxide_module_tool_media_video,
+        oxide_module_tool_reminder,
+        oxide_module_tool_brave_search,
+        oxide_module_tool_browser_live,
+        oxide_module_tool_crw,
+        oxide_module_tool_stack_logs,
+        oxide_module_tool_tavily,
+        oxide_module_tool_todos,
+        oxide_module_tool_tts_kokoro,
+        oxide_module_tool_tts_silero,
+        oxide_module_tool_webfetch_md,
+        oxide_module_tool_wiki_memory,
+        oxide_module_tool_ytdlp
     ))]
     fn register_tool_runtime_module<M>(
         &self,
@@ -261,31 +261,31 @@ impl AgentExecutor {
 
     #[cfg_attr(
         not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-sandbox-recreate",
-            feature = "manager-control-plane",
-            feature = "integration-ssh-mcp",
-            feature = "integration-mcp-jira",
-            feature = "integration-mcp-mattermost",
-            feature = "tool-agents-md",
-            feature = "tool-compression",
-            feature = "tool-file-delivery",
-            feature = "tool-media-audio",
-            feature = "tool-media-image",
-            feature = "tool-media-video",
-            feature = "tool-reminder",
-            feature = "tool-brave-search",
-            feature = "tool-browser-live",
-            feature = "tool-crw",
-            feature = "tool-stack-logs",
-            feature = "tool-tavily",
-            feature = "tool-todos",
-            feature = "tool-tts-kokoro",
-            feature = "tool-tts-silero",
-            feature = "tool-webfetch-md",
-            feature = "tool-wiki-memory",
-            feature = "tool-ytdlp"
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_sandbox_recreate,
+            oxide_module_manager_control_plane,
+            oxide_module_integration_ssh_mcp,
+            oxide_module_integration_mcp_jira,
+            oxide_module_integration_mcp_mattermost,
+            oxide_module_tool_agents_md,
+            oxide_module_tool_compression,
+            oxide_module_tool_file_delivery,
+            oxide_module_tool_media_audio,
+            oxide_module_tool_media_image,
+            oxide_module_tool_media_video,
+            oxide_module_tool_reminder,
+            oxide_module_tool_brave_search,
+            oxide_module_tool_browser_live,
+            oxide_module_tool_crw,
+            oxide_module_tool_stack_logs,
+            oxide_module_tool_tavily,
+            oxide_module_tool_todos,
+            oxide_module_tool_tts_kokoro,
+            oxide_module_tool_tts_silero,
+            oxide_module_tool_webfetch_md,
+            oxide_module_tool_wiki_memory,
+            oxide_module_tool_ytdlp
         )),
         allow(dead_code)
     )]

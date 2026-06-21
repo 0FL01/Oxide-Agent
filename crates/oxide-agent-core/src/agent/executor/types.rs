@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use super::{AgentExecutionOptions, AgentUserInput};
 
 #[derive(Clone)]
-#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
 pub(super) struct AgentsMdContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,
@@ -23,7 +23,7 @@ pub(super) struct AgentsMdContext {
 }
 
 #[derive(Clone)]
-#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
 pub(super) struct ManagerControlPlaneContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,
@@ -31,7 +31,7 @@ pub(super) struct ManagerControlPlaneContext {
 }
 
 #[derive(Clone)]
-#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
 pub(super) struct TopicInfraContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,

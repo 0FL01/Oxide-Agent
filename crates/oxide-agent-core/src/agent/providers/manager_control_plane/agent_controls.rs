@@ -234,13 +234,13 @@ impl ManagerControlPlaneProvider {
 
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
         #[cfg(not(any(
-            feature = "tool-tavily",
-            feature = "tool-crw",
-            feature = "tool-webfetch-md"
+            oxide_module_tool_tavily,
+            oxide_module_tool_crw,
+            oxide_module_tool_webfetch_md
         )))]
         let _ = groups;
 
-        #[cfg(feature = "tool-tavily")]
+        #[cfg(oxide_module_tool_tavily)]
         if crate::config::is_tavily_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "tavily",
@@ -249,7 +249,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         if crate::config::is_crw_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "crw",
@@ -258,7 +258,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         if crate::config::is_web_crawler_merge_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "web_crawler",
@@ -278,7 +278,7 @@ impl ManagerControlPlaneProvider {
         &self,
         topic_id: &str,
     ) -> Result<TopicAgentToolCatalog> {
-        #[cfg(not(feature = "integration-ssh-mcp"))]
+        #[cfg(not(oxide_module_integration_ssh_mcp))]
         let _ = topic_id;
 
         let mut groups = vec![
@@ -326,7 +326,7 @@ impl ManagerControlPlaneProvider {
 
         groups.extend(Self::configured_search_tool_groups());
 
-        #[cfg(feature = "integration-ssh-mcp")]
+        #[cfg(oxide_module_integration_ssh_mcp)]
         {
             let topic_infra = self
                 .storage
@@ -342,7 +342,7 @@ impl ManagerControlPlaneProvider {
             }
         }
 
-        #[cfg(feature = "integration-mcp-jira")]
+        #[cfg(oxide_module_integration_mcp_jira)]
         {
             groups.push(TopicAgentToolGroup {
                 provider: "jira",
@@ -351,7 +351,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "integration-mcp-mattermost")]
+        #[cfg(oxide_module_integration_mcp_mattermost)]
         {
             if crate::agent::providers::MattermostMcpConfig::from_env().is_some() {
                 groups.push(TopicAgentToolGroup {
@@ -363,22 +363,22 @@ impl ManagerControlPlaneProvider {
         }
 
         #[cfg(any(
-            feature = "tool-media-audio",
-            feature = "tool-media-image",
-            feature = "tool-media-video"
+            oxide_module_tool_media_audio,
+            oxide_module_tool_media_image,
+            oxide_module_tool_media_video
         ))]
         groups.push(TopicAgentToolGroup {
             provider: "media_file",
             aliases: &["media", "media_file"],
             tools: TOPIC_AGENT_MEDIA_FILE_TOOLS,
         });
-        #[cfg(feature = "tool-tts-kokoro")]
+        #[cfg(oxide_module_tool_tts_kokoro)]
         groups.push(TopicAgentToolGroup {
             provider: "tts_en",
             aliases: &["tts", "tts_en", "kokoro"],
             tools: TOPIC_AGENT_TTS_EN_TOOLS,
         });
-        #[cfg(feature = "tool-tts-silero")]
+        #[cfg(oxide_module_tool_tts_silero)]
         groups.push(TopicAgentToolGroup {
             provider: "tts_ru",
             aliases: &["tts_ru", "silero"],
@@ -1445,16 +1445,16 @@ impl ManagerControlPlaneProvider {
 mod tests {
     use super::*;
     #[cfg(any(
-        feature = "tool-media-audio",
-        feature = "tool-media-image",
-        feature = "tool-media-video"
+        oxide_module_tool_media_audio,
+        oxide_module_tool_media_image,
+        oxide_module_tool_media_video
     ))]
     use std::sync::Arc;
 
     #[cfg(any(
-        feature = "tool-media-audio",
-        feature = "tool-media-image",
-        feature = "tool-media-video"
+        oxide_module_tool_media_audio,
+        oxide_module_tool_media_image,
+        oxide_module_tool_media_video
     ))]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_media_file_tools() {

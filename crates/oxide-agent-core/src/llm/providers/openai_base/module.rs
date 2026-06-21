@@ -228,7 +228,7 @@ fn endpoint_image_input_for_provider(provider_name: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     value.clamp(
         crate::llm::providers::opencode_go::discovery::MIN_MODEL_DISCOVERY_TTL_SECS,
@@ -236,12 +236,12 @@ fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     )
 }
 
-#[cfg(not(feature = "llm-opencode-go"))]
+#[cfg(not(oxide_module_llm_provider_opencode_go))]
 const fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     value
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 pub(crate) fn build_model_catalogs(
     _settings: &AgentSettings,
     http_client: reqwest::Client,
@@ -262,7 +262,7 @@ pub(crate) fn build_model_catalogs(
         .collect()
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn openai_base_discovery_config(
     endpoint: &OpenAIBaseEndpointConfig,
 ) -> crate::llm::providers::opencode_go::discovery::OpenCodeGoDiscoveryConfig {
@@ -278,7 +278,7 @@ fn openai_base_discovery_config(
     )
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn models_url_from_api_base(api_base: &str) -> String {
     let chat_url = super::chat_completions_url(api_base);
     chat_url
@@ -378,17 +378,17 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
 ///
 /// Creates an [`OpenAIBaseProvider`] with a Mistral-specific profile when
 /// `MISTRAL_API_KEY` is set. Module ID is `"llm-provider/mistral"`.
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 pub(crate) struct MistralProviderModule;
 
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 const MISTRAL_API_KEY_CONFIG_KEY: &str = "api_key";
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 const MISTRAL_API_KEY_ENV: &str = "MISTRAL_API_KEY";
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
 
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 impl LlmProviderModule for MistralProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/mistral"

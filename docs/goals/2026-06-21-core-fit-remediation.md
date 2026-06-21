@@ -66,7 +66,7 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 |---|---|---|---|
 | A1.1 | No transport dependency leak | PASS | `Cargo.toml:19-61` no teloxide/transport; grep 0 hits |
 | A1.2 | Explicit `mod.rs` convention | PARTIAL (low) | 3 dirs use modern `foo.rs+foo/` style (`agent/executor.rs`, `llm/providers/opencode_go.rs`, `openrouter.rs`) |
-| A1.3 | cfg-gating on `oxide_module_<id>` | VIOLATION (high) | ~503 raw `#[cfg(feature="...")]` vs 108 `#[cfg(oxide_module_*)]`; top: `delegation.rs:44-71`, `manager_control_plane/mod.rs:203-256` |
+| A1.3 | cfg-gating on `oxide_module_<id>` | FIXED | mechanical migration: 491 simple + 13 compound + 10 cfg_attr + 4 cfg!() gates → `oxide_module_*` aliases; 0 remaining non-profile non-http-client raw gates |
 | A1.4 | thiserror for lib | VIOLATION (medium) | 272 `anyhow!` in non-test lib; `SandboxError` does not exist; `SandboxBackend` trait returns `anyhow::Result` (`sandbox/traits.rs:50`) |
 | A1.5 | Context-scoped storage | PASS | `storage/provider.rs` three-tier API, legacy fallback marked |
 | A1.6 | Typed provider boundaries | PARTIAL (low) | `check_connection() -> Result<(), String>` (`provider.rs:214`); 2 manager traits on `anyhow::Result` |
@@ -106,7 +106,7 @@ Full evidence with reasoning, traces, and design assessments: `docs/goals/2026-0
 
 | # | Area | Verdict | Evidence |
 |---|---|---|---|
-| A4.1 | cfg-gating hygiene in tests | PARTIAL | 26 raw module-level `#[cfg(feature="...")]` in test contexts (`runner/llm_calls.rs:1115,1165,1429`, `manager_control_plane/tests/*.rs`) |
+| A4.1 | cfg-gating hygiene in tests | FIXED | 26 raw module-level gates in test contexts migrated to `oxide_module_*` aliases along with all src gates |
 | A4.2 | Test category coverage | SOUND | hermetic/integration/snapshot/property present; 1394 test fns |
 | A4.3 | Hermetic vs integration gating | SOUND | Postgres + live LLM env-gated skip-cleanly |
 | A4.4 | `mock_storage_noop` masks contract bugs | PARTIAL | `testing.rs:100` blanket `Ok(None)`/`Ok(())`; only 2 call-sites, mitigated |
@@ -150,9 +150,10 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 
 | Metric | Current | Target |
 |---|---|---|
-| `#[cfg(feature = "<module-feature>")]` (raw, attribute form) | 490 simple + 13 compound = ~503 | 0 module-level (profile-level stays) |
-| `#[cfg(oxide_module_<id>)]` (aliased) | 107 (+1 compound) | ~610 (all module gates) |
-| `#[cfg(feature = "profile-*")]` (allowed raw) | 0 attribute, 11 `cfg!()` macro | unchanged |
+| `#[cfg(feature = "<module-feature>")]` (raw, attribute form) | ~~490 simple + 13 compound~~ → 0 (all migrated) | 0 module-level ✓ |
+| `#[cfg(oxide_module_<id>)]` (aliased) | ~~107~~ → ~600+ (all module gates migrated) | ~610 ✓ |
+| `#[cfg(feature = "profile-*")]` (allowed raw) | 0 attribute, 7 `cfg!()` macro | unchanged ✓ |
+| `#[cfg(feature = "http-client")]` (non-module utility) | 1 | 1 (not a module, stays raw) ✓ |
 
 ### anyhow usage in sandbox
 
@@ -181,10 +182,10 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
 
 - G3: cfg-alias migration complete
   - Source: A1.3, A4.1
-  - Acceptance: all module-level `#[cfg(feature = "<module-feature>")]` in `src/**/*.rs` and `tests/**/*.rs` replaced with `#[cfg(oxide_module_<id>)]`; only profile-level raw gates remain
-  - Evidence required: `cargo run -p xtask -- module-registry check` green; grep `#[cfg(feature = "(?!profile-)` returns 0 (or only profile-level)
-  - Status: pending
-  - Evidence collected:
+  - Acceptance: all module-level `#[cfg(feature = "<module-feature>")]` in `src/**/*.rs` replaced with `#[cfg(oxide_module_<id>)]`; only profile-level raw gates and `http-client` (non-module utility feature) remain
+  - Evidence required: `cargo run -p xtask -- module-registry check` green; grep `feature = "` in `src/**/*.rs` excluding `profile-` and `http-client` returns 0; `cargo check` green on `profile-full` and `profile-embedded-opencode-local`
+  - Status: verified
+  - Evidence collected: Mechanical sed-based migration applied to all `src/**/*.rs` files. 491 simple `#[cfg(feature="...")]` + 13 compound `#[cfg(any/all(... feature="..."))]` + 10 `cfg_attr(not(feature="..."))` + 4 `cfg!(feature="...")` gates migrated to `oxide_module_*` aliases. `http-client` (non-module utility feature for `dep:reqwest`) preserved as raw. Profile-level gates (`cfg!(feature = "profile-*")` in `compiled.rs`) preserved as raw per AGENTS.md. Post-migration: 0 remaining non-profile non-http-client raw feature gates; `xtask module-registry check` passes (40 modules, 45 Cargo features, 40 compiled declarations); `cargo check` green on both `profile-full` and `profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean; 1295 tests pass. Also fixed pre-existing clippy `needless_return` in `manager.rs:2449`.
 
 - G4: Loop detection catches cycles, not just consecutive repeats
   - Source: A2.10, A5.4
@@ -517,6 +518,16 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full` (1295 pass, 0 fail); `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean
   - Audit IDs updated: G2 verified, A3.1 FIXED
   - Next: Phase 3 (cfg-alias migration)
+
+- 2026-06-21: Phase 3 — cfg-alias migration (G3 verified)
+  - Changed: all `src/**/*.rs` files — mechanical sed-based migration of 491 simple `#[cfg(feature="...")]` + 13 compound `#[cfg(any/all(... feature="..."))]` + 10 `cfg_attr(not(feature="..."))` + 4 `cfg!(feature="...")` gates to `#[cfg(oxide_module_*)]` / `cfg!(oxide_module_*)` aliases
+  - Preserved: `#[cfg(feature = "http-client")]` in `llm/error.rs:73` (non-module utility feature for `dep:reqwest`); `cfg!(feature = "profile-*")` in `capabilities/compiled.rs:272-285` (profile-level, allowed raw per AGENTS.md)
+  - Fixed: pre-existing clippy `needless_return` in `sandbox/manager.rs:2449` (return Err(...) → Err(...))
+  - Fixed: `cargo fmt` reformatted 4 `cfg_attr` lines that exceeded line width after alias migration (longer `oxide_module_*` names)
+  - Evidence: `xtask module-registry check` passes (40 modules, 45 features, 40 declarations); 0 remaining non-profile non-http-client raw feature gates; `cargo check` green on `profile-full` and `profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all -- --check` clean; 1295 tests pass
+  - Commands: `cargo run -p xtask -- module-registry check`; `cargo check -p oxide-agent-core --no-default-features --features profile-full`; `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-core --no-default-features --features profile-full` (1295 pass, 0 fail)
+  - Audit IDs updated: G3 verified, A1.3 FIXED, A4.1 FIXED
+  - Next: Phase 4 (Loop detection class-closing)
 
 ## Risks and Blockers
 

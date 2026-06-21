@@ -3,41 +3,47 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[cfg(any(
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_opencode_go
+))]
 use super::super::capabilities::ToolHistoryMode;
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
 
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 use crate::llm::support;
 
 #[cfg(any(
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 use super::chat_completions::{client::ChatCompletionsClient, profile::ChatCompletionsProfile};
-#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[cfg(any(
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_opencode_go
+))]
 use super::messages::{MessagesClient, MessagesProfile};
 
 /// Context shared by provider module factories.
 pub(crate) struct LlmProviderBuildContext {
     #[cfg(any(
-        feature = "llm-chatgpt",
-        feature = "llm-minimax",
-        feature = "llm-mistral",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_openai_chatgpt,
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))]
     pub(crate) http_client: reqwest::Client,
 }
@@ -46,12 +52,12 @@ impl LlmProviderBuildContext {
     fn new() -> Self {
         Self {
             #[cfg(any(
-                feature = "llm-chatgpt",
-                feature = "llm-minimax",
-                feature = "llm-mistral",
-                feature = "llm-openai-base",
-                feature = "llm-opencode-go",
-                feature = "llm-openrouter"
+                oxide_module_llm_provider_openai_chatgpt,
+                oxide_module_llm_provider_anthropic,
+                oxide_module_llm_provider_mistral,
+                oxide_module_llm_provider_openai_base,
+                oxide_module_llm_provider_opencode_go,
+                oxide_module_llm_provider_openrouter
             ))]
             http_client: support::http::create_http_client(),
         }
@@ -61,11 +67,11 @@ impl LlmProviderBuildContext {
 /// Internal generic compatible-provider kind. This is intentionally not wired
 /// to user config yet; legacy modules remain the stable public surface.
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,11 +81,11 @@ pub(crate) enum GenericProviderKind {
 }
 
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 impl GenericProviderKind {
@@ -100,11 +106,11 @@ impl GenericProviderKind {
 /// This documents the intended fields (`kind`, `endpoint_url`, `api_key`, and
 /// optional `profile`) without introducing an untested public settings stanza.
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,11 +123,11 @@ pub(crate) struct GenericEndpointProviderConfig {
 }
 
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 impl GenericEndpointProviderConfig {
@@ -143,32 +149,35 @@ impl GenericEndpointProviderConfig {
 }
 
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum GenericEndpointClient {
     #[cfg(any(
-        feature = "llm-mistral",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))]
     ChatCompletions(ChatCompletionsClient),
-    #[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+    #[cfg(any(
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_opencode_go
+    ))]
     Messages(MessagesClient),
 }
 
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -180,11 +189,11 @@ pub(crate) struct GenericEndpointProvider {
 }
 
 #[cfg(any(
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 pub(crate) fn build_generic_endpoint_provider(
@@ -200,10 +209,10 @@ pub(crate) fn build_generic_endpoint_provider(
 }
 
 #[cfg(any(
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 fn build_generic_chat_completions_provider(
@@ -230,17 +239,17 @@ fn build_generic_chat_completions_provider(
 
 #[cfg(all(
     any(
-        feature = "llm-minimax",
-        feature = "llm-mistral",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ),
     not(any(
-        feature = "llm-mistral",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))
 ))]
 #[allow(dead_code)]
@@ -251,7 +260,10 @@ fn build_generic_chat_completions_provider(
     Err("generic chat_completions providers are not compiled in this build".to_string())
 }
 
-#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[cfg(any(
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_opencode_go
+))]
 #[allow(dead_code)]
 fn build_generic_messages_provider(
     config: &GenericEndpointProviderConfig,
@@ -276,13 +288,16 @@ fn build_generic_messages_provider(
 
 #[cfg(all(
     any(
-        feature = "llm-minimax",
-        feature = "llm-mistral",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_mistral,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ),
-    not(any(feature = "llm-minimax", feature = "llm-opencode-go"))
+    not(any(
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_opencode_go
+    ))
 ))]
 #[allow(dead_code)]
 fn build_generic_messages_provider(
@@ -293,10 +308,10 @@ fn build_generic_messages_provider(
 }
 
 #[cfg(any(
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 fn resolve_generic_chat_completions_profile(
@@ -321,7 +336,10 @@ fn resolve_generic_chat_completions_profile(
     }
 }
 
-#[cfg(any(feature = "llm-minimax", feature = "llm-opencode-go"))]
+#[cfg(any(
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_opencode_go
+))]
 #[allow(dead_code)]
 fn resolve_generic_messages_profile(profile: Option<&str>) -> Result<MessagesProfile, String> {
     match profile
@@ -436,7 +454,7 @@ pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapab
 /// Resolves a provider alias or module ID to the compiled provider module ID.
 #[must_use]
 pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     if super::openai_base::module::provider_instance_name(provider_name).is_some()
         || super::openai_base::module::is_legacy_provider_name(provider_name)
     {
@@ -449,12 +467,12 @@ pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
 /// Returns the canonical runtime provider key for route configuration.
 #[must_use]
 pub(crate) fn canonical_route_provider(provider_name: &str) -> Option<String> {
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     if let Some(instance) = super::openai_base::module::provider_instance_name(provider_name) {
         return Some(format!("openai-base:{instance}"));
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     if super::openai_base::module::is_legacy_provider_name(provider_name) {
         return None;
     }
@@ -498,7 +516,7 @@ pub(crate) fn provider_capabilities_for_model(
 }
 
 fn find_provider_module(provider_name: &str) -> Option<Box<dyn LlmProviderModule>> {
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     if super::openai_base::module::provider_instance_name(provider_name).is_some()
         || super::openai_base::module::is_legacy_provider_name(provider_name)
     {
@@ -531,19 +549,19 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     let mut modules: Vec<Box<dyn LlmProviderModule>> = Vec::new();
     let _ = &mut modules;
 
-    #[cfg(feature = "llm-chatgpt")]
+    #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
-    #[cfg(feature = "llm-mistral")]
+    #[cfg(oxide_module_llm_provider_mistral)]
     modules.push(Box::new(super::openai_base::MistralProviderModule));
-    #[cfg(feature = "llm-minimax")]
+    #[cfg(oxide_module_llm_provider_anthropic)]
     modules.push(Box::new(super::anthropic::AnthropicProviderModule));
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     modules.push(Box::new(super::openai_base::OpenAIBaseProviderModule));
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     modules.push(Box::new(super::opencode_go::OpenCodeZenProviderModule));
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     modules.push(Box::new(super::openrouter::OpenRouterProviderModule));
 
     modules

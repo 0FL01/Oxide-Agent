@@ -7,76 +7,79 @@
 //! Deployment: `docs/deploy.md`
 
 use super::error::SandboxError;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::Docker;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::container::LogOutput;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::errors::Error as DockerError;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::exec::{CreateExecOptions, StartExecResults};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum, HostConfig,
 };
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
     LogsOptionsBuilder, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bytes::Bytes;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use chrono::{DateTime, Utc};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use futures_util::{StreamExt, TryStreamExt};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use http_body_util::{Either, Full};
 use serde::{Deserialize, Serialize};
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use shell_escape::escape;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::io::Read;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::time::Duration;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tokio::time::sleep;
 use tracing::instrument;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tracing::{debug, info, warn};
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use crate::config::get_sandbox_image;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use crate::config::{
     SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
     get_stack_logs_project,
 };
 use crate::config::{SandboxBackendConfig, get_sandbox_backend_config};
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 use crate::sandbox::broker::SandboxBrokerClient;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use crate::sandbox::broker::{
     ResolvedStackLogsSelector, StackLogCursor, StackLogEntry, StackLogSource, StackLogSuppression,
     StackLogsSelector, StackLogsWindow,
 };
-#[cfg(any(feature = "sandbox-backend-docker-direct", feature = "tool-stack-logs"))]
+#[cfg(any(
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_tool_stack_logs
+))]
 use crate::sandbox::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use crate::sandbox::traits::apply_sandbox_file_edit;
 use crate::sandbox::{
@@ -84,22 +87,22 @@ use crate::sandbox::{
     SandboxScope,
 };
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const DOCKER_COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOGS_PROJECT_ENV: &str = "STACK_LOGS_PROJECT";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const UNKNOWN_STACK_LOG_STATE: &str = "unknown";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOG_STREAM_STDOUT: &str = "stdout";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOG_STREAM_STDERR: &str = "stderr";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOGS_HARD_MAX_ENTRIES: usize = 500;
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[derive(Default)]
 struct StackLogBufferState {
     buffer: String,
@@ -243,13 +246,13 @@ pub struct SandboxManager {
 
 #[derive(Clone)]
 enum SandboxManagerInner {
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     Docker(DockerSandboxManager),
-    #[cfg(feature = "sandbox-backend-sandboxd-client")]
+    #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
     Broker(BrokerSandboxManager),
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 #[derive(Clone)]
 struct BrokerSandboxManager {
     client: SandboxBrokerClient,
@@ -278,7 +281,7 @@ impl ExecResult {
     }
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 impl BrokerSandboxManager {
     fn new(scope: SandboxScope) -> Self {
         Self {
@@ -426,14 +429,14 @@ impl BrokerSandboxManager {
     }
 }
 
-#[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+#[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
 fn broker_backend_not_compiled() -> SandboxError {
     SandboxError::BackendNotCompiled(
         "sandbox broker client backend is not compiled; enable sandbox-backend-sandboxd-client",
     )
 }
 
-#[cfg(not(feature = "sandbox-backend-docker-direct"))]
+#[cfg(not(oxide_module_sandbox_backend_docker_direct))]
 fn docker_backend_not_compiled() -> SandboxError {
     SandboxError::BackendNotCompiled(
         "sandbox Docker direct backend is not compiled; enable sandbox-backend-docker-direct",
@@ -442,10 +445,10 @@ fn docker_backend_not_compiled() -> SandboxError {
 
 fn compiled_sandbox_backends() -> Vec<&'static str> {
     let mut backends = Vec::new();
-    if cfg!(feature = "sandbox-backend-docker-direct") {
+    if cfg!(oxide_module_sandbox_backend_docker_direct) {
         backends.push("docker");
     }
-    if cfg!(feature = "sandbox-backend-sandboxd-client") {
+    if cfg!(oxide_module_sandbox_backend_sandboxd_client) {
         backends.push("broker");
     }
     backends
@@ -477,8 +480,8 @@ fn selected_sandbox_backend() -> Result<SandboxBackendConfig, SandboxError> {
     let compiled = compiled_sandbox_backends();
 
     let selected_is_compiled = match backend {
-        SandboxBackendConfig::Docker => cfg!(feature = "sandbox-backend-docker-direct"),
-        SandboxBackendConfig::Broker => cfg!(feature = "sandbox-backend-sandboxd-client"),
+        SandboxBackendConfig::Docker => cfg!(oxide_module_sandbox_backend_docker_direct),
+        SandboxBackendConfig::Broker => cfg!(oxide_module_sandbox_backend_sandboxd_client),
     };
 
     if selected_is_compiled {
@@ -504,25 +507,25 @@ impl SandboxManager {
         let scope = scope.into();
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 {
                     return Ok(Self {
                         inner: SandboxManagerInner::Broker(BrokerSandboxManager::new(scope)),
                     });
                 }
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 {
                     return Ok(Self {
                         inner: SandboxManagerInner::Docker(DockerSandboxManager::new(scope).await?),
                     });
                 }
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -533,19 +536,19 @@ impl SandboxManager {
     ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .list_user_sandboxes(user_id)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::list_user_sandboxes(user_id).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -557,20 +560,20 @@ impl SandboxManager {
     ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .inspect_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -581,19 +584,19 @@ impl SandboxManager {
     ) -> Result<SandboxContainerRecord, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .ensure_scope_sandbox(scope, get_sandbox_image())
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::ensure_scope_sandbox(scope).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -604,19 +607,19 @@ impl SandboxManager {
     ) -> Result<SandboxContainerRecord, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .recreate_scope_sandbox(scope, get_sandbox_image())
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::recreate_scope_sandbox(scope).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -628,67 +631,67 @@ impl SandboxManager {
     ) -> Result<bool, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .delete_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::delete_sandbox_by_name(user_id, container_name).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    #[cfg(feature = "tool-stack-logs")]
+    #[cfg(oxide_module_tool_stack_logs)]
     pub async fn list_stack_log_sources(
         request: StackLogsListSourcesRequest,
     ) -> Result<StackLogsListSourcesResponse, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .list_stack_log_sources(request)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::list_stack_log_sources(request).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    #[cfg(feature = "tool-stack-logs")]
+    #[cfg(oxide_module_tool_stack_logs)]
     pub async fn fetch_stack_logs(
         request: StackLogsFetchRequest,
     ) -> Result<StackLogsFetchResponse, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .fetch_stack_logs(request)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::fetch_stack_logs(request).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -697,9 +700,9 @@ impl SandboxManager {
     #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.is_running(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.is_running(),
         }
     }
@@ -707,9 +710,9 @@ impl SandboxManager {
     #[must_use]
     pub fn container_id(&self) -> Option<&str> {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.container_id(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.container_id(),
         }
     }
@@ -717,18 +720,18 @@ impl SandboxManager {
     #[must_use]
     pub fn scope(&self) -> &SandboxScope {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.scope(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.scope(),
         }
     }
 
     pub async fn create_sandbox(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.create_sandbox().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.create_sandbox().await,
         }
     }
@@ -739,11 +742,11 @@ impl SandboxManager {
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<ExecResult, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
@@ -752,18 +755,18 @@ impl SandboxManager {
 
     pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.write_file(path, content).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.write_file(path, content).await,
         }
     }
 
     pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.read_file(path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
         }
     }
@@ -775,7 +778,7 @@ impl SandboxManager {
         read_guard: Option<SandboxEditReadGuard>,
     ) -> Result<SandboxApplyFileEditResult, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 let current = manager.read_file(path).await?;
                 let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
@@ -784,7 +787,7 @@ impl SandboxManager {
                 }
                 Ok(applied.result)
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 let current = manager.read_file(path).await?;
                 let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
@@ -802,11 +805,11 @@ impl SandboxManager {
         content: &[u8],
     ) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager.upload_file(container_path, content).await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager.upload_file(container_path, content).await
             }
@@ -815,45 +818,45 @@ impl SandboxManager {
 
     pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.download_file(container_path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.download_file(container_path).await,
         }
     }
 
     pub async fn get_uploads_size(&mut self) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.get_uploads_size().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.get_uploads_size().await,
         }
     }
 
     pub async fn cleanup_old_downloads(&mut self) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.cleanup_old_downloads().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.cleanup_old_downloads().await,
         }
     }
 
     pub async fn destroy(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.destroy().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.destroy().await,
         }
     }
 
     pub async fn recreate(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.recreate().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.recreate().await,
         }
     }
@@ -864,13 +867,13 @@ impl SandboxManager {
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager
                     .file_size_bytes(container_path, cancellation_token)
                     .await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager
                     .file_size_bytes(container_path, cancellation_token)
@@ -881,17 +884,17 @@ impl SandboxManager {
 
     pub async fn list_files(&mut self, path: &str) -> Result<SandboxFileListing, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => list_files_via_exec(manager, path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => list_files_via_exec(manager, path).await,
         }
     }
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 async fn list_files_via_exec(
     manager: &mut impl SandboxCommandExec,
@@ -909,8 +912,8 @@ async fn list_files_via_exec(
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 #[async_trait::async_trait]
 trait SandboxCommandExec {
@@ -921,7 +924,7 @@ trait SandboxCommandExec {
     ) -> Result<ExecResult, SandboxError>;
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[async_trait::async_trait]
 impl SandboxCommandExec for DockerSandboxManager {
     async fn exec_command(
@@ -933,7 +936,7 @@ impl SandboxCommandExec for DockerSandboxManager {
     }
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 #[async_trait::async_trait]
 impl SandboxCommandExec for BrokerSandboxManager {
     async fn exec_command(
@@ -946,8 +949,8 @@ impl SandboxCommandExec for BrokerSandboxManager {
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 fn list_files_command(path: &str) -> String {
     format!(
@@ -958,7 +961,7 @@ fn list_files_command(path: &str) -> String {
 }
 
 /// Docker sandbox manager for isolated code execution
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[derive(Clone)]
 pub(crate) struct DockerSandboxManager {
     docker: Docker,
@@ -967,14 +970,14 @@ pub(crate) struct DockerSandboxManager {
     scope: SandboxScope,
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_MAX_ATTEMPTS: usize = 8;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 impl DockerSandboxManager {
     fn normalize_non_empty(value: &str) -> Option<String> {
         let trimmed = value.trim();
@@ -2446,9 +2449,9 @@ impl DockerSandboxManager {
 
             Ok(content)
         } else {
-            return Err(SandboxError::Protocol(
+            Err(SandboxError::Protocol(
                 "Empty tar archive received".to_string(),
-            ));
+            ))
         }
     }
 
@@ -2611,7 +2614,7 @@ impl DockerSandboxManager {
     }
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 impl Drop for DockerSandboxManager {
     fn drop(&mut self) {
         if let Some(ref id) = self.container_id {
@@ -2666,7 +2669,7 @@ mod backend_selection_tests {
     }
 }
 
-#[cfg(all(test, feature = "sandbox-backend-docker-direct"))]
+#[cfg(all(test, oxide_module_sandbox_backend_docker_direct))]
 mod tests {
     use super::*;
     use crate::sandbox::broker::{

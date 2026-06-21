@@ -985,7 +985,10 @@ impl AgentRunner {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+    #![cfg_attr(
+        not(oxide_module_llm_provider_opencode_go),
+        allow(dead_code, unused_imports)
+    )]
 
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
@@ -1112,7 +1115,7 @@ mod tests {
         assert_eq!(messages[0].text_projection(), "What is shown in the image?");
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn openai_base_route_supports_native_image_parts_by_capability() {
         use crate::testing::{test_remove_env, test_set_env};
@@ -1162,7 +1165,7 @@ mod tests {
         test_remove_env(format!("OPENAI_BASE_PROVIDERS__{IDX}__DEFAULT_IMAGE_INPUT"));
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn openai_base_route_without_config_defaults_to_text_only() {
         use crate::testing::test_remove_env;
@@ -1426,7 +1429,7 @@ mod tests {
         drop(ctx);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_repairs_invalid_tool_history_before_llm_call() {
         let llm_client = build_llm_client(single_final_response_provider());
@@ -1507,7 +1510,7 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_fails_over_to_weighted_backup_after_persistent_rate_limits() {
         let mut primary = MockLlmProvider::new();
@@ -1608,7 +1611,7 @@ mod tests {
         }));
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_keeps_primary_provider_when_rate_limit_recovers() {
         let mut primary = MockLlmProvider::new();

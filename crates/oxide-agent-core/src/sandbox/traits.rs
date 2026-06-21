@@ -1,7 +1,7 @@
 //! Narrow sandbox backend capability traits.
 
 use super::ExecResult;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 use super::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
@@ -112,8 +112,8 @@ pub struct SandboxApplyFileEditResult {
 /// Internal result of applying a sandbox text edit to in-memory bytes.
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -126,8 +126,8 @@ pub(crate) struct SandboxAppliedFileEdit {
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -164,8 +164,8 @@ pub(crate) fn apply_sandbox_file_edit(
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -175,8 +175,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -208,8 +208,8 @@ fn validate_edit_read_guard(
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -266,8 +266,8 @@ fn apply_exact_text_edit(
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -375,7 +375,7 @@ pub trait SandboxAdmin: SandboxBackend {
 }
 
 /// Sandbox diagnostics capability.
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 #[async_trait]
 pub trait SandboxDiagnostics: SandboxBackend {
     /// List compose-stack log sources available to the diagnostics backend.

@@ -1,103 +1,103 @@
-#[cfg(feature = "llm-minimax")]
+#[cfg(oxide_module_llm_provider_anthropic)]
 pub mod anthropic;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(unused_imports, dead_code)]
 pub(crate) mod anthropic_messages;
 #[cfg(any(
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 pub(crate) mod chat_completions;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-chatgpt")]
+#[cfg(oxide_module_llm_provider_openai_chatgpt)]
 pub mod chatgpt;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 pub(crate) mod messages;
 pub(crate) mod modules;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-openai-base")]
+#[cfg(oxide_module_llm_provider_openai_base)]
 pub mod openai_base;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 pub mod opencode_go;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-openrouter")]
+#[cfg(oxide_module_llm_provider_openrouter)]
 pub mod openrouter;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 mod protocol_profiles;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 mod tool_call_adapter;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 mod tool_call_encoder;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 mod tool_correlation;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 #[allow(dead_code)]
 mod tool_result_encoder;
-#[cfg(feature = "llm-minimax")]
+#[cfg(oxide_module_llm_provider_anthropic)]
 pub use anthropic::AnthropicProvider;
-#[cfg(feature = "llm-chatgpt")]
+#[cfg(oxide_module_llm_provider_openai_chatgpt)]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-openai-base")]
+#[cfg(oxide_module_llm_provider_openai_base)]
 pub use openai_base::OpenAIBaseProvider;
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 pub use opencode_go::OpenCodeGoProvider;
-#[cfg(feature = "llm-openrouter")]
+#[cfg(oxide_module_llm_provider_openrouter)]
 pub use openrouter::OpenRouterProvider;
 
 pub(crate) use modules::{

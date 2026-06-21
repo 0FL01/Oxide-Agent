@@ -467,7 +467,10 @@ impl AgentRunner {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+    #![cfg_attr(
+        not(oxide_module_llm_provider_opencode_go),
+        allow(dead_code, unused_imports)
+    )]
 
     use super::*;
     use crate::agent::compaction::{
@@ -529,7 +532,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_retries_after_context_overflow_with_runtime_context_limit_compaction() {
         let llm_client = crate::agent::runner::test_support::build_llm_client(
@@ -622,7 +625,7 @@ mod tests {
         assert!(started < completed);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_pre_sampling_uses_runtime_compaction_when_threshold_reached() {
         let llm_client = crate::agent::runner::test_support::build_llm_client(
@@ -932,7 +935,7 @@ mod tests {
         drop(ctx);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_compacts_before_downshifting_to_smaller_model_route() {
         let mut primary = MockLlmProvider::new();

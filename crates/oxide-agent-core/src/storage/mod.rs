@@ -3,24 +3,24 @@
 //! Provides persistent storage implementations for durable runtime state.
 
 mod browser_artifacts;
-#[cfg(any(feature = "storage-sqlx", test))]
+#[cfg(any(oxide_module_storage_sqlx, test))]
 mod builders;
 mod control_plane;
 mod error;
 mod flows;
 mod keys;
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 mod modules;
 mod provider;
 mod reminder;
-#[cfg(any(feature = "storage-sqlx", test))]
+#[cfg(any(oxide_module_storage_sqlx, test))]
 mod schema;
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 mod sqlx;
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 mod sqlx_config;
 mod user;
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 mod utils;
 
 pub use browser_artifacts::{BrowserArtifactData, BrowserArtifactRecord};
@@ -43,7 +43,7 @@ pub use keys::{
     generate_flow_id, wiki_context_inbox_key, wiki_context_key, wiki_context_page_key,
     wiki_context_prefix, wiki_context_raw_key, wiki_global_key,
 };
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 pub use modules::{BuiltStorageBackend, StorageBackendModule, build_primary_storage};
 #[cfg(test)]
 pub use provider::MockStorageProvider;
@@ -53,9 +53,9 @@ pub use reminder::{
     ReminderThreadKind, compute_cron_next_run_at, compute_next_reminder_run_at,
     format_reminder_unix_in_timezone, parse_reminder_timezone, resolve_reminder_local_datetime,
 };
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 pub use sqlx::SqlxStorage;
-#[cfg(feature = "storage-sqlx")]
+#[cfg(oxide_module_storage_sqlx)]
 pub use sqlx_config::{SQLX_STORAGE_MODULE_ID, SqlxStorageConfig};
 pub use user::{UserConfig, UserContextConfig};
 

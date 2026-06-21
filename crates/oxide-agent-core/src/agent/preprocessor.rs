@@ -570,9 +570,9 @@ pub enum AgentInput {
 mod tests {
     use super::*;
     use crate::config::AgentSettings;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::config::ModuleRuntimeConfig;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::llm::MockLlmProvider;
     use crate::sandbox::{
         SandboxBackend, SandboxBackendId, SandboxCapability, SandboxError, SandboxFileListing,
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(fileops.writes()[0].0, staged.sandbox_path);
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_image_preserves_user_request_separately_from_description() {
         let mut settings = AgentSettings {
@@ -905,7 +905,7 @@ mod tests {
         assert!(result.contains("Attached image content:\nVisible text: OpenAI Developers"));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_image_without_context_keeps_plain_description() {
         let mut settings = AgentSettings {
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(result, "plain image description");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
         let mut settings = AgentSettings {

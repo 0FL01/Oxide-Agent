@@ -1,16 +1,16 @@
 //! Capability-oriented tool modules.
 
 use super::ToolExecutor;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use super::{
     OutputNormalizer, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::agent::progress::AgentEvent;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::providers::SandboxExecProvider;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::providers::SandboxFileOpsProvider;
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 use crate::agent::providers::SandboxLifecycleProvider;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::session::AgentMemoryScope;
@@ -18,87 +18,87 @@ use crate::agent::wiki_memory::WikiStore;
 use crate::capabilities::ModuleId;
 use crate::config::AgentSettings;
 use crate::llm::LlmClient;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::llm::ToolDefinition;
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 use crate::sandbox::SandboxFileOps;
 use crate::sandbox::SandboxScope;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use async_trait::async_trait;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use serde::Deserialize;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use serde_json::{Value, json};
 use std::sync::Arc;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use std::sync::OnceLock;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 use crate::agent::providers::AgentsMdProvider;
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 use crate::agent::providers::BraveSearchProvider;
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 use crate::agent::providers::CompressionProvider;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 use crate::agent::providers::CrwProvider;
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 use crate::agent::providers::DelegationProvider;
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 use crate::agent::providers::FileHosterProvider;
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 use crate::agent::providers::ManagerControlPlaneProvider;
 use crate::agent::providers::ManagerTopicLifecycle;
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 use crate::agent::providers::MediaFileProvider;
 use crate::agent::providers::ReminderContext;
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 use crate::agent::providers::ReminderProvider;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use crate::agent::providers::SshMcpProvider;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 use crate::agent::providers::StackLogsProvider;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 use crate::agent::providers::TavilyProvider;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 use crate::agent::providers::TodosProvider;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::WebFetchMdProvider;
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 use crate::agent::providers::WikiMemoryProvider;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::providers::YtdlpProvider;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::webfetch_md::WebMarkdownArgs;
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 use crate::agent::providers::{BrowserArtifactSettings, BrowserLiveProvider};
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
 use crate::storage::StorageProvider;
 use crate::storage::TopicInfraConfigRecord;
 
 /// Topic-scoped context required by the AGENTS.md tools.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
 pub struct AgentsMdModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_id: String,
 }
 
-#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
 impl AgentsMdModuleContext {
     /// Create a context for topic-scoped AGENTS.md tools.
     #[must_use]
@@ -113,14 +113,14 @@ impl AgentsMdModuleContext {
 
 /// User-scoped context required by manager control-plane tools.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
 pub struct ManagerControlPlaneModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
 }
 
-#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
 impl ManagerControlPlaneModuleContext {
     /// Create a context for manager control-plane tools.
     #[must_use]
@@ -139,7 +139,7 @@ impl ManagerControlPlaneModuleContext {
 
 /// Topic-scoped infrastructure context required by SSH MCP tools.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
 pub struct SshMcpModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
@@ -147,7 +147,7 @@ pub struct SshMcpModuleContext {
     config: TopicInfraConfigRecord,
 }
 
-#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
 impl SshMcpModuleContext {
     /// Create a context for topic-scoped SSH MCP tools.
     #[must_use]
@@ -169,14 +169,14 @@ impl SshMcpModuleContext {
 /// Context required by browser-live tools: durable storage for screenshot
 /// artifacts and transport-agnostic session scope for deletion.
 #[derive(Clone)]
-#[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
 pub struct BrowserLiveModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: String,
 }
 
-#[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
 impl BrowserLiveModuleContext {
     /// Create a context for browser-live screenshot storage.
     #[must_use]
@@ -306,49 +306,49 @@ impl ToolModuleContext {
     }
 
     /// Optional context for topic-scoped AGENTS.md tools.
-    #[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
     #[must_use]
     pub fn agents_md_context(&self) -> Option<AgentsMdModuleContext> {
         self.agents_md_context.clone()
     }
 
     /// Optional context for manager control-plane tools.
-    #[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
     #[must_use]
     pub fn manager_control_plane_context(&self) -> Option<ManagerControlPlaneModuleContext> {
         self.manager_control_plane_context.clone()
     }
 
     /// Optional context for topic-scoped SSH MCP tools.
-    #[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
     #[must_use]
     pub fn ssh_mcp_context(&self) -> Option<SshMcpModuleContext> {
         self.ssh_mcp_context.clone()
     }
 
     /// Optional context for browser-live screenshot storage.
-    #[cfg_attr(not(feature = "tool-browser-live"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
     #[must_use]
     pub fn browser_live_context(&self) -> Option<BrowserLiveModuleContext> {
         self.browser_live_context.clone()
     }
 
     /// Optional context for reminder tools.
-    #[cfg_attr(not(feature = "tool-reminder"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_tool_reminder), allow(dead_code))]
     #[must_use]
     pub fn reminder_context(&self) -> Option<ReminderContext> {
         self.reminder_context.clone()
     }
 
     /// Optional durable wiki memory store.
-    #[cfg_attr(not(feature = "tool-wiki-memory"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
     #[must_use]
     pub fn wiki_memory_store(&self) -> Option<WikiStore> {
         self.wiki_memory_store.clone()
     }
 
     /// Stable memory scope used by wiki memory tools.
-    #[cfg_attr(not(feature = "tool-wiki-memory"), allow(dead_code))]
+    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
     #[must_use]
     pub fn memory_scope(&self) -> AgentMemoryScope {
         self.memory_scope.clone()
@@ -371,10 +371,10 @@ pub trait ToolModule {
 }
 
 /// Capability module for Browser Live autonomous browser tools.
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 pub struct BrowserLiveToolModule;
 
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 impl BrowserLiveToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<BrowserLiveProvider> {
         let settings = ctx.settings();
@@ -400,7 +400,7 @@ impl BrowserLiveToolModule {
     }
 }
 
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 impl ToolModule for BrowserLiveToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/browser-live")
@@ -414,10 +414,10 @@ impl ToolModule for BrowserLiveToolModule {
 }
 
 /// Capability module for the runner-handled `compress` tool.
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 pub struct CompressionToolModule;
 
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 impl ToolModule for CompressionToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/compression")
@@ -429,10 +429,10 @@ impl ToolModule for CompressionToolModule {
 }
 
 /// Capability module for chat and external file delivery from sandbox files.
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 pub struct FileDeliveryToolModule;
 
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 impl ToolModule for FileDeliveryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/file-delivery")
@@ -445,10 +445,10 @@ impl ToolModule for FileDeliveryToolModule {
 }
 
 /// Capability module for topic-scoped AGENTS.md self-editing tools.
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 pub struct AgentsMdToolModule;
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 impl AgentsMdToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<AgentsMdProvider> {
         ctx.agents_md_context().map(|agents_md| {
@@ -457,7 +457,7 @@ impl AgentsMdToolModule {
     }
 }
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
@@ -471,16 +471,16 @@ impl ToolModule for AgentsMdToolModule {
 }
 
 /// Capability module for sub-agent delegation tools.
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 pub struct DelegationToolModule;
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 impl DelegationToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> DelegationProvider {
         let provider =
             DelegationProvider::new(ctx.llm_client(), ctx.sandbox_scope(), ctx.settings());
 
-        #[cfg(feature = "tool-agents-md")]
+        #[cfg(oxide_module_tool_agents_md)]
         let provider = if let Some(agents_md) = ctx.agents_md_context() {
             provider.with_topic_agents_md_context(
                 agents_md.storage,
@@ -495,7 +495,7 @@ impl DelegationToolModule {
     }
 }
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 impl ToolModule for DelegationToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/delegation")
@@ -507,10 +507,10 @@ impl ToolModule for DelegationToolModule {
 }
 
 /// Capability module for manager control-plane tools.
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub struct ManagerControlPlaneToolModule;
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 impl ManagerControlPlaneToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<ManagerControlPlaneProvider> {
         let manager = ctx.manager_control_plane_context()?;
@@ -522,7 +522,7 @@ impl ManagerControlPlaneToolModule {
     }
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 impl ToolModule for ManagerControlPlaneToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("manager/control-plane")
@@ -536,13 +536,13 @@ impl ToolModule for ManagerControlPlaneToolModule {
 }
 
 /// Capability module for topic-scoped SSH MCP tools.
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub struct SshMcpToolModule;
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 static SSH_PRIVATE_KEY_CLEANUP_RESULT: OnceLock<Result<usize, String>> = OnceLock::new();
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 impl SshMcpToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SshMcpProvider> {
         let ssh = ctx.ssh_mcp_context()?;
@@ -571,7 +571,7 @@ impl SshMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 impl ToolModule for SshMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/ssh-mcp")
@@ -585,17 +585,17 @@ impl ToolModule for SshMcpToolModule {
 }
 
 /// Capability module for reminder scheduling tools.
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 pub struct ReminderToolModule;
 
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 impl ReminderToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<ReminderProvider> {
         ctx.reminder_context().map(ReminderProvider::new)
     }
 }
 
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 impl ToolModule for ReminderToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/reminder")
@@ -609,10 +609,10 @@ impl ToolModule for ReminderToolModule {
 }
 
 /// Capability module for scoped durable wiki memory tools.
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 pub struct WikiMemoryToolModule;
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 impl WikiMemoryToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<WikiMemoryProvider> {
         let store = ctx.wiki_memory_store()?;
@@ -625,7 +625,7 @@ impl WikiMemoryToolModule {
     }
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 impl ToolModule for WikiMemoryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/wiki-memory")
@@ -639,9 +639,9 @@ impl ToolModule for WikiMemoryToolModule {
 }
 
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
     match ctx.browser_live_context() {
@@ -656,10 +656,10 @@ fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
 }
 
 /// Capability module for audio file transcription.
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 pub struct MediaAudioToolModule;
 
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 impl ToolModule for MediaAudioToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-audio")
@@ -671,10 +671,10 @@ impl ToolModule for MediaAudioToolModule {
 }
 
 /// Capability module for image file description.
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 pub struct MediaImageToolModule;
 
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 impl ToolModule for MediaImageToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-image")
@@ -686,10 +686,10 @@ impl ToolModule for MediaImageToolModule {
 }
 
 /// Capability module for video file description.
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 pub struct MediaVideoToolModule;
 
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 impl ToolModule for MediaVideoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-video")
@@ -701,10 +701,10 @@ impl ToolModule for MediaVideoToolModule {
 }
 
 /// Capability module for Jira MCP tools.
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 pub struct JiraMcpToolModule;
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 impl JiraMcpToolModule {
     fn provider(&self) -> Option<JiraMcpProvider> {
         match JiraMcpConfig::from_env() {
@@ -732,7 +732,7 @@ impl JiraMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 impl ToolModule for JiraMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-jira")
@@ -745,7 +745,7 @@ impl ToolModule for JiraMcpToolModule {
             .unwrap_or_default();
 
         // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         if crate::config::is_crw_enabled() {
             return executors
                 .into_iter()
@@ -758,10 +758,10 @@ impl ToolModule for JiraMcpToolModule {
 }
 
 /// Capability module for Mattermost MCP tools.
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 pub struct MattermostMcpToolModule;
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 impl MattermostMcpToolModule {
     fn provider(&self) -> Option<MattermostMcpProvider> {
         match MattermostMcpConfig::from_env() {
@@ -791,7 +791,7 @@ impl MattermostMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 impl ToolModule for MattermostMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-mattermost")
@@ -805,10 +805,10 @@ impl ToolModule for MattermostMcpToolModule {
 }
 
 /// Capability module for compose-stack log tools.
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 pub struct StackLogsToolModule;
 
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 impl ToolModule for StackLogsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/stack-logs")
@@ -820,10 +820,10 @@ impl ToolModule for StackLogsToolModule {
 }
 
 /// Capability module for one-shot URL-to-Markdown fetches.
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub struct WebFetchMdToolModule;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
@@ -838,10 +838,10 @@ impl ToolModule for WebFetchMdToolModule {
 }
 
 /// Capability module for merged URL-to-Markdown fetches.
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub struct WebCrawlerToolModule;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl ToolModule for WebCrawlerToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/web-crawler")
@@ -855,12 +855,12 @@ impl ToolModule for WebCrawlerToolModule {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const TOOL_WEB_CRAWLER: &str = "web_crawler";
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS: u64 = 10;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[derive(Debug, Deserialize, Clone, Default)]
 struct WebCrawlerArgs {
     url: String,
@@ -876,19 +876,19 @@ struct WebCrawlerArgs {
     fresh: bool,
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 struct WebCrawlerToolExecutor {
     webfetch: WebFetchMdProvider,
-    #[cfg(feature = "tool-crw")]
+    #[cfg(oxide_module_tool_crw)]
     crw: Option<Arc<CrwProvider>>,
     name: ToolName,
     spec: ToolDefinition,
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl WebCrawlerToolExecutor {
     fn new() -> Self {
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         let crw = crate::config::is_crw_enabled()
             .then(CrwProvider::new)
             .and_then(|res| res.ok())
@@ -896,7 +896,7 @@ impl WebCrawlerToolExecutor {
 
         Self {
             webfetch: WebFetchMdProvider::new(),
-            #[cfg(feature = "tool-crw")]
+            #[cfg(oxide_module_tool_crw)]
             crw,
             name: ToolName::from(TOOL_WEB_CRAWLER),
             spec: web_crawler_tool_definition(),
@@ -977,7 +977,7 @@ impl WebCrawlerToolExecutor {
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         let _ = (&args.wait_for, args.fresh);
 
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         if let Some(crw) = &self.crw {
             return self
                 .execute_crw_scrape_fallback(
@@ -1008,7 +1008,7 @@ impl WebCrawlerToolExecutor {
     ///
     /// Called when webfetch fails with an anti-bot or access-block error
     /// and a CRW provider is configured.
-    #[cfg(feature = "tool-crw")]
+    #[cfg(oxide_module_tool_crw)]
     async fn execute_crw_scrape_fallback(
         &self,
         invocation: &ToolInvocation,
@@ -1074,7 +1074,7 @@ impl WebCrawlerToolExecutor {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[async_trait]
 impl ToolExecutor for WebCrawlerToolExecutor {
     fn name(&self) -> ToolName {
@@ -1102,7 +1102,7 @@ impl ToolExecutor for WebCrawlerToolExecutor {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_WEB_CRAWLER.to_string(),
@@ -1146,19 +1146,19 @@ fn web_crawler_tool_definition() -> ToolDefinition {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn parse_web_crawler_args(arguments: &str) -> anyhow::Result<WebCrawlerArgs> {
     serde_json::from_str(arguments)
         .map_err(|error| anyhow::anyhow!("invalid web_crawler arguments: {error}"))
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
     args.timeout_secs
         .unwrap_or(WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS)
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     let message = error.to_string();
     if message.contains("invalid web_crawler arguments") {
@@ -1168,7 +1168,7 @@ fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_output(
     backend: &str,
     fallback_reason: Option<&str>,
@@ -1200,7 +1200,7 @@ fn web_crawler_output(
     output
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_success_payload(
     backend: &str,
     fallback_reason: Option<&str>,
@@ -1226,7 +1226,7 @@ fn web_crawler_success_payload(
     })
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_webfetch_failure_payload(
     args: Option<&WebMarkdownArgs>,
     error: &anyhow::Error,
@@ -1243,7 +1243,7 @@ fn web_crawler_webfetch_failure_payload(
     payload
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_no_fallback_payload(
     args: &WebMarkdownArgs,
     error: &anyhow::Error,
@@ -1269,14 +1269,14 @@ fn web_crawler_no_fallback_payload(
     payload
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_fallback_unavailable_message(url: &str) -> String {
     format!(
         "web_crawler lightweight fetch needs rendered fallback for {url}, but no rendered fallback provider is configured. This path is closed for this task; use another source."
     )
 }
 
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crw"))]
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
 fn web_crawler_crw_failure_payload(
     webfetch_args: &WebMarkdownArgs,
     webfetch_error: &anyhow::Error,
@@ -1303,7 +1303,7 @@ fn web_crawler_crw_failure_payload(
     })
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_fallback_reason(
     args: &WebMarkdownArgs,
     error: &anyhow::Error,
@@ -1315,7 +1315,7 @@ fn web_crawler_fallback_reason(
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_http_status_fallback_reason(
     args: &WebMarkdownArgs,
     error: &anyhow::Error,
@@ -1335,7 +1335,7 @@ fn web_crawler_http_status_fallback_reason(
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_is_reddit_thread_url(raw_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(raw_url) else {
         return false;
@@ -1367,7 +1367,7 @@ fn web_crawler_is_reddit_thread_url(raw_url: &str) -> bool {
     )
 }
 
-#[cfg(all(test, feature = "tool-webfetch-md"))]
+#[cfg(all(test, oxide_module_tool_webfetch_md))]
 mod web_crawler_tests {
     use super::*;
 
@@ -1494,10 +1494,10 @@ mod web_crawler_tests {
 }
 
 /// Capability module for Tavily search/extract tools.
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 pub struct TavilyToolModule;
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 impl TavilyToolModule {
     fn provider(&self) -> Option<TavilyProvider> {
         if !crate::config::is_tavily_enabled() {
@@ -1530,7 +1530,7 @@ impl TavilyToolModule {
     }
 }
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 impl ToolModule for TavilyToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tavily")
@@ -1544,10 +1544,10 @@ impl ToolModule for TavilyToolModule {
 }
 
 /// Capability module for Brave Search API web search.
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 pub struct BraveSearchToolModule;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 impl BraveSearchToolModule {
     fn provider(&self) -> Option<BraveSearchProvider> {
         if !crate::config::is_brave_search_enabled() {
@@ -1564,7 +1564,7 @@ impl BraveSearchToolModule {
     }
 }
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 impl ToolModule for BraveSearchToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/brave-search")
@@ -1578,10 +1578,10 @@ impl ToolModule for BraveSearchToolModule {
 }
 
 /// Capability module for CRW-backed web search.
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 pub struct CrwSearchToolModule;
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 impl CrwSearchToolModule {
     fn provider(&self) -> Option<Arc<CrwProvider>> {
         if !crate::config::is_crw_enabled() {
@@ -1598,7 +1598,7 @@ impl CrwSearchToolModule {
     }
 }
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 impl ToolModule for CrwSearchToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/crw")
@@ -1612,10 +1612,10 @@ impl ToolModule for CrwSearchToolModule {
 }
 
 /// Capability module for Kokoro English text-to-speech tools.
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 pub struct KokoroTtsToolModule;
 
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 impl KokoroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<KokoroTtsProvider> {
         let config = TtsConfig::from_env();
@@ -1642,7 +1642,7 @@ impl KokoroTtsToolModule {
     }
 }
 
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 impl ToolModule for KokoroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-kokoro")
@@ -1656,10 +1656,10 @@ impl ToolModule for KokoroTtsToolModule {
 }
 
 /// Capability module for Silero Russian text-to-speech tools.
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 pub struct SileroTtsToolModule;
 
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 impl SileroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SileroTtsProvider> {
         let config = SileroTtsConfig::from_env();
@@ -1686,7 +1686,7 @@ impl SileroTtsToolModule {
     }
 }
 
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 impl ToolModule for SileroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-silero")
@@ -1700,10 +1700,10 @@ impl ToolModule for SileroTtsToolModule {
 }
 
 /// Capability module for yt-dlp media tools.
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 pub struct YtdlpToolModule;
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 impl YtdlpToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> YtdlpProvider {
         if let Some(tx) = ctx.progress_tx() {
@@ -1714,7 +1714,7 @@ impl YtdlpToolModule {
     }
 }
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 impl ToolModule for YtdlpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/ytdlp")
@@ -1726,10 +1726,10 @@ impl ToolModule for YtdlpToolModule {
 }
 
 /// Capability module for the `write_todos` typed runtime tool.
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 pub struct TodosToolModule;
 
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 impl ToolModule for TodosToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/todos")
@@ -1741,10 +1741,10 @@ impl ToolModule for TodosToolModule {
 }
 
 /// Capability module for sandbox command execution.
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 pub struct SandboxExecToolModule;
 
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 impl ToolModule for SandboxExecToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-exec")
@@ -1756,10 +1756,10 @@ impl ToolModule for SandboxExecToolModule {
 }
 
 /// Capability module for sandbox file operations.
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 pub struct SandboxFileOpsToolModule;
 
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 impl ToolModule for SandboxFileOpsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-fileops")
@@ -1771,10 +1771,10 @@ impl ToolModule for SandboxFileOpsToolModule {
 }
 
 /// Capability module for sandbox recreation.
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 pub struct SandboxRecreateToolModule;
 
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 impl ToolModule for SandboxRecreateToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-recreate")

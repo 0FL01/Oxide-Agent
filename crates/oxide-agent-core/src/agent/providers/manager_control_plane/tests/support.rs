@@ -143,7 +143,7 @@ pub(super) fn provider_status<'a>(
         .unwrap_or_else(|| panic!("{provider} provider status must be present"))
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub(super) fn expect_forum_topic_provision_profile_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -181,7 +181,7 @@ pub(super) fn expect_forum_topic_provision_profile_calls(
         });
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub(super) fn expect_forum_topic_provision_binding_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -213,7 +213,7 @@ pub(super) fn expect_forum_topic_provision_binding_calls(
         });
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub(super) fn expect_forum_topic_provision_infra_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -248,7 +248,7 @@ pub(super) fn expect_forum_topic_provision_infra_calls(
         });
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub(super) fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_user_config()

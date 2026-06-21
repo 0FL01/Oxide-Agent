@@ -10,51 +10,51 @@ mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 pub mod media_file;
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 mod path;
 pub mod reminder;
 pub mod sandbox;
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 pub mod silero_tts;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub mod ssh_mcp;
-#[cfg(not(feature = "integration-ssh-mcp"))]
+#[cfg(not(oxide_module_integration_ssh_mcp))]
 mod ssh_mcp_stub;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 pub mod stack_logs;
 pub mod todos;
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 pub mod tts;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub mod webfetch_md;
 pub mod wiki_memory;
 pub mod ytdlp;
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 pub mod tavily;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 pub mod brave_search;
 
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 pub mod browser_live;
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 pub mod crw;
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 pub mod jira_mcp;
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 pub mod mattermost_mcp;
 
 pub use agents_md::{AgentsMdProvider, agents_md_tool_names};
@@ -67,9 +67,9 @@ pub use manager_control_plane::{
     ManagerTopicLifecycle, ManagerTopicSandboxCleanup, manager_control_plane_tool_names,
 };
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 pub use media_file::MediaFileProvider;
 pub use reminder::{
@@ -79,49 +79,49 @@ pub use reminder::{
 pub use sandbox::{
     SandboxExecProvider, SandboxFileOpsProvider, SandboxLifecycleProvider, SandboxRuntime,
 };
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 pub use silero_tts::{
     SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsProvider, SileroTtsRequest,
     SileroTtsSpeaker,
 };
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub use ssh_mcp::{
     SecretProbeKind, SecretProbeReport, SshMcpProvider, TopicInfraPreflightReport,
     inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
 };
-#[cfg(not(feature = "integration-ssh-mcp"))]
+#[cfg(not(oxide_module_integration_ssh_mcp))]
 pub use ssh_mcp_stub::{
     SecretProbeKind, SecretProbeReport, TopicInfraPreflightReport,
     inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
 };
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 pub use stack_logs::StackLogsProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub use webfetch_md::WebFetchMdProvider;
 pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 pub use tavily::TavilyProvider;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 pub use brave_search::BraveSearchProvider;
 
-#[cfg(feature = "tool-browser-live")]
+#[cfg(oxide_module_tool_browser_live)]
 pub use browser_live::{
     BrowserAction, BrowserArtifactSettings, BrowserLiveProvider, BrowserObservation,
     BrowserSidecarClient, BrowserSidecarError, BrowserSidecarTimeouts, CreateSessionRequest,
     IdempotencyKey, ScreenshotArtifact, SidecarErrorBody, Viewport,
 };
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 pub use crw::CrwProvider;
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 pub use mattermost_mcp::{MattermostMcpConfig, MattermostMcpProvider};

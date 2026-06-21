@@ -49,7 +49,7 @@ pub struct DiscoveredLlmModel {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for DiscoveredLlmModel {
     fn from(model: providers::opencode_go::discovery::DiscoveredOpenCodeGoModel) -> Self {
         Self {
@@ -237,8 +237,11 @@ impl LlmClient {
 
         #[cfg_attr(
             not(any(
-                feature = "llm-opencode-go",
-                all(feature = "llm-openai-base", feature = "llm-opencode-go")
+                oxide_module_llm_provider_opencode_go,
+                all(
+                    oxide_module_llm_provider_openai_base,
+                    oxide_module_llm_provider_opencode_go
+                )
             )),
             allow(unused_mut)
         )]
@@ -246,7 +249,7 @@ impl LlmClient {
             &'static str,
             Arc<dyn DiscoveredModelSource>,
         )> = Vec::new();
-        #[cfg(feature = "llm-opencode-go")]
+        #[cfg(oxide_module_llm_provider_opencode_go)]
         {
             providers::opencode_go::discovery::init_models_dev_catalog(
                 support::http::create_http_client(),
@@ -264,7 +267,10 @@ impl LlmClient {
                 discovered_model_sources.push((SOURCE_ID_OPENCODE_ZEN, catalog));
             }
         }
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
+        #[cfg(all(
+            oxide_module_llm_provider_openai_base,
+            oxide_module_llm_provider_opencode_go
+        ))]
         {
             for catalog in providers::openai_base::module::build_model_catalogs(
                 settings,

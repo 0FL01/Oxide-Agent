@@ -381,7 +381,7 @@ impl AgentSettings {
     pub fn new() -> Result<Self, ConfigError> {
         // Prime the Models.dev catalog before validation so vision capability
         // checks (MEDIA_MODEL route validation) have data available.
-        #[cfg(feature = "llm-opencode-go")]
+        #[cfg(oxide_module_llm_provider_opencode_go)]
         {
             crate::llm::providers::opencode_go::discovery::init_models_dev_catalog(
                 reqwest::Client::new(),
@@ -1235,10 +1235,10 @@ mod tests {
     use std::env;
 
     #[cfg(any(
-        feature = "llm-minimax",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))]
     fn clear_model_route_env() {
         let keys: Vec<String> = env::vars()
@@ -1253,7 +1253,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     fn clear_opencode_go_env() {
         for key in [
             "OPENCODE_API_KEY",
@@ -1267,7 +1267,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     fn clear_browser_agent_env() {
         for key in [
             "BROWSER_AGENT_ENABLED",
@@ -1283,7 +1283,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     fn set_minimal_opencode_go_agent_env() {
         clear_model_route_env();
         clear_opencode_go_env();
@@ -1294,7 +1294,7 @@ mod tests {
         test_set_env("AGENT_MODEL_CONTEXT_WINDOW_TOKENS", "240000");
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     fn clear_minimal_opencode_go_agent_env() {
         clear_opencode_go_env();
         clear_model_route_env();
@@ -1309,7 +1309,7 @@ mod tests {
     }
 
     // Tests run sequentially to avoid environment variable race conditions
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
@@ -1445,7 +1445,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn route_validation_accepts_openai_base_zai_instance() {
         let _guard = test_env_mutex()
@@ -1524,7 +1524,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_validation_accepts_compiled_provider_alias_and_id() {
         let settings = AgentSettings {
@@ -1540,7 +1540,7 @@ mod tests {
             .expect("compiled provider alias and id should validate");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_validation_rejects_disabled_provider_module() {
         let mut settings = AgentSettings {
@@ -1562,7 +1562,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_canonicalization_rewrites_aliases_to_module_ids() {
         let mut settings = AgentSettings {
@@ -1624,7 +1624,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_model_validation_rejects_unapproved_openrouter_agent_model() {
         let mut settings = AgentSettings {
@@ -1647,7 +1647,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_model_validation_rejects_unapproved_openrouter_media_model() {
         let mut settings = AgentSettings {
@@ -1672,7 +1672,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn route_credentials_validation_resolves_provider_module_ids() {
         let _guard = test_env_mutex()
@@ -1693,7 +1693,7 @@ mod tests {
         clear_opencode_go_env();
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn browser_agent_config_defaults_to_disabled() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
@@ -1715,7 +1715,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn browser_agent_config_keeps_existing_media_model_when_disabled()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1744,7 +1744,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn browser_agent_config_parses_enabled() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
@@ -1774,7 +1774,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn browser_agent_config_rejects_missing_sidecar_url() {
         let _guard = test_env_mutex()
@@ -1895,7 +1895,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "llm-minimax", feature = "llm-openai-base"))]
+    #[cfg(all(
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_openai_base
+    ))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1954,7 +1957,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_resolves_opencode_go_module_env_config() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -2003,7 +2006,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_bootstraps_opencode_go_route_from_api_key_only() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -2034,7 +2037,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_do_not_require_unrelated_provider_key_when_active_routes_use_opencode_go()
     -> Result<(), ConfigError> {
@@ -2070,7 +2073,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_error_when_active_opencode_go_key_missing() {
         let _guard = test_env_mutex()

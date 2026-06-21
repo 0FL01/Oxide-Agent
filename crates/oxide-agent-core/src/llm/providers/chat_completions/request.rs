@@ -25,7 +25,7 @@ pub(crate) trait ChatToolCallIdMapper {
     fn map_tool_call_id(&mut self, id: &str) -> String;
 }
 
-#[cfg(feature = "llm-openai-base")]
+#[cfg(oxide_module_llm_provider_openai_base)]
 impl ChatToolCallIdMapper for crate::llm::providers::openai_base::ToolCallIdMapper {
     fn map_tool_call_id(&mut self, id: &str) -> String {
         self.mistral_id_for(id)

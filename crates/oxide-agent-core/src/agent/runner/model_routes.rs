@@ -172,11 +172,14 @@ impl AgentRunner {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+    #![cfg_attr(
+        not(oxide_module_llm_provider_opencode_go),
+        allow(dead_code, unused_imports)
+    )]
 
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
-    #[cfg(feature = "llm-chatgpt")]
+    #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     use crate::agent::runner::test_support::build_llm_client_for_provider;
     use crate::agent::runner::test_support::{
         build_llm_client, single_final_response_provider, stub_non_chat_methods,
@@ -262,7 +265,7 @@ mod tests {
         assert!(!runner.structured_output_required_for_config(&config));
     }
 
-    #[cfg(feature = "llm-chatgpt")]
+    #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     #[test]
     fn select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled() {
         let llm_client = build_llm_client_for_provider(
@@ -308,7 +311,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route() {
         let mut opencode = MockLlmProvider::new();
@@ -378,7 +381,7 @@ mod tests {
         assert_eq!(runner.select_model_route_index(&ctx, &exhausted), None);
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn select_model_route_index_keeps_selected_opencode_zen_route_with_go_fallbacks() {
         let mut zen = MockLlmProvider::new();

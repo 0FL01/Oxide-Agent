@@ -3,7 +3,7 @@ pub(crate) mod profile;
 pub(crate) mod tool_ids;
 pub(crate) mod transcription;
 
-#[cfg(feature = "llm-mistral")]
+#[cfg(oxide_module_llm_provider_mistral)]
 pub(crate) use module::MistralProviderModule;
 pub(crate) use module::OpenAIBaseProviderModule;
 pub(crate) use profile::OpenAICompatibleProfile;

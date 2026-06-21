@@ -25,12 +25,12 @@ pub use provider::LlmProvider;
 pub use provider::MockLlmProvider;
 pub(crate) use support::backoff::is_transient_server_status;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_mistral,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 pub use support::http;
 pub use types::{

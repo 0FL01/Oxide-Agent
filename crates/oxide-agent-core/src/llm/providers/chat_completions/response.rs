@@ -25,7 +25,7 @@ pub(crate) trait ChatToolCallIdResolver {
     fn has_provider_tool_call_id(&self, provider_id: &str) -> bool;
 }
 
-#[cfg(feature = "llm-openai-base")]
+#[cfg(oxide_module_llm_provider_openai_base)]
 impl ChatToolCallIdResolver for crate::llm::providers::openai_base::ToolCallIdMapper {
     fn original_tool_call_id(&self, provider_id: &str) -> String {
         self.to_original(provider_id)

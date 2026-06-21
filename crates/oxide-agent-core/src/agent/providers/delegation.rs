@@ -41,34 +41,34 @@ use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 use crate::agent::tool_runtime::BraveSearchToolModule;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 use crate::agent::tool_runtime::CrwSearchToolModule;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 use crate::agent::tool_runtime::TavilyToolModule;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-brave-search",
-    feature = "tool-crw",
-    feature = "tool-tavily",
-    feature = "tool-todos",
-    feature = "tool-webfetch-md",
-    feature = "tool-ytdlp"
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_brave_search,
+    oxide_module_tool_crw,
+    oxide_module_tool_tavily,
+    oxide_module_tool_todos,
+    oxide_module_tool_webfetch_md,
+    oxide_module_tool_ytdlp
 ))]
 use crate::agent::tool_runtime::ToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebCrawlerToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::tool_runtime::YtdlpToolModule;
 use tokio::sync::Semaphore;
 
@@ -170,9 +170,9 @@ pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     #[cfg_attr(
         not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-ytdlp",
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_ytdlp,
         )),
         allow(dead_code)
     )]
@@ -705,42 +705,42 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
         #[cfg(not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-brave-search",
-            feature = "tool-crw",
-            feature = "tool-tavily",
-            feature = "tool-todos",
-            feature = "tool-webfetch-md",
-            feature = "tool-ytdlp"
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_brave_search,
+            oxide_module_tool_crw,
+            oxide_module_tool_tavily,
+            oxide_module_tool_todos,
+            oxide_module_tool_webfetch_md,
+            oxide_module_tool_ytdlp
         )))]
         let _ = (&module_ctx, &mut executors);
 
-        #[cfg(feature = "tool-todos")]
+        #[cfg(oxide_module_tool_todos)]
         self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-sandbox-exec")]
+        #[cfg(oxide_module_tool_sandbox_exec)]
         self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-sandbox-fileops")]
+        #[cfg(oxide_module_tool_sandbox_fileops)]
         self.push_sub_agent_tool_module(&mut executors, &SandboxFileOpsToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-ytdlp")]
+        #[cfg(oxide_module_tool_ytdlp)]
         self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.push_sub_agent_tool_module(&mut executors, &WebCrawlerToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-tavily")]
+        #[cfg(oxide_module_tool_tavily)]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-brave-search")]
+        #[cfg(oxide_module_tool_brave_search)]
         self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
 
         self.warn_for_uncompiled_sub_agent_tool_modules();
@@ -778,14 +778,14 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     #[cfg(any(
-        feature = "tool-sandbox-exec",
-        feature = "tool-sandbox-fileops",
-        feature = "tool-brave-search",
-        feature = "tool-crw",
-        feature = "tool-tavily",
-        feature = "tool-todos",
-        feature = "tool-webfetch-md",
-        feature = "tool-ytdlp"
+        oxide_module_tool_sandbox_exec,
+        oxide_module_tool_sandbox_fileops,
+        oxide_module_tool_brave_search,
+        oxide_module_tool_crw,
+        oxide_module_tool_tavily,
+        oxide_module_tool_todos,
+        oxide_module_tool_webfetch_md,
+        oxide_module_tool_ytdlp
     ))]
     fn push_sub_agent_tool_module<M>(
         &self,
@@ -804,17 +804,17 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
-        #[cfg(not(feature = "tool-tavily"))]
+        #[cfg(not(oxide_module_tool_tavily))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(not(feature = "tool-brave-search"))]
+        #[cfg(not(oxide_module_tool_brave_search))]
         if crate::config::is_brave_search_enabled() {
             warn!("Brave Search enabled but feature not compiled in");
         }
 
-        #[cfg(not(feature = "tool-crw"))]
+        #[cfg(not(oxide_module_tool_crw))]
         if crate::config::is_crw_enabled() {
             warn!("CRW enabled but feature not compiled in");
         }
@@ -2068,7 +2068,7 @@ mod tests {
         assert!(parent_rx.recv().await.is_none());
     }
 
-    #[cfg(feature = "tool-todos")]
+    #[cfg(oxide_module_tool_todos)]
     #[tokio::test]
     async fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
         let settings = Arc::new(AgentSettings {
@@ -2114,7 +2114,7 @@ mod tests {
         assert!(ctx.tool_runtime_registry.is_some());
     }
 
-    #[cfg(feature = "tool-todos")]
+    #[cfg(oxide_module_tool_todos)]
     #[tokio::test]
     async fn prepare_sub_agent_execution_inherits_topic_agents_md() {
         let mut storage = MockStorageProvider::new();
@@ -2233,9 +2233,9 @@ mod tests {
         assert!(!tools.contains("upload_file"));
         assert!(!tools.contains("recreate_sandbox"));
 
-        #[cfg(feature = "tool-sandbox-exec")]
+        #[cfg(oxide_module_tool_sandbox_exec)]
         assert!(tools.contains("execute_command"));
-        #[cfg(feature = "tool-sandbox-fileops")]
+        #[cfg(oxide_module_tool_sandbox_fileops)]
         for tool in ["write_file", "read_file", "apply_file_edit", "list_files"] {
             assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
         }

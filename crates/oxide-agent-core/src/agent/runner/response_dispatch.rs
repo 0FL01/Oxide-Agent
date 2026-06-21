@@ -331,7 +331,10 @@ fn should_parse_unstructured_structured_output_fallback(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![cfg_attr(not(feature = "llm-opencode-go"), allow(dead_code, unused_imports))]
+    #![cfg_attr(
+        not(oxide_module_llm_provider_opencode_go),
+        allow(dead_code, unused_imports)
+    )]
 
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
@@ -346,7 +349,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
         let llm_client = build_llm_client_for_provider(
