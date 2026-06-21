@@ -310,8 +310,23 @@ impl BrowserLiveProvider {
         args: ObserveArgs,
     ) -> Result<ObserveToolResult, ToolRuntimeError> {
         ensure_not_cancelled(invocation)?;
+
+        // First observe after browser_start: the sidecar has no cached
+        // observation, so fresh=false would trigger a full capture under the
+        // short 5s non-fresh timeout — too tight for heavy pages. Override
+        // to fresh=true when the local state has no cached frame, using the
+        // 15s timeout that matches the actual work.
+        let cache_empty = {
+            let states = self.states.lock().await;
+            states
+                .get(&args.session_id)
+                .and_then(|state| state.latest())
+                .is_none()
+        };
+        let fresh = args.fresh || cache_empty;
+
         let query = ObserveQuery {
-            fresh: args.fresh,
+            fresh,
             include_dom: args.include_dom,
             include_a11y: args.include_a11y,
             include_network_summary: true,

@@ -18,7 +18,7 @@ pub mod snapshot;
 pub mod stealth;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     Router,
@@ -38,7 +38,7 @@ use oxide_browser_contracts::{
     validate_action_fields,
 };
 use serde_json::json;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use session::SessionManager;
 
@@ -226,6 +226,8 @@ async fn observe(
 ) -> Json<ObserveResponse> {
     let request_id = session::new_request_id();
     let session_id = id.clone();
+    let fresh = query.fresh;
+    debug!(session_id = %id, fresh, include_dom = query.include_dom, "observe request");
 
     let Some(session) = state.sessions.get(&id).await else {
         return Json(ObserveResponse {
@@ -238,6 +240,7 @@ async fn observe(
     };
 
     let action_seq = session.next_action_seq();
+    let started = Instant::now();
     let observation = observe::build_observation(
         &session,
         action_seq,
@@ -248,6 +251,13 @@ async fn observe(
         query.max_debug_items,
     )
     .await;
+    debug!(
+        session_id = %session_id,
+        fresh,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        dom_nodes = observation.dom_snapshot.len(),
+        "observe response"
+    );
 
     Json(ObserveResponse {
         request_id,
