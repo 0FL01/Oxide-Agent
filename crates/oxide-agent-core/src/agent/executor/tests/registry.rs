@@ -892,6 +892,43 @@ fn typed_runtime_registry_registers_search_modules_once() {
     test_remove_env("TAVILY_API_KEY");
 }
 
+#[cfg(all(oxide_module_tool_tavily, oxide_module_tool_crw))]
+#[test]
+fn typed_runtime_registry_crw_owns_web_search_tavily_keeps_web_extract() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    test_set_env("TAVILY_API_KEY", "dummy-key");
+    test_set_env("TAVILY_ENABLED", "true");
+    test_set_env("OXIDE_CRW_ENABLED", "true");
+
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry.tool_names();
+
+    // CRW owns `web_search`; Tavily's duplicate is filtered at module level.
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "web_search")
+            .count(),
+        1
+    );
+    // Tavily keeps `web_extract` (not provided by CRW).
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "web_extract")
+            .count(),
+        1
+    );
+
+    test_remove_env("OXIDE_CRW_ENABLED");
+    test_remove_env("TAVILY_ENABLED");
+    test_remove_env("TAVILY_API_KEY");
+}
+
 #[cfg(oxide_module_manager_control_plane)]
 #[test]
 fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {

@@ -739,21 +739,9 @@ impl ToolModule for JiraMcpToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        let executors = self
-            .provider()
+        self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default();
-
-        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
-        #[cfg(oxide_module_tool_crw)]
-        if crate::config::is_crw_enabled() {
-            return executors
-                .into_iter()
-                .filter(|executor| executor.name().as_str() != "web_search")
-                .collect();
-        }
-
-        executors
+            .unwrap_or_default()
     }
 }
 
@@ -1537,9 +1525,21 @@ impl ToolModule for TavilyToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
+        let executors = self
+            .provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
+        #[cfg(oxide_module_tool_crw)]
+        if crate::config::is_crw_enabled() {
+            return executors
+                .into_iter()
+                .filter(|executor| executor.name().as_str() != "web_search")
+                .collect();
+        }
+
+        executors
     }
 }
 
