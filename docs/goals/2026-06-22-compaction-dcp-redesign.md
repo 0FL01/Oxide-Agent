@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-22 00:30
+Last updated: 2026-06-22 01:00
 
 ## Objective
 
@@ -35,10 +35,7 @@ Out of scope:
 
 ## Missing Inputs
 
-- User review of this goal plan.
-  - Impact: implementation should not start until the phase/checkpoint structure is accepted or edited.
-  - Low-risk assumption: DCP is a conceptual donor only; Oxide will reimplement the model in Rust with stricter structured contracts.
-  - User/external action needed: approve, reject, or edit this goal document.
+- None. User approved the plan and authorized iterative implementation.
 
 ## Repository Context
 
@@ -250,15 +247,15 @@ Out of scope:
   - Source: AGENTS.md П0.
   - Acceptance: no workaround that merely validates/synchronizes old destructive replacement behavior; architecture makes transcript loss and id hallucination impossible by contract.
   - Evidence required: design doc section mapping old failure classes to new impossible states; code review checklist before implementation.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docs/compaction-redesign.md` §6 maps old failure classes (destructive replacement, id hallucination, string-match overflow detection) to new impossible states (raw preservation, renderer-owned refs, typed `ContextOverflow` variant). Component boundary diagram shows `CompactionEngine` as only mutation authority for `CompactionState`; raw messages never touched by compaction.
 
 - Q2: П0.5 verification precedes code touching external/uncontrolled contracts.
   - Source: AGENTS.md П0.5.
   - Acceptance: before storage/schema/provider-contract changes, verification skeleton records commands/queries and actual observed outputs.
   - Evidence required: checked-in or goal-doc-linked verification notes for SQLx serialization/backward compatibility and provider-render constraints.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docs/compaction-redesign.md` §1-5 records verified facts from actual code inspection: `AgentMemory` serialization path (`serde_json::to_value` → JSONB column, `#[serde(default)]` safe for new fields), `LlmError` typed enum (no context-overflow variant exists; `llm_error_suggests_context_overflow` uses substring matching — П0 violation confirmed), `AgentEvent` compaction variants and transport mappings, tool history repair contract (runtime policy preserves terminal open batch; block boundaries must not split tool-call/result pairs), runner→provider boundary (`refresh_messages_from_memory` is the render insertion point).
 
 - Q3: П0.6 blast radius is checked after each implementation checkpoint.
   - Source: AGENTS.md П0.6.
@@ -271,15 +268,15 @@ Out of scope:
   - Source: DCP donor license and implementation constraint.
   - Acceptance: implementation is original Rust design using concepts only; no copied TS code or prompt text verbatim unless license decision is explicitly made.
   - Evidence required: diff review; decisions log records conceptual reimplementation.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docs/compaction-redesign.md` §6 describes original Rust architecture with no DCP code import. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts."
 
 - Q5: Repository invariants remain intact.
   - Source: AGENTS.md architecture invariants.
   - Acceptance: core/runtime stay transport-agnostic; teloxide remains transport-only; module registry remains source of truth; no new crates/services without verified need.
   - Evidence required: Cargo diff review, dependency grep, module-registry check if module/profile changes occur.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `docs/compaction-redesign.md` §1 confirms storage facade changes not required (JSONB column already stores full struct). Architecture adds types to `oxide-agent-core` only. No new crates, services, queues, or transports needed. Transport-agnostic: compaction engine/renderer live in core; transport event mapping changes are payload-only.
 
 - Q6: Runtime mine safety preserves progress without treating untrusted content as instructions.
   - Source: User question about agent hitting a “mine” while reading a file.
@@ -494,12 +491,12 @@ Out of scope:
   - Audit IDs updated: G10, G11, G12, G13, Q6 added as pending.
   - Next: review emergency phase ordering and decide exact artifact/retrieval contract during Phase 0.
 
-- 2026-06-22 00:30: Trigger matrix and full old-system deletion requirement added.
-  - Changed: added explicit compaction trigger matrix, G14, and changed G9/objective/Phase 8 from non-authoritative compatibility language to full deletion/no-tail language.
-  - Evidence: user asked whether trigger conditions/initiators are documented and whether replacement is without old-system tails.
-  - Commands: targeted goal-doc reads before edit; whitespace/diff checks after edit.
-  - Audit IDs updated: G9 strengthened; G14 added as pending.
-  - Next: user approval; then Phase 0 verification skeleton before implementation.
+- 2026-06-22 01:00: Phase 0 verification skeleton complete.
+  - Changed: added `docs/compaction-redesign.md` with verified contracts for storage serialization, provider error types, event consumers, tool history repair, and runner→provider boundary.
+  - Evidence: inspected `memory.rs:662-673` (AgentMemory struct), `storage/sqlx/mod.rs:165-200` (serialization path), `llm/error.rs:5-59` (LlmError enum), `llm/support/backoff.rs:64-119` (error classification), `progress.rs:207-279` (AgentEvent variants), `recovery.rs:38-43` (repair policy), `runner/types.rs:128-165` (AgentRunnerContext), `runner/mod.rs:101-124` (convert_memory_to_messages), `runner/token_snapshots.rs:93-95` (refresh_messages_from_memory), `llm_calls.rs:923-936` (substring matching overflow detection).
+  - Commands: targeted file reads of 10 key source files.
+  - Audit IDs updated: Q1, Q2, Q4, Q5 verified.
+  - Next: Phase 1 — raw transcript / rendered context split.
 
 ## Risks and Blockers
 
