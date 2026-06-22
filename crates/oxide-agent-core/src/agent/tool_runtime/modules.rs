@@ -904,6 +904,39 @@ const WEB_CRAWLER_DEFAULT_INLINE_CHARS: usize = 60_000;
 const WEB_CRAWLER_MIN_INLINE_CHARS: usize = 1_000;
 #[cfg(oxide_module_tool_webfetch_md)]
 const WEB_CRAWLER_MAX_INLINE_CHARS: usize = 100_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_DEFAULT_RENDER_WAIT_MS: u64 = 3000;
+
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderMode {
+    Http,
+    Lightpanda,
+    Playwright,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+impl RenderMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Lightpanda => "lightpanda",
+            Self::Playwright => "playwright",
+        }
+    }
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn parse_render_mode(value: Option<&str>) -> anyhow::Result<RenderMode> {
+    match value.unwrap_or("http").trim() {
+        "http" | "" => Ok(RenderMode::Http),
+        "lightpanda" => Ok(RenderMode::Lightpanda),
+        "playwright" => Ok(RenderMode::Playwright),
+        other => anyhow::bail!(
+            "invalid web_crawler render mode: {other} (expected http, lightpanda, or playwright)"
+        ),
+    }
+}
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -916,10 +949,12 @@ struct WebCrawlerArgs {
     timeout_secs: Option<u64>,
     #[serde(default)]
     max_chars: Option<usize>,
+    /// Render mode: `http` (default), `lightpanda`, or `playwright`.
     #[serde(default)]
-    wait_for: Option<String>,
+    render: Option<String>,
+    /// Milliseconds to wait after JS rendering for late content (rendered modes only).
     #[serde(default)]
-    fresh: bool,
+    render_wait_ms: Option<u64>,
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
@@ -966,10 +1001,29 @@ impl WebCrawlerToolExecutor {
         }
 
         let url = require_url(args.url.as_deref(), TOOL_WEB_CRAWLER)?.to_string();
+        let render_mode =
+            parse_render_mode(args.render.as_deref()).map_err(web_crawler_runtime_error)?;
+
+        match render_mode {
+            RenderMode::Http => self.execute_http(invocation, &normalizer, &args, url).await,
+            RenderMode::Lightpanda | RenderMode::Playwright => {
+                self.execute_rendered(invocation, &normalizer, &args, url, render_mode)
+                    .await
+            }
+        }
+    }
+
+    async fn execute_http(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        args: &WebCrawlerArgs,
+        url: String,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         let webfetch_args = WebMarkdownArgs {
             url: Some(url.clone()),
             read: None,
-            timeout_secs: Some(web_crawler_webfetch_timeout_secs(&args)),
+            timeout_secs: Some(web_crawler_webfetch_timeout_secs(args)),
             max_chars: None,
         };
 
@@ -999,7 +1053,7 @@ impl WebCrawlerToolExecutor {
                     &delivery,
                     Some(&DeliveryStdoutExtra {
                         backend: Some("webfetch_md"),
-                        fallback_reason: None,
+                        render: Some("http"),
                     }),
                 );
                 let mut output = normalizer.success(invocation, &stdout, "");
@@ -1008,7 +1062,8 @@ impl WebCrawlerToolExecutor {
                     &delivery,
                     Some(&DeliveryPayloadExtra {
                         backend: Some("webfetch_md"),
-                        fallback_reason: None,
+                        render: Some("http"),
+                        rendered_with: None,
                         status_code: None,
                         raw_payload: None,
                     }),
@@ -1016,29 +1071,145 @@ impl WebCrawlerToolExecutor {
                 Ok(output)
             }
             Err(webfetch_error) => {
-                let fallback_reason = web_crawler_fallback_reason(&webfetch_args, &webfetch_error);
-                let Some(fallback_reason) = fallback_reason else {
-                    let message =
-                        WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
-                    let mut output = normalizer.failure(invocation, message);
-                    output.structured_payload = Some(web_crawler_webfetch_failure_payload(
-                        Some(&webfetch_args),
-                        &webfetch_error,
-                    ));
-                    return Ok(output);
-                };
-
-                self.execute_rendered_fallback(
-                    invocation,
-                    &normalizer,
-                    args,
-                    webfetch_args,
+                let message =
+                    WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
+                let mut output = normalizer.failure(invocation, message);
+                output.structured_payload = Some(web_crawler_webfetch_failure_payload(
+                    Some(&webfetch_args),
                     &webfetch_error,
-                    fallback_reason,
-                )
-                .await
+                ));
+                Ok(output)
             }
         }
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    async fn execute_rendered(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        args: &WebCrawlerArgs,
+        url: String,
+        render_mode: RenderMode,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        use crate::agent::providers::crw::CrwScrapeArgs;
+
+        let crw = match &self.crw {
+            Some(crw) => crw,
+            None => {
+                let mut output = normalizer.failure(
+                    invocation,
+                    web_crawler_render_unavailable_message(&url, render_mode.as_str()),
+                );
+                output.structured_payload = Some(web_crawler_render_unavailable_payload(
+                    &url,
+                    render_mode.as_str(),
+                ));
+                return Ok(output);
+            }
+        };
+
+        let wait_for_ms = args
+            .render_wait_ms
+            .unwrap_or(WEB_CRAWLER_DEFAULT_RENDER_WAIT_MS);
+        let scrape_args = CrwScrapeArgs {
+            url: url.clone(),
+            renderer: render_mode.as_str().to_string(),
+            wait_for_ms,
+        };
+
+        match crw.client().scrape(&scrape_args).await {
+            Ok(response) => {
+                let final_url = response.data.metadata.url.as_deref().unwrap_or(&url);
+                let status_code = response.data.metadata.status_code.map(u64::from);
+                let rendered_with = response
+                    .data
+                    .metadata
+                    .rendered_with
+                    .as_deref()
+                    .unwrap_or(render_mode.as_str());
+
+                let document = FetchedMarkdownDocument {
+                    metadata: vec![("URL".to_string(), final_url.to_string())],
+                    fetched_bytes: None,
+                    markdown: response.data.markdown.trim().to_string(),
+                };
+                let output_window = resolve_output_window(
+                    args.max_chars,
+                    WEB_CRAWLER_DEFAULT_INLINE_CHARS,
+                    WEB_CRAWLER_MIN_INLINE_CHARS,
+                    WEB_CRAWLER_MAX_INLINE_CHARS,
+                );
+                let delivery = self
+                    .webfetch
+                    .store_markdown_window(
+                        invocation.session_id.as_i64(),
+                        url,
+                        document,
+                        output_window,
+                    )
+                    .await;
+                let stdout = render_delivery_stdout(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryStdoutExtra {
+                        backend: Some("crw_scrape"),
+                        render: Some(render_mode.as_str()),
+                    }),
+                );
+                let mut output = normalizer.success(invocation, &stdout, "");
+                output.structured_payload = Some(delivery_success_payload(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryPayloadExtra {
+                        backend: Some("crw_scrape"),
+                        render: Some(render_mode.as_str()),
+                        rendered_with: Some(rendered_with),
+                        status_code,
+                        raw_payload: None,
+                    }),
+                ));
+                Ok(output)
+            }
+            Err(crw_error) => {
+                let crw_error_kind = crw_error.kind().to_string();
+                let crw_error_message = crw_error.scrape_agent_message();
+                let message = format!(
+                    "web_crawler render:{} failed for {}: {}",
+                    render_mode.as_str(),
+                    url,
+                    crw_error_message,
+                );
+                let mut output = normalizer.failure(invocation, message);
+                output.structured_payload = Some(web_crawler_crw_failure_payload(
+                    &url,
+                    render_mode.as_str(),
+                    &crw_error_kind,
+                    &crw_error_message,
+                ));
+                Ok(output)
+            }
+        }
+    }
+
+    #[cfg(not(oxide_module_tool_crw))]
+    async fn execute_rendered(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        _args: &WebCrawlerArgs,
+        url: String,
+        render_mode: RenderMode,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let mut output = normalizer.failure(
+            invocation,
+            web_crawler_render_unavailable_message(&url, render_mode.as_str()),
+        );
+        output.structured_payload = Some(web_crawler_render_unavailable_payload(
+            &url,
+            render_mode.as_str(),
+        ));
+        Ok(output)
     }
 
     async fn execute_cached_next(
@@ -1076,7 +1247,7 @@ impl WebCrawlerToolExecutor {
             &delivery,
             Some(&DeliveryStdoutExtra {
                 backend: Some("webfetch_md"),
-                fallback_reason: None,
+                render: Some("http"),
             }),
         );
         let mut output = normalizer.success(invocation, &stdout, "");
@@ -1085,142 +1256,13 @@ impl WebCrawlerToolExecutor {
             &delivery,
             Some(&DeliveryPayloadExtra {
                 backend: Some("webfetch_md"),
-                fallback_reason: None,
+                render: Some("http"),
+                rendered_with: None,
                 status_code: None,
                 raw_payload: None,
             }),
         ));
         Ok(output)
-    }
-
-    async fn execute_rendered_fallback(
-        &self,
-        invocation: &ToolInvocation,
-        normalizer: &OutputNormalizer,
-        args: WebCrawlerArgs,
-        webfetch_args: WebMarkdownArgs,
-        webfetch_error: &anyhow::Error,
-        fallback_reason: &'static str,
-    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        let _ = (&args.wait_for, args.fresh);
-
-        #[cfg(oxide_module_tool_crw)]
-        if let Some(crw) = &self.crw {
-            return self
-                .execute_crw_scrape_fallback(
-                    invocation,
-                    normalizer,
-                    &args,
-                    &webfetch_args,
-                    webfetch_error,
-                    fallback_reason,
-                    crw,
-                )
-                .await;
-        }
-
-        let mut output = normalizer.failure(
-            invocation,
-            web_crawler_fallback_unavailable_message(web_crawler_webfetch_url(&webfetch_args)),
-        );
-        output.structured_payload = Some(web_crawler_no_fallback_payload(
-            &webfetch_args,
-            webfetch_error,
-            fallback_reason,
-        ));
-        Ok(output)
-    }
-
-    /// CRW scrape fallback for anti-bot/JS-blocked URLs.
-    ///
-    /// Called when webfetch fails with an anti-bot or access-block error
-    /// and a CRW provider is configured.
-    #[cfg(oxide_module_tool_crw)]
-    async fn execute_crw_scrape_fallback(
-        &self,
-        invocation: &ToolInvocation,
-        normalizer: &OutputNormalizer,
-        args: &WebCrawlerArgs,
-        webfetch_args: &WebMarkdownArgs,
-        webfetch_error: &anyhow::Error,
-        fallback_reason: &'static str,
-        crw: &Arc<CrwProvider>,
-    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        use crate::agent::providers::crw::CrwScrapeArgs;
-
-        let scrape_args = CrwScrapeArgs {
-            url: web_crawler_webfetch_url(webfetch_args).to_string(),
-        };
-
-        match crw.client().scrape(&scrape_args).await {
-            Ok(response) => {
-                let url = web_crawler_webfetch_url(webfetch_args).to_string();
-                let final_url = response.data.metadata.url.as_deref();
-                let status_code = response.data.metadata.status_code.map(u64::from);
-
-                let document = FetchedMarkdownDocument {
-                    metadata: vec![("URL".to_string(), final_url.unwrap_or(&url).to_string())],
-                    fetched_bytes: None,
-                    markdown: response.data.markdown.trim().to_string(),
-                };
-                let output_window = resolve_output_window(
-                    args.max_chars,
-                    WEB_CRAWLER_DEFAULT_INLINE_CHARS,
-                    WEB_CRAWLER_MIN_INLINE_CHARS,
-                    WEB_CRAWLER_MAX_INLINE_CHARS,
-                );
-                let delivery = self
-                    .webfetch
-                    .store_markdown_window(
-                        invocation.session_id.as_i64(),
-                        url,
-                        document,
-                        output_window,
-                    )
-                    .await;
-                let stdout = render_delivery_stdout(
-                    TOOL_WEB_CRAWLER,
-                    &delivery,
-                    Some(&DeliveryStdoutExtra {
-                        backend: Some("crw_scrape"),
-                        fallback_reason: Some(fallback_reason),
-                    }),
-                );
-                let mut output = normalizer.success(invocation, &stdout, "");
-                output.structured_payload = Some(delivery_success_payload(
-                    TOOL_WEB_CRAWLER,
-                    &delivery,
-                    Some(&DeliveryPayloadExtra {
-                        backend: Some("crw_scrape"),
-                        fallback_reason: Some(fallback_reason),
-                        status_code,
-                        raw_payload: None,
-                    }),
-                ));
-                Ok(output)
-            }
-            Err(crw_error) => {
-                let crw_error_kind = crw_error.kind().to_string();
-                let crw_error_message = crw_error.agent_message();
-                let message = format!(
-                    "web_crawler lightweight fetch failed for {} ({}); \
-                     CRW scrape fallback also failed: {}. \
-                     This path is closed for this task; use another source.",
-                    web_crawler_webfetch_url(webfetch_args),
-                    fallback_reason,
-                    crw_error_message
-                );
-                let mut output = normalizer.failure(invocation, message);
-                output.structured_payload = Some(web_crawler_crw_failure_payload(
-                    webfetch_args,
-                    webfetch_error,
-                    fallback_reason,
-                    &crw_error_kind,
-                    &crw_error_message,
-                ));
-                Ok(output)
-            }
-        }
     }
 }
 
@@ -1257,42 +1299,46 @@ fn web_crawler_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_WEB_CRAWLER.to_string(),
         description: concat!(
-            "Fetch one known http/https URL as Markdown. Uses lightweight webfetch first, ",
-            "then falls back to a browser-rendered service only for JS/CAPTCHA/anti-bot blocks when configured. ",
-            "If both paths fail, use another source instead of retrying the same host."
+            "Fetch one known http/https URL as Markdown. ",
+            "Use render:\"http\" for static pages (default), ",
+            "render:\"lightpanda\" for lightweight JS rendering, ",
+            "or render:\"playwright\" for full browser rendering of SPAs and dynamic content. ",
+            "If a render mode returns only a shell or loading placeholder, ",
+            "retry with a heavier mode instead of the same one."
         )
         .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Fully-qualified public http/https URL to fetch. Required unless read is \"next\"."
-                    },
-                    "read": {
-                        "type": "string",
-                        "enum": ["auto", "next"],
-                        "description": "auto fetches the URL and starts reading; next continues the last cached page in this session"
-                    },
-                    "timeout_secs": {
-                        "type": "integer",
-                        "description": "Optional request timeout in seconds; lightweight fast path defaults to 10 seconds"
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "description": "Optional maximum Markdown output characters"
-                    },
-                    "wait_for": {
-                        "type": "string",
-                        "description": "Optional CSS selector for rendered fallback"
-                    },
-                    "fresh": {
-                        "type": "boolean",
-                        "description": "If true, bypass cache on rendered fallback; default false"
-                    }
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Fully-qualified public http/https URL to fetch. Required unless read is \"next\"."
                 },
-                "additionalProperties": false
-            }),
+                "read": {
+                    "type": "string",
+                    "enum": ["auto", "next"],
+                    "description": "auto fetches the URL and starts reading; next continues the last cached page in this session"
+                },
+                "render": {
+                    "type": "string",
+                    "enum": ["http", "lightpanda", "playwright"],
+                    "description": "Render mode: http (default, no JS), lightpanda (lightweight JS), playwright (full browser). Use http for static pages; lightpanda or playwright for SPAs and JS-rendered content."
+                },
+                "render_wait_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds to wait after JS rendering for late content (rendered modes only; default 3000)"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "Optional request timeout in seconds for http mode; defaults to 10"
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Optional maximum Markdown output characters"
+                }
+            },
+            "additionalProperties": false
+        }),
     }
 }
 
@@ -1306,11 +1352,6 @@ fn parse_web_crawler_args(arguments: &str) -> anyhow::Result<WebCrawlerArgs> {
 fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
     args.timeout_secs
         .unwrap_or(WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS)
-}
-
-#[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_webfetch_url(args: &WebMarkdownArgs) -> &str {
-    args.url.as_deref().unwrap_or("")
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
@@ -1332,6 +1373,7 @@ fn web_crawler_webfetch_failure_payload(
     if let Some(object) = payload.as_object_mut() {
         object.insert("provider".to_string(), json!(TOOL_WEB_CRAWLER));
         object.insert("backend".to_string(), json!("webfetch_md"));
+        object.insert("render".to_string(), json!("http"));
         object.insert(
             "webfetch_error_kind".to_string(),
             json!(WebFetchMdProvider::error_kind(error)),
@@ -1341,131 +1383,48 @@ fn web_crawler_webfetch_failure_payload(
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_no_fallback_payload(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-    fallback_reason: &'static str,
-) -> Value {
-    let mut payload = web_crawler_webfetch_failure_payload(Some(args), error);
-    if let Some(object) = payload.as_object_mut() {
-        object.insert("backend".to_string(), json!("webfetch_md"));
-        object.insert("fallback_backend".to_string(), json!("rendered_fallback"));
-        object.insert("fallback_attempted".to_string(), json!(false));
-        object.insert("fallback_reason".to_string(), json!(fallback_reason));
-        object.insert(
-            "fallback_error_kind".to_string(),
-            json!("fallback_unavailable"),
-        );
-        object.insert("provider_unavailable".to_string(), json!(true));
-        object.insert("retryable".to_string(), json!(false));
-        object.insert(
-            "message".to_string(),
-            json!(web_crawler_fallback_unavailable_message(
-                web_crawler_webfetch_url(args)
-            )),
-        );
-    }
-    payload
+fn web_crawler_render_unavailable_message(url: &str, render: &str) -> String {
+    format!(
+        "web_crawler render:{render} requested for {url}, but no CRW provider is configured. \
+         Use render:\"http\" or configure CRW."
+    )
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_fallback_unavailable_message(url: &str) -> String {
-    format!(
-        "web_crawler lightweight fetch needs rendered fallback for {url}, but no rendered fallback provider is configured. This path is closed for this task; use another source."
-    )
+fn web_crawler_render_unavailable_payload(url: &str, render: &str) -> Value {
+    json!({
+        "provider": TOOL_WEB_CRAWLER,
+        "backend": null,
+        "render": render,
+        "kind": "fetch",
+        "url": url,
+        "error_kind": "render_provider_unavailable",
+        "retryable": false,
+        "provider_unavailable": true,
+        "success": false,
+        "message": web_crawler_render_unavailable_message(url, render)
+    })
 }
 
 #[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
 fn web_crawler_crw_failure_payload(
-    webfetch_args: &WebMarkdownArgs,
-    webfetch_error: &anyhow::Error,
-    fallback_reason: &'static str,
+    url: &str,
+    render: &str,
     crw_error_kind: &str,
     crw_error_message: &str,
 ) -> Value {
-    let web_payload = WebFetchMdProvider::failure_payload(Some(webfetch_args), webfetch_error);
     json!({
         "provider": TOOL_WEB_CRAWLER,
         "backend": "crw_scrape",
-        "fallback_backend": "crw_scrape",
-        "fallback_attempted": true,
-        "fallback_reason": fallback_reason,
-        "url": web_crawler_webfetch_url(webfetch_args),
-        "host": web_payload.get("host").cloned().unwrap_or(Value::Null),
+        "render": render,
+        "kind": "fetch",
+        "url": url,
         "error_kind": crw_error_kind,
-        "webfetch_error_kind": WebFetchMdProvider::error_kind(webfetch_error),
-        "crw_error_kind": crw_error_kind,
         "retryable": false,
         "provider_unavailable": true,
-        "message": crw_error_message,
-        "webfetch_payload": web_payload
+        "success": false,
+        "message": crw_error_message
     })
-}
-
-#[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_fallback_reason(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-) -> Option<&'static str> {
-    match WebFetchMdProvider::error_kind(error) {
-        "anti_bot" => Some("webfetch anti_bot"),
-        "http_status" => web_crawler_http_status_fallback_reason(args, error),
-        _ => None,
-    }
-}
-
-#[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_http_status_fallback_reason(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-) -> Option<&'static str> {
-    let payload = WebFetchMdProvider::failure_payload(Some(args), error);
-    let status = payload.get("status_code").and_then(Value::as_u64);
-    match status {
-        Some(400..=403 | 429)
-            if web_crawler_is_reddit_thread_url(web_crawler_webfetch_url(args)) =>
-        {
-            Some("webfetch reddit_rss_http_status")
-        }
-        Some(400..=403 | 429) => Some("webfetch http_status"),
-        Some(503) => Some("webfetch http_status"),
-        Some(500..=504) if web_crawler_is_reddit_thread_url(web_crawler_webfetch_url(args)) => {
-            Some("webfetch reddit_rss_http_status")
-        }
-        _ => None,
-    }
-}
-
-#[cfg(oxide_module_tool_webfetch_md)]
-fn web_crawler_is_reddit_thread_url(raw_url: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(raw_url) else {
-        return false;
-    };
-    let Some(host) = url
-        .host_str()
-        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
-    else {
-        return false;
-    };
-    if !matches!(
-        host.as_str(),
-        "reddit.com" | "www.reddit.com" | "old.reddit.com" | "new.reddit.com" | "sh.reddit.com"
-    ) {
-        return false;
-    }
-
-    let Some(mut segments) = url.path_segments() else {
-        return false;
-    };
-    matches!(
-        (
-            segments.next(),
-            segments.next(),
-            segments.next(),
-            segments.next()
-        ),
-        (Some("r"), Some(_), Some("comments"), Some(_))
-    )
 }
 
 #[cfg(all(test, oxide_module_tool_webfetch_md))]
@@ -1533,7 +1492,8 @@ mod web_crawler_tests {
             &window,
             Some(&DeliveryPayloadExtra {
                 backend: Some("webfetch_md"),
-                fallback_reason: None,
+                render: Some("http"),
+                rendered_with: None,
                 status_code: None,
                 raw_payload: None,
             }),
@@ -1589,103 +1549,56 @@ mod web_crawler_tests {
     }
 
     #[test]
-    fn web_crawler_falls_back_for_reddit_rss_retryable_http_status() {
-        let args = WebMarkdownArgs {
-            url: Some("https://www.reddit.com/r/LocalLLaMA/comments/1tcv14c/mtp_speed_with_3090_qwen_27b_q4/".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!(
-            "reddit rss fast-path failed: reddit rss returned non-success status: 429 Too Many Requests"
-        );
+    fn parse_render_mode_defaults_to_http() {
+        assert_eq!(parse_render_mode(None).unwrap(), RenderMode::Http);
+        assert_eq!(parse_render_mode(Some("")).unwrap(), RenderMode::Http);
+        assert_eq!(parse_render_mode(Some("http")).unwrap(), RenderMode::Http);
+    }
 
+    #[test]
+    fn parse_render_mode_accepts_lightpanda_and_playwright() {
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch reddit_rss_http_status")
+            parse_render_mode(Some("lightpanda")).unwrap(),
+            RenderMode::Lightpanda
         );
-    }
-
-    #[test]
-    fn web_crawler_falls_back_for_generic_rate_limit_http_status() {
-        let args = WebMarkdownArgs {
-            url: Some("https://example.test/page".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error =
-            anyhow::anyhow!("web_markdown fetch failed: non-success status: 429 Too Many Requests");
-
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(Some("playwright")).unwrap(),
+            RenderMode::Playwright
         );
     }
 
     #[test]
-    fn web_crawler_falls_back_for_generic_payment_required_http_status() {
-        let args = WebMarkdownArgs {
-            url: Some("https://www.investopedia.com/article-123".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error =
-            anyhow::anyhow!("web_markdown fetch failed: non-success status: 402 Payment Required");
+    fn parse_render_mode_rejects_unknown() {
+        assert!(parse_render_mode(Some("chrome")).is_err());
+        assert!(parse_render_mode(Some("auto")).is_err());
+        assert!(parse_render_mode(Some("rendered")).is_err());
+    }
 
+    #[test]
+    fn parse_render_mode_trims_whitespace() {
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(Some("  playwright  ")).unwrap(),
+            RenderMode::Playwright
         );
     }
 
     #[test]
-    fn web_crawler_falls_back_for_generic_forbidden_http_status() {
-        let args = WebMarkdownArgs {
-            url: Some("https://example.test/page".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 403 Forbidden");
-
-        assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
-        );
+    fn render_mode_as_str_round_trips() {
+        assert_eq!(RenderMode::Http.as_str(), "http");
+        assert_eq!(RenderMode::Lightpanda.as_str(), "lightpanda");
+        assert_eq!(RenderMode::Playwright.as_str(), "playwright");
     }
 
     #[test]
-    fn web_crawler_falls_back_for_generic_service_unavailable() {
-        let args = WebMarkdownArgs {
-            url: Some("https://example.test/page".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!(
-            "web_markdown fetch failed: non-success status: 503 Service Unavailable"
-        );
-
-        assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
-        );
-    }
-
-    #[test]
-    fn web_crawler_does_not_fallback_for_generic_not_found() {
-        let args = WebMarkdownArgs {
-            url: Some("https://example.test/missing".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 404 Not Found");
-
-        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
-    }
-
-    #[test]
-    fn web_crawler_does_not_fallback_for_reddit_not_found() {
-        let args = WebMarkdownArgs {
-            url: Some("https://www.reddit.com/r/LocalLLaMA/comments/missing/thread/".to_string()),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!(
-            "reddit rss fast-path failed: reddit rss returned non-success status: 404 Not Found"
-        );
-
-        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
+    fn web_crawler_render_unavailable_payload_has_correct_shape() {
+        let payload =
+            web_crawler_render_unavailable_payload("https://example.test/page", "playwright");
+        assert_eq!(payload["provider"], "web_crawler");
+        assert_eq!(payload["render"], "playwright");
+        assert_eq!(payload["error_kind"], "render_provider_unavailable");
+        assert_eq!(payload["provider_unavailable"], true);
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["retryable"], false);
     }
 }
 

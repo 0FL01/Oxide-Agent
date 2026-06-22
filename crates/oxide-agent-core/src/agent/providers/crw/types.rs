@@ -201,6 +201,15 @@ pub struct CrwScrapeRequest {
     pub url: String,
     /// Output formats (always `["markdown"]`).
     pub formats: Vec<String>,
+    /// Whether to render JavaScript. `false` = HTTP-only.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "renderJs")]
+    pub render_js: Option<bool>,
+    /// Pin to a specific renderer: `lightpanda` or `playwright`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<String>,
+    /// Milliseconds to wait after JS rendering for late content.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "waitFor")]
+    pub wait_for: Option<u64>,
 }
 
 // --- Scrape response (Firecrawl-compatible) ---
@@ -236,6 +245,9 @@ pub struct CrwScrapeMetadata {
     /// HTTP status code of the scraped page.
     #[serde(default, alias = "statusCode")]
     pub status_code: Option<u16>,
+    /// Which renderer CRW actually used (e.g. `http`, `lightpanda`, `playwright`).
+    #[serde(default, alias = "renderedWith")]
+    pub rendered_with: Option<String>,
 }
 
 /// Arguments for the LLM-facing `web_search` tool.
@@ -333,11 +345,15 @@ const fn default_max_results() -> u8 {
     DEFAULT_MAX_RESULTS
 }
 
-/// Arguments for CRW scrape (used internally by `web_crawler` fallback).
+/// Arguments for CRW scrape (used by `web_crawler` rendered modes).
 #[derive(Debug, Clone)]
 pub struct CrwScrapeArgs {
     /// URL to scrape.
     pub url: String,
+    /// Renderer to use: `lightpanda` or `playwright`.
+    pub renderer: String,
+    /// Milliseconds to wait after JS rendering for late content.
+    pub wait_for_ms: u64,
 }
 
 impl CrwScrapeArgs {
@@ -347,6 +363,9 @@ impl CrwScrapeArgs {
         CrwScrapeRequest {
             url: self.url.trim().to_string(),
             formats: vec!["markdown".to_string()],
+            render_js: Some(true),
+            renderer: Some(self.renderer.clone()),
+            wait_for: Some(self.wait_for_ms),
         }
     }
 }
@@ -437,15 +456,34 @@ mod tests {
     }
 
     #[test]
-    fn scrape_request_serializes_with_markdown_format() {
+    fn scrape_request_serializes_with_render_fields() {
         let args = CrwScrapeArgs {
             url: "https://example.com/page".to_string(),
+            renderer: "playwright".to_string(),
+            wait_for_ms: 5000,
         };
         let json = serde_json::to_value(args.to_request()).expect("serialize");
         assert_eq!(
             json,
-            serde_json::json!({"url": "https://example.com/page", "formats": ["markdown"]})
+            serde_json::json!({
+                "url": "https://example.com/page",
+                "formats": ["markdown"],
+                "renderJs": true,
+                "renderer": "playwright",
+                "waitFor": 5000
+            })
         );
+    }
+
+    #[test]
+    fn scrape_request_trims_url() {
+        let args = CrwScrapeArgs {
+            url: "  https://example.com/page  ".to_string(),
+            renderer: "lightpanda".to_string(),
+            wait_for_ms: 3000,
+        };
+        let json = serde_json::to_value(args.to_request()).expect("serialize");
+        assert_eq!(json["url"], "https://example.com/page");
     }
 
     #[test]
@@ -572,7 +610,7 @@ mod tests {
             "success": true,
             "data": {
                 "markdown": "# Page Title\n\nContent here.",
-                "metadata": {"url": "https://example.com", "statusCode": 200}
+                "metadata": {"url": "https://example.com", "statusCode": 200, "renderedWith": "playwright"}
             }
         });
         let resp: CrwScrapeResponse = serde_json::from_value(raw).expect("deserialize");
@@ -583,6 +621,10 @@ mod tests {
             Some("https://example.com")
         );
         assert_eq!(resp.data.metadata.status_code, Some(200));
+        assert_eq!(
+            resp.data.metadata.rendered_with.as_deref(),
+            Some("playwright")
+        );
     }
 
     #[test]

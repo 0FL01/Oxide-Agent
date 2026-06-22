@@ -1000,7 +1000,7 @@ fn effort_prompt_instructions(
             "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
             "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
             "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `web_crawler`, and `web_markdown`.\n",
-            "- For web-research sub-agents, include `web_crawler` when available for pages that may need rendered fallback; keep `web_markdown` as the lightweight fetch path.\n",
+            "- For web-research sub-agents, include `web_crawler` when available for JS-rendered pages (use render:\"lightpanda\" or render:\"playwright\"); keep `web_markdown` as the lightweight HTTP-only fetch path.\n",
             "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
             "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
             "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."

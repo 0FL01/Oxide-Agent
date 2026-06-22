@@ -1040,10 +1040,10 @@ fn summarize_crawl_json(text: &str) -> Option<String> {
         .or_else(|| extract_json_u64_field_lossy(text, "chars"));
     let mode = parsed
         .as_ref()
-        .and_then(|value| value.get("content_mode"))
+        .and_then(|value| value.get("backend"))
         .and_then(|mode| mode.as_str())
         .map(str::to_owned)
-        .or_else(|| extract_json_string_field_lossy(text, "content_mode"));
+        .or_else(|| extract_json_string_field_lossy(text, "backend"));
     let mut summary = format!("fetched {final_url}");
     if let Some(mode) = mode.as_deref() {
         summary.push_str(" via ");
@@ -2362,7 +2362,7 @@ after
 
     #[test]
     fn timeout_report_sanitizer_unwraps_tool_output_wrappers() {
-        let truncated_crawl_wrapper = r#"{"artifacts":[],"cancellation_reason":null,"cleanup_status":"not_needed","duration_ms":5894,"error_message":null,"exit_code":null,"status":"success","stderr":{"text":""},"stdout":{"text":"{\"chars\":5223,\"content_mode\":\"crw_scrape\",\"final_url\":\"https://huggingface.co/unsloth/Step-3.7-Flash-GGUF\"}"},"#;
+        let truncated_crawl_wrapper = r#"{"artifacts":[],"cancellation_reason":null,"cleanup_status":"not_needed","duration_ms":5894,"error_message":null,"exit_code":null,"status":"success","stderr":{"text":""},"stdout":{"text":"{\"chars\":5223,\"backend\":\"crw_scrape\",\"render\":\"playwright\",\"final_url\":\"https://huggingface.co/unsloth/Step-3.7-Flash-GGUF\"}"},"#;
         let web_search_wrapper = r###"{"artifacts":[],"cleanup_status":"not_needed","status":"success","stdout":{"text":"## Web Search results for: DDR3 ECC 2133 quad channel RAM bandwidth\n\n### Results\n\n1. llama.cpp / ik_llama MoE Expert Offloading"},"stderr":{"text":""}}"###;
         let report = serde_json::json!({
             "status": "timeout",

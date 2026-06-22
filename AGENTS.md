@@ -121,7 +121,7 @@ Default branch: `dev`.
 ### Tool providers
 
 - Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox (split into `sandbox-fileops`: `read_file`/`write_file`/`apply_file_edit`/`list_files`, `sandbox-exec`: `execute_command`, `sandbox-recreate`: `recreate_sandbox`), todos, tavily, brave-search, webfetch_md, crw, browser_live (`browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over CDP sidecar), media (audio transcription, image description, video description), jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
-- `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, which uses webfetch first and falls back to CRW scrape only on anti-bot/access-block failures when `OXIDE_CRW_ENABLED=true`. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
+- `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, a unified fetch tool with explicit render modes: `render:"http"` (default, lightweight HTTP), `render:"lightpanda"` (lightweight JS), `render:"playwright"` (full browser). No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
 
 ## Configuration
 
@@ -154,6 +154,7 @@ Default branch: `dev`.
 
 ### Format and lint
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` must both pass before finishing. CI enforces both.
+- When touching `oxide-agent-web-ui`, also verify the wasm target: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`. Leptos `view!` macro expansion differs between native and wasm; native-only checks do not catch ownership/move errors that surface under the real trunk build. For a full frontend gate, run `trunk build --release` from `crates/oxide-agent-web-ui`.
 
 ### Testing
 - Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`, `test_set_env()`, `test_remove_env()`).

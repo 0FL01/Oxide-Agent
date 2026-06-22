@@ -43,7 +43,7 @@ impl CrwError {
         }
     }
 
-    /// Returns a short, agent-friendly error message (no HTTP bodies or status codes).
+    /// Returns a short, agent-friendly error message for the **search** endpoint.
     #[must_use]
     pub fn agent_message(&self) -> String {
         match self {
@@ -72,6 +72,54 @@ impl CrwError {
                     "Search request failed (invalid provider response format)".to_string()
                 } else {
                     "Search request failed (transport error)".to_string()
+                }
+            }
+        }
+    }
+
+    /// Returns a short, agent-friendly error message for the **scrape** endpoint.
+    ///
+    /// Scrape 502/503 typically means the target page blocked the renderer,
+    /// not that CRW itself is down — the message must convey this so the agent
+    /// does not misinterpret it as a transient CRW outage.
+    #[must_use]
+    pub fn scrape_agent_message(&self) -> String {
+        match self {
+            Self::EmptyQuery => "Search query cannot be empty".to_string(),
+            Self::InvalidUrl => "Invalid URL".to_string(),
+            Self::HttpStatus { status, body } => {
+                let code = status.as_u16();
+                if code == 401 || code == 403 {
+                    "CRW authentication error".to_string()
+                } else if code == 502 || code == 503 || code == 504 {
+                    if body.contains("error sending request") {
+                        "CRW could not reach the target page — the site may be blocking the renderer or is unreachable".to_string()
+                    } else {
+                        "CRW renderer failed — the target page may be blocking JavaScript rendering"
+                            .to_string()
+                    }
+                } else if status.is_client_error() {
+                    "CRW configuration error".to_string()
+                } else {
+                    "CRW temporarily unavailable, please try again in a moment".to_string()
+                }
+            }
+            Self::ApiFailure { message } => {
+                if is_auth_message(message) {
+                    "CRW authentication error".to_string()
+                } else {
+                    "CRW provider returned an error".to_string()
+                }
+            }
+            Self::Request(err) => {
+                if err.is_timeout() {
+                    "CRW render request timed out — the target page may be too slow or blocking the renderer".to_string()
+                } else if err.is_connect() {
+                    "CRW is not reachable, please try again in a moment".to_string()
+                } else if err.is_decode() {
+                    "CRW request failed (invalid provider response format)".to_string()
+                } else {
+                    "CRW request failed (transport error)".to_string()
                 }
             }
         }
@@ -191,5 +239,38 @@ mod tests {
         assert!(!err.is_retryable());
         assert_eq!(err.kind(), "crw_auth_failed");
         assert_eq!(err.agent_message(), "Search authentication error");
+    }
+
+    #[test]
+    fn scrape_503_with_transport_body_indicates_blocked_renderer() {
+        let err = CrwError::HttpStatus {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: "HTTP request failed: error sending request for url (https://www.hp.com/...)"
+                .to_string(),
+        };
+        let msg = err.scrape_agent_message();
+        assert!(msg.contains("could not reach the target page"));
+        assert!(!msg.contains("Search"));
+    }
+
+    #[test]
+    fn scrape_503_without_transport_body_indicates_blocked_renderer() {
+        let err = CrwError::HttpStatus {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            body: String::new(),
+        };
+        let msg = err.scrape_agent_message();
+        assert!(msg.contains("renderer failed"));
+        assert!(!msg.contains("Search"));
+    }
+
+    #[test]
+    fn scrape_403_indicates_auth_error() {
+        let err = CrwError::HttpStatus {
+            status: StatusCode::FORBIDDEN,
+            body: String::new(),
+        };
+        let msg = err.scrape_agent_message();
+        assert!(msg.contains("authentication error"));
     }
 }

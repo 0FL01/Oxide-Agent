@@ -548,14 +548,14 @@ fn CrawlToolCard(
     let status_code = crawl
         .as_ref()
         .and_then(|v| v.get("status_code").and_then(Value::as_u64));
-    let markdown_kind = crawl.as_ref().and_then(|v| {
-        v.get("markdown_kind")
+    let render: Option<String> = crawl
+        .as_ref()
+        .and_then(|v| v.get("render").and_then(Value::as_str).map(String::from));
+    let rendered_with: Option<String> = crawl.as_ref().and_then(|v| {
+        v.get("rendered_with")
             .and_then(Value::as_str)
             .map(String::from)
     });
-    let fresh = crawl
-        .as_ref()
-        .and_then(|v| v.get("fresh").and_then(Value::as_bool));
     let truncated = crawl
         .as_ref()
         .and_then(|v| v.get("truncated").and_then(Value::as_bool))
@@ -625,6 +625,12 @@ fn CrawlToolCard(
     };
     let raw_output = raw_output_preview(result.as_ref());
 
+    // Pre-compute rendered_with display: show only when it differs from render.
+    let rendered_with_display = rendered_with
+        .as_deref()
+        .filter(|rw| render.as_deref() != Some(*rw))
+        .map(String::from);
+
     let mut header_metas = Vec::new();
     if let Some(duration) = duration_label {
         header_metas.push(tool_meta(duration));
@@ -651,8 +657,8 @@ fn CrawlToolCard(
                 .filter(|final_url| requested_url.as_deref() != Some(final_url.as_str()))
                 .map(|u| tool_query_row("Final URL", u))}
             {status_code.map(|code| tool_query_row("Status", code.to_string()))}
-            {markdown_kind.map(|kind| tool_query_row("Markdown", kind))}
-            {fresh.map(|fresh| tool_query_row("Fresh", if fresh { "yes" } else { "no" }.to_string()))}
+            {render.map(|r| tool_query_row("Render", r))}
+            {rendered_with_display.map(|rw| tool_query_row("Rendered With", rw))}
             {failure_label.clone().map(|label| tool_query_row("Error", label))}
             {failure_status_code.map(|code| tool_query_row("Status", code.to_string()))}
             {failure_message.map(|message| tool_pre_stream(Some("message"), message))}
@@ -1736,12 +1742,17 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
             }
             Some("web_crawler") => {
                 let host = payload.get("host").and_then(Value::as_str);
+                let url = payload.get("url").and_then(Value::as_str);
+                let render = payload.get("render").and_then(Value::as_str);
                 let status_code = payload.get("status_code").and_then(Value::as_i64);
 
                 Some(match error_kind {
                     "anti_bot" => host
                         .map(|host| format!("anti_bot at {host}"))
                         .unwrap_or_else(|| "anti_bot".to_string()),
+                    "render_provider_unavailable" => render
+                        .map(|r| format!("render:{r} unavailable"))
+                        .unwrap_or_else(|| "render unavailable".to_string()),
                     "crw_http_status" | "http_status" => status_code
                         .map(|code| format!("http_status {code}"))
                         .unwrap_or_else(|| "http_status".to_string()),
@@ -1756,7 +1767,10 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                     "network" => host
                         .map(|host| format!("network at {host}"))
                         .unwrap_or_else(|| "network".to_string()),
-                    other => other.to_string(),
+                    other => url
+                        .map(|url| format!("{other} at {url}"))
+                        .or_else(|| host.map(|host| format!("{other} at {host}")))
+                        .unwrap_or_else(|| other.to_string()),
                 })
             }
             _ => None,

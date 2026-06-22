@@ -1397,7 +1397,8 @@ fn web_crawler_display_payload(output: &str) -> Option<Value> {
     Some(json!({
         "provider": "web_crawler",
         "backend": payload.get("backend").and_then(Value::as_str),
-        "fallback_reason": payload.get("fallback_reason").and_then(Value::as_str),
+        "render": payload.get("render").and_then(Value::as_str),
+        "rendered_with": payload.get("rendered_with").and_then(Value::as_str),
         "url": payload.get("url").and_then(Value::as_str),
         "final_url": payload.get("final_url").and_then(Value::as_str),
         "status_code": payload.get("status_code").and_then(Value::as_u64),
@@ -1561,12 +1562,17 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
         ("web_crawler", Some("web_crawler")) => {
             let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
             let host = payload.get("host").and_then(Value::as_str);
+            let url = payload.get("url").and_then(Value::as_str);
+            let render = payload.get("render").and_then(Value::as_str);
             let status_code = payload.get("status_code").and_then(Value::as_u64);
 
             Some(match error_kind {
                 "anti_bot" => host
                     .map(|host| format!("anti_bot at {host}"))
                     .unwrap_or_else(|| "anti_bot".to_string()),
+                "render_provider_unavailable" => render
+                    .map(|r| format!("render:{r} unavailable"))
+                    .unwrap_or_else(|| "render unavailable".to_string()),
                 "crw_http_status" => status_code
                     .map(|code| format!("http_status {code}"))
                     .unwrap_or_else(|| "http_status".to_string()),
@@ -1582,7 +1588,10 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                 "network" => host
                     .map(|host| format!("network at {host}"))
                     .unwrap_or_else(|| "network".to_string()),
-                other => other.to_string(),
+                other => url
+                    .map(|url| format!("{other} at {url}"))
+                    .or_else(|| host.map(|host| format!("{other} at {host}")))
+                    .unwrap_or_else(|| other.to_string()),
             })
         }
         _ => None,
@@ -1963,9 +1972,8 @@ mod tests {
             "structured_payload": {
             "provider": "web_crawler",
             "backend": "crw_scrape",
-            "primary_backend": "webfetch_md",
-            "fallback_backend": "crw_scrape",
-            "fallback_reason": "webfetch http_status 403",
+            "render": "playwright",
+            "rendered_with": "playwright",
             "url": "https://arxiv.org/abs/2602.10604",
             "final_url": "https://arxiv.org/abs/2602.10604",
             "status_code": 200,
@@ -2014,6 +2022,8 @@ mod tests {
         let display = &tool_result.payload["display_payload"];
         assert_eq!(display["provider"], "web_crawler");
         assert_eq!(display["backend"], "crw_scrape");
+        assert_eq!(display["render"], "playwright");
+        assert_eq!(display["rendered_with"], "playwright");
         assert_eq!(display["final_url"], "https://arxiv.org/abs/2602.10604");
         assert_eq!(display["chars"], 6_009);
         assert!(

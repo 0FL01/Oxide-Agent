@@ -160,11 +160,11 @@ pub(crate) fn resolve_output_window(
     }
 }
 
-/// Optional fields for stdout rendering (web_crawler adds backend/fallback_reason).
+/// Optional fields for stdout rendering (web_crawler adds backend/render).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DeliveryStdoutExtra<'a> {
     pub backend: Option<&'a str>,
-    pub fallback_reason: Option<&'a str>,
+    pub render: Option<&'a str>,
 }
 
 /// Unified stdout renderer for a windowed delivery result.
@@ -174,7 +174,7 @@ pub(crate) struct DeliveryStdoutExtra<'a> {
 /// ## <tool_name>
 ///
 /// [Backend: ...]
-/// [Fallback-Reason: ...]
+/// [Render: ...]
 /// <metadata entries>
 /// [Fetched-Bytes: ...]
 /// Range-Chars: <start>..<end>
@@ -204,9 +204,9 @@ pub(crate) fn render_delivery_stdout(
             output.push_str(backend);
             output.push('\n');
         }
-        if let Some(reason) = extra.fallback_reason {
-            output.push_str("Fallback-Reason: ");
-            output.push_str(reason);
+        if let Some(render) = extra.render {
+            output.push_str("Render: ");
+            output.push_str(render);
             output.push('\n');
         }
     }
@@ -257,11 +257,12 @@ pub(crate) fn render_delivery_stdout(
     output
 }
 
-/// Optional fields for structured payload (web_crawler adds backend/fallback_reason/status_code/raw_payload).
+/// Optional fields for structured payload (web_crawler adds backend/render/status_code/raw_payload).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DeliveryPayloadExtra<'a> {
     pub backend: Option<&'a str>,
-    pub fallback_reason: Option<&'a str>,
+    pub render: Option<&'a str>,
+    pub rendered_with: Option<&'a str>,
     pub status_code: Option<u64>,
     pub raw_payload: Option<&'a Value>,
 }
@@ -282,20 +283,22 @@ pub(crate) fn delivery_success_payload(
         })
     });
 
-    let (backend, fallback_reason, status_code, raw_payload) = match extra {
+    let (backend, render, rendered_with, status_code, raw_payload) = match extra {
         Some(extra) => (
             extra.backend.map(Value::from),
-            extra.fallback_reason.map(Value::from),
+            extra.render.map(Value::from),
+            extra.rendered_with.map(Value::from),
             extra.status_code.map(Value::from),
             extra.raw_payload.cloned(),
         ),
-        None => (None, None, None, None),
+        None => (None, None, None, None, None),
     };
 
     json!({
         "provider": tool_name,
         "backend": backend,
-        "fallback_reason": fallback_reason,
+        "render": render,
+        "rendered_with": rendered_with,
         "kind": "fetch",
         "url": delivery.requested_url,
         "final_url": document_metadata(&delivery.document, "URL"),

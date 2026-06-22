@@ -41,7 +41,7 @@ impl CrwProvider {
         })
     }
 
-    /// Direct access to the scrape client (used by `web_crawler` fallback).
+    /// Direct access to the scrape client (used by `web_crawler` rendered modes).
     pub fn client(&self) -> &CrwClient {
         &self.client
     }
