@@ -58,7 +58,10 @@ pub mod jira_mcp;
 pub mod mattermost_mcp;
 
 pub use agents_md::{AgentsMdProvider, agents_md_tool_names};
-pub use compression::{CompressionProvider, TOOL_COMPRESS, compress_tool_names};
+pub use compression::{
+    CompressEntry, CompressRequest, CompressResult, CompressionProvider, TOOL_COMPRESS,
+    compress_tool_names,
+};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{

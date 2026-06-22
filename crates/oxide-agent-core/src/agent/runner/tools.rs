@@ -3,14 +3,14 @@
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
 use crate::agent::compaction::{
-    AdmissionBudget, AdmissionDecision, CompactionPolicy, CompactionTrigger, ContextAdmission,
+    AdmissionBudget, AdmissionDecision, CompactionEngine, CompactionTrigger, ContextAdmission,
     PayloadDescriptor, PayloadKind, count_tokens_cached,
 };
 use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
 use crate::agent::memory::{AgentMessage, AgentMessageAttachment};
 use crate::agent::progress::{AgentEvent, AgentEventSource};
-use crate::agent::providers::TOOL_COMPRESS;
+use crate::agent::providers::{CompressRequest, CompressResult, TOOL_COMPRESS};
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
     ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallRuntime,
@@ -24,6 +24,7 @@ use crate::llm::{
     ToolProtocol, ToolTransport,
 };
 use async_trait::async_trait;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
@@ -350,7 +351,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         output: ToolOutput,
-        content: String,
+        mut content: String,
     ) {
         let tool_name = output.tool_name.as_str().to_string();
         if let Some(tx) = ctx.progress_tx {
@@ -366,13 +367,13 @@ impl AgentRunner {
         }
 
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
+
+        // Apply compress tool results through the compaction engine.
+        // The tool executor parses LLM args into a CompressRequest (returned
+        // as structured_payload); the runner applies each entry through the
+        // engine — the sole mutation authority for CompactionState.
         if output.success && tool_name == TOOL_COMPRESS {
-            let memory = ctx.agent.memory();
-            let threshold = memory.max_tokens() / 100
-                * CompactionPolicy::default().compact_threshold_percent as usize;
-            if memory.token_count() >= threshold {
-                state.request_manual_compaction();
-            }
+            content = Self::apply_compress_through_engine(ctx, output.structured_payload.as_ref());
         }
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
@@ -459,6 +460,62 @@ impl AgentRunner {
             memory_message.attachments.push(attachment);
         }
         ctx.agent.memory_mut().add_message(memory_message);
+    }
+
+    /// Apply a parsed compress request through the compaction engine.
+    ///
+    /// Extracts the `CompressRequest` from the tool's `structured_payload`,
+    /// calls `CompactionEngine::apply_compression` for each entry, and returns
+    /// the result JSON to use as the tool output content (visible to the LLM).
+    ///
+    /// The tool executor is a pure parser — it cannot access `AgentMemory`.
+    /// The runner is the authority that applies parsed requests through the
+    /// engine, which is the sole mutation authority for `CompactionState`.
+    fn apply_compress_through_engine(
+        ctx: &mut AgentRunnerContext<'_>,
+        payload: Option<&serde_json::Value>,
+    ) -> String {
+        let Some(payload) = payload else {
+            return serde_json::to_string_pretty(&json!({
+                "compressed": false,
+                "error": "internal_error",
+                "error_detail": "Compress tool returned no structured payload"
+            }))
+            .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+        };
+
+        let request: CompressRequest = match serde_json::from_value(payload.clone()) {
+            Ok(req) => req,
+            Err(e) => {
+                return serde_json::to_string_pretty(&json!({
+                    "compressed": false,
+                    "error": "internal_error",
+                    "error_detail": format!("Failed to parse compress request: {e}")
+                }))
+                .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+            }
+        };
+
+        // Clone messages to avoid borrow conflict with compaction_state_mut.
+        // The engine does not modify raw messages, so this snapshot is valid
+        // for all entries in the request.
+        let messages = ctx.agent.memory().get_messages().to_vec();
+
+        let mut outcomes = Vec::with_capacity(request.entries.len());
+        for entry in &request.entries {
+            let result = CompactionEngine::apply_compression(
+                ctx.agent.memory_mut().compaction_state_mut(),
+                &messages,
+                &entry.selection,
+                entry.summary.clone(),
+            );
+            outcomes.push(result.map_err(|e| e.to_string()));
+        }
+
+        let result = CompressResult::from_outcomes(outcomes);
+        result
+            .to_json()
+            .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string())
     }
 
     /// Compute the admission budget from the current runner context.
@@ -1257,7 +1314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_output_requests_manual_compaction() {
+    async fn typed_runtime_compress_applies_through_engine() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1277,11 +1334,17 @@ mod tests {
         let tools = runtime_registry.specs();
         let runtime_registry = Arc::new(runtime_registry);
 
-        let mut session = EphemeralSession::new(30);
-        // Fill memory above the 85% compaction threshold (30 * 85% = 25 tokens).
-        session.memory_mut().add_message(AgentMessage::user_task(
-            "padding task to push token count above the eighty-five percent compaction threshold of the thirty token max window for the compress budget guard test",
-        ));
+        let mut session = EphemeralSession::new(10000);
+        // Add 3 messages that the compress tool will cover.
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Task description"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Assistant response"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_turn("Follow-up question"));
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
@@ -1311,11 +1374,20 @@ mod tests {
                 }]),
         };
         let mut state = RunState::new();
+        let compress_args = r#"{
+            "ranges": [
+                {
+                    "start": "m0001",
+                    "end": "m0003",
+                    "summary": [{"text": "User task, assistant response, and follow-up"}]
+                }
+            ]
+        }"#;
         let tool_call = ToolCall::new(
             "invoke-compress-1",
             ToolCallFunction {
                 name: TOOL_COMPRESS.to_string(),
-                arguments: "{}".to_string(),
+                arguments: compress_args.to_string(),
             },
             false,
         )
@@ -1338,19 +1410,30 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        assert!(state.force_manual_compaction);
+        // Old manual compaction trigger must NOT be set.
+        assert!(!state.force_manual_compaction);
+        // Engine must have created an active block.
+        assert!(ctx.agent.memory().compaction_state().has_active_blocks());
+        // Tool result in memory must show compression success.
         let memory = ctx.agent.memory().get_messages();
-        // 1 padding user_task + 1 compress tool result = 2 (user_task was added in setup).
-        assert!(memory.len() >= 2);
         let compress_result = memory
             .iter()
             .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
         let compress_result = compress_result.expect("compress tool result should be present");
-        assert!(compress_result.content.contains("scheduled"));
+        assert!(
+            compress_result.content.contains(r#""compressed": true"#),
+            "compress result must show compressed=true, got: {}",
+            compress_result.content
+        );
+        assert!(
+            compress_result.content.contains("b1"),
+            "compress result must mention block b1, got: {}",
+            compress_result.content
+        );
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_skips_when_below_budget_threshold() {
+    async fn typed_runtime_compress_rejects_invalid_refs() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1370,19 +1453,21 @@ mod tests {
         let tools = runtime_registry.specs();
         let runtime_registry = Arc::new(runtime_registry);
 
-        // Large context window, no messages — well below the 85% threshold.
         let mut session = EphemeralSession::new(10000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Task"));
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "compress below threshold",
+            task: "compress with invalid refs",
             system_prompt: "system prompt",
             date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "compress-guard-test",
+            task_id: "compress-invalid-refs-test",
             messages: &mut messages,
             agent: &mut session,
             compaction_controller: None,
@@ -1401,11 +1486,21 @@ mod tests {
                 }]),
         };
         let mut state = RunState::new();
+        // m0099 is out of range — engine must reject.
+        let compress_args = r#"{
+            "ranges": [
+                {
+                    "start": "m0099",
+                    "end": "m0100",
+                    "summary": [{"text": "Invalid range"}]
+                }
+            ]
+        }"#;
         let tool_call = ToolCall::new(
             "invoke-compress-1",
             ToolCallFunction {
                 name: TOOL_COMPRESS.to_string(),
-                arguments: "{}".to_string(),
+                arguments: compress_args.to_string(),
             },
             false,
         )
@@ -1428,8 +1523,25 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        // Budget guard should have prevented compaction.
         assert!(!state.force_manual_compaction);
+        // No blocks should be created for invalid refs.
+        assert!(!ctx.agent.memory().compaction_state().has_active_blocks());
+        // Tool result must show structured error.
+        let memory = ctx.agent.memory().get_messages();
+        let compress_result = memory
+            .iter()
+            .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
+        let compress_result = compress_result.expect("compress tool result should be present");
+        assert!(
+            compress_result.content.contains(r#""compressed": false"#),
+            "compress result must show compressed=false, got: {}",
+            compress_result.content
+        );
+        assert!(
+            compress_result.content.contains("invalid_message_ref"),
+            "compress result must contain invalid_message_ref error, got: {}",
+            compress_result.content
+        );
     }
 
     #[tokio::test]

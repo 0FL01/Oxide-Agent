@@ -182,7 +182,7 @@ impl CompactionRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::compaction::block::{SummaryPart, new_block};
+    use crate::agent::compaction::block::SummaryPart;
     use crate::agent::compaction::engine::CompactionEngine;
     use crate::agent::compaction::refs::{BlockRef, MessageRef};
     use crate::agent::compaction::state::CompactionState;
@@ -421,7 +421,7 @@ mod tests {
         let mut state = CompactionState::default();
 
         // b1 covers [1, 2]
-        let b1 = create_block(&mut state, &messages, 1, 2, "b1 appended summary");
+        let _b1 = create_block(&mut state, &messages, 1, 2, "b1 appended summary");
         // b2 covers [0, 4] consuming b1, but does NOT reference b1 in summary
         let _b2 = CompactionEngine::apply_compression_at(
             &mut state,
