@@ -4,12 +4,12 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRetention,
-    OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
+    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRenderer,
+    CompactionRetention, CompactionState, OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
 use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
-use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
+use crate::llm::{Message, TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -670,6 +670,11 @@ pub struct AgentMemory {
     /// Last request-scoped token usage reported by the LLM API.
     #[serde(default)]
     last_api_usage: Option<TokenUsage>,
+    /// Compaction overlay state — tracks blocks, refs, and strategy decisions.
+    /// The renderer uses this to produce compacted model-facing context.
+    /// Old checkpoints without this field deserialize to `CompactionState::default()`.
+    #[serde(default)]
+    compaction_state: CompactionState,
 }
 
 impl AgentMemory {
@@ -682,6 +687,7 @@ impl AgentMemory {
             token_count: 0,
             max_tokens,
             last_api_usage: None,
+            compaction_state: CompactionState::default(),
         }
     }
 
@@ -828,12 +834,14 @@ impl AgentMemory {
         self.todos.clear();
         self.token_count = 0;
         self.last_api_usage = None;
+        self.compaction_state = CompactionState::default();
     }
 
     /// Replace hot memory messages and recalculate token accounting.
     pub fn replace_messages(&mut self, messages: Vec<AgentMessage>) {
         self.messages = messages;
         self.last_api_usage = None;
+        self.compaction_state = CompactionState::default();
         self.recalculate_token_count();
         self.repair_history_after_mutation("replace_messages");
     }
@@ -857,6 +865,7 @@ impl AgentMemory {
 
         self.messages = messages;
         self.last_api_usage = None;
+        self.compaction_state = CompactionState::default();
         self.recalculate_token_count();
 
         Ok(CompactedHistoryReplacementOutcome {
@@ -914,6 +923,42 @@ impl AgentMemory {
         }
         let percent = (self.token_count * 100) / self.max_tokens;
         u8::try_from(percent.min(100)).unwrap_or(100)
+    }
+
+    // ── Compaction overlay: rendered context boundary ──
+
+    /// Render the model-facing `Vec<Message>` from raw transcript + compaction state.
+    ///
+    /// This is the single boundary through which the runner sends messages to LLM
+    /// providers. When `CompactionState` is empty, output is identical to the
+    /// base `AgentMessage` → `Message` conversion (identity rendering).
+    #[must_use]
+    pub fn rendered_messages(&self) -> Vec<Message> {
+        CompactionRenderer::render(&self.messages, &self.compaction_state)
+    }
+
+    /// Estimated token count of the rendered model context.
+    ///
+    /// When `CompactionState` is empty, this equals `token_count()` because
+    /// the renderer is identity. Later phases will compute this from the
+    /// rendered output, which may be smaller than the raw transcript.
+    #[must_use]
+    pub fn rendered_token_count(&self) -> usize {
+        // Phase 1: identity renderer — rendered == raw
+        self.token_count
+    }
+
+    /// Read-only access to compaction overlay state.
+    #[must_use]
+    pub const fn compaction_state(&self) -> &CompactionState {
+        &self.compaction_state
+    }
+
+    /// Mutable access to compaction overlay state.
+    ///
+    /// Only the `CompactionEngine` (future) should mutate this.
+    pub fn compaction_state_mut(&mut self) -> &mut CompactionState {
+        &mut self.compaction_state
     }
 }
 
@@ -1026,6 +1071,66 @@ mod tests {
         let message = AgentMessage::user_task("Ship temporal context");
 
         assert!(message.created_at_unix.is_some());
+    }
+
+    #[test]
+    fn compaction_state_defaults_on_new() {
+        let memory = AgentMemory::new(4096);
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_clear() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("test"));
+        memory.clear();
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_replace_messages() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("original"));
+        memory.replace_messages(vec![AgentMessage::user_task("replaced")]);
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn old_json_without_compaction_state_deserializes() {
+        // Simulates old checkpoint JSON without compaction_state field.
+        // serde(default) should produce CompactionState::default().
+        let old_json = json!({
+            "messages": [{"kind": "UserTask", "role": "User", "content": "hello"}],
+            "todos": {"items": []},
+            "token_count": 10,
+            "max_tokens": 4096
+        });
+        let memory: AgentMemory =
+            serde_json::from_value(old_json).expect("old JSON must deserialize");
+        assert!(memory.compaction_state().is_empty());
+        assert_eq!(memory.get_messages().len(), 1);
+    }
+
+    #[test]
+    fn rendered_messages_identity_for_empty_state() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task"));
+        memory.add_message(AgentMessage::assistant("response"));
+
+        // rendered_messages should produce same count and content as raw
+        let rendered = memory.rendered_messages();
+        assert_eq!(rendered.len(), memory.get_messages().len());
+        for (r, raw) in rendered.iter().zip(memory.get_messages().iter()) {
+            assert_eq!(r.content, raw.content);
+        }
+    }
+
+    #[test]
+    fn rendered_token_count_equals_token_count_for_empty_state() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task with some tokens"));
+        memory.add_message(AgentMessage::assistant("response with more tokens"));
+        assert_eq!(memory.rendered_token_count(), memory.token_count());
     }
 
     #[test]

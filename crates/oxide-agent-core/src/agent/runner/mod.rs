@@ -97,30 +97,16 @@ impl AgentRunner {
     }
 
     /// Convert `AgentMessage` history to LLM Message format.
+    ///
+    /// Delegates to `CompactionRenderer::render` with empty compaction state,
+    /// producing identity-equivalent output. This is the legacy entry point;
+    /// production code should use `AgentMemory::rendered_messages()` instead.
     #[must_use]
     pub fn convert_memory_to_messages(messages: &[AgentMessage]) -> Vec<Message> {
-        messages
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    crate::agent::memory::MessageRole::User => "user",
-                    crate::agent::memory::MessageRole::Assistant => "assistant",
-                    crate::agent::memory::MessageRole::System => "system",
-                    crate::agent::memory::MessageRole::Tool => "tool",
-                };
-                Message {
-                    role: role.to_string(),
-                    content: msg.content.clone(),
-                    content_parts: Vec::new(),
-                    reasoning_content: msg.reasoning.clone(),
-                    tool_call_id: msg.tool_call_id.clone(),
-                    tool_call_correlation: msg.resolved_tool_call_correlation(),
-                    name: msg.tool_name.clone(),
-                    tool_calls: msg.tool_calls.clone(),
-                    tool_call_correlations: msg.resolved_tool_call_correlations(),
-                }
-            })
-            .collect()
+        crate::agent::compaction::CompactionRenderer::render(
+            messages,
+            &crate::agent::compaction::CompactionState::default(),
+        )
     }
 }
 

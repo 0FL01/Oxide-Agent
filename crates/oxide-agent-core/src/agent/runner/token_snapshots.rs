@@ -91,7 +91,7 @@ impl AgentRunner {
     }
 
     pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
-        *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
+        *ctx.messages = ctx.agent.memory().rendered_messages();
     }
 }
 

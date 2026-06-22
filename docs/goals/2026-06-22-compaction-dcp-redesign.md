@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-22 01:00
+Last updated: 2026-06-22 01:45
 
 ## Objective
 
@@ -144,11 +144,11 @@ Out of scope:
 ### Functional requirements (G*)
 
 - G1: Raw transcript is preserved and compaction becomes an overlay/render concern.
-  - Source: User request “текущую систему выкинуть, нужна единая логика compaction”; RECON finding that current compaction replaces `AgentMemory`.
+  - Source: User request "текущую систему выкинуть, нужна единая логика compaction"; RECON finding that current compaction replaces `AgentMemory`.
   - Acceptance: compaction does not destructively remove source messages from persisted raw memory; model-facing history is produced by a renderer from raw messages + compaction state.
   - Evidence required: tests showing raw messages remain after compaction while rendered context omits compacted ranges; storage round-trip preserves both raw messages and compaction state.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 1 added `CompactionRenderer` (identity for empty state), `CompactionState` to `AgentMemory` with `#[serde(default)]`, `rendered_messages()` boundary. Raw transcript preserved in `AgentMemory.messages`; renderer produces model-facing `Vec<Message>` without mutating raw. Old compaction still uses `replace_compacted_history` (will be removed in Phase 8). `old_json_without_compaction_state_deserializes` test proves backward compat. Full compaction overlay (blocks, pruning) pending Phase 3-4.
 
 - G2: One `CompactionEngine` is the only runtime mutation authority.
   - Source: RECON finding multiple compaction entry paths and duplicated event emitters.
@@ -182,8 +182,8 @@ Out of scope:
   - Source: existing invariant in `repair_agent_message_history_runtime`; compaction must not create orphaned tool results or partial tool-call batches.
   - Acceptance: rendered model context never contains orphaned tool results, partial completed tool batches, or invalid terminal open tool batches.
   - Evidence required: unit/property tests over rendered histories plus integration coverage for read/write/tool-heavy histories.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 1 renderer is identity-equivalent (passes through all tool-call fields: `tool_calls`, `tool_call_correlations`, `tool_call_id`, `tool_call_correlation`). No tool-call splitting or dropping occurs for empty state. `refresh_messages_from_memory_drops_transient_messages` test passes. Full tool-batch safety tests pending Phase 3-4 when block selection is implemented.
 
 - G7: DCP-inspired pruning strategies are unified with rendering.
   - Source: DCP `deduplicate` and `purgeErrors`; current Oxide read-file dedup is local to `history.rs`.
@@ -261,8 +261,8 @@ Out of scope:
   - Source: AGENTS.md П0.6.
   - Acceptance: each checkpoint records affected symbols/call-sites and validation/classification of any failures.
   - Evidence required: progress log entries with grep/call-site audits and monorepo-wide gates or justified narrower pre-commit gates.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 blast radius mapped via `git grep` — `AgentMemory` struct (serialization consumers: storage facade, backward compat via `serde(default)`), `convert_memory_to_messages` (~20 call sites, all identity-equivalent via renderer delegation), `refresh_messages_from_memory` (5 runner call sites, all identity-equivalent). Workspace gates: `cargo test -p oxide-agent-core --profile-full --lib` (1337 passed), `cargo check --workspace --profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo test -p oxide-agent-transport-web --profile-web-embedded-opencode-local --lib -- compaction` (2 passed). 6 pre-existing clippy errors in `tool_runtime/modules.rs` classified by `git stash` test (not from this change).
 
 - Q4: No direct AGPL code import.
   - Source: DCP donor license and implementation constraint.
@@ -497,6 +497,14 @@ Out of scope:
   - Commands: targeted file reads of 10 key source files.
   - Audit IDs updated: Q1, Q2, Q4, Q5 verified.
   - Next: Phase 1 — raw transcript / rendered context split.
+
+- 2026-06-22 01:45: Phase 1 — raw/rendered context split complete.
+  - Changed: added `compaction/state.rs` (`CompactionState` empty struct with serde/default), `compaction/renderer.rs` (`CompactionRenderer` with identity render for empty state), updated `memory.rs` (added `compaction_state` field with `#[serde(default)]`, `rendered_messages()`, `rendered_token_count()`, `compaction_state()`/`compaction_state_mut()` accessors, reset in `clear()`/`replace_messages()`/`replace_compacted_history()`), updated `runner/mod.rs` (`convert_memory_to_messages` delegates to renderer), updated `runner/token_snapshots.rs` (`refresh_messages_from_memory` calls `memory.rendered_messages()`).
+  - Evidence: 1337 core tests pass (0 failures), 2 web transport compaction tests pass, workspace check with `profile-embedded-opencode-local` passes, fmt clean. 6 pre-existing clippy errors in `tool_runtime/modules.rs` verified by `git stash` test (not from this change). New tests: `state::tests::*` (3), `renderer::tests::*` (5), `memory::tests::compaction_*` (3), `memory::tests::rendered_*` (2), `memory::tests::old_json_*` (1) — all pass. `refresh_messages_from_memory_drops_transient_messages` existing test still passes.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1337 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed).
+  - Audit IDs updated: G1 in_progress (raw preservation infrastructure in place, renderer is identity), G6 in_progress (renderer preserves tool-call fields for empty state), Q3 verified (blast radius mapped, workspace gates pass, pre-existing clippy classified).
+  - Follow-up: `executor/execution.rs:518` still uses `convert_memory_to_messages` for initial message creation; `refresh_messages_from_memory` overwrites before LLM calls. Should switch to `rendered_messages()` in Phase 4 when compaction state becomes non-empty.
+  - Next: Phase 2 — persistent CompactionState and stable refs.
 
 ## Risks and Blockers
 
