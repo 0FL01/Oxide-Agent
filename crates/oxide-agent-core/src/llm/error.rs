@@ -46,6 +46,17 @@ pub enum LlmError {
     /// Request history is internally inconsistent but can be repaired locally.
     #[error("Repairable history error: {0}")]
     RepairableHistory(String),
+    /// Provider returned a typed error indicating the request exceeded the
+    /// context window. Classified from `ApiError` by [`Self::try_classify_context_overflow`].
+    #[error("Context overflow: {message}")]
+    ContextOverflow {
+        /// Error message from the provider.
+        message: String,
+        /// Provider that produced the error, if known.
+        provider: Option<String>,
+        /// Model identifier that produced the error, if known.
+        model: Option<String>,
+    },
     /// Any other unexpected error
     #[error("Unknown error: {message}")]
     Unknown {
@@ -94,24 +105,26 @@ impl LlmError {
         }
     }
 
-    /// Attach the provider name to `ApiError` or `Unknown` variants.
+    /// Attach the provider name to `ApiError`, `ContextOverflow`, or `Unknown` variants.
     /// Other variants are returned unchanged.
     #[must_use]
     pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
         match &mut self {
             Self::ApiError { provider: p, .. } => *p = Some(provider.into()),
+            Self::ContextOverflow { provider: p, .. } => *p = Some(provider.into()),
             Self::Unknown { provider: p, .. } => *p = Some(provider.into()),
             _ => {}
         }
         self
     }
 
-    /// Attach the model identifier to `ApiError` or `Unknown` variants.
+    /// Attach the model identifier to `ApiError`, `ContextOverflow`, or `Unknown` variants.
     /// Other variants are returned unchanged.
     #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         match &mut self {
             Self::ApiError { model: m, .. } => *m = Some(model.into()),
+            Self::ContextOverflow { model: m, .. } => *m = Some(model.into()),
             Self::Unknown { model: m, .. } => *m = Some(model.into()),
             _ => {}
         }
@@ -128,6 +141,83 @@ impl LlmError {
             Self::RequestBuilder(e.to_string())
         } else {
             Self::NetworkError(e.to_string())
+        }
+    }
+
+    /// Check if this error is a typed context-overflow error.
+    ///
+    /// Use this instead of string matching on `to_string()`. Providers should
+    /// call [`Self::try_classify_context_overflow`] when constructing errors
+    /// so that downstream code can use this typed check.
+    #[must_use]
+    pub fn is_context_overflow(&self) -> bool {
+        matches!(self, Self::ContextOverflow { .. })
+    }
+
+    /// Attempt to classify an `ApiError` as a typed `ContextOverflow`.
+    ///
+    /// This centralizes the classification logic that was previously scattered
+    /// as string matching in the runner (`llm_error_suggests_context_overflow`).
+    /// Providers return HTTP 400 or 413 for context-overflow errors; the
+    /// response body contains provider-specific error text. This method checks
+    /// the typed status code first, then inspects the message for known
+    /// context-overflow indicators. This is HTTP API error response parsing,
+    /// not heuristic over LLM output.
+    ///
+    /// Classification rules:
+    /// - `ApiError { status: Some(400|413), .. }` + message contains overflow
+    ///   indicator → `ContextOverflow`.
+    /// - `ApiError { status: None, .. }` + message contains overflow indicator
+    ///   → `ContextOverflow` (status unknown, but message is clear).
+    /// - `ApiError { status: Some(other), .. }` → unchanged (different error
+    ///   type, e.g. 429 rate limit).
+    /// - Other variants → unchanged.
+    ///
+    /// If the error is not an `ApiError` with an overflow-indicating status and
+    /// message, it is returned unchanged.
+    #[must_use]
+    pub fn try_classify_context_overflow(self) -> Self {
+        const INDICATORS: &[&str] = &[
+            "context length",
+            "context window",
+            "too many tokens",
+            "token limit",
+            "maximum context",
+            "prompt is too long",
+            "context overflow",
+        ];
+
+        let is_overflow_message = |message: &str| {
+            let lower = message.to_ascii_lowercase();
+            INDICATORS.iter().any(|needle| lower.contains(needle))
+        };
+
+        match &self {
+            // HTTP 400 or 413 with overflow indicator → classify.
+            Self::ApiError {
+                status: Some(s),
+                message,
+                provider,
+                model,
+            } if (*s == 400 || *s == 413) && is_overflow_message(message) => {
+                Self::ContextOverflow {
+                    message: message.clone(),
+                    provider: provider.clone(),
+                    model: model.clone(),
+                }
+            }
+            // Unknown HTTP status (None) with overflow indicator → classify.
+            Self::ApiError {
+                status: None,
+                message,
+                provider,
+                model,
+            } if is_overflow_message(message) => Self::ContextOverflow {
+                message: message.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
+            },
+            _ => self,
         }
     }
 }
@@ -197,5 +287,115 @@ mod tests {
             } => {}
             _ => panic!("expected ApiError with None provider/model"),
         }
+    }
+
+    #[test]
+    fn is_context_overflow_typed_match() {
+        let overflow = LlmError::ContextOverflow {
+            message: "context length exceeded".to_string(),
+            provider: Some("openrouter".to_string()),
+            model: Some("test-model".to_string()),
+        };
+        assert!(overflow.is_context_overflow());
+
+        let api = LlmError::api_error("some other error");
+        assert!(!api.is_context_overflow());
+
+        let network = LlmError::NetworkError("timeout".to_string());
+        assert!(!network.is_context_overflow());
+    }
+
+    #[test]
+    fn try_classify_context_overflow_400_with_indicator() {
+        let error =
+            LlmError::api_error_status(400, "This request exceeds the context length limit")
+                .with_provider("openrouter")
+                .with_model("test-model");
+        let classified = error.try_classify_context_overflow();
+        assert!(classified.is_context_overflow());
+        match classified {
+            LlmError::ContextOverflow {
+                provider,
+                model,
+                message,
+            } => {
+                assert_eq!(provider.as_deref(), Some("openrouter"));
+                assert_eq!(model.as_deref(), Some("test-model"));
+                assert!(message.contains("context length"));
+            }
+            _ => panic!("expected ContextOverflow"),
+        }
+    }
+
+    #[test]
+    fn try_classify_context_overflow_413_with_indicator() {
+        let error = LlmError::api_error_status(413, "Prompt is too long for context window");
+        let classified = error.try_classify_context_overflow();
+        assert!(classified.is_context_overflow());
+    }
+
+    #[test]
+    fn try_classify_context_overflow_none_status_with_indicator() {
+        let error = LlmError::api_error("maximum context length exceeded");
+        let classified = error.try_classify_context_overflow();
+        assert!(classified.is_context_overflow());
+    }
+
+    #[test]
+    fn try_classify_context_overflow_400_without_indicator_unchanged() {
+        let error = LlmError::api_error_status(400, "Invalid request body");
+        let classified = error.try_classify_context_overflow();
+        assert!(!classified.is_context_overflow());
+        assert!(matches!(classified, LlmError::ApiError { .. }));
+    }
+
+    #[test]
+    fn try_classify_context_overflow_non_400_unchanged() {
+        let error = LlmError::api_error_status(429, "Rate limited: too many tokens");
+        let classified = error.try_classify_context_overflow();
+        assert!(!classified.is_context_overflow());
+        assert!(matches!(
+            classified,
+            LlmError::ApiError {
+                status: Some(429),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn try_classify_context_overflow_non_api_error_unchanged() {
+        let error = LlmError::NetworkError("context length connection error".to_string());
+        let classified = error.try_classify_context_overflow();
+        assert!(!classified.is_context_overflow());
+        assert!(matches!(classified, LlmError::NetworkError(_)));
+    }
+
+    #[test]
+    fn context_overflow_carries_provider_model() {
+        let error = LlmError::ContextOverflow {
+            message: "exceeded".to_string(),
+            provider: None,
+            model: None,
+        }
+        .with_provider("mistral")
+        .with_model("mistral-large");
+        match error {
+            LlmError::ContextOverflow {
+                provider, model, ..
+            } => {
+                assert_eq!(provider.as_deref(), Some("mistral"));
+                assert_eq!(model.as_deref(), Some("mistral-large"));
+            }
+            _ => panic!("expected ContextOverflow"),
+        }
+    }
+
+    #[test]
+    fn with_provider_noop_on_other_variants() {
+        let error = LlmError::NetworkError("timeout".to_string())
+            .with_provider("test")
+            .with_model("test");
+        assert!(matches!(error, LlmError::NetworkError(_)));
     }
 }

@@ -5,6 +5,7 @@
 //!
 //! Documentation: `docs/context-window-tracking.md`
 
+pub mod admission;
 pub mod archive;
 pub mod block;
 pub mod budget;
@@ -20,6 +21,11 @@ pub mod strategy;
 pub mod task;
 pub mod types;
 
+pub use admission::{
+    AdmissionBlocker, AdmissionBudget, AdmissionDecision, ChunkSummaryResult, ContextAdmission,
+    EmergencySummarizer, ManifestSpec, PayloadDescriptor, PayloadKind, SummarizeError,
+    split_into_chunks, summarize_in_chunks,
+};
 pub use archive::ArchiveRef;
 pub use block::{CompressionBlock, CompressionSelection, SummaryPart};
 pub use budget::{count_tokens_cached, estimate_request_budget};

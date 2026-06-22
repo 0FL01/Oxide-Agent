@@ -2,7 +2,10 @@
 
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
-use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
+use crate::agent::compaction::{
+    AdmissionBudget, AdmissionDecision, CompactionPolicy, CompactionTrigger, ContextAdmission,
+    PayloadDescriptor, PayloadKind, count_tokens_cached,
+};
 use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
 use crate::agent::memory::{AgentMessage, AgentMessageAttachment};
@@ -17,8 +20,8 @@ use crate::agent::tool_runtime::{
 use crate::config::ModelInfo;
 
 use crate::llm::{
-    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol,
-    ToolTransport,
+    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+    ToolProtocol, ToolTransport,
 };
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -377,15 +380,42 @@ impl AgentRunner {
             .with_protocol(ToolProtocol::ChatLike)
             .with_transport(ToolTransport::ClientRoundTrip);
         let failure_summary = summarize_tool_failure_content(&tool_name, &content);
-        let memory_content = failure_summary
-            .as_ref()
-            .map(|summary| summary.content.as_str())
-            .unwrap_or(content.as_str());
+
+        // Admission gate: evaluate tool output before hot-memory mutation.
+        // Skip when failure_summary already pruned the content (it's already bounded).
+        let (model_content, externalized_payload) = if let Some(summary) = &failure_summary {
+            (summary.content.clone(), None)
+        } else {
+            let budget = Self::compute_admission_budget(ctx);
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::ToolOutput {
+                    tool_name: tool_name.clone(),
+                },
+                content: content.clone(),
+                source: None,
+                size_bytes: content.len(),
+            };
+            match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => (content.clone(), None),
+                AdmissionDecision::Manifest(spec) => (
+                    spec.manifest_content.clone(),
+                    Some(spec.externalized_payload),
+                ),
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[Tool output withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    (placeholder, None)
+                }
+            }
+        };
+
         ctx.messages.push(Message::tool_with_correlation(
             output.invocation_id.as_str(),
             correlation.clone(),
             &tool_name,
-            memory_content,
+            &model_content,
         ));
         let mut memory_message = if let Some(summary) = failure_summary {
             AgentMessage::pruned_tool_with_correlation(
@@ -397,12 +427,14 @@ impl AgentRunner {
                 None,
             )
         } else {
-            AgentMessage::tool_with_correlation(
+            let mut msg = AgentMessage::tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
                 &tool_name,
-                &content,
-            )
+                &model_content,
+            );
+            msg.externalized_payload = externalized_payload;
+            msg
         };
         if let Some(image) = output.image_attachment {
             let mut attachment = if let Some(data) = image.data {
@@ -427,6 +459,43 @@ impl AgentRunner {
             memory_message.attachments.push(attachment);
         }
         ctx.agent.memory_mut().add_message(memory_message);
+    }
+
+    /// Compute the admission budget from the current runner context.
+    ///
+    /// This is used by the tool-output admission gate to decide whether a
+    /// tool result can enter hot memory inline or must be externalized.
+    /// Uses the route's `context_window_tokens` (the real provider constraint)
+    /// rather than `memory.max_tokens()` (which may be set artificially small
+    /// for compaction threshold testing).
+    fn compute_admission_budget(ctx: &AgentRunnerContext<'_>) -> AdmissionBudget {
+        let memory = ctx.agent.memory();
+        let route_context_window = ctx
+            .config
+            .model_routes
+            .first()
+            .map(|route| route.context_window_tokens as usize)
+            .unwrap_or_else(|| memory.max_tokens());
+        AdmissionBudget {
+            rendered_tokens: memory.token_count(),
+            route_context_window,
+            system_prompt_tokens: count_tokens_cached(ctx.system_prompt),
+            tool_schema_tokens: Self::estimate_tool_schema_tokens(ctx.tools),
+            hard_reserve: ctx.config.model_max_output_tokens as usize,
+        }
+    }
+
+    /// Estimate token overhead from tool definitions (name + description + parameters schema).
+    fn estimate_tool_schema_tokens(tools: &[ToolDefinition]) -> usize {
+        tools.iter().fold(0, |acc, tool| {
+            let param_tokens = serde_json::to_string(&tool.parameters)
+                .ok()
+                .as_deref()
+                .map_or(0, count_tokens_cached);
+            acc.saturating_add(count_tokens_cached(&tool.name))
+                .saturating_add(count_tokens_cached(&tool.description))
+                .saturating_add(param_tokens)
+        })
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {

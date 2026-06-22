@@ -572,7 +572,10 @@ impl AgentRunner {
                     return Err(anyhow!("LLM call failed: {error}"));
                 }
 
-                if Self::llm_error_suggests_context_overflow(&error) && metadata.attempt == 1 {
+                // Classify provider API errors into typed context-overflow variant.
+                let error = error.try_classify_context_overflow();
+
+                if error.is_context_overflow() && metadata.attempt == 1 {
                     let retried = self
                         .run_runtime_context_limit_compaction(ctx, state, metadata.route)
                         .await?;
@@ -918,21 +921,6 @@ impl AgentRunner {
             outcome,
             "LLM route attempt finished"
         );
-    }
-
-    fn llm_error_suggests_context_overflow(error: &LlmError) -> bool {
-        let message = error.to_string().to_ascii_lowercase();
-        [
-            "context length",
-            "context window",
-            "too many tokens",
-            "token limit",
-            "maximum context",
-            "prompt is too long",
-            "context overflow",
-        ]
-        .iter()
-        .any(|needle| message.contains(needle))
     }
 
     fn route_with_soft_output_cap(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> ModelInfo {

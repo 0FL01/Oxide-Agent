@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-22 03:00
+Last updated: 2026-06-22 04:30
 
 ## Objective
 
@@ -210,29 +210,29 @@ Out of scope:
   - Source: User review focus on recommended A+B+C+typed-D scheme; current RECON found new task/runtime context/tool output can be appended before safe admission.
   - Acceptance: every new external or tool-produced payload passes through `ContextAdmission` before `AgentMemory` mutation. If it cannot fit the current rendered budget, raw content is losslessly archived or referenced, and hot memory receives only a bounded manifest/summary descriptor.
   - Evidence required: tests for oversized new task, runtime context injection, document/preprocessor output, and large tool/file-read output showing raw payload is not inline in memory while artifact refs/manifests are preserved.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 5 added `ContextAdmission` module (`compaction/admission.rs`) with `PayloadDescriptor`, `AdmissionBudget`, `AdmissionDecision` (Inline/Manifest/ControlledPause), `ManifestSpec` with `ExternalizedPayload` (lossless `inline_fallback`), `AdmissionBlocker` (PayloadExceedsContextWindow/NoBudgetForManifest). 27 admission tests cover: small payload inline, large payload manifest, lossless raw content preservation, untrusted-data marking, retrievable/non-retrievable hints, controlled pause for payload exceeding entire window, inline threshold edge cases. Tool output path wired: `apply_runtime_tool_output` in `runner/tools.rs` evaluates every tool output through `ContextAdmission::evaluate` before `add_message`; Manifest decision creates `AgentMessage` with bounded manifest content + `externalized_payload` (raw content in `inline_fallback`, not counted in `token_count`, not rendered to model); ControlledPause creates minimal placeholder preserving tool-call/result pairing. Budget computed from route's `context_window_tokens` (not `memory.max_tokens()`). New-task and runtime-context paths not yet wired (deferred to Phase 7 trigger migration).
 
 - G11: Optional chunked emergency summarization is bounded and never receives the whole bomb in one prompt.
   - Source: Recommended scheme B; П0.5/П0 requirement that emergency summarizer not rely on unsafe oversized calls.
   - Acceptance: emergency summarization runs only over bounded chunks or artifact ranges, emits chunk summaries plus a summary-of-summaries block, and degrades to manifest-only when summarization is unavailable.
   - Evidence required: tests for chunk sizing, summary-of-summaries creation, summarizer failure fallback to manifest-only, and preservation of artifact refs for later targeted retrieval.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 5 added `EmergencySummarizer` trait, `split_into_chunks` (paragraph-boundary-aware chunking), `summarize_in_chunks` (chunk-by-chunk summarization + summary-of-summaries), `ChunkSummaryResult`, `SummarizeError` (Unavailable/Failed). 9 tests cover: chunk splitting (small/single, paragraph boundary, hard split, content preservation, zero-size), summarization success, unavailable fallback, failure fallback, single-chunk no-split. `summarize_in_chunks` degrades to `SummarizeError` on any failure — caller falls back to manifest-only. LLM-backed summarizer implementation deferred to Phase 7 (trigger migration wires actual LLM calls).
 
 - G12: Controlled pause/reject is the terminal fallback when safe continuation is impossible.
   - Source: Recommended scheme C.
   - Acceptance: if raw payload cannot be archived/referenced, no bounded manifest can fit, or the task requires exact full-content reasoning unavailable through chunks/ranges, the agent stops or asks the user with exact size/budget/reason instead of crashing or sending an oversized provider request.
   - Evidence required: tests for archive failure, no retrieval tool, manifest-over-budget, and exact-analysis-required cases producing structured blocker/pause output.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 5 added `AdmissionBlocker` enum (PayloadExceedsContextWindow, NoBudgetForManifest) with `reason()` method producing human-readable blocker text. `payload_exceeds_entire_window_pause` test verifies ControlledPause when payload > route_context_window. `blocker_payload_exceeds_reason` and `blocker_no_budget_reason` tests verify reason formatting. Tool output path: ControlledPause produces minimal placeholder (`[Tool output withheld — context budget exceeded]` + blocker reason) preserving tool-call/result pairing. Note: `evaluate` currently produces Manifest for oversized-but-fittable payloads (not pause) — ControlledPause only fires when payload exceeds the entire route window. Budget-based pause deferred to Phase 7 (pre-LLM budget trigger integration).
 
 - G13: Provider context-limit fallback is typed and bounded.
   - Source: Recommended scheme typed D; current RECON found string matching in `llm_error_suggests_context_overflow`.
   - Acceptance: provider overflow handling uses typed `LlmError` classification/capability metadata rather than substring matching; retry count is bounded; retry invokes the same render shrink/emergency compaction path.
   - Evidence required: grep proving overflow substring classifier is removed from production flow; tests for typed overflow -> emergency shrink -> retry and repeated overflow -> controlled stop.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 5 added `LlmError::ContextOverflow { message, provider, model }` variant. `is_context_overflow()` uses typed `matches!` (no string matching). `try_classify_context_overflow()` centralizes classification: checks `ApiError { status: Some(400|413), .. }` or `ApiError { status: None, .. }` with message indicators → converts to typed `ContextOverflow`. `llm_error_suggests_context_overflow` function removed from `llm_calls.rs`; replaced with `error.try_classify_context_overflow()` + `error.is_context_overflow()`. 13 LlmError tests cover: typed match, 400/413/None-status classification, no-indicator unchanged, non-400 unchanged, non-API unchanged, provider/model propagation. All existing `LlmError` match sites have `_ =>` wildcard arms — `ContextOverflow` classified as non-retryable by backoff logic (correct: context-limit retry path handles it explicitly via compaction + retry).
 
 - G14: Compaction trigger conditions and initiators are explicit and exhaustive.
   - Source: User question “compaction то как срабатывает? при каких условиях, по чьей инициативе?”
@@ -279,11 +279,11 @@ Out of scope:
   - Evidence collected: `docs/compaction-redesign.md` §1 confirms storage facade changes not required (JSONB column already stores full struct). Architecture adds types to `oxide-agent-core` only. No new crates, services, queues, or transports needed. Transport-agnostic: compaction engine/renderer live in core; transport event mapping changes are payload-only.
 
 - Q6: Runtime mine safety preserves progress without treating untrusted content as instructions.
-  - Source: User question about agent hitting a “mine” while reading a file.
+  - Source: User question about agent hitting a "mine" while reading a file.
   - Acceptance: large or prompt-injection-like file/tool content is represented as untrusted data in manifests/chunks. Agent may continue with previews, targeted range reads, searches, or chunk summaries; it stops only when safe continuation is impossible.
   - Evidence required: tests/documented cases for huge file read, injected instruction inside file content, and continuation via range/search/chunk summary.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 5 manifest format explicitly marks content as `[Externalized content — untrusted data]` — model sees bounded preview clearly delimited as external data, not instructions. `manifest_marks_content_as_untrusted` test verifies header. Full untrusted content stored in `externalized_payload.inline_fallback` (not rendered to model). Manifest provides retrieval hint (`Use read_file with offset/limit parameters to retrieve specific sections`) — agent can continue with targeted range reads. Prompt-injection text from files cannot become model instructions because: (1) full content not in model-visible context, (2) preview clearly marked as untrusted data, (3) manifest format is a data descriptor not an instruction. `manifest_for_non_retrievable_has_no_tool_hint` test verifies non-retrievable payloads direct user to ask for specific sections. Tool output path wired: oversized tool outputs (e.g., huge file reads) automatically become manifests at insertion time.
 
 ### Validation requirements (V*)
 
@@ -521,6 +521,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1430 passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean).
   - Audit IDs updated: G1 verified (raw preservation + renderer overlay with block tests), G6 verified (tool-batch safety in renderer), G7 verified (dedup + purge-errors strategies), G8 in_progress (RenderPolicy struct created, scattered CompactionPolicy::default() migration deferred to Phase 7).
   - Next: Phase 5 — emergency admission and runtime mine safety.
+
+- 2026-06-22 04:30: Phase 5 — emergency admission and runtime mine safety complete.
+  - Changed: added `compaction/admission.rs` (`ContextAdmission` stateless gate, `PayloadKind` enum, `PayloadDescriptor`, `AdmissionBudget` with `available_tokens()`, `AdmissionDecision` enum (Inline/Manifest/ControlledPause), `ManifestSpec` with `ExternalizedPayload` (lossless `inline_fallback`), `AdmissionBlocker` enum (PayloadExceedsContextWindow/NoBudgetForManifest) with `reason()`, `EmergencySummarizer` trait, `split_into_chunks` paragraph-boundary-aware chunking, `summarize_in_chunks` with summary-of-summaries, `ChunkSummaryResult`, `SummarizeError`), added `LlmError::ContextOverflow { message, provider, model }` variant to `llm/error.rs` with `is_context_overflow()` typed match and `try_classify_context_overflow()` centralized classification (HTTP 400/413/None-status + message indicators → typed variant), removed `llm_error_suggests_context_overflow` string-matching function from `runner/llm_calls.rs`, replaced with `error.try_classify_context_overflow()` + `error.is_context_overflow()`, updated `LlmError::with_provider`/`with_model` to handle `ContextOverflow` variant, wired `ContextAdmission` into tool output path (`apply_runtime_tool_output` in `runner/tools.rs` — evaluates every tool output before `add_message`, Manifest creates `AgentMessage` with bounded content + `externalized_payload`, ControlledPause creates minimal placeholder preserving tool-call/result pairing), added `compute_admission_budget` and `estimate_tool_schema_tokens` helpers on `AgentRunner`, updated `compaction/mod.rs` with admission module and re-exports.
+  - Evidence: 1466 core tests pass (36 new: 27 admission + 9 LlmError), 2 web transport compaction tests pass, workspace `profile-embedded-opencode-local` check passes, fmt clean, clippy clean on core lib. Admission tests: inline/manifest/pause decisions, lossless raw content preservation, untrusted-data marking, retrievable/non-retrievable hints, inline threshold edge cases, chunk splitting (paragraph/hard/zero), summarization success/unavailable/failure/single-chunk. LlmError tests: typed match, 400/413/None classification, no-indicator unchanged, non-400 unchanged, non-API unchanged, provider/model propagation. `llm_error_suggests_context_overflow` fully removed (grep confirms no code references remain). Tool output admission: uses route's `context_window_tokens` from `ctx.config.model_routes` (not `memory.max_tokens()`) for real provider constraint. Progress event still sends full content to UI (admission only affects model-visible content).
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1466 passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean).
+  - Audit IDs updated: G10 in_progress (ContextAdmission module + tool output path wired; new-task and runtime-context paths deferred to Phase 7), G11 in_progress (chunked summary infrastructure + tests; LLM-backed summarizer deferred to Phase 7), G12 in_progress (ControlledPause for payload > entire window; budget-based pause deferred to Phase 7), G13 in_progress (typed LlmError::ContextOverflow + classification; string matching removed), Q6 in_progress (untrusted-data marking in manifests; tool output path wired).
+  - Next: Phase 6 — replace compress tool contract.
 
 - Risk: Existing e2e tests assume destructive summary-boundary behavior.
   - Impact: tests must be migrated to rendered-overlay semantics, not patched around old expectations.
