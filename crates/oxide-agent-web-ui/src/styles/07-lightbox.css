@@ -1,0 +1,33 @@
+/* Lightbox overlay — full-screen image viewer with darkened backdrop.
+   Rendered as a position:fixed overlay; click backdrop or press Escape to close. */
+
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+  animation: lightbox-fade-in 0.2s ease-out;
+}
+
+.lightbox-image {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 4px;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+@keyframes lightbox-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

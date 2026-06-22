@@ -3,6 +3,7 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::PersistedTaskEvent;
 use serde_json::Value;
 
+use super::lightbox::{LightboxContext, LightboxImage};
 use super::payload::{
     field_i64, field_str, input_preview_field_str, input_preview_json, is_sub_agent_event,
     parse_output_json, payload_str_event, raw_output_preview, stream_text, sub_agent_event_name,
@@ -1096,6 +1097,10 @@ fn BrowserToolCard(
         .map(|e| e.session_id.clone());
     let task_id_for_artifact = call.as_ref().or(result.as_ref()).map(|e| e.task_id.clone());
 
+    // Lightbox context — optional so the card degrades gracefully (native
+    // new-tab link) when the context is not provided (e.g. in tests).
+    let lightbox = use_context::<LightboxContext>();
+
     view! {
         {tool_card_header(icon, &name, header_metas)}
         <ToolDetails open=default_open>
@@ -1109,8 +1114,20 @@ fn BrowserToolCard(
                     let alt = dimensions
                         .map(|(width, height)| format!("Screenshot {filename} ({width}×{height})"))
                         .unwrap_or_else(|| format!("Screenshot {filename}"));
+                    let lb_url = image_url.clone();
+                    let lb_alt = alt.clone();
                     Some(view! {
-                        <a class="browser-tool-shot-link" style=BROWSER_TOOL_SHOT_LINK_STYLE href=image_url.clone() target="_blank" rel="noopener noreferrer">
+                        <a class="browser-tool-shot-link" style=BROWSER_TOOL_SHOT_LINK_STYLE
+                           href=image_url.clone() target="_blank" rel="noopener noreferrer"
+                           on:click=move |ev| {
+                               if let Some(lb) = lightbox {
+                                   ev.prevent_default();
+                                   lb.set_image.set(Some(LightboxImage {
+                                       url: lb_url.clone(),
+                                       alt: lb_alt.clone(),
+                                   }));
+                               }
+                           }>
                             <img class="browser-tool-shot-image" style=BROWSER_TOOL_SHOT_IMAGE_STYLE src=image_url.clone() alt=alt />
                         </a>
                     }.into_any())

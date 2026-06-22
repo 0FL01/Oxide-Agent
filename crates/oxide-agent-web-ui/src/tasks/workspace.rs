@@ -21,6 +21,7 @@ use super::composer::{
     persist_default_effort, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
     task_input_limit_notice, task_input_too_long,
 };
+use super::lightbox::{Lightbox, LightboxContext, LightboxImage};
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
@@ -527,6 +528,14 @@ fn SessionWorkspace(
     let (drawer_open, set_drawer_open) = signal(false);
     let (activity_task_id, set_activity_task_id) = signal(None::<String>);
 
+    // Lightbox overlay state — session-scoped, provided via context so any
+    // child component (e.g. BrowserToolCard) can open a full-screen image.
+    let (lightbox_image, set_lightbox_image) = signal(None::<LightboxImage>);
+    provide_context(LightboxContext {
+        image: lightbox_image,
+        set_image: set_lightbox_image,
+    });
+
     // Shared wall-clock for all elapsed timers (task-card "Thinking for…"
     // label and the Activity drawer). A single 1s interval drives every
     // active-task timer so the UI ticks from the browser clock, not from
@@ -574,6 +583,7 @@ fn SessionWorkspace(
         set_activity_pages.set(HashMap::new());
         set_activity_task_id.set(None);
         set_drawer_open.set(false);
+        set_lightbox_image.set(None);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -677,6 +687,7 @@ fn SessionWorkspace(
                         set_activity_pages.set(HashMap::new());
                         set_activity_task_id.set(None);
                         set_drawer_open.set(false);
+                        set_lightbox_image.set(None);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -877,6 +888,7 @@ fn SessionWorkspace(
         set_activity_pages.set(HashMap::new());
         set_activity_task_id.set(None);
         set_drawer_open.set(false);
+        set_lightbox_image.set(None);
         let session_id = session_id_for_submit.clone();
         let effort = selected_effort.get();
         spawn_ui(async move {
@@ -1260,6 +1272,7 @@ fn SessionWorkspace(
                 load_older_events=load_older_activity
                 now_millis=elapsed_now_millis
             />
+            <Lightbox />
         </section>
     }
 }
