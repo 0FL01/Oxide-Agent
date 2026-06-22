@@ -15,9 +15,12 @@ use error::{webfetch_failure_message, webfetch_failure_payload};
 
 pub(crate) use convert::OutputWindow;
 pub(crate) use delivery::{
-    MarkdownDeliveryCache, MarkdownDeliveryResult, MarkdownReadMode, document_metadata,
+    DeliveryPayloadExtra, DeliveryStdoutExtra, MarkdownDeliveryCache, MarkdownDeliveryResult,
+    MarkdownReadMode, delivery_success_payload, no_cached_document_message,
+    no_cached_document_payload, parse_read_mode, render_delivery_stdout, require_url,
+    resolve_output_window,
 };
-pub(crate) use fetch::{FetchedMarkdownDocument, format_markdown_document_output};
+pub(crate) use fetch::FetchedMarkdownDocument;
 
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -38,7 +41,6 @@ const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 20_000;
 const MIN_OUTPUT_CHARS: usize = 1_000;
 const MAX_OUTPUT_CHARS_REQUEST: usize = 100_000;
-const MAX_OFFSET_CHARS: usize = 1_000_000;
 const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
@@ -62,8 +64,6 @@ pub(crate) struct WebMarkdownArgs {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub max_chars: Option<usize>,
-    #[serde(default)]
-    pub offset_chars: Option<usize>,
 }
 
 impl WebFetchMdProvider {
@@ -169,7 +169,7 @@ impl WebFetchMdProvider {
                     "read": {
                         "type": "string",
                         "enum": ["auto", "next"],
-                        "description": "auto fetches the URL and starts reading; next continues the last cached page in this session without requiring offset_chars"
+                        "description": "auto fetches the URL and starts reading; next continues the last cached page in this session"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -178,10 +178,6 @@ impl WebFetchMdProvider {
                     "max_chars": {
                         "type": "integer",
                         "description": "Optional maximum Markdown output characters, clamped to 1000..100000; default is 20000"
-                    },
-                    "offset_chars": {
-                        "type": "integer",
-                        "description": "Optional character offset into extracted Markdown for reading later chunks; default is 0"
                     }
                 },
                 "additionalProperties": false
@@ -232,41 +228,37 @@ impl ToolExecutor for WebFetchMdToolExecutor {
         let args =
             parse_web_markdown_args(&invocation.raw_arguments).map_err(webfetch_runtime_error)?;
 
-        if web_markdown_read_mode(&args)? == MarkdownReadMode::Next {
+        if parse_read_mode(args.read.as_deref(), TOOL_WEB_MARKDOWN)? == MarkdownReadMode::Next {
+            let output_window = resolve_output_window(
+                args.max_chars,
+                MAX_OUTPUT_CHARS,
+                MIN_OUTPUT_CHARS,
+                MAX_OUTPUT_CHARS_REQUEST,
+            );
             let Some(delivery) = self
                 .provider
                 .next_markdown_window(
                     invocation.session_id.as_i64(),
                     args.url.as_deref(),
-                    web_markdown_output_window(&args, 0),
+                    output_window,
                 )
                 .await
             else {
-                let mut output = normalizer.failure(
-                    &invocation,
-                    "web_markdown has no cached page to continue in this session; call web_markdown with url first",
-                );
-                output.structured_payload = Some(json!({
-                    "provider": TOOL_WEB_MARKDOWN,
-                    "kind": "delivery",
-                    "error_kind": "no_cached_document",
-                    "retryable": false,
-                    "success": false
-                }));
+                let mut output =
+                    normalizer.failure(&invocation, no_cached_document_message(TOOL_WEB_MARKDOWN));
+                output.structured_payload =
+                    Some(no_cached_document_payload(TOOL_WEB_MARKDOWN, None));
                 return Ok(output);
             };
 
-            let output_text = format_markdown_document_output(
-                &delivery.document,
-                delivery.output_window,
-                &delivery.windowed,
-            );
+            let output_text = render_delivery_stdout(TOOL_WEB_MARKDOWN, &delivery, None);
             let mut output = normalizer.success(&invocation, &output_text, "");
-            output.structured_payload = Some(web_markdown_success_payload(&delivery));
+            output.structured_payload =
+                Some(delivery_success_payload(TOOL_WEB_MARKDOWN, &delivery, None));
             return Ok(output);
         }
 
-        let requested_url = web_markdown_required_url(&args)?.to_string();
+        let requested_url = require_url(args.url.as_deref(), TOOL_WEB_MARKDOWN)?.to_string();
 
         match self
             .provider
@@ -274,22 +266,25 @@ impl ToolExecutor for WebFetchMdToolExecutor {
             .await
         {
             Ok(document) => {
+                let output_window = resolve_output_window(
+                    args.max_chars,
+                    MAX_OUTPUT_CHARS,
+                    MIN_OUTPUT_CHARS,
+                    MAX_OUTPUT_CHARS_REQUEST,
+                );
                 let delivery = self
                     .provider
                     .store_markdown_window(
                         invocation.session_id.as_i64(),
                         requested_url,
                         document,
-                        web_markdown_output_window(&args, args.offset_chars.unwrap_or(0)),
+                        output_window,
                     )
                     .await;
-                let output_text = format_markdown_document_output(
-                    &delivery.document,
-                    delivery.output_window,
-                    &delivery.windowed,
-                );
+                let output_text = render_delivery_stdout(TOOL_WEB_MARKDOWN, &delivery, None);
                 let mut output = normalizer.success(&invocation, &output_text, "");
-                output.structured_payload = Some(web_markdown_success_payload(&delivery));
+                output.structured_payload =
+                    Some(delivery_success_payload(TOOL_WEB_MARKDOWN, &delivery, None));
                 Ok(output)
             }
             Err(error) => {
@@ -304,82 +299,6 @@ impl ToolExecutor for WebFetchMdToolExecutor {
 
 fn parse_web_markdown_args(arguments: &str) -> Result<WebMarkdownArgs> {
     serde_json::from_str(arguments).context("invalid web_markdown arguments")
-}
-
-fn web_markdown_required_url(
-    args: &WebMarkdownArgs,
-) -> std::result::Result<&str, ToolRuntimeError> {
-    args.url
-        .as_deref()
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .ok_or_else(|| {
-            ToolRuntimeError::InvalidArguments(
-                "web_markdown requires url unless read is \"next\"".to_string(),
-            )
-        })
-}
-
-fn web_markdown_read_mode(
-    args: &WebMarkdownArgs,
-) -> std::result::Result<MarkdownReadMode, ToolRuntimeError> {
-    match args
-        .read
-        .as_deref()
-        .map(str::trim)
-        .filter(|read| !read.is_empty())
-    {
-        None | Some("auto") => Ok(MarkdownReadMode::Auto),
-        Some("next") => Ok(MarkdownReadMode::Next),
-        Some(other) => Err(ToolRuntimeError::InvalidArguments(format!(
-            "invalid web_markdown read mode '{other}'; expected 'auto' or 'next'"
-        ))),
-    }
-}
-
-fn web_markdown_output_window(args: &WebMarkdownArgs, offset_chars: usize) -> OutputWindow {
-    OutputWindow {
-        max_chars: args
-            .max_chars
-            .unwrap_or(MAX_OUTPUT_CHARS)
-            .clamp(MIN_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST),
-        offset_chars: offset_chars.min(MAX_OFFSET_CHARS),
-    }
-}
-
-fn web_markdown_success_payload(delivery: &MarkdownDeliveryResult) -> serde_json::Value {
-    let start_chars = delivery.output_window.offset_chars;
-    let end_chars = start_chars + delivery.windowed.returned_chars;
-    let has_more = delivery.windowed.was_truncated;
-    let continue_with = has_more.then(|| {
-        json!({
-            "tool": TOOL_WEB_MARKDOWN,
-            "args": { "read": "next" }
-        })
-    });
-
-    json!({
-        "provider": TOOL_WEB_MARKDOWN,
-        "kind": "fetch",
-        "url": delivery.requested_url,
-        "final_url": document_metadata(&delivery.document, "URL"),
-        "markdown": delivery.windowed.text,
-        "chars": delivery.windowed.markdown_chars,
-        "markdown_chars": delivery.windowed.markdown_chars,
-        "returned_chars": delivery.windowed.returned_chars,
-        "remaining_chars": delivery.windowed.remaining_chars,
-        "next_offset_chars": delivery.windowed.next_offset_chars,
-        "truncated": has_more,
-        "complete": start_chars == 0 && !has_more,
-        "range": {
-            "start_chars": start_chars,
-            "end_chars": end_chars,
-            "total_chars": delivery.windowed.markdown_chars,
-            "has_more": has_more
-        },
-        "continue_with": continue_with,
-        "success": true
-    })
 }
 
 fn webfetch_runtime_error(error: anyhow::Error) -> ToolRuntimeError {

@@ -19,8 +19,6 @@ use super::{
     BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_RESPONSE_BYTES,
     MAX_TIMEOUT_SECS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
 };
-#[cfg(test)]
-use super::{MAX_OFFSET_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MIN_OUTPUT_CHARS};
 
 struct FetchResult {
     final_url: Url,
@@ -62,20 +60,32 @@ struct FetchOptions<'a> {
 
 impl WebFetchMdProvider {
     #[cfg(test)]
-    pub(crate) async fn fetch_markdown(
+    pub(crate) async fn fetch_and_render(
         &self,
         args: WebMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
-        let output_window = resolve_output_window(&args);
         let document = self
-            .fetch_markdown_document(args, cancellation_token)
+            .fetch_markdown_document(args.clone(), cancellation_token)
             .await?;
-        let windowed = window_markdown_document(&document, output_window);
-        Ok(format_markdown_document_output(
-            &document,
-            output_window,
-            &windowed,
+        let output_window = super::resolve_output_window(
+            args.max_chars,
+            super::MAX_OUTPUT_CHARS,
+            super::MIN_OUTPUT_CHARS,
+            super::MAX_OUTPUT_CHARS_REQUEST,
+        );
+        let delivery = self
+            .store_markdown_window(
+                0,
+                args.url.as_deref().unwrap_or("").to_string(),
+                document,
+                output_window,
+            )
+            .await;
+        Ok(super::render_delivery_stdout(
+            super::TOOL_WEB_MARKDOWN,
+            &delivery,
+            None,
         ))
     }
 
@@ -1160,62 +1170,6 @@ pub(crate) fn window_markdown_document(
     output_window: OutputWindow,
 ) -> WindowedOutput {
     window_chars(document.markdown.trim().to_string(), output_window)
-}
-
-pub(crate) fn format_markdown_document_output(
-    document: &FetchedMarkdownDocument,
-    output_window: OutputWindow,
-    windowed: &WindowedOutput,
-) -> String {
-    let mut output = String::from("## Web Markdown\n\n");
-    for (key, value) in &document.metadata {
-        output.push_str(key);
-        output.push_str(": ");
-        output.push_str(value);
-        output.push('\n');
-    }
-    if let Some(bytes) = document.fetched_bytes {
-        output.push_str("Fetched-Bytes: ");
-        output.push_str(&bytes.to_string());
-        output.push('\n');
-    }
-    output.push_str("Max-Chars: ");
-    output.push_str(&output_window.max_chars.to_string());
-    output.push('\n');
-    output.push_str("Offset-Chars: ");
-    output.push_str(&output_window.offset_chars.to_string());
-    output.push('\n');
-    output.push_str("Markdown-Chars: ");
-    output.push_str(&windowed.markdown_chars.to_string());
-    output.push('\n');
-    output.push_str("Returned-Chars: ");
-    output.push_str(&windowed.returned_chars.to_string());
-    output.push('\n');
-    output.push_str("Remaining-Chars: ");
-    output.push_str(&windowed.remaining_chars.to_string());
-    output.push('\n');
-    output.push_str("Next-Offset-Chars: ");
-    match windowed.next_offset_chars {
-        Some(offset) => output.push_str(&offset.to_string()),
-        None => output.push_str("none"),
-    }
-    output.push('\n');
-    output.push_str("Truncated: ");
-    output.push_str(if windowed.was_truncated { "yes" } else { "no" });
-    output.push_str("\n\n### Content\n\n");
-    output.push_str(&windowed.text);
-    output
-}
-
-#[cfg(test)]
-fn resolve_output_window(args: &WebMarkdownArgs) -> OutputWindow {
-    OutputWindow {
-        max_chars: args
-            .max_chars
-            .unwrap_or(MAX_OUTPUT_CHARS)
-            .clamp(MIN_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST),
-        offset_chars: args.offset_chars.unwrap_or(0).min(MAX_OFFSET_CHARS),
-    }
 }
 
 fn github_readme_download_url(metadata_json: &str) -> Result<Url> {
