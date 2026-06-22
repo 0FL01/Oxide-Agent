@@ -3,10 +3,13 @@
 //!
 //! Phase 1: empty state, identity rendering.
 //! Phase 2: block id allocation counter, ref types.
-//! Later phases add block graph and strategy state.
+//! Phase 3: block graph (`blocks: BTreeMap<BlockRef, CompressionBlock>`).
+//! Later phases add strategy state.
 
+use super::block::CompressionBlock;
 use super::refs::BlockRef;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Persistent compaction overlay state stored alongside raw `AgentMemory` messages.
 ///
@@ -24,7 +27,10 @@ pub struct CompactionState {
     /// Block ids start at 1 (`b1`, `b2`, …) — see `allocate_block_id`.
     #[serde(default)]
     next_block_id: u32,
-    // Phase 3: blocks: BTreeMap<BlockRef, CompressionBlock>,
+    /// Compression blocks keyed by `BlockRef`.
+    /// Active blocks are visible to the renderer; consumed blocks are inactive.
+    #[serde(default)]
+    blocks: BTreeMap<BlockRef, CompressionBlock>,
     // Phase 4: strategy state (dedup, purge-errors)
 }
 
@@ -50,6 +56,24 @@ impl CompactionState {
     #[must_use]
     pub const fn next_block_id(&self) -> u32 {
         self.next_block_id
+    }
+
+    /// Read-only access to all blocks (for renderer and diagnostics).
+    #[must_use]
+    pub fn blocks(&self) -> &BTreeMap<BlockRef, CompressionBlock> {
+        &self.blocks
+    }
+
+    /// Mutable access to blocks (for `CompactionEngine` within the compaction module).
+    #[must_use]
+    pub(super) fn blocks_mut(&mut self) -> &mut BTreeMap<BlockRef, CompressionBlock> {
+        &mut self.blocks
+    }
+
+    /// Returns true when there are active blocks (visible to the renderer).
+    #[must_use]
+    pub fn has_active_blocks(&self) -> bool {
+        self.blocks.values().any(CompressionBlock::is_active)
     }
 }
 
@@ -132,5 +156,64 @@ mod tests {
         let state: CompactionState = serde_json::from_str(json).expect("deserialize partial");
         assert_eq!(state.next_block_id(), 5);
         assert!(!state.is_empty());
+        assert!(!state.has_active_blocks());
+    }
+
+    #[test]
+    fn phase2_json_with_next_block_id_deserializes_without_blocks() {
+        // Phase 2 serialized CompactionState with only next_block_id.
+        // After adding blocks, this must still deserialize via serde(default).
+        let json = r#"{"next_block_id": 3}"#;
+        let state: CompactionState = serde_json::from_str(json).expect("deserialize phase2");
+        assert_eq!(state.next_block_id(), 3);
+        assert!(state.blocks().is_empty());
+        assert!(!state.has_active_blocks());
+    }
+
+    #[test]
+    fn has_active_blocks_false_for_empty_state() {
+        let state = CompactionState::default();
+        assert!(!state.has_active_blocks());
+    }
+
+    #[test]
+    fn has_active_blocks_true_with_active_block() {
+        use crate::agent::compaction::block::{SummaryPart, new_block};
+
+        let mut state = CompactionState::default();
+        let block_ref = state.allocate_block_id();
+        let block = new_block(
+            block_ref,
+            vec![0, 1, 2],
+            vec![],
+            vec![SummaryPart::Text("summary".into())],
+            0,
+        );
+        state.blocks_mut().insert(block_ref, block);
+        assert!(state.has_active_blocks());
+    }
+
+    #[test]
+    fn has_active_blocks_false_when_all_consumed() {
+        use crate::agent::compaction::block::{SummaryPart, mark_consumed, new_block};
+
+        let mut state = CompactionState::default();
+        let b1 = state.allocate_block_id();
+        let block = new_block(
+            b1,
+            vec![0, 1],
+            vec![],
+            vec![SummaryPart::Text("b1".into())],
+            0,
+        );
+        state.blocks_mut().insert(b1, block);
+
+        // Consume b1
+        let b2 = state.allocate_block_id();
+        if let Some(block) = state.blocks_mut().get_mut(&b1) {
+            mark_consumed(block, b2);
+        }
+        // Don't insert b2 — just verify b1 is now inactive
+        assert!(!state.has_active_blocks());
     }
 }
