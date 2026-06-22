@@ -1,7 +1,6 @@
 use super::{AgentExecutionOptions, AgentExecutor};
 use crate::agent::compaction::{
-    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionReason,
-    wiki_memory_lookup_available,
+    CompactionBackend, CompactionPhase, CompactionReason, EngineCompactionResult,
 };
 use crate::agent::progress::AgentEvent;
 use anyhow::{Result, anyhow};
@@ -10,84 +9,103 @@ use tracing::warn;
 
 impl AgentExecutor {
     /// Manually compact the current Agent Mode hot context without running a task iteration.
+    ///
+    /// Uses the unified engine path (`compact_via_engine`) — creates a block
+    /// in `CompactionState` without destroying raw memory.
     pub async fn compact_current_context(
         &mut self,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<CompactRunOutcome> {
+    ) -> Result<()> {
         let task = self
             .last_task()
             .map(str::to_string)
             .unwrap_or_else(|| "Continue the current Agent Mode session".to_string());
-        self.compact_current_context_codex_style(&task, progress_tx)
-            .await
-    }
 
-    async fn compact_current_context_codex_style(
-        &mut self,
-        task: &str,
-        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<CompactRunOutcome> {
+        let token_before = self.session.memory.rendered_token_count();
+        let history_items_before = self.session.memory.rendered_item_count();
+
         warn!(
             hot_memory_tokens = self.session.memory.token_count(),
-            hot_memory_items = self.session.memory.get_messages().len(),
+            rendered_tokens = token_before,
+            rendered_items = history_items_before,
             task_len = task.len(),
-            "Manual Codex-style compaction requested"
+            "Manual engine compaction requested"
         );
-        Self::emit_runtime_manual_compaction_started(progress_tx.as_ref(), &self.session.memory)
-            .await;
-        let wiki_memory_lookup_available =
-            wiki_memory_lookup_available(&self.current_tool_definitions());
 
+        Self::emit_runtime_compaction_started(
+            progress_tx.as_ref(),
+            CompactionReason::Manual,
+            CompactionPhase::Manual,
+            token_before,
+            history_items_before,
+        )
+        .await;
+
+        let route = self.settings.get_configured_agent_model();
+        let tools = self.current_tool_definitions();
         let cancellation_token = self.session.cancellation_token.clone();
-        let context = CompactRequestContext {
-            task: task.to_string(),
-            route: self.settings.get_configured_agent_model(),
-            reason: CompactionReason::Manual,
-            phase: CompactionPhase::Manual,
-            target_token_budget: self.session.memory.max_tokens(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            wiki_memory_lookup_available,
-        };
-        let outcome = match Self::await_until_cancelled(cancellation_token, async {
+
+        let result = Self::await_until_cancelled(cancellation_token, async {
             self.compaction_controller
-                .manual_compact(&mut self.session.memory, context)
+                .compact_via_engine(
+                    &mut self.session.memory,
+                    &route,
+                    &task,
+                    &tools,
+                    "", // system_prompt — not available outside a run; empty is conservative
+                    CompactionReason::Manual,
+                    CompactionPhase::Manual,
+                    true, // force
+                )
                 .await
                 .map_err(anyhow::Error::from)
         })
-        .await
-        {
-            Some(Ok(outcome)) => outcome,
-            Some(Err(error)) => {
-                warn!(error = %error, "Manual Codex-style compaction failed");
-                Self::emit_runtime_manual_compaction_failed(
+        .await;
+
+        match result {
+            Some(Ok(EngineCompactionResult::Applied(outcome))) => {
+                self.session.persist_memory_checkpoint_background();
+                warn!(
+                    block_ref = %outcome.block_ref,
+                    rendered_tokens_before = outcome.token_before,
+                    rendered_tokens_after = outcome.token_after,
+                    rendered_items_before = outcome.history_items_before,
+                    rendered_items_after = outcome.history_items_after,
+                    provider = %outcome.provider,
+                    route = %outcome.route,
+                    "Manual engine compaction completed"
+                );
+                Self::emit_runtime_compaction_completed(progress_tx.as_ref(), &outcome).await;
+                Ok(())
+            }
+            Some(Ok(EngineCompactionResult::Skipped(skipped))) => {
+                Self::emit_runtime_compaction_skipped(
                     progress_tx.as_ref(),
+                    skipped.reason,
+                    skipped.phase,
+                    skipped.skipped_reason,
+                )
+                .await;
+                Ok(())
+            }
+            Some(Err(error)) => {
+                warn!(error = %error, "Manual engine compaction failed");
+                Self::emit_runtime_compaction_failed(
+                    progress_tx.as_ref(),
+                    CompactionReason::Manual,
+                    CompactionPhase::Manual,
                     error.to_string(),
                 )
                 .await;
-                return Err(error);
+                Err(error)
             }
             None => {
                 if let Some(tx) = progress_tx.as_ref() {
                     let _ = tx.send(AgentEvent::Cancelled).await;
                 }
-                return Err(anyhow!("Task cancelled by user"));
+                Err(anyhow!("Task cancelled by user"))
             }
-        };
-
-        self.session.persist_memory_checkpoint_background();
-        warn!(
-            hot_memory_tokens_before = outcome.replacement.token_before,
-            hot_memory_tokens_after = outcome.replacement.token_after,
-            history_items_before = outcome.replacement.history_items_before,
-            history_items_after = outcome.replacement.history_items_after,
-            provider = %outcome.metadata.provider,
-            route = %outcome.metadata.route,
-            generation = outcome.metadata.generation,
-            "Manual Codex-style compaction completed"
-        );
-        Self::emit_runtime_manual_compaction_completed(progress_tx.as_ref(), &outcome).await;
-
-        Ok(outcome)
+        }
     }
 
     /// Check if the task has been cancelled
@@ -125,61 +143,86 @@ impl AgentExecutor {
             && self.session.elapsed_secs() >= self.settings.get_agent_timeout_secs()
     }
 
-    async fn emit_runtime_manual_compaction_started(
+    // Unified event emitters — shared between runner and executor paths.
+    // These replace the old duplicated emit_runtime_manual_compaction_* methods.
+
+    async fn emit_runtime_compaction_started(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        memory: &crate::agent::memory::AgentMemory,
+        reason: CompactionReason,
+        phase: CompactionPhase,
+        token_before: usize,
+        history_items_before: usize,
     ) {
         if let Some(tx) = progress_tx {
             let _ = tx
                 .send(AgentEvent::RuntimeCompactionStarted {
-                    reason: CompactionReason::Manual,
-                    phase: CompactionPhase::Manual,
+                    reason,
+                    phase,
                     backend: CompactionBackend::LocalLlmSummary,
                     provider: None,
                     route: None,
-                    token_before: memory.token_count(),
-                    history_items_before: memory.get_messages().len(),
+                    token_before,
+                    history_items_before,
                 })
                 .await;
         }
     }
 
-    async fn emit_runtime_manual_compaction_completed(
+    async fn emit_runtime_compaction_completed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        outcome: &CompactRunOutcome,
+        outcome: &crate::agent::compaction::EngineCompactionOutcome,
     ) {
         if let Some(tx) = progress_tx {
             let _ = tx
                 .send(AgentEvent::RuntimeCompactionCompleted {
-                    reason: outcome.metadata.reason,
-                    phase: outcome.metadata.phase,
-                    backend: outcome.metadata.backend,
-                    provider: outcome.metadata.provider.clone(),
-                    route: outcome.metadata.route.clone(),
-                    token_before: outcome.replacement.token_before,
-                    token_after: outcome.replacement.token_after,
-                    history_items_before: outcome.replacement.history_items_before,
-                    history_items_after: outcome.replacement.history_items_after,
-                    generation: outcome.metadata.generation,
-                    repair_applied: outcome.metadata.repair_applied,
+                    reason: outcome.reason,
+                    phase: outcome.phase,
+                    backend: CompactionBackend::LocalLlmSummary,
+                    provider: outcome.provider.clone(),
+                    route: outcome.route.clone(),
+                    token_before: outcome.token_before,
+                    token_after: outcome.token_after,
+                    history_items_before: outcome.history_items_before,
+                    history_items_after: outcome.history_items_after,
+                    generation: outcome.block_ref.as_u32(),
+                    repair_applied: false,
                 })
                 .await;
         }
     }
 
-    async fn emit_runtime_manual_compaction_failed(
+    async fn emit_runtime_compaction_failed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        reason: CompactionReason,
+        phase: CompactionPhase,
         error: String,
     ) {
         if let Some(tx) = progress_tx {
             let _ = tx
                 .send(AgentEvent::RuntimeCompactionFailed {
-                    reason: CompactionReason::Manual,
-                    phase: CompactionPhase::Manual,
+                    reason,
+                    phase,
                     backend: CompactionBackend::LocalLlmSummary,
                     provider: None,
                     route: None,
                     error,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_runtime_compaction_skipped(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        reason: CompactionReason,
+        phase: CompactionPhase,
+        skipped_reason: String,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RuntimeCompactionSkipped {
+                    reason,
+                    phase,
+                    skipped_reason,
                 })
                 .await;
         }

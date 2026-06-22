@@ -7,6 +7,7 @@
 
 pub mod admission;
 pub mod archive;
+pub mod auto_select;
 pub mod block;
 pub mod budget;
 pub mod controller;
@@ -31,6 +32,7 @@ pub use block::{CompressionBlock, CompressionSelection, SummaryPart};
 pub use budget::{count_tokens_cached, estimate_request_budget};
 pub use controller::{
     CompactRequestContext, CompactRunOutcome, CompactionController, CompactionControllerError,
+    EngineCompactionOutcome, EngineCompactionResult, EngineCompactionSkipped,
 };
 pub use engine::{CompactionEngine, CompactionError};
 pub use history::{

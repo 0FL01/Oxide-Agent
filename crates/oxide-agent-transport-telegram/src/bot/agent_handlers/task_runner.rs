@@ -12,9 +12,7 @@ use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
 use anyhow::{Result, anyhow};
-use oxide_agent_core::agent::{
-    AgentExecutionOutcome, SessionId, compaction::CompactRunOutcome, progress::AgentEvent,
-};
+use oxide_agent_core::agent::{AgentExecutionOutcome, SessionId, progress::AgentEvent};
 use oxide_agent_core::config::get_agent_max_iterations;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -631,7 +629,7 @@ pub(crate) async fn clear_completed_response_delivery_state(session_id: &Session
 
 async fn deliver_manual_compaction_result(
     ctx: &TaskDeliveryContext,
-    result: Result<CompactRunOutcome>,
+    result: Result<()>,
     progress_text: &str,
     progress_message_id: MessageId,
     progress_reply_markup: Option<InlineKeyboardMarkup>,
@@ -893,7 +891,7 @@ pub(crate) async fn execute_user_input_resume(
 pub(crate) async fn execute_manual_compaction(
     session_id: SessionId,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<CompactRunOutcome> {
+) -> Result<()> {
     let executor_arc = SESSION_REGISTRY
         .get(&session_id)
         .await

@@ -950,12 +950,33 @@ impl AgentMemory {
     /// Estimated token count of the rendered model context.
     ///
     /// When `CompactionState` is empty, this equals `token_count()` because
-    /// the renderer is identity. Later phases will compute this from the
-    /// rendered output, which may be smaller than the raw transcript.
+    /// the renderer is identity. When active blocks exist, this counts tokens
+    /// from the rendered output (which replaces covered messages with block
+    /// summaries), and may be smaller than the raw transcript.
     #[must_use]
     pub fn rendered_token_count(&self) -> usize {
-        // Phase 1: identity renderer — rendered == raw
-        self.token_count
+        let rendered = self.rendered_messages();
+        rendered
+            .iter()
+            .map(|msg| {
+                let mut tokens = crate::agent::compaction::count_tokens_cached(&msg.content);
+                if let Some(reasoning) = &msg.reasoning_content {
+                    tokens = tokens
+                        .saturating_add(crate::agent::compaction::count_tokens_cached(reasoning));
+                }
+                tokens
+            })
+            .sum()
+    }
+
+    /// Number of items in the rendered model context.
+    ///
+    /// When `CompactionState` is empty, this equals `get_messages().len()`.
+    /// When active blocks exist, covered messages are replaced by synthetic
+    /// summary messages, so this may differ from the raw message count.
+    #[must_use]
+    pub fn rendered_item_count(&self) -> usize {
+        self.rendered_messages().len()
     }
 
     /// Read-only access to compaction overlay state.

@@ -333,6 +333,7 @@ async fn manual_compaction_uses_current_compaction_controller() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
+        agent_model_context_window_tokens: Some(100),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
@@ -355,25 +356,39 @@ async fn manual_compaction_uses_current_compaction_controller() {
     let session = AgentSession::new(9_i64.into());
     let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
     executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor.session_mut().memory.set_max_tokens(100);
     executor
         .session_mut()
         .memory
         .add_message(crate::agent::memory::AgentMessage::user_task(
             "Ship compaction",
         ));
+    // Add enough old messages to create a compressible range.
+    // Using large content to exceed the tail target budget.
+    for i in 0..5 {
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user_turn(format!(
+                "old {i}: {}",
+                "x".repeat(200)
+            )));
+    }
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::summary(
-            "[COMPACTION_SUMMARY]\nOld summary",
-        ));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 1"));
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 2"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 3"));
 
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
-    let outcome = executor
+    executor
         .compact_current_context(Some(progress_tx))
         .await
         .expect("manual compaction succeeds");
@@ -390,24 +405,32 @@ async fn manual_compaction_uses_current_compaction_controller() {
         });
     }
 
-    assert_eq!(outcome.metadata.generation, 1);
-    assert_eq!(outcome.metadata.provider, "opencode-go");
-    assert_eq!(outcome.metadata.route, "deepseek-v4-flash");
-    assert!(outcome.replacement.history_items_after <= outcome.replacement.history_items_before);
-    let messages = executor.session().memory.get_messages();
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message
-                .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
-            .count(),
-        1
-    );
+    // New system: block created in CompactionState, raw memory preserved.
     assert!(
-        messages
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "compaction should have created an active block"
+    );
+    // Raw messages are preserved (not replaced).
+    assert!(
+        executor
+            .session()
+            .memory
+            .get_messages()
             .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]"))
+            .any(|m| m.content.contains("old 0:")),
+        "raw memory should be preserved"
+    );
+    // Rendered context should be smaller (block summary replaces old messages).
+    let rendered = executor.session().memory.rendered_messages();
+    assert!(
+        rendered
+            .iter()
+            .any(|m| m.content.contains("Compressed conversation section")),
+        "rendered context should contain block summary"
     );
     assert_eq!(event_names, vec!["runtime_started", "runtime_completed"]);
 }
@@ -417,6 +440,7 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
+        agent_model_context_window_tokens: Some(100),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
@@ -439,18 +463,36 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     let session = AgentSession::new(9_i64.into());
     let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
     executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor.session_mut().memory.set_max_tokens(100);
     executor
         .session_mut()
         .memory
         .add_message(crate::agent::memory::AgentMessage::user_task(
             "Ship compaction",
         ));
+    // Add enough old messages for first compaction.
+    for i in 0..5 {
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user_turn(format!(
+                "old {i}: {}",
+                "x".repeat(200)
+            )));
+    }
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 1"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 2"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 3"));
 
-    let mut outcome_generations = Vec::new();
     let mut event_generations = Vec::new();
     for turn in [
         "after first compact",
@@ -458,11 +500,10 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
         "after third compact",
     ] {
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
-        let outcome = executor
+        executor
             .compact_current_context(Some(progress_tx))
             .await
             .expect("manual compaction succeeds");
-        outcome_generations.push(outcome.metadata.generation);
 
         while let Some(event) = progress_rx.recv().await {
             if let crate::agent::progress::AgentEvent::RuntimeCompactionCompleted {
@@ -474,28 +515,26 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
             }
         }
 
-        executor
-            .session_mut()
-            .memory
-            .add_message(crate::agent::memory::AgentMessage::user(turn));
+        // Add more large messages for the next compaction.
+        for i in 0..3 {
+            executor.session_mut().memory.add_message(
+                crate::agent::memory::AgentMessage::user_turn(format!(
+                    "{turn} extra {i}: {}",
+                    "y".repeat(200)
+                )),
+            );
+        }
     }
 
-    assert_eq!(outcome_generations, vec![1, 2, 3]);
+    // Block refs are monotonic (b1, b2, b3).
     assert_eq!(event_generations, vec![1, 2, 3]);
-    let messages = executor.session().memory.get_messages();
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message
-                .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
-            .count(),
-        1
-    );
     assert!(
-        messages
-            .iter()
-            .any(|message| message.content.contains("generation: 3"))
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "should have active blocks after repeated compaction"
     );
 }
 
