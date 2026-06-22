@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-22 01:45
+Last updated: 2026-06-22 02:30
 
 ## Objective
 
@@ -148,7 +148,7 @@ Out of scope:
   - Acceptance: compaction does not destructively remove source messages from persisted raw memory; model-facing history is produced by a renderer from raw messages + compaction state.
   - Evidence required: tests showing raw messages remain after compaction while rendered context omits compacted ranges; storage round-trip preserves both raw messages and compaction state.
   - Status: in_progress
-  - Evidence collected: Phase 1 added `CompactionRenderer` (identity for empty state), `CompactionState` to `AgentMemory` with `#[serde(default)]`, `rendered_messages()` boundary. Raw transcript preserved in `AgentMemory.messages`; renderer produces model-facing `Vec<Message>` without mutating raw. Old compaction still uses `replace_compacted_history` (will be removed in Phase 8). `old_json_without_compaction_state_deserializes` test proves backward compat. Full compaction overlay (blocks, pruning) pending Phase 3-4.
+  - Evidence collected: Phase 1 added `CompactionRenderer` (identity for empty state), `CompactionState` to `AgentMemory` with `#[serde(default)]`, `rendered_messages()` boundary. Raw transcript preserved in `AgentMemory.messages`; renderer produces model-facing `Vec<Message>` without mutating raw. Old compaction still uses `replace_compacted_history` (will be removed in Phase 8). `old_json_without_compaction_state_deserializes` test proves backward compat. Phase 2 added `MessageRef`/`BlockRef` types, `next_block_id` counter, state sync on repair (compaction_state resets when `repair_history_after_mutation` drops messages). Full compaction overlay (blocks, pruning) pending Phase 3-4.
 
 - G2: One `CompactionEngine` is the only runtime mutation authority.
   - Source: RECON finding multiple compaction entry paths and duplicated event emitters.
@@ -161,15 +161,15 @@ Out of scope:
   - Source: DCP `CompressionBlock` and `PruneMessagesState` model.
   - Acceptance: active blocks, consumed blocks, parent blocks, direct/effective message refs, and direct/effective tool ids are tracked deterministically; recompression consumes prior blocks without duplicate model-visible summaries.
   - Evidence required: unit tests for block creation, nested block consumption, deactivation, reactivation/sync if applicable, and effective id propagation.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 2 added block id allocation infrastructure (`CompactionState::allocate_block_id` returns monotonic `BlockRef`). Full `CompressionBlock` struct with nesting/consumption fields pending Phase 3.
 
 - G4: Stable visible refs are renderer-owned and tool-resolved.
   - Source: DCP `mNNNN`/`bN`; П0 contract rule that LLM must not provide unknown downstream ids.
   - Acceptance: renderer injects refs; `compress` accepts only visible refs; engine resolves refs internally and rejects invented/stale refs with structured tool errors.
   - Evidence required: tests for ref allocation, parsing, stale/missing refs, block refs, and capacity/error behavior.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 2 created `MessageRef` (mNNNN format, 1-indexed, `from_index`/`to_index`/`resolve`/`Display`/`FromStr`) and `BlockRef` (bN format, `new`/`as_u32`/`Display`/`FromStr`). 18 unit tests cover format/parse round-trip, case-insensitive prefix, invalid/zero refs, stale-ref resolution boundary, serde round-trip, and ordering. `CompactionState::allocate_block_id` returns monotonic `BlockRef`. Ref injection into model-visible context pending Phase 4; compress tool ref acceptance pending Phase 6.
 
 - G5: Summary nesting uses structured data, not regex/string matching over LLM output.
   - Source: П0 ban on regex/string-match over LLM output; DCP placeholder mechanism identified as valuable but not directly acceptable.
@@ -505,6 +505,13 @@ Out of scope:
   - Audit IDs updated: G1 in_progress (raw preservation infrastructure in place, renderer is identity), G6 in_progress (renderer preserves tool-call fields for empty state), Q3 verified (blast radius mapped, workspace gates pass, pre-existing clippy classified).
   - Follow-up: `executor/execution.rs:518` still uses `convert_memory_to_messages` for initial message creation; `refresh_messages_from_memory` overwrites before LLM calls. Should switch to `rendered_messages()` in Phase 4 when compaction state becomes non-empty.
   - Next: Phase 2 — persistent CompactionState and stable refs.
+
+- 2026-06-22 02:30: Phase 2 — persistent CompactionState and stable refs complete.
+  - Changed: added `compaction/refs.rs` (`MessageRef` mNNNN format with `from_index`/`to_index`/`resolve`/`Display`/`FromStr`, `BlockRef` bN format with `new`/`as_u32`/`Display`/`FromStr`, both with `Serialize`/`Deserialize`/`Hash`/`Ord` derives, parse error enums), updated `compaction/state.rs` (added `#[serde(default)] next_block_id: u32`, `allocate_block_id() -> BlockRef`, `next_block_id() -> u32`), updated `memory.rs` (`repair_history_after_mutation` now resets `compaction_state` when repair drops messages — prevents stale block index ranges), updated `compaction/mod.rs` (added `pub mod refs` and re-exports `MessageRef`, `BlockRef`).
+  - Evidence: 1361 core tests pass (24 new from Phase 2: 18 refs + 5 state + 1 memory repair), 2 web transport compaction tests pass, workspace `profile-embedded-opencode-local` check passes, fmt clean, clippy clean on core lib. `phase1_empty_json_deserializes_with_new_field` proves Phase 1 `{}` CompactionState JSON still deserializes with new `next_block_id` field. `compaction_state_resets_on_repair` proves state invalidation when orphaned tool results are dropped from middle. `partial_json_with_only_next_block_id_deserializes` future-proofs Phase 3 field additions.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1361 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed).
+  - Audit IDs updated: G1 in_progress (refs + state sync added), G3 in_progress (block id allocation infrastructure), G4 in_progress (MessageRef/BlockRef types with parsing/validation/stale-ref tests).
+  - Next: Phase 3 — block graph and selection engine.
 
 ## Risks and Blockers
 

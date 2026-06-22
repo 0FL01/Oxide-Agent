@@ -11,6 +11,7 @@ pub mod controller;
 pub mod history;
 pub mod local_llm_summary;
 pub mod prompt;
+pub mod refs;
 pub mod renderer;
 pub mod state;
 pub mod task;
@@ -27,6 +28,7 @@ pub use history::{
     is_current_compacted_summary_message,
 };
 pub use local_llm_summary::LocalLlmSummary;
+pub use refs::{BlockRef, MessageRef};
 pub use renderer::CompactionRenderer;
 pub use state::CompactionState;
 pub use task::{

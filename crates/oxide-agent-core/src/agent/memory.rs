@@ -886,6 +886,11 @@ impl AgentMemory {
         self.messages = repaired_messages;
         self.recalculate_token_count();
         self.last_api_usage = None;
+        // Repair may drop messages from the middle (orphaned tool results),
+        // which shifts indices and invalidates any compaction block ranges.
+        // Reset compaction state to a clean slate — blocks will be recomputed
+        // by the engine on the next compaction trigger.
+        self.compaction_state = CompactionState::default();
         warn!(
             boundary,
             dropped_tool_results = outcome.dropped_tool_results,
@@ -1093,6 +1098,31 @@ mod tests {
         memory.add_message(AgentMessage::user_task("original"));
         memory.replace_messages(vec![AgentMessage::user_task("replaced")]);
         assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_repair() {
+        // When repair removes an orphaned tool result from the middle,
+        // compaction state must be reset because block index ranges become invalid.
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task"));
+        memory.add_message(AgentMessage::assistant_with_tools(
+            "calling tool",
+            vec![tool_call("call-1", "search")],
+        ));
+        memory.add_message(AgentMessage::tool("call-1", "search", "result"));
+
+        // Make compaction state non-default by allocating a block id.
+        memory.compaction_state_mut().allocate_block_id();
+        assert!(!memory.compaction_state().is_empty());
+
+        // Add an orphaned tool result — triggers repair which drops it
+        // and resets compaction_state.
+        memory.add_message(AgentMessage::tool("orphan", "read_file", "orphan result"));
+
+        assert!(memory.compaction_state().is_empty());
+        // Orphan should have been dropped by repair.
+        assert_eq!(memory.get_messages().len(), 3);
     }
 
     #[test]
