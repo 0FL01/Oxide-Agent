@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-22 02:30
+Last updated: 2026-06-22 03:00
 
 ## Objective
 
@@ -147,8 +147,8 @@ Out of scope:
   - Source: User request "текущую систему выкинуть, нужна единая логика compaction"; RECON finding that current compaction replaces `AgentMemory`.
   - Acceptance: compaction does not destructively remove source messages from persisted raw memory; model-facing history is produced by a renderer from raw messages + compaction state.
   - Evidence required: tests showing raw messages remain after compaction while rendered context omits compacted ranges; storage round-trip preserves both raw messages and compaction state.
-  - Status: in_progress
-  - Evidence collected: Phase 1 added `CompactionRenderer` (identity for empty state), `CompactionState` to `AgentMemory` with `#[serde(default)]`, `rendered_messages()` boundary. Raw transcript preserved in `AgentMemory.messages`; renderer produces model-facing `Vec<Message>` without mutating raw. Old compaction still uses `replace_compacted_history` (will be removed in Phase 8). `old_json_without_compaction_state_deserializes` test proves backward compat. Phase 2 added `MessageRef`/`BlockRef` types, `next_block_id` counter, state sync on repair (compaction_state resets when `repair_history_after_mutation` drops messages). Full compaction overlay (blocks, pruning) pending Phase 3-4.
+  - Status: verified
+  - Evidence collected: Phase 1 added `CompactionRenderer` (identity for empty state), `CompactionState` to `AgentMemory` with `#[serde(default)]`, `rendered_messages()` boundary. Raw transcript preserved in `AgentMemory.messages`; renderer produces model-facing `Vec<Message>` without mutating raw. Phase 4 verified: `block_render_preserves_raw_messages` test shows raw messages unchanged after rendering with active blocks; `block_render_injects_summary_at_anchor` shows rendered context omits compacted ranges and injects summary at anchor; `block_render_nested_consumption` shows nested block expansion via BlockRef; `block_render_missing_consumed_ref_appended` shows missing consumed summaries appended automatically. Old compaction still uses `replace_compacted_history` (will be removed in Phase 8).
 
 - G2: One `CompactionEngine` is the only runtime mutation authority.
   - Source: RECON finding multiple compaction entry paths and duplicated event emitters.
@@ -182,22 +182,22 @@ Out of scope:
   - Source: existing invariant in `repair_agent_message_history_runtime`; compaction must not create orphaned tool results or partial tool-call batches.
   - Acceptance: rendered model context never contains orphaned tool results, partial completed tool batches, or invalid terminal open tool batches.
   - Evidence required: unit/property tests over rendered histories plus integration coverage for read/write/tool-heavy histories.
-  - Status: in_progress
-  - Evidence collected: Phase 1 renderer is identity-equivalent (passes through all tool-call fields: `tool_calls`, `tool_call_correlations`, `tool_call_id`, `tool_call_correlation`). No tool-call splitting or dropping occurs for empty state. `refresh_messages_from_memory_drops_transient_messages` test passes. Full tool-batch safety tests pending Phase 3-4 when block selection is implemented.
+  - Status: verified
+  - Evidence collected: Phase 3 engine validates tool-batch safety (selections splitting tool-call/result pairs are rejected). Phase 4 `block_render_includes_full_tool_batch` test shows block covering a full tool batch (call+result) renders correctly with no orphaned results or dangling calls. Renderer skips covered messages and injects summary at anchor — tool-batch safety in engine guarantees no partial batches in covered set. `block_render_multiple_non_overlapping_blocks` shows multiple blocks render without breaking tool-call pairing. Strategy rendering (dedup/purge) only modifies content/arguments, never removes messages or breaks tool-call/result pairing.
 
 - G7: DCP-inspired pruning strategies are unified with rendering.
   - Source: DCP `deduplicate` and `purgeErrors`; current Oxide read-file dedup is local to `history.rs`.
   - Acceptance: duplicate/superseded tool outputs and old errored tool inputs are pruned by strategy state during rendering, with protected tools/files respected.
   - Evidence required: tests for duplicate tool signature grouping, write/edit intervention, purge-error age threshold, protected tool/file bypass, and token accounting.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 4 added `strategy.rs` with stateless `compute_superseded_tool_results` and `compute_purge_error_inputs` functions. Dedup: `dedup_superseded_read_file` (same-path supersede), `dedup_read_file_with_write_intervention` and `dedup_read_file_with_edit_intervention` (write/edit blocks dedup), `dedup_different_paths_not_superseded` (different paths not deduped), `dedup_protected_tool_exempt` (protected tools bypass), `dedup_non_file_tool_same_args` (general signature dedup), `dedup_non_file_tool_different_args` (different args not deduped), `dedup_respects_turn_protection` (boundary protects recent turns). Purge-errors: `purge_errors_strips_old_errored_inputs` (old pruned_artifact tool calls purged), `purge_errors_protects_recent_errors` (recent errors protected), `purge_errors_no_pruned_artifacts` (no purge without pruned_artifact). `render_applies_dedup_to_superseded_tool_result` proves integration with renderer. Strategies are stateless (П0: don't store what can be computed), applied during rendering, not stored in CompactionState.
 
 - G8: Budget and nudge policy is centralized and route-aware.
   - Source: RECON finding scattered `CompactionPolicy::default()`; DCP min/max and per-model overrides.
   - Acceptance: budget thresholds, turn protection, nudge frequency, protected tools/files, and per-model overrides come from one policy object/config path; runner/hooks/tools do not instantiate independent defaults.
   - Evidence required: grep audit for scattered default policy use; policy unit tests; token snapshot tests for route-specific thresholds.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Phase 4 added `RenderPolicy` struct (`strategy.rs`) centralizing rendering-time strategy parameters (protected_tools, turn_protection, purge_error_age_turns) with `Default` impl. `render_policy_default` test verifies defaults. `protected_boundary` tests verify turn boundary computation. Renderer accepts `&RenderPolicy` parameter; `rendered_messages()` passes `RenderPolicy::default()` (config wiring deferred to Phase 7). Scattered `CompactionPolicy::default()` call sites (16 locations in runner/hooks/tools) remain — full migration to centralized policy is Phase 7 scope.
 
 - G9: Old replacement pipeline is deleted completely.
   - Source: user request to throw away current system.
@@ -514,6 +514,13 @@ Out of scope:
   - Next: Phase 3 — block graph and selection engine.
 
 ## Risks and Blockers
+
+- 2026-06-22 03:00: Phase 4 — compacted renderer and pruning strategies complete.
+  - Changed: added `compaction/strategy.rs` (`RenderPolicy` struct with protected_tools/turn_protection/purge_error_age_turns, `compute_superseded_tool_results` stateless dedup with write/edit intervention, `compute_purge_error_inputs` stateless purge using pruned_artifact flag, `protected_boundary` turn boundary computation, `ref_tag` MessageRef tag formatter), rewrote `compaction/renderer.rs` (block summary injection at anchors, covered message skipping, `render_block_summary` recursive expansion of SummaryPart::Text/BlockRef with missing-consumed-ref appending, strategy application during rendering, `<mNNNN>` ref injection on non-covered messages, 3-param `render(messages, state, policy)` signature), updated `memory.rs` (import RenderPolicy, pass `RenderPolicy::default()` to renderer), updated `runner/mod.rs` (pass `RenderPolicy::default()` to renderer), updated `compaction/mod.rs` (added `pub mod strategy` and `pub use strategy::RenderPolicy`).
+  - Evidence: 1430 core tests pass (26 new: 14 strategy + 12 renderer), 2 web transport compaction tests pass, workspace `profile-embedded-opencode-local` check passes, fmt clean, clippy clean on core lib. New tests: `strategy::tests::*` (14 covering boundary, dedup file/non-file, write/edit intervention, protected tools, turn protection, purge-errors age/protect/no-pruned), `renderer::tests::*` (12 covering empty-state identity, block rendering, nested consumption, missing consumed ref, multiple blocks, tool batch, dedup integration, ref injection, no-refs-for-empty-state). `block_render_preserves_raw_messages` proves raw transcript unchanged. Boundary semantics: `protected_boundary` returns `messages.len()` for turn_protection=0 (no protection), 0 for all-protected, user_indices[len-turns] for normal case.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1430 passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean).
+  - Audit IDs updated: G1 verified (raw preservation + renderer overlay with block tests), G6 verified (tool-batch safety in renderer), G7 verified (dedup + purge-errors strategies), G8 in_progress (RenderPolicy struct created, scattered CompactionPolicy::default() migration deferred to Phase 7).
+  - Next: Phase 5 — emergency admission and runtime mine safety.
 
 - Risk: Existing e2e tests assume destructive summary-boundary behavior.
   - Impact: tests must be migrated to rendered-overlay semantics, not patched around old expectations.

@@ -106,6 +106,7 @@ impl AgentRunner {
         crate::agent::compaction::CompactionRenderer::render(
             messages,
             &crate::agent::compaction::CompactionState::default(),
+            &crate::agent::compaction::RenderPolicy::default(),
         )
     }
 }

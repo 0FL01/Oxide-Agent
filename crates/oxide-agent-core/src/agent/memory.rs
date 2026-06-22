@@ -5,7 +5,8 @@
 
 use crate::agent::compaction::{
     AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRenderer,
-    CompactionRetention, CompactionState, OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
+    CompactionRetention, CompactionState, OXIDE_COMPACTED_SUMMARY_PREFIX, RenderPolicy,
+    count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
 use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
@@ -939,7 +940,11 @@ impl AgentMemory {
     /// base `AgentMessage` → `Message` conversion (identity rendering).
     #[must_use]
     pub fn rendered_messages(&self) -> Vec<Message> {
-        CompactionRenderer::render(&self.messages, &self.compaction_state)
+        CompactionRenderer::render(
+            &self.messages,
+            &self.compaction_state,
+            &RenderPolicy::default(),
+        )
     }
 
     /// Estimated token count of the rendered model context.

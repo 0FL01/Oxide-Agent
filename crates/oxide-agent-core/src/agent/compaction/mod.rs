@@ -16,6 +16,7 @@ pub mod prompt;
 pub mod refs;
 pub mod renderer;
 pub mod state;
+pub mod strategy;
 pub mod task;
 pub mod types;
 
@@ -35,6 +36,7 @@ pub use local_llm_summary::LocalLlmSummary;
 pub use refs::{BlockRef, MessageRef};
 pub use renderer::CompactionRenderer;
 pub use state::CompactionState;
+pub use strategy::RenderPolicy;
 pub use task::{
     CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
 };
