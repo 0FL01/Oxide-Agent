@@ -32,9 +32,12 @@ use axum::{
 use oxide_browser_contracts::{
     ActionRequest, ActionResponse, ActionStatus, BrowserObservation, CloseSessionRequest,
     CloseSessionResponse, ConsoleDebugPayload, ConsoleDebugQuery, ConsoleDebugResponse,
-    CreateSessionRequest, CreateSessionResponse, GotoRequest, GotoResponse, NavigationResult,
-    NavigationStatus, NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, ObserveQuery,
-    ObserveResponse, ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, SidecarErrorBody,
+    CreateSessionRequest, CreateSessionResponse, DOM_EXTRACT_DEFAULT_MAX_RESULTS,
+    DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS, DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS,
+    DOM_EXTRACT_MAX_FIELDS_LIMIT, DomExtractLimits, DomExtractPayload, DomExtractRequest,
+    DomExtractResponse, GotoRequest, GotoResponse, NavigationResult, NavigationStatus,
+    NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, ObserveQuery, ObserveResponse,
+    ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, SidecarErrorBody,
     validate_action_fields,
 };
 use serde_json::json;
@@ -56,6 +59,7 @@ pub fn create_app(state: AppState, token: String) -> Router {
         .route("/sessions/:id/goto", post(goto))
         .route("/sessions/:id/observe", get(observe))
         .route("/sessions/:id/action", post(action))
+        .route("/sessions/:id/extract/dom", post(extract_dom))
         .route("/sessions/:id/screenshot/latest", get(screenshot_latest))
         .route("/sessions/:id/debug/network", get(debug_network))
         .route("/sessions/:id/debug/console", get(debug_console))
@@ -266,6 +270,44 @@ async fn observe(
         observation,
         error: None,
     })
+}
+
+async fn extract_dom(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<DomExtractRequest>,
+) -> Json<DomExtractResponse> {
+    let request_id = session::new_request_id();
+    let session_id = id.clone();
+
+    let Some(session) = state.sessions.get(&id).await else {
+        return Json(DomExtractResponse {
+            request_id,
+            session_id,
+            ok: false,
+            extraction: empty_dom_extraction(req.selector),
+            error: Some(not_found_error()),
+        });
+    };
+
+    let cdp = session.cdp().await;
+    let context_id = session.isolated_context_id().await;
+    match dom::extract_dom(&cdp, context_id, &req).await {
+        Ok(extraction) => Json(DomExtractResponse {
+            request_id,
+            session_id,
+            ok: true,
+            extraction,
+            error: None,
+        }),
+        Err(error) => Json(DomExtractResponse {
+            request_id,
+            session_id,
+            ok: false,
+            extraction: empty_dom_extraction(req.selector),
+            error: Some(error),
+        }),
+    }
 }
 
 async fn action(
@@ -646,6 +688,22 @@ fn empty_observation() -> BrowserObservation {
         dom_snapshot_error: None,
         network_summary: None,
         console_summary: None,
+    }
+}
+
+fn empty_dom_extraction(selector: String) -> DomExtractPayload {
+    DomExtractPayload {
+        selector,
+        total_matches: 0,
+        returned_matches: 0,
+        truncated: false,
+        limits: DomExtractLimits {
+            max_results: DOM_EXTRACT_DEFAULT_MAX_RESULTS,
+            max_fields: DOM_EXTRACT_MAX_FIELDS_LIMIT,
+            max_value_chars: DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS,
+            max_total_chars: DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS,
+        },
+        matches: Vec::new(),
     }
 }
 

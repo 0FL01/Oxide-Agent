@@ -6,11 +6,15 @@ use super::types::{
     ActionRequest, ActionResponse, ActionResult, ActionStatus, BrowserDescriptor,
     BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleDebugPayload,
     ConsoleDebugQuery, ConsoleDebugResponse, ConsoleItem, ConsoleLevel, ConsoleSummary,
-    CreateSessionRequest, CreateSessionResponse, DebugLevel, DiagnosticScope, DomSnapshotNode,
-    GotoRequest, GotoResponse, LoadingState, NavigationResult, NavigationStatus,
-    NetworkDebugPayload, NetworkDebugQuery, NetworkDebugResponse, NetworkFilter, NetworkItem,
-    NetworkSummary, ObserveQuery, ObserveResponse, ScopeCounts, ScreenshotArtifact,
-    ScreenshotFormat, ScreenshotQuery, ScreenshotResponse, Viewport,
+    CreateSessionRequest, CreateSessionResponse, DOM_EXTRACT_DEFAULT_MAX_RESULTS,
+    DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS, DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS,
+    DOM_EXTRACT_MAX_FIELDS_LIMIT, DOM_EXTRACT_MAX_RESULTS_LIMIT, DebugLevel, DiagnosticScope,
+    DomExtractLimits, DomExtractMatch, DomExtractPayload, DomExtractRequest, DomExtractResponse,
+    DomExtractValue, DomExtractValueSource, DomSnapshotNode, GotoRequest, GotoResponse,
+    LoadingState, NavigationResult, NavigationStatus, NetworkDebugPayload, NetworkDebugQuery,
+    NetworkDebugResponse, NetworkFilter, NetworkItem, NetworkSummary, ObserveQuery,
+    ObserveResponse, ScopeCounts, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery,
+    ScreenshotResponse, Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -40,6 +44,7 @@ struct FakeState {
     next_request: u64,
     sessions: BTreeMap<String, FakeSession>,
     action_outcomes: VecDeque<FakeActionOutcome>,
+    dom_extract_payloads: VecDeque<DomExtractPayload>,
     network_items: Vec<NetworkItem>,
     console_items: Vec<ConsoleItem>,
     crash_next_request: bool,
@@ -72,6 +77,7 @@ impl FakeBrowserSidecar {
                 next_request: 1,
                 sessions: BTreeMap::new(),
                 action_outcomes: VecDeque::new(),
+                dom_extract_payloads: VecDeque::new(),
                 network_items: Vec::new(),
                 console_items: Vec::new(),
                 crash_next_request: false,
@@ -81,6 +87,11 @@ impl FakeBrowserSidecar {
 
     pub(crate) fn with_action_script(self, outcomes: Vec<FakeActionOutcome>) -> Self {
         self.state().action_outcomes = outcomes.into();
+        self
+    }
+
+    pub(crate) fn with_dom_extract_payloads(self, payloads: Vec<DomExtractPayload>) -> Self {
+        self.state().dom_extract_payloads = payloads.into();
         self
     }
 
@@ -409,6 +420,28 @@ impl BrowserSidecar for FakeBrowserSidecar {
         })
     }
 
+    async fn extract_dom(
+        &self,
+        session_id: &str,
+        request: &DomExtractRequest,
+    ) -> Result<DomExtractResponse, BrowserSidecarError> {
+        self.maybe_crash()?;
+        let mut state = self.state();
+        let request_id = state.next_request_id();
+        state.session_mut(session_id)?;
+        let extraction = state
+            .dom_extract_payloads
+            .pop_front()
+            .unwrap_or_else(|| fake_dom_extract_payload(request));
+        Ok(DomExtractResponse {
+            request_id,
+            session_id: session_id.to_string(),
+            ok: true,
+            extraction,
+            error: None,
+        })
+    }
+
     async fn latest_screenshot(
         &self,
         session_id: &str,
@@ -687,6 +720,76 @@ fn action_kind(request: &ActionRequest) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn fake_dom_extract_payload(request: &DomExtractRequest) -> DomExtractPayload {
+    let fields = if request.fields.is_empty() {
+        BTreeMap::from([(
+            "value".to_string(),
+            DomExtractValue {
+                attribute: request
+                    .attribute
+                    .clone()
+                    .unwrap_or_else(|| "innerText".to_string()),
+                source: DomExtractValueSource::Property,
+                found: true,
+                value: Some("Fake DOM value".to_string()),
+                truncated: false,
+                original_chars: 14,
+            },
+        )])
+    } else {
+        request
+            .fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    DomExtractValue {
+                        attribute: field
+                            .attribute
+                            .clone()
+                            .or_else(|| request.attribute.clone())
+                            .unwrap_or_else(|| "innerText".to_string()),
+                        source: DomExtractValueSource::Property,
+                        found: true,
+                        value: Some(format!("fake {}", field.name)),
+                        truncated: false,
+                        original_chars: (5 + field.name.len()) as u32,
+                    },
+                )
+            })
+            .collect()
+    };
+    DomExtractPayload {
+        selector: request.selector.clone(),
+        total_matches: 1,
+        returned_matches: 1,
+        truncated: false,
+        limits: DomExtractLimits {
+            max_results: if request.max_results == 0 {
+                DOM_EXTRACT_DEFAULT_MAX_RESULTS
+            } else {
+                request.max_results.min(DOM_EXTRACT_MAX_RESULTS_LIMIT)
+            },
+            max_fields: DOM_EXTRACT_MAX_FIELDS_LIMIT,
+            max_value_chars: if request.max_value_chars == 0 {
+                DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS
+            } else {
+                request.max_value_chars
+            },
+            max_total_chars: if request.max_total_chars == 0 {
+                DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS
+            } else {
+                request.max_total_chars
+            },
+        },
+        matches: vec![DomExtractMatch {
+            index: 0,
+            tag: "div".to_string(),
+            fields,
+        }],
+    }
 }
 
 fn fixed_timestamp() -> String {

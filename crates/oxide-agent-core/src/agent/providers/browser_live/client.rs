@@ -1,9 +1,9 @@
 use super::error::BrowserSidecarError;
 use super::types::{
     ActionRequest, ActionResponse, CloseSessionRequest, CloseSessionResponse, ConsoleDebugQuery,
-    ConsoleDebugResponse, CreateSessionRequest, CreateSessionResponse, GotoRequest, GotoResponse,
-    NetworkDebugQuery, NetworkDebugResponse, ObserveQuery, ObserveResponse, ScreenshotQuery,
-    ScreenshotResponse, SidecarErrorBody,
+    ConsoleDebugResponse, CreateSessionRequest, CreateSessionResponse, DomExtractRequest,
+    DomExtractResponse, GotoRequest, GotoResponse, NetworkDebugQuery, NetworkDebugResponse,
+    ObserveQuery, ObserveResponse, ScreenshotQuery, ScreenshotResponse, SidecarErrorBody,
 };
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -29,6 +29,8 @@ pub struct BrowserSidecarTimeouts {
     pub observe_fresh: Duration,
     /// `POST /sessions/{id}/action` timeout.
     pub action: Duration,
+    /// DOM extract timeout.
+    pub dom_extract: Duration,
     /// Latest screenshot metadata timeout.
     pub screenshot_metadata: Duration,
     /// Network debug timeout.
@@ -46,6 +48,7 @@ impl Default for BrowserSidecarTimeouts {
             observe: Duration::from_secs(5),
             observe_fresh: Duration::from_secs(15),
             action: Duration::from_secs(60),
+            dom_extract: Duration::from_secs(15),
             screenshot_metadata: Duration::from_secs(5),
             debug_network: Duration::from_secs(10),
             debug_console: Duration::from_secs(10),
@@ -65,6 +68,7 @@ impl BrowserSidecarTimeouts {
             self.observe,
             self.observe_fresh,
             self.action,
+            self.dom_extract,
             self.screenshot_metadata,
             self.debug_network,
             self.debug_console,
@@ -153,6 +157,13 @@ pub trait BrowserSidecar: Send + Sync {
         request: &ActionRequest,
         key: &IdempotencyKey,
     ) -> Result<ActionResponse, BrowserSidecarError>;
+
+    /// Extract bounded DOM rows from the current page.
+    async fn extract_dom(
+        &self,
+        session_id: &str,
+        request: &DomExtractRequest,
+    ) -> Result<DomExtractResponse, BrowserSidecarError>;
 
     /// Return latest screenshot metadata without image bytes.
     async fn latest_screenshot(
@@ -310,6 +321,23 @@ impl BrowserSidecarClient {
             request,
             Some(key),
             self.timeouts.action,
+        )
+        .await
+    }
+
+    /// `POST /sessions/{id}/extract/dom`.
+    pub async fn extract_dom(
+        &self,
+        session_id: &str,
+        request: &DomExtractRequest,
+    ) -> Result<DomExtractResponse, BrowserSidecarError> {
+        let path = session_path(session_id, "/extract/dom")?;
+        self.send_json(
+            reqwest::Method::POST,
+            &path,
+            request,
+            None,
+            self.timeouts.dom_extract,
         )
         .await
     }
@@ -509,6 +537,14 @@ impl BrowserSidecar for BrowserSidecarClient {
         key: &IdempotencyKey,
     ) -> Result<ActionResponse, BrowserSidecarError> {
         BrowserSidecarClient::execute_action(self, session_id, request, key).await
+    }
+
+    async fn extract_dom(
+        &self,
+        session_id: &str,
+        request: &DomExtractRequest,
+    ) -> Result<DomExtractResponse, BrowserSidecarError> {
+        BrowserSidecarClient::extract_dom(self, session_id, request).await
     }
 
     async fn latest_screenshot(
@@ -724,16 +760,17 @@ mod tests {
             observe: Duration::from_secs(4),
             observe_fresh: Duration::from_secs(5),
             action: Duration::from_secs(6),
-            screenshot_metadata: Duration::from_secs(7),
-            debug_network: Duration::from_secs(8),
-            debug_console: Duration::from_secs(9),
+            dom_extract: Duration::from_secs(7),
+            screenshot_metadata: Duration::from_secs(8),
+            debug_network: Duration::from_secs(9),
+            debug_console: Duration::from_secs(10),
         };
         let client =
             BrowserSidecarClient::with_timeouts("http://127.0.0.1:8787/", "token", timeouts)
                 .expect("client");
 
         assert_eq!(client.timeouts(), timeouts);
-        assert_eq!(timeouts.max_timeout(), Duration::from_secs(9));
+        assert_eq!(timeouts.max_timeout(), Duration::from_secs(10));
     }
 
     #[test]

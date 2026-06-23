@@ -5,10 +5,12 @@ use super::error::BrowserSidecarError;
 use super::metrics::BrowserMetricsCollector;
 use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    ActionRequest, BrowserAction, BrowserObservation, BrowserProfile, CloseReason,
-    CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
-    DomSnapshotNode, NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact,
-    ScreenshotFormat, ScreenshotQuery, Viewport, validate_action_fields,
+    BrowserAction, BrowserObservation, BrowserProfile, CloseReason, CloseSessionRequest,
+    ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DOM_EXTRACT_DEFAULT_MAX_RESULTS,
+    DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS, DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS, DebugLevel,
+    DomExtractField, DomExtractPayload, DomExtractRequest, DomSnapshotNode, NetworkDebugQuery,
+    NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
+    validate_action_fields,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -677,19 +679,34 @@ impl BrowserLiveProvider {
         ))
         .await;
 
-        let max_results = args.max_results.unwrap_or(10).clamp(1, 100);
-        let matches = match args.source {
-            ExtractSource::Dom => extract_from_dom(&args, self, invocation).await?,
-            ExtractSource::Network => extract_from_network(&args, self, max_results).await?,
+        let max_results = args
+            .max_results
+            .unwrap_or(DOM_EXTRACT_DEFAULT_MAX_RESULTS)
+            .clamp(1, 100);
+        let (matches, extraction) = match args.source {
+            ExtractSource::Dom => {
+                let extraction = extract_from_dom(&args, self).await?;
+                let matches = serde_json::to_value(&extraction.matches).map_err(|error| {
+                    ToolRuntimeError::Failure(format!(
+                        "failed to serialize DOM extraction matches: {error}"
+                    ))
+                })?;
+                (matches, Some(dom_extraction_summary(&extraction)))
+            }
+            ExtractSource::Network => (
+                Value::Array(extract_from_network(&args, self, max_results).await?),
+                None,
+            ),
         };
+        let match_count = matches.as_array().map_or(0, Vec::len);
 
         tracing::info!(
             session_id = %args.session_id,
             source = ?args.source,
-            matches = matches.len(),
+            matches = match_count,
             "browser extract completed"
         );
-        Ok(json!({
+        let mut payload = json!({
             "status": "extracted",
             "source": match args.source {
                 ExtractSource::Dom => "dom",
@@ -697,7 +714,11 @@ impl BrowserLiveProvider {
             },
             "session_id": args.session_id,
             "matches": matches,
-        }))
+        });
+        if let Some(extraction) = extraction {
+            payload["extraction"] = extraction;
+        }
+        Ok(payload)
     }
 
     async fn observe_for_timeout(
@@ -1188,6 +1209,8 @@ struct ExtractArgs {
     #[serde(default)]
     attribute: Option<String>,
     #[serde(default)]
+    fields: Vec<DomExtractField>,
+    #[serde(default)]
     url_pattern: Option<String>,
     #[serde(default)]
     method: Option<String>,
@@ -1195,6 +1218,10 @@ struct ExtractArgs {
     status_code: Option<u16>,
     #[serde(default)]
     max_results: Option<u32>,
+    #[serde(default)]
+    max_value_chars: Option<u32>,
+    #[serde(default)]
+    max_total_chars: Option<u32>,
     #[serde(default)]
     include_bodies: Option<bool>,
 }
@@ -1725,12 +1752,30 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                 "properties": {
                     "session_id": {"type": "string"},
                     "source": {"type": "string", "enum": ["dom", "network"]},
-                    "selector": {"type": "string", "description": "CSS selector for dom source"},
-                    "attribute": {"type": "string", "description": "DOM property or attribute to return as matches[].value: value, innerText, innerHTML, textContent, href, data-*, aria-*, class, etc. Defaults to innerText; all raw properties and attributes are also included for diagnostics."},
+                    "selector": {"type": "string", "description": "CSS selector for DOM root rows. Required for dom source."},
+                    "attribute": {"type": "string", "description": "Legacy single-field shorthand for dom source. When fields is omitted, returns matches[].fields.value using this DOM property/attribute. Defaults to innerText."},
+                    "fields": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "description": "Structured fields extracted relative to each root row. Use this for marketplace/search result tables instead of execute_javascript.",
+                        "items": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": {"type": "string", "minLength": 1, "description": "Stable output field name, e.g. title, price, url"},
+                                "selector": {"type": "string", "description": "CSS selector evaluated inside each root row. Omit to read the root element."},
+                                "attribute": {"type": "string", "description": "DOM property or attribute to read: innerText, textContent, value, href, data-*, aria-*, etc. Defaults to request attribute or innerText."},
+                                "max_chars": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Per-value character cap for this field."}
+                            },
+                            "additionalProperties": false
+                        }
+                    },
                     "url_pattern": {"type": "string", "description": "glob/ substring pattern for network source, e.g. */api/create"},
                     "method": {"type": "string", "description": "HTTP method filter for network source"},
                     "status_code": {"type": "integer", "description": "HTTP status filter for network source"},
-                    "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum network matches or DOM root rows. DOM sidecar clamps root rows to its bounded extract limit."},
+                    "max_value_chars": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Default per-field character cap for DOM extraction."},
+                    "max_total_chars": {"type": "integer", "minimum": 1, "maximum": 24000, "description": "Aggregate character cap across all DOM field values."},
                     "include_bodies": {"type": "boolean", "default": true, "description": "include response bodies for network source"}
                 },
                 "additionalProperties": false
@@ -1846,110 +1891,37 @@ async fn extract_from_network(
 async fn extract_from_dom(
     args: &ExtractArgs,
     provider: &BrowserLiveProvider,
-    invocation: &ToolInvocation,
-) -> Result<Vec<Value>, ToolRuntimeError> {
+) -> Result<DomExtractPayload, ToolRuntimeError> {
     let selector = args.selector.as_deref().ok_or_else(|| {
         ToolRuntimeError::InvalidArguments("dom source requires selector".to_string())
     })?;
-    let expression = dom_extract_expression(selector);
-    let action_seq = {
-        let states = provider.states.lock().await;
-        let state = states.get(&args.session_id).ok_or_else(|| {
-            ToolRuntimeError::Failure("browser session is not started".to_string())
-        })?;
-        state.action_seq().saturating_add(1)
-    };
-    let key = idempotency_key(
-        invocation,
-        "extract",
-        &format!("{}:{}", args.session_id, action_seq),
-    )?;
-    let request = ActionRequest {
-        action_seq,
-        action: BrowserAction::ExecuteJavaScript { expression },
-        expected_result: "extract DOM data".to_string(),
-        timeout_ms: 10_000,
-        capture_after: false,
-        wait_for_stability: false,
+    let request = DomExtractRequest {
+        selector: selector.to_string(),
+        attribute: args.attribute.clone(),
+        fields: args.fields.clone(),
+        max_results: args.max_results.unwrap_or(DOM_EXTRACT_DEFAULT_MAX_RESULTS),
+        max_value_chars: args
+            .max_value_chars
+            .unwrap_or(DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS),
+        max_total_chars: args
+            .max_total_chars
+            .unwrap_or(DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS),
     };
     let response = provider
-        .measure_sidecar(
-            provider
-                .sidecar
-                .execute_action(&args.session_id, &request, &key),
-        )
+        .measure_sidecar(provider.sidecar.extract_dom(&args.session_id, &request))
         .await
         .map_err(sidecar_runtime_error)?;
-    let raw = response.action_result.result.unwrap_or_default();
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    let parsed: Value = serde_json::from_str(&raw).map_err(|error| {
-        ToolRuntimeError::Failure(format!("failed to parse DOM extraction result: {error}"))
-    })?;
-    let array = parsed.as_array().ok_or_else(|| {
-        ToolRuntimeError::Failure("DOM extraction result is not a JSON array".to_string())
-    })?;
-    let attribute = args
-        .attribute
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("innerText");
-    Ok(array
-        .iter()
-        .enumerate()
-        .map(|(index, element)| dom_extract_match(selector, attribute, index, element))
-        .collect())
+    Ok(response.extraction)
 }
 
-fn dom_extract_match(selector: &str, attribute: &str, index: usize, element: &Value) -> Value {
-    let properties = element.get("properties").cloned().unwrap_or_else(|| {
-        json!({
-            "value": element.get("value").cloned().unwrap_or(Value::Null),
-            "innerText": element.get("innerText").cloned().unwrap_or(Value::Null),
-            "innerHTML": element.get("innerHTML").cloned().unwrap_or(Value::Null),
-            "textContent": element.get("textContent").cloned().unwrap_or(Value::Null),
-            "href": element.get("href").cloned().unwrap_or(Value::Null),
-        })
-    });
-    let attributes = element
-        .get("attributes")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let (selected_value, attribute_source, found) =
-        select_dom_attribute(&properties, &attributes, attribute);
+fn dom_extraction_summary(extraction: &DomExtractPayload) -> Value {
     json!({
-        "selector": selector,
-        "index": index,
-        "tag": element.get("tag").cloned().unwrap_or(Value::Null),
-        "attribute": attribute,
-        "attribute_source": attribute_source,
-        "found": found,
-        "value": selected_value,
-        "properties": properties,
-        "attributes": attributes,
+        "selector": &extraction.selector,
+        "total_matches": extraction.total_matches,
+        "returned_matches": extraction.returned_matches,
+        "truncated": extraction.truncated,
+        "limits": &extraction.limits,
     })
-}
-
-fn select_dom_attribute(
-    properties: &Value,
-    attributes: &Value,
-    attribute: &str,
-) -> (Value, &'static str, bool) {
-    if let Some(value) = properties.get(attribute) {
-        return (value.clone(), "property", !value.is_null());
-    }
-    if let Some(value) = attributes.get(attribute) {
-        return (value.clone(), "attribute", true);
-    }
-    let lower_attribute = attribute.to_ascii_lowercase();
-    if lower_attribute != attribute
-        && let Some(value) = attributes.get(&lower_attribute)
-    {
-        return (value.clone(), "attribute", true);
-    }
-    (Value::Null, "missing", false)
 }
 
 fn url_matches_pattern(url: &str, pattern: &str) -> bool {
@@ -1986,23 +1958,6 @@ fn url_matches_pattern(url: &str, pattern: &str) -> bool {
     true
 }
 
-fn dom_extract_expression(selector: &str) -> String {
-    let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
-    format!(
-        "JSON.stringify(Array.from(document.querySelectorAll({selector_json})).map(el => ({{ \
-            tag: el.tagName ? el.tagName.toLowerCase() : null, \
-            properties: {{ \
-                value: el.value !== undefined ? el.value : null, \
-                innerText: el.innerText !== undefined ? el.innerText : null, \
-                innerHTML: el.innerHTML !== undefined ? el.innerHTML : null, \
-                textContent: el.textContent !== undefined ? el.textContent : null, \
-                href: typeof el.href === 'string' && el.href.length > 0 ? new URL(el.href, location.href).href : null \
-            }}, \
-            attributes: Object.fromEntries(Array.from(el.attributes || []).map(a => [a.name, a.value])) \
-        }})))"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2011,7 +1966,8 @@ mod tests {
         FakeActionOutcome, FakeBrowserSidecar,
     };
     use crate::agent::providers::browser_live::types::{
-        LoadingState, ScreenshotArtifact, SidecarErrorBody,
+        DOM_EXTRACT_MAX_FIELDS_LIMIT, DomExtractLimits, DomExtractMatch, DomExtractValue,
+        DomExtractValueSource, LoadingState, ScreenshotArtifact, SidecarErrorBody,
     };
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
@@ -2110,9 +2066,11 @@ mod tests {
         assert_eq!(params["required"], json![["session_id", "source"]]);
         assert!(params["properties"].get("source").is_some());
         assert!(params["properties"].get("selector").is_some());
+        assert!(params["properties"].get("fields").is_some());
         assert!(params["properties"].get("url_pattern").is_some());
         assert!(params["properties"].get("method").is_some());
         assert!(params["properties"].get("status_code").is_some());
+        assert!(params["properties"].get("max_total_chars").is_some());
     }
 
     #[tokio::test]
@@ -2154,26 +2112,55 @@ mod tests {
         assert_eq!(matches[0]["body"], r#"{"secret_id":"abc"}"#);
     }
 
+    fn dom_payload(
+        selector: &str,
+        tag: &str,
+        fields: BTreeMap<String, DomExtractValue>,
+    ) -> DomExtractPayload {
+        DomExtractPayload {
+            selector: selector.to_string(),
+            total_matches: 1,
+            returned_matches: 1,
+            truncated: false,
+            limits: DomExtractLimits {
+                max_results: DOM_EXTRACT_DEFAULT_MAX_RESULTS,
+                max_fields: DOM_EXTRACT_MAX_FIELDS_LIMIT,
+                max_value_chars: DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS,
+                max_total_chars: DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS,
+            },
+            matches: vec![DomExtractMatch {
+                index: 0,
+                tag: tag.to_string(),
+                fields,
+            }],
+        }
+    }
+
+    fn dom_value(attribute: &str, source: DomExtractValueSource, value: &str) -> DomExtractValue {
+        DomExtractValue {
+            attribute: attribute.to_string(),
+            source,
+            found: true,
+            value: Some(value.to_string()),
+            truncated: false,
+            original_chars: value.chars().count() as u32,
+        }
+    }
+
     #[tokio::test]
     async fn browser_extract_dom_returns_selected_property_value() {
-        let js_result = serde_json::json!([
-            {
-                "tag": "input",
-                "properties": {
-                    "value": "https://ots.example/#secret|key",
-                    "innerText": "",
-                    "innerHTML": "",
-                    "textContent": "",
-                    "href": null
-                },
-                "attributes": {
-                    "class": "form-control",
-                    "data-state": "ready"
-                }
-            }
-        ]);
-        let fake = FakeBrowserSidecar::new()
-            .with_action_script(vec![FakeActionOutcome::JsResult(js_result.to_string())]);
+        let fake = FakeBrowserSidecar::new().with_dom_extract_payloads(vec![dom_payload(
+            "input[readonly]",
+            "input",
+            BTreeMap::from([(
+                "value".to_string(),
+                dom_value(
+                    "value",
+                    DomExtractValueSource::Property,
+                    "https://ots.example/#secret|key",
+                ),
+            )]),
+        )]);
         let provider = Arc::new(BrowserLiveProvider::new(
             Arc::new(fake),
             BrowserArtifactSettings::default(),
@@ -2198,40 +2185,31 @@ mod tests {
         assert_eq!(payload["source"], "dom");
         let matches = payload["matches"].as_array().expect("matches array");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0]["selector"], "input[readonly]");
         assert_eq!(matches[0]["index"], 0);
         assert_eq!(matches[0]["tag"], "input");
-        assert_eq!(matches[0]["attribute"], "value");
-        assert_eq!(matches[0]["attribute_source"], "property");
-        assert_eq!(matches[0]["found"], true);
-        assert_eq!(matches[0]["value"], "https://ots.example/#secret|key");
-        assert_eq!(
-            matches[0]["properties"]["value"],
-            "https://ots.example/#secret|key"
-        );
-        assert_eq!(matches[0]["attributes"]["data-state"], "ready");
+        let field = &matches[0]["fields"]["value"];
+        assert_eq!(field["attribute"], "value");
+        assert_eq!(field["source"], "property");
+        assert_eq!(field["found"], true);
+        assert_eq!(field["value"], "https://ots.example/#secret|key");
+        assert!(matches[0].get("properties").is_none());
+        assert!(matches[0].get("attributes").is_none());
     }
 
     #[tokio::test]
     async fn browser_extract_dom_returns_selected_dom_attribute() {
-        let js_result = serde_json::json!([
-            {
-                "tag": "button",
-                "properties": {
-                    "value": null,
-                    "innerText": "Reveal",
-                    "innerHTML": "Reveal",
-                    "textContent": "Reveal",
-                    "href": null
-                },
-                "attributes": {
-                    "class": "btn btn-success",
-                    "data-secret-state": "created"
-                }
-            }
-        ]);
-        let fake = FakeBrowserSidecar::new()
-            .with_action_script(vec![FakeActionOutcome::JsResult(js_result.to_string())]);
+        let fake = FakeBrowserSidecar::new().with_dom_extract_payloads(vec![dom_payload(
+            "button",
+            "button",
+            BTreeMap::from([(
+                "value".to_string(),
+                dom_value(
+                    "data-secret-state",
+                    DomExtractValueSource::Attribute,
+                    "created",
+                ),
+            )]),
+        )]);
         let provider = Arc::new(BrowserLiveProvider::new(
             Arc::new(fake),
             BrowserArtifactSettings::default(),
@@ -2254,45 +2232,79 @@ mod tests {
         let payload = result.structured_payload.as_ref().expect("payload");
         let matches = payload["matches"].as_array().expect("matches array");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0]["attribute"], "data-secret-state");
-        assert_eq!(matches[0]["attribute_source"], "attribute");
-        assert_eq!(matches[0]["found"], true);
-        assert_eq!(matches[0]["value"], "created");
+        let field = &matches[0]["fields"]["value"];
+        assert_eq!(field["attribute"], "data-secret-state");
+        assert_eq!(field["source"], "attribute");
+        assert_eq!(field["found"], true);
+        assert_eq!(field["value"], "created");
     }
 
-    #[test]
-    fn dom_extract_expression_collects_properties_and_all_attributes() {
-        let expression = dom_extract_expression("input.form-control");
-        assert!(expression.contains("document.querySelectorAll(\"input.form-control\")"));
-        assert!(!expression.contains("JSON.parse"));
-        assert!(expression.contains("properties"));
-        assert!(expression.contains("value: el.value"));
-        assert!(expression.contains("innerText"));
-        assert!(expression.contains("href"));
-        assert!(expression.contains("Array.from(el.attributes || [])"));
-        assert!(!expression.contains("startsWith('data-')"));
-    }
+    #[tokio::test]
+    async fn browser_extract_dom_returns_structured_table_fields() {
+        let fake = FakeBrowserSidecar::new().with_dom_extract_payloads(vec![dom_payload(
+            "[data-marker='item']",
+            "div",
+            BTreeMap::from([
+                (
+                    "title".to_string(),
+                    dom_value("innerText", DomExtractValueSource::Property, "ThinkPad Z13"),
+                ),
+                (
+                    "price".to_string(),
+                    dom_value("innerText", DomExtractValueSource::Property, "95 000 ₽"),
+                ),
+                (
+                    "url".to_string(),
+                    dom_value(
+                        "href",
+                        DomExtractValueSource::Computed,
+                        "https://avito.test/item",
+                    ),
+                ),
+            ]),
+        )]);
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake),
+            BrowserArtifactSettings::default(),
+            None,
+            None,
+            0,
+            "test".to_string(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+        let extract_args = json!({
+            "session_id": session_id,
+            "source": "dom",
+            "selector": "[data-marker='item']",
+            "max_results": 15,
+            "fields": [
+                {"name": "title", "selector": "[data-marker='item-title']"},
+                {"name": "price", "selector": "[data-marker='item-price']"},
+                {"name": "url", "selector": "a", "attribute": "href", "max_chars": 500}
+            ]
+        })
+        .to_string();
 
-    #[test]
-    fn select_dom_attribute_prefers_properties_then_attributes() {
-        let properties = json!({"value": "current", "innerText": "visible"});
-        let attributes = json!({"value": "initial", "data-state": "ready", "aria-label": "Reveal"});
-
-        assert_eq!(
-            select_dom_attribute(&properties, &attributes, "value"),
-            (json!("current"), "property", true)
-        );
-        assert_eq!(
-            select_dom_attribute(&properties, &attributes, "data-state"),
-            (json!("ready"), "attribute", true)
-        );
-        assert_eq!(
-            select_dom_attribute(&properties, &attributes, "ARIA-LABEL"),
-            (json!("Reveal"), "attribute", true)
-        );
-        assert_eq!(
-            select_dom_attribute(&properties, &attributes, "missing"),
-            (Value::Null, "missing", false)
+        let result = execute(&executors, TOOL_BROWSER_EXTRACT, &extract_args).await;
+        let payload = result.structured_payload.as_ref().expect("payload");
+        let first = &payload["matches"][0]["fields"];
+        assert_eq!(first["title"]["value"], "ThinkPad Z13");
+        assert_eq!(first["price"]["value"], "95 000 ₽");
+        assert_eq!(first["url"]["value"], "https://avito.test/item");
+        assert_eq!(payload["extraction"]["returned_matches"], 1);
+        assert!(
+            result
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout")
+                .starts_with("browser_tool status=extracted")
         );
     }
 
@@ -3048,12 +3060,12 @@ mod tests {
         let matches = payload["matches"].as_array().expect("matches array");
         let share_url = matches
             .iter()
-            .find_map(|item| item["value"].as_str())
+            .find_map(|item| item["fields"]["value"]["value"].as_str())
             .expect("share URL value");
         assert!(share_url.starts_with("https://ots.bash.md/#"));
-        assert_eq!(matches[0]["attribute"], "value");
-        assert_eq!(matches[0]["attribute_source"], "property");
-        assert_eq!(matches[0]["found"], true);
+        assert_eq!(matches[0]["fields"]["value"]["attribute"], "value");
+        assert_eq!(matches[0]["fields"]["value"]["source"], "property");
+        assert_eq!(matches[0]["fields"]["value"]["found"], true);
 
         let close_args = json!({"session_id": session_id, "keep_artifacts": false}).to_string();
         let _ = execute(&executors, TOOL_BROWSER_CLOSE, &close_args).await;

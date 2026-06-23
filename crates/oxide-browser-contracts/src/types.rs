@@ -310,6 +310,130 @@ pub struct BrowserObservation {
     pub console_summary: Option<ConsoleSummary>,
 }
 
+/// Default number of DOM root matches returned by extract endpoint.
+pub const DOM_EXTRACT_DEFAULT_MAX_RESULTS: u32 = 10;
+/// Hard maximum number of DOM root matches returned by extract endpoint.
+pub const DOM_EXTRACT_MAX_RESULTS_LIMIT: u32 = 50;
+/// Maximum number of fields evaluated for each DOM root match.
+pub const DOM_EXTRACT_MAX_FIELDS_LIMIT: u32 = 20;
+/// Default maximum characters returned for one extracted field value.
+pub const DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS: u32 = 512;
+/// Hard maximum characters returned for one extracted field value.
+pub const DOM_EXTRACT_MAX_VALUE_CHARS_LIMIT: u32 = 2_000;
+/// Default maximum aggregate characters returned across all extracted values.
+pub const DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS: u32 = 16_000;
+/// Hard maximum aggregate characters returned across all extracted values.
+pub const DOM_EXTRACT_MAX_TOTAL_CHARS_LIMIT: u32 = 24_000;
+
+/// Request for `POST /sessions/{id}/extract/dom`.
+///
+/// `selector` selects root rows. `fields` are evaluated relative to each root
+/// row; when omitted, the request behaves as the legacy single-field extractor
+/// and returns one field named `value` using `attribute` or `innerText`.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractRequest {
+    /// CSS selector for root rows.
+    pub selector: String,
+    /// Legacy single-field attribute/property shorthand used when `fields` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribute: Option<String>,
+    /// Structured fields to extract from each root row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<DomExtractField>,
+    /// Maximum root rows to return. Sidecar clamps this to
+    /// [`DOM_EXTRACT_MAX_RESULTS_LIMIT`].
+    #[serde(default = "default_dom_extract_max_results")]
+    pub max_results: u32,
+    /// Default per-field character cap. Sidecar clamps this to
+    /// [`DOM_EXTRACT_MAX_VALUE_CHARS_LIMIT`].
+    #[serde(default = "default_dom_extract_max_value_chars")]
+    pub max_value_chars: u32,
+    /// Aggregate character cap across all returned field values. Sidecar clamps
+    /// this to [`DOM_EXTRACT_MAX_TOTAL_CHARS_LIMIT`].
+    #[serde(default = "default_dom_extract_max_total_chars")]
+    pub max_total_chars: u32,
+}
+
+/// One field projected by [`DomExtractRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractField {
+    /// Stable output field name.
+    pub name: String,
+    /// CSS selector evaluated relative to each root row. Omit to read the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// DOM property or attribute to read. Defaults to request attribute or `innerText`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribute: Option<String>,
+    /// Per-field character cap. Sidecar clamps this to
+    /// [`DOM_EXTRACT_MAX_VALUE_CHARS_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<u32>,
+}
+
+/// Response from `POST /sessions/{id}/extract/dom`.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractResponse {
+    pub request_id: String,
+    pub session_id: String,
+    pub ok: bool,
+    pub extraction: DomExtractPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<SidecarErrorBody>,
+}
+
+/// Bounded DOM extraction payload.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractPayload {
+    pub selector: String,
+    pub total_matches: u32,
+    pub returned_matches: u32,
+    pub truncated: bool,
+    pub limits: DomExtractLimits,
+    #[serde(default)]
+    pub matches: Vec<DomExtractMatch>,
+}
+
+/// Effective limits applied by the sidecar.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractLimits {
+    pub max_results: u32,
+    pub max_fields: u32,
+    pub max_value_chars: u32,
+    pub max_total_chars: u32,
+}
+
+/// One extracted root row.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractMatch {
+    pub index: u32,
+    pub tag: String,
+    #[serde(default)]
+    pub fields: BTreeMap<String, DomExtractValue>,
+}
+
+/// One extracted field value with bounded diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct DomExtractValue {
+    pub attribute: String,
+    pub source: DomExtractValueSource,
+    pub found: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub truncated: bool,
+    pub original_chars: u32,
+}
+
+/// Where a DOM extraction value came from.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DomExtractValueSource {
+    Property,
+    Attribute,
+    Computed,
+    Missing,
+}
+
 /// Screenshot metadata. No base64 bytes are part of this metadata contract.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ScreenshotArtifact {
@@ -863,6 +987,18 @@ const fn default_limit() -> u32 {
     20
 }
 
+const fn default_dom_extract_max_results() -> u32 {
+    DOM_EXTRACT_DEFAULT_MAX_RESULTS
+}
+
+const fn default_dom_extract_max_value_chars() -> u32 {
+    DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS
+}
+
+const fn default_dom_extract_max_total_chars() -> u32 {
+    DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS
+}
+
 /// Default occurrence count for a freshly captured network/console item.
 const fn default_occurrences() -> u32 {
     1
@@ -1004,6 +1140,68 @@ mod tests {
         };
         let value = serde_json::to_value(event).expect("serialize event");
         assert_eq!(value["type"], "heartbeat");
+    }
+
+    #[test]
+    fn dom_extract_contract_serializes_structured_fields_and_defaults() {
+        let request: DomExtractRequest = serde_json::from_value(json!({
+            "selector": "[data-marker='item']",
+            "fields": [
+                {"name": "title", "selector": "[data-marker='item-title']"},
+                {"name": "url", "selector": "a", "attribute": "href", "max_chars": 500}
+            ]
+        }))
+        .expect("deserialize request");
+
+        assert_eq!(request.max_results, DOM_EXTRACT_DEFAULT_MAX_RESULTS);
+        assert_eq!(request.max_value_chars, DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS);
+        assert_eq!(request.max_total_chars, DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS);
+        assert_eq!(request.fields.len(), 2);
+        assert_eq!(request.fields[0].name, "title");
+        assert_eq!(request.fields[1].attribute.as_deref(), Some("href"));
+
+        let response = DomExtractResponse {
+            request_id: "req-1".to_string(),
+            session_id: "br_1".to_string(),
+            ok: true,
+            extraction: DomExtractPayload {
+                selector: request.selector,
+                total_matches: 1,
+                returned_matches: 1,
+                truncated: false,
+                limits: DomExtractLimits {
+                    max_results: 10,
+                    max_fields: 20,
+                    max_value_chars: 512,
+                    max_total_chars: 16_000,
+                },
+                matches: vec![DomExtractMatch {
+                    index: 0,
+                    tag: "div".to_string(),
+                    fields: BTreeMap::from([(
+                        "title".to_string(),
+                        DomExtractValue {
+                            attribute: "innerText".to_string(),
+                            source: DomExtractValueSource::Property,
+                            found: true,
+                            value: Some("ThinkPad".to_string()),
+                            truncated: false,
+                            original_chars: 8,
+                        },
+                    )]),
+                }],
+            },
+            error: None,
+        };
+        let value = serde_json::to_value(response).expect("serialize response");
+        assert_eq!(
+            value["extraction"]["matches"][0]["fields"]["title"]["source"],
+            "property"
+        );
+        assert_eq!(
+            value["extraction"]["matches"][0]["fields"]["title"]["value"],
+            "ThinkPad"
+        );
     }
 
     #[test]

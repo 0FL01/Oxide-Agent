@@ -388,7 +388,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
             lines.push("If a JavaScript or wait action returns a result, use that value before relying on the screenshot.".to_string());
         }
         if has_tool(&tool_names, "browser_extract") {
-            lines.push("Use `browser_extract` to pull structured data such as network response bodies or DOM element values.".to_string());
+            lines.push("Use `browser_extract` to pull structured data: network response bodies, single DOM values, or DOM table rows via `selector` + `fields` instead of custom JavaScript.".to_string());
         }
         if has_tool(&tool_names, "browser_debug") {
             lines.push("Use `browser_debug` for network or console summaries when observation summaries are insufficient.".to_string());
@@ -842,6 +842,7 @@ mod tests {
         assert!(prompt.contains("Use `browser_observe` to capture the current page state"));
         assert!(prompt.contains("Use `browser_execute` to perform one concrete browser action"));
         assert!(prompt.contains("Use `browser_extract` to pull structured data"));
+        assert!(prompt.contains("`selector` + `fields` instead of custom JavaScript"));
         assert!(
             prompt.contains("Use `browser_close` when the browser session is no longer needed")
         );
