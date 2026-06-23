@@ -6,7 +6,7 @@ use super::types::{
 };
 use crate::agent::context::AgentContext;
 use crate::agent::memory::AgentMessage;
-use crate::llm::ToolDefinition;
+use crate::llm::{Message, ToolDefinition};
 use std::sync::OnceLock;
 use tiktoken_rs::cl100k_base;
 
@@ -34,13 +34,13 @@ pub fn estimate_request_budget(
 ) -> BudgetEstimate {
     let system_prompt_tokens = estimate_text_tokens(request.system_prompt);
     let tool_schema_tokens = estimate_tool_tokens(request.tools);
-    let hot_memory = estimate_hot_memory(agent.memory().get_messages());
+    let hot_memory = estimate_hot_memory(agent);
     let context_window_tokens = agent.memory().max_tokens();
     let reserved_output_tokens = 0;
     let hard_reserve_tokens = policy.hard_reserve_tokens;
     let total_input_tokens = system_prompt_tokens
         .saturating_add(tool_schema_tokens)
-        .saturating_add(hot_memory.total_tokens);
+        .saturating_add(hot_memory.rendered_tokens);
     let projected_total_tokens = total_input_tokens.saturating_add(hard_reserve_tokens);
     let headroom_tokens = context_window_tokens.saturating_sub(projected_total_tokens);
     let warning_threshold_tokens =
@@ -76,10 +76,13 @@ pub fn estimate_request_budget(
     }
 }
 
-fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
+fn estimate_hot_memory(agent: &dyn AgentContext) -> HotMemoryBudget {
+    let messages = agent.memory().get_messages();
     let mut budget = HotMemoryBudget {
-        total_tokens: 0,
-        total_messages: messages.len(),
+        rendered_tokens: 0,
+        rendered_messages: 0,
+        raw_tokens: 0,
+        raw_messages: messages.len(),
         pinned_tokens: 0,
         protected_live_tokens: 0,
         prunable_artifact_tokens: 0,
@@ -89,7 +92,7 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
 
     for message in messages {
         let tokens = estimate_message_tokens(message);
-        budget.total_tokens = budget.total_tokens.saturating_add(tokens);
+        budget.raw_tokens = budget.raw_tokens.saturating_add(tokens);
 
         match message.retention() {
             CompactionRetention::Pinned => {
@@ -113,6 +116,10 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
         }
     }
 
+    let rendered = agent.memory().rendered_messages();
+    budget.rendered_messages = rendered.len();
+    budget.rendered_tokens = estimate_rendered_messages_tokens(&rendered);
+
     budget
 }
 
@@ -128,6 +135,29 @@ fn estimate_tool_tokens(tools: &[ToolDefinition]) -> usize {
 pub(crate) fn estimate_message_tokens(message: &AgentMessage) -> usize {
     let reasoning_tokens = message.reasoning.as_deref().map_or(0, estimate_text_tokens);
     estimate_text_tokens(&message.content).saturating_add(reasoning_tokens)
+}
+
+fn estimate_rendered_messages_tokens(messages: &[Message]) -> usize {
+    messages.iter().map(estimate_rendered_message_tokens).sum()
+}
+
+fn estimate_rendered_message_tokens(message: &Message) -> usize {
+    let mut tokens = estimate_text_tokens(&message.content);
+    if let Some(reasoning) = message.reasoning_content.as_deref() {
+        tokens = tokens.saturating_add(estimate_text_tokens(reasoning));
+    }
+    if let Some(tool_call_id) = message.tool_call_id.as_deref() {
+        tokens = tokens.saturating_add(estimate_text_tokens(tool_call_id));
+    }
+    if let Some(name) = message.name.as_deref() {
+        tokens = tokens.saturating_add(estimate_text_tokens(name));
+    }
+    if let Some(tool_calls) = message.tool_calls.as_ref() {
+        tokens = tokens.saturating_add(estimate_json_tokens(
+            &serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null),
+        ));
+    }
+    tokens
 }
 
 fn estimate_json_tokens(value: &serde_json::Value) -> usize {
@@ -149,7 +179,8 @@ const fn percent_of(value: usize, percent: u8) -> usize {
 mod tests {
     use super::estimate_request_budget;
     use crate::agent::compaction::{
-        BudgetState, CompactionPolicy, CompactionRequest, CompactionTrigger,
+        BudgetState, CompactionEngine, CompactionPolicy, CompactionRequest, CompactionTrigger,
+        CompressionSelection, MessageRef, SummaryPart,
     };
     use crate::agent::memory::AgentMessage;
     use crate::agent::{AgentContext, EphemeralSession};
@@ -204,7 +235,9 @@ mod tests {
 
         assert!(estimate.system_prompt_tokens > 0);
         assert!(estimate.tool_schema_tokens > 0);
-        assert!(estimate.hot_memory.total_tokens > 0);
+        assert!(estimate.hot_memory.rendered_tokens > 0);
+        assert!(estimate.hot_memory.raw_tokens > 0);
+        assert!(estimate.hot_memory.rendered_tokens >= estimate.hot_memory.raw_tokens);
         assert!(estimate.hot_memory.pinned_tokens > 0);
         assert!(estimate.hot_memory.prunable_artifact_tokens > 0);
         assert_eq!(estimate.reserved_output_tokens, 0);
@@ -215,7 +248,7 @@ mod tests {
             estimate.total_input_tokens,
             estimate.system_prompt_tokens
                 + estimate.tool_schema_tokens
-                + estimate.hot_memory.total_tokens
+                + estimate.hot_memory.rendered_tokens
         );
         assert_eq!(
             estimate.projected_total_tokens,
@@ -248,5 +281,60 @@ mod tests {
 
         assert_eq!(estimate.state, BudgetState::OverLimit);
         assert_eq!(estimate.headroom_tokens, 0);
+    }
+
+    #[test]
+    fn estimate_request_budget_uses_rendered_overlay_not_raw_transcript() {
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Investigate laptops"));
+        session.memory_mut().add_message(AgentMessage::user(format!(
+            "old raw crawl {}",
+            "large ".repeat(12_000)
+        )));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 1"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 2"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 3"));
+
+        let messages = session.memory().get_messages().to_vec();
+        CompactionEngine::apply_compression(
+            session.memory_mut().compaction_state_mut(),
+            &messages,
+            &CompressionSelection::Range {
+                start: MessageRef::from_index(1),
+                end: MessageRef::from_index(1),
+            },
+            vec![SummaryPart::Text("old crawl summarized".to_string())],
+        )
+        .expect("test compaction block is valid");
+
+        let request = CompactionRequest::new(
+            CompactionTrigger::PreIteration,
+            "Investigate laptops",
+            "system prompt",
+            &[],
+            "demo-model",
+            512,
+            false,
+        );
+
+        let estimate = estimate_request_budget(&CompactionPolicy::default(), &request, &session);
+        let raw_projected_total = estimate
+            .system_prompt_tokens
+            .saturating_add(estimate.tool_schema_tokens)
+            .saturating_add(estimate.hot_memory.raw_tokens)
+            .saturating_add(estimate.hard_reserve_tokens);
+
+        assert!(estimate.hot_memory.raw_tokens > estimate.hot_memory.rendered_tokens);
+        assert!(raw_projected_total >= estimate.compact_threshold_tokens);
+        assert!(estimate.projected_total_tokens < estimate.warning_threshold_tokens);
+        assert_eq!(estimate.state, BudgetState::Healthy);
     }
 }

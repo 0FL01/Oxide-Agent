@@ -252,22 +252,30 @@ impl BudgetState {
     }
 }
 
-/// Token accounting grouped by hot-memory retention class.
+/// Token accounting for the hot-memory boundary.
+///
+/// Runtime context-window decisions use the model-facing rendered overlay, not
+/// the durable raw transcript. Raw counters are retained only as diagnostics
+/// for storage growth and retention-class visibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotMemoryBudget {
-    /// Total estimated tokens represented by the current hot memory.
-    pub total_tokens: usize,
-    /// Total messages represented in hot memory.
-    pub total_messages: usize,
-    /// Tokens belonging to pinned messages.
+    /// Estimated tokens in the model-facing rendered hot-memory messages.
+    pub rendered_tokens: usize,
+    /// Number of model-facing rendered hot-memory messages.
+    pub rendered_messages: usize,
+    /// Estimated tokens in the durable raw transcript before overlay rendering.
+    pub raw_tokens: usize,
+    /// Number of durable raw transcript messages before overlay rendering.
+    pub raw_messages: usize,
+    /// Raw tokens belonging to pinned messages.
     pub pinned_tokens: usize,
-    /// Tokens belonging to protected live messages.
+    /// Raw tokens belonging to protected live messages.
     pub protected_live_tokens: usize,
-    /// Tokens belonging to prunable artifact messages.
+    /// Raw tokens belonging to prunable artifact messages.
     pub prunable_artifact_tokens: usize,
-    /// Tokens belonging to compactable history messages.
+    /// Raw tokens belonging to compactable history messages.
     pub compactable_history_tokens: usize,
-    /// Tokens specifically attributed to runtime context messages.
+    /// Raw tokens specifically attributed to runtime context messages.
     pub runtime_context_tokens: usize,
 }
 
@@ -280,7 +288,8 @@ pub struct BudgetEstimate {
     pub system_prompt_tokens: usize,
     /// Estimated token count of serialized tool schemas.
     pub tool_schema_tokens: usize,
-    /// Estimated token count of the active hot memory.
+    /// Estimated token count of the active hot memory. Context-window decisions
+    /// use `hot_memory.rendered_tokens`; raw counters are diagnostic only.
     pub hot_memory: HotMemoryBudget,
     /// Output tokens pre-reserved from the input window. Kept for API compatibility; currently zero.
     pub reserved_output_tokens: usize,

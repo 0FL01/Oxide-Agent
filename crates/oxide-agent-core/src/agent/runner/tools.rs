@@ -534,7 +534,7 @@ impl AgentRunner {
             .map(|route| route.context_window_tokens as usize)
             .unwrap_or_else(|| memory.max_tokens());
         AdmissionBudget {
-            rendered_tokens: memory.token_count(),
+            rendered_tokens: memory.rendered_token_count(),
             route_context_window,
             system_prompt_tokens: count_tokens_cached(ctx.system_prompt),
             tool_schema_tokens: Self::estimate_tool_schema_tokens(ctx.tools),

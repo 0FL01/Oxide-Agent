@@ -305,7 +305,7 @@ impl AgentExecutor {
             // The pre-LLM budget trigger re-checks with accurate numbers before
             // the first LLM call.
             let budget = AdmissionBudget {
-                rendered_tokens: self.session.memory.token_count(),
+                rendered_tokens: self.session.memory.rendered_token_count(),
                 route_context_window: self.session.memory.max_tokens(),
                 system_prompt_tokens: 0,
                 tool_schema_tokens: 0,

@@ -9,6 +9,7 @@ use super::{
 use crate::agent::memory::{AgentMemory, AgentMessage};
 use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, ModelInfo};
 use crate::llm::{LlmClient, ToolDefinition};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -125,7 +126,7 @@ impl CompactionController {
         if !force {
             let system_prompt_tokens = count_tokens_cached(system_prompt);
             let tool_tokens = tool_schema_tokens(tools);
-            let hot_memory_tokens = memory.token_count();
+            let hot_memory_tokens = memory.rendered_token_count();
             let projected_total = system_prompt_tokens
                 .saturating_add(tool_tokens)
                 .saturating_add(hot_memory_tokens)
@@ -170,14 +171,25 @@ impl CompactionController {
             }
         };
 
+        // Resolve the selected raw range once. The summary LLM sees only this
+        // range; consumed active blocks are preserved structurally as BlockRef
+        // parts instead of being flattened into a global previous summary.
+        let source_messages = memory.get_messages().to_vec();
+        let selected_indices = resolve_selection_indices(&source_messages, &selection)?;
+        let consumed_block_refs =
+            consumed_block_refs_for_selection(memory.compaction_state(), &selected_indices);
+        let selected_summary_source_messages = selected_summary_source_messages(
+            &source_messages,
+            memory.compaction_state(),
+            &selected_indices,
+            &consumed_block_refs,
+        );
+        let summary_source_messages =
+            bounded_summary_source_messages(&selected_summary_source_messages, route);
+
         // Record rendered token/item counts before compaction.
         let token_before = memory.rendered_token_count();
         let history_items_before = memory.rendered_item_count();
-
-        // Select bounded source messages for the summary LLM prompt.
-        let source_messages = memory.get_messages().to_vec();
-        let previous_summary = memory.compaction_state().previous_block_summary_text();
-        let summary_source_messages = bounded_summary_source_messages(&source_messages, route);
 
         // Generate the summary via the LLM backend.
         let summary_result = self
@@ -186,22 +198,52 @@ impl CompactionController {
                 task,
                 route,
                 messages: &summary_source_messages,
-                previous_summary: previous_summary.as_deref(),
+                previous_summary: None,
             })
             .await?;
 
-        // Apply through the engine — creates a block, consumes old blocks.
+        // Apply through a cloned state first. A compaction block is committed
+        // only if it actually reduces the rendered model-facing context.
         let source_messages_for_engine = memory.get_messages().to_vec();
+        let mut summary_parts = vec![SummaryPart::Text(summary_result.summary_text.clone())];
+        summary_parts.extend(
+            consumed_block_refs
+                .iter()
+                .copied()
+                .map(SummaryPart::BlockRef),
+        );
+        let mut candidate_state = memory.compaction_state().clone();
+        CompactionEngine::apply_compression(
+            &mut candidate_state,
+            &source_messages_for_engine,
+            &selection,
+            summary_parts.clone(),
+        )?;
+        let candidate_token_after =
+            rendered_token_count_for_state(&source_messages_for_engine, &candidate_state);
+        let candidate_history_items_after =
+            rendered_item_count_for_state(&source_messages_for_engine, &candidate_state);
+        if candidate_token_after >= token_before {
+            return Ok(EngineCompactionResult::Skipped(EngineCompactionSkipped {
+                reason,
+                phase,
+                skipped_reason: format!(
+                    "Compaction would not reduce rendered context ({token_before} -> {candidate_token_after})"
+                ),
+            }));
+        }
+
+        // Apply through the engine — creates a block, consumes old blocks.
         let block_ref = CompactionEngine::apply_compression(
             memory.compaction_state_mut(),
             &source_messages_for_engine,
             &selection,
-            vec![SummaryPart::Text(summary_result.summary_text.clone())],
+            summary_parts,
         )?;
 
         // Record rendered token/item counts after compaction.
         let token_after = memory.rendered_token_count();
-        let history_items_after = memory.rendered_item_count();
+        let history_items_after = candidate_history_items_after;
 
         Ok(EngineCompactionResult::Applied(EngineCompactionOutcome {
             block_ref,
@@ -216,6 +258,101 @@ impl CompactionController {
             history_items_after,
         }))
     }
+}
+
+fn rendered_token_count_for_state(
+    messages: &[AgentMessage],
+    state: &super::CompactionState,
+) -> usize {
+    super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default())
+        .iter()
+        .map(|message| {
+            let mut tokens = count_tokens_cached(&message.content);
+            if let Some(reasoning) = message.reasoning_content.as_deref() {
+                tokens = tokens.saturating_add(count_tokens_cached(reasoning));
+            }
+            tokens
+        })
+        .sum()
+}
+
+fn rendered_item_count_for_state(
+    messages: &[AgentMessage],
+    state: &super::CompactionState,
+) -> usize {
+    super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default()).len()
+}
+
+fn resolve_selection_indices(
+    messages: &[AgentMessage],
+    selection: &super::CompressionSelection,
+) -> Result<BTreeSet<usize>, super::CompactionError> {
+    let message_count = messages.len();
+    match selection {
+        super::CompressionSelection::Range { start, end } => {
+            let start_idx = start
+                .resolve(message_count)
+                .ok_or(super::CompactionError::InvalidMessageRef(*start))?;
+            let end_idx = end
+                .resolve(message_count)
+                .ok_or(super::CompactionError::InvalidMessageRef(*end))?;
+            if start_idx > end_idx {
+                return Err(super::CompactionError::InvalidRange {
+                    start: *start,
+                    end: *end,
+                });
+            }
+            Ok((start_idx..=end_idx).collect())
+        }
+        super::CompressionSelection::Messages { refs } => {
+            if refs.is_empty() {
+                return Err(super::CompactionError::EmptySelection);
+            }
+            refs.iter()
+                .map(|reff| {
+                    reff.resolve(message_count)
+                        .ok_or(super::CompactionError::InvalidMessageRef(*reff))
+                })
+                .collect()
+        }
+    }
+}
+
+fn consumed_block_refs_for_selection(
+    state: &super::CompactionState,
+    selected_indices: &BTreeSet<usize>,
+) -> Vec<super::BlockRef> {
+    state
+        .blocks()
+        .values()
+        .filter(|block| block.is_active())
+        .filter(|block| {
+            block
+                .direct_message_indices()
+                .iter()
+                .all(|index| selected_indices.contains(index))
+        })
+        .map(super::CompressionBlock::block_ref)
+        .collect()
+}
+
+fn selected_summary_source_messages(
+    messages: &[AgentMessage],
+    state: &super::CompactionState,
+    selected_indices: &BTreeSet<usize>,
+    consumed_block_refs: &[super::BlockRef],
+) -> Vec<AgentMessage> {
+    let consumed_effective_indices: BTreeSet<usize> = consumed_block_refs
+        .iter()
+        .filter_map(|block_ref| state.blocks().get(block_ref))
+        .flat_map(|block| block.effective_message_indices(state))
+        .collect();
+
+    selected_indices
+        .iter()
+        .filter(|index| !consumed_effective_indices.contains(index))
+        .filter_map(|index| messages.get(*index).cloned())
+        .collect()
 }
 
 fn bounded_summary_source_messages(
@@ -297,32 +434,54 @@ mod tests {
     use super::*;
     use crate::agent::compaction::CompactSummaryResult;
     use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
 
-    struct StaticSummaryBackend;
+    #[derive(Debug, Default)]
+    struct CapturedSummaryRequest {
+        contents: Vec<String>,
+        previous_summary: Option<String>,
+    }
+
+    struct CapturingSummaryBackend {
+        summary_text: String,
+        captured: Arc<Mutex<Option<CapturedSummaryRequest>>>,
+    }
 
     #[async_trait]
-    impl CompactSummaryBackend for StaticSummaryBackend {
+    impl CompactSummaryBackend for CapturingSummaryBackend {
         async fn summarize(
             &self,
             request: CompactSummaryRequest<'_>,
         ) -> Result<CompactSummaryResult, CompactSummaryError> {
+            *self.captured.lock().expect("capture lock") = Some(CapturedSummaryRequest {
+                contents: request
+                    .messages
+                    .iter()
+                    .map(|message| message.content.clone())
+                    .collect(),
+                previous_summary: request.previous_summary.map(str::to_string),
+            });
             Ok(CompactSummaryResult {
-                summary_text: "Current state and remaining work.".to_string(),
+                summary_text: self.summary_text.clone(),
                 provider: request.route.provider.clone(),
                 route: request.route.id.clone(),
             })
         }
     }
 
-    #[test]
-    fn summary_source_is_bounded_but_keeps_pinned_context_and_recent_tail() {
-        let route = ModelInfo {
+    fn route(context_window_tokens: u32) -> ModelInfo {
+        ModelInfo {
             id: "agent-model".to_string(),
             provider: "mock".to_string(),
             max_output_tokens: 512,
-            context_window_tokens: 8_000,
+            context_window_tokens,
             weight: 1,
-        };
+        }
+    }
+
+    #[test]
+    fn summary_source_is_bounded_but_keeps_pinned_context_and_recent_tail() {
+        let route = route(8_000);
         let mut messages = vec![
             AgentMessage::topic_agents_md("# Topic AGENTS\nKeep this instruction."),
             AgentMessage::user_task("Finish the compaction cleanup."),
@@ -346,5 +505,92 @@ mod tests {
         assert!(selected_content.contains("Finish the compaction cleanup."));
         assert!(selected_content.contains("recent important finding"));
         assert!(!selected_content.contains("old-0:"));
+    }
+
+    #[tokio::test]
+    async fn compact_via_engine_summarizes_only_selected_range() {
+        let captured = Arc::new(Mutex::new(None));
+        let controller = CompactionController::new(Arc::new(CapturingSummaryBackend {
+            summary_text: "selected old range summarized".to_string(),
+            captured: Arc::clone(&captured),
+        }));
+        let mut memory = AgentMemory::new(20_000);
+        memory.add_message(AgentMessage::user_task("Find laptops"));
+        memory.add_message(AgentMessage::user(format!(
+            "OLD SHOULD BE SUMMARIZED {}",
+            "large ".repeat(6_000)
+        )));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 1"));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 2"));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 3"));
+
+        let result = controller
+            .compact_via_engine(
+                &mut memory,
+                &route(20_000),
+                "Find laptops",
+                &[],
+                "system prompt",
+                CompactionReason::Manual,
+                CompactionPhase::Manual,
+                true,
+            )
+            .await
+            .expect("compaction succeeds");
+
+        assert!(matches!(result, EngineCompactionResult::Applied(_)));
+        let captured = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("summary request captured");
+        let joined = captured.contents.join("\n");
+        assert!(joined.contains("OLD SHOULD BE SUMMARIZED"));
+        assert!(!joined.contains("RECENT MUST STAY RAW"));
+        assert_eq!(captured.previous_summary, None);
+    }
+
+    #[tokio::test]
+    async fn compact_via_engine_skips_when_summary_would_not_reduce_rendered_context() {
+        let captured = Arc::new(Mutex::new(None));
+        let controller = CompactionController::new(Arc::new(CapturingSummaryBackend {
+            summary_text: "expanded summary ".repeat(8_000),
+            captured,
+        }));
+        let mut memory = AgentMemory::new(20_000);
+        memory.add_message(AgentMessage::user_task("Find laptops"));
+        memory.add_message(AgentMessage::user(format!(
+            "old range {}",
+            "large ".repeat(6_000)
+        )));
+        memory.add_message(AgentMessage::user("recent requirement 1"));
+        memory.add_message(AgentMessage::user("recent requirement 2"));
+        memory.add_message(AgentMessage::user("recent requirement 3"));
+
+        let result = controller
+            .compact_via_engine(
+                &mut memory,
+                &route(20_000),
+                "Find laptops",
+                &[],
+                "system prompt",
+                CompactionReason::Manual,
+                CompactionPhase::Manual,
+                true,
+            )
+            .await
+            .expect("compaction call succeeds");
+
+        match result {
+            EngineCompactionResult::Skipped(skipped) => {
+                assert!(
+                    skipped
+                        .skipped_reason
+                        .contains("would not reduce rendered context")
+                );
+            }
+            EngineCompactionResult::Applied(_) => panic!("no-op compaction must not be applied"),
+        }
+        assert!(!memory.compaction_state().has_active_blocks());
     }
 }

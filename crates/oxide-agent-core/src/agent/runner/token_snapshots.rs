@@ -26,7 +26,7 @@ impl AgentRunner {
         let budget = estimate_request_budget(&policy, &request, ctx.agent);
 
         TokenSnapshot {
-            hot_memory_tokens: budget.hot_memory.total_tokens,
+            hot_memory_tokens: budget.hot_memory.rendered_tokens,
             system_prompt_tokens: budget.system_prompt_tokens,
             tool_schema_tokens: budget.tool_schema_tokens,
             total_input_tokens: budget.total_input_tokens,

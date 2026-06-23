@@ -142,7 +142,7 @@ impl AgentRunner {
         let policy = CompactionPolicy::default();
         count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
-            .saturating_add(ctx.agent.memory().token_count())
+            .saturating_add(ctx.agent.memory().rendered_token_count())
             .saturating_add(policy.hard_reserve_tokens)
     }
 
@@ -267,8 +267,8 @@ impl AgentRunner {
                     reason = ?skipped.reason,
                     phase = ?skipped.phase,
                     skipped_reason = %skipped.skipped_reason,
-                    hot_memory_tokens = ctx.agent.memory().token_count(),
-                    rendered_tokens = ctx.agent.memory().rendered_token_count(),
+                    hot_memory_tokens = ctx.agent.memory().rendered_token_count(),
+                    raw_memory_tokens = ctx.agent.memory().token_count(),
                     history_items = ctx.agent.memory().get_messages().len(),
                     "Engine compaction skipped"
                 );
@@ -402,7 +402,7 @@ mod tests {
     use super::*;
     use crate::agent::compaction::{
         CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
-        CompactionController,
+        CompactionController, CompactionEngine, CompressionSelection, MessageRef, SummaryPart,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -668,6 +668,74 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 16_000,
             context_window_tokens: 100_000,
+            weight: 1,
+        };
+
+        assert!(!AgentRunner::runtime_compaction_threshold_reached(
+            &ctx, &route
+        ));
+    }
+
+    #[test]
+    fn threshold_not_reached_when_raw_memory_large_but_rendered_overlay_is_small() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Find laptops"));
+        session.memory_mut().add_message(AgentMessage::user(format!(
+            "old raw crawl {}",
+            "large ".repeat(12_000)
+        )));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 1"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 2"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("recent requirement 3"));
+
+        let messages_snapshot = session.memory().get_messages().to_vec();
+        CompactionEngine::apply_compression(
+            session.memory_mut().compaction_state_mut(),
+            &messages_snapshot,
+            &CompressionSelection::Range {
+                start: MessageRef::from_index(1),
+                end: MessageRef::from_index(1),
+            },
+            vec![SummaryPart::Text("old crawl summarized".to_string())],
+        )
+        .expect("test compaction block is valid");
+
+        assert!(session.memory().token_count() > session.memory().rendered_token_count());
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let ctx = AgentRunnerContext {
+            task: "Find laptops",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "test-rendered-threshold-ok",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 512),
+        };
+        let route = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 512,
+            context_window_tokens: 20_000,
             weight: 1,
         };
 
