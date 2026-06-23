@@ -261,6 +261,17 @@ impl AgentRunner {
                 Ok(true)
             }
             Ok(EngineCompactionResult::Skipped(skipped)) => {
+                warn!(
+                    task_id = %ctx.task_id,
+                    iteration = state.iteration,
+                    reason = ?skipped.reason,
+                    phase = ?skipped.phase,
+                    skipped_reason = %skipped.skipped_reason,
+                    hot_memory_tokens = ctx.agent.memory().token_count(),
+                    rendered_tokens = ctx.agent.memory().rendered_token_count(),
+                    history_items = ctx.agent.memory().get_messages().len(),
+                    "Engine compaction skipped"
+                );
                 Self::emit_runtime_compaction_skipped(
                     ctx.progress_tx,
                     skipped.reason,

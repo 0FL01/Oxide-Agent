@@ -54,8 +54,11 @@ fn pinned_prefix_end(messages: &[AgentMessage]) -> usize {
 /// is reached. Tool batches (`AssistantToolCall` followed by consecutive
 /// `ToolResult`s) are collected atomically — the tail boundary never splits
 /// a batch. A minimum floor of [`MIN_RECENT_USER_TURNS`] user-role messages
-/// is enforced.
-fn tail_start(messages: &[AgentMessage], target_token_budget: usize) -> usize {
+/// is enforced, but only within the compressible region (between `prefix_end`
+/// and the token-budget boundary). If fewer user turns exist in that region,
+/// the tail stays at the token-budget position — the floor is best-effort,
+/// not a hard wall that would make the entire session uncompressible.
+fn tail_start(messages: &[AgentMessage], target_token_budget: usize, prefix_end: usize) -> usize {
     if messages.is_empty() {
         return 0;
     }
@@ -77,6 +80,15 @@ fn tail_start(messages: &[AgentMessage], target_token_budget: usize) -> usize {
             // If the batch extends beyond the current tail_start, it's already
             // included; skip to the batch start.
             if batch_end <= tail_start {
+                // Compute batch cost and check budget before including.
+                let batch_cost: usize = (batch_start..batch_end)
+                    .map(|i| message_token_cost(&messages[i]))
+                    .sum();
+                if accumulated.saturating_add(batch_cost) > target_token_budget
+                    && tail_start < messages.len()
+                {
+                    break;
+                }
                 for i in (batch_start..batch_end).rev() {
                     accumulated = accumulated.saturating_add(message_token_cost(&messages[i]));
                 }
@@ -101,23 +113,37 @@ fn tail_start(messages: &[AgentMessage], target_token_budget: usize) -> usize {
         }
     }
 
-    // Minimum floor: ensure at least MIN_RECENT_USER_TURNS user-role messages.
+    // Minimum floor: ensure at least MIN_RECENT_USER_TURNS user-role messages,
+    // but only within the compressible region. Never extend past prefix_end —
+    // doing so would consume the pinned prefix and leave nothing to compress.
+    // If fewer user turns exist in the compressible region, the tail stays at
+    // the token-budget position — the floor is best-effort, not a hard wall.
     if user_turn_count < MIN_RECENT_USER_TURNS {
-        extend_to_min_user_turns(messages, &mut tail_start, &mut user_turn_count);
+        let original_tail = tail_start;
+        extend_to_min_user_turns(messages, &mut tail_start, &mut user_turn_count, prefix_end);
+        // If we couldn't find enough user turns and extended all the way to
+        // prefix_end, revert — better to have a small tail with a compressible
+        // middle than no compressible range at all.
+        if user_turn_count < MIN_RECENT_USER_TURNS && tail_start <= prefix_end {
+            tail_start = original_tail.max(prefix_end);
+        }
     }
 
     tail_start
 }
 
 /// Extend the tail backward until at least [`MIN_RECENT_USER_TURNS`] user-role
-/// messages are included or the message list is exhausted.
+/// messages are included, the message list is exhausted, or `prefix_end` is
+/// reached — whichever comes first. Never extends past `prefix_end`, because
+/// that would consume the pinned prefix and leave nothing to compress.
 fn extend_to_min_user_turns(
     messages: &[AgentMessage],
     tail_start: &mut usize,
     user_turn_count: &mut usize,
+    prefix_end: usize,
 ) {
     let mut index = *tail_start;
-    while index > 0 && *user_turn_count < MIN_RECENT_USER_TURNS {
+    while index > prefix_end && *user_turn_count < MIN_RECENT_USER_TURNS {
         index -= 1;
         if is_user_role(&messages[index]) {
             *user_turn_count += 1;
@@ -226,7 +252,7 @@ pub fn select_automatic_compression_range(
     }
 
     let prefix_end = pinned_prefix_end(messages);
-    let tail = tail_start(messages, target_tokens);
+    let tail = tail_start(messages, target_tokens, prefix_end);
 
     if prefix_end >= tail {
         return None;
@@ -342,10 +368,9 @@ mod tests {
     #[test]
     fn only_tail_returns_none() {
         let state = CompactionState::default();
-        // 2 user turns — fewer than MIN_RECENT_USER_TURNS (3), so the entire
-        // list becomes the tail and there's nothing to compress.
+        // 2 user turns with very large target — both fit in tail, nothing to compress.
         let messages = make_user_turns(2, "turn");
-        let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
+        let result = select_automatic_compression_range(&messages, &state, 10_000);
         assert!(result.is_none());
     }
 
@@ -430,6 +455,61 @@ mod tests {
                 assert!(
                     both_in_range || both_in_tail,
                     "tool batch must not be split: range [{start_idx}, {end_idx}], batch [{batch_start}, {batch_end}]"
+                );
+            }
+            _ => panic!("expected Range"),
+        }
+    }
+
+    #[test]
+    fn tool_heavy_session_with_few_user_turns_compacts() {
+        use crate::llm::{ToolCall, ToolCallFunction};
+        let state = CompactionState::default();
+        // Reproduces the production bug: 1 UserTask + many AssistantToolCall/ToolResult
+        // pairs with large outputs. Only 0 user turns in tail → extend_to_min_user_turns
+        // must NOT extend past prefix_end (making everything tail and skipping compaction).
+        let mut messages = vec![
+            AgentMessage::topic_agents_md("# Topic"),     // 0 - pinned
+            AgentMessage::user_task("Research laptops."), // 1 - pinned
+        ];
+        // Add 6 tool batches (assistant call + tool result) with large content.
+        for i in 0..6 {
+            messages.push(AgentMessage::assistant_with_tools(
+                format!("Step {i}"),
+                vec![ToolCall::new(
+                    &format!("call-{i}"),
+                    ToolCallFunction {
+                        name: "browser_execute".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    false,
+                )],
+            ));
+            messages.push(AgentMessage::tool(
+                &format!("call-{i}"),
+                "browser_execute",
+                &"x".repeat(500), // Large tool output
+            ));
+        }
+        // prefix_end = 2 (TopicAgentsMd + UserTask)
+        // tail_start: walks back from end, accumulates tokens. With TAIL_TARGET=5,
+        // the first tool result (~125 tokens) already exceeds budget.
+        // user_turn_count = 0 (no user-role messages in tail).
+        // extend_to_min_user_turns: tries to go back to find user turns, but
+        // stops at prefix_end=2. No user turns between 2 and tail_start.
+        // tail stays at token-budget position → compressible middle exists.
+        let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
+        assert!(
+            result.is_some(),
+            "tool-heavy session with few user turns must produce a compressible range, not skip"
+        );
+        match result.unwrap() {
+            CompressionSelection::Range { start, end } => {
+                assert_eq!(start.to_index(), 2, "range starts after pinned prefix");
+                // End is before the tail (which contains the last tool batch).
+                assert!(
+                    end.to_index() < messages.len() - 1,
+                    "range end must not include the tail"
                 );
             }
             _ => panic!("expected Range"),
@@ -624,8 +704,8 @@ mod tests {
             AgentMessage::user_turn("recent 3"),
         ];
 
-        // Small target — tail should start early.
-        let tail = tail_start(&messages, 50);
+        // Small target — tail should start early. prefix_end=1 (UserTask is pinned).
+        let tail = tail_start(&messages, 50, 1);
         assert!(tail <= 3, "tail should include recent messages only");
     }
 
