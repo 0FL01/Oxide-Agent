@@ -282,7 +282,7 @@ fn assert_tool_payload_compacted_or_removed(
     }
 }
 
-fn assert_compress_tool_result_scheduled(content: &str) {
+fn assert_compress_tool_result_applied(content: &str) {
     let tool_output: serde_json::Value =
         serde_json::from_str(content).expect("compress tool result should be valid json");
     assert_eq!(tool_output["success"], true);
@@ -293,8 +293,7 @@ fn assert_compress_tool_result_scheduled(content: &str) {
         .expect("compress tool output should include stdout text");
     let stdout_json: serde_json::Value =
         serde_json::from_str(stdout).expect("compress stdout should be valid json");
-    assert_eq!(stdout_json["ok"], true);
-    assert_eq!(stdout_json["scheduled"], true);
+    assert_eq!(stdout_json["compressed"], true);
 }
 
 fn token_rich_payload(label: &str, words: usize) -> String {
@@ -1559,16 +1558,18 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
     assert!(
-        messages.iter().any(|message| message
-            .content
-            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
-        "runtime manual compaction should insert a Codex-style compacted summary"
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "runtime manual compaction should create an active block in compaction state"
     );
     if let Some(tool_result) = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
     {
-        assert_compress_tool_result_scheduled(&tool_result.content);
+        assert_compress_tool_result_applied(&tool_result.content);
     }
 
     server.abort();
@@ -1676,16 +1677,18 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
     let messages = executor.session().memory.get_messages();
 
     assert!(
-        messages.iter().any(|message| message
-            .content
-            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
-        "runtime compaction should insert a Codex-style compacted summary"
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "runtime compaction should create an active block in compaction state"
     );
     if let Some(compress_result) = messages
         .iter()
         .find(|message| message.tool_name.as_deref() == Some("compress"))
     {
-        assert_compress_tool_result_scheduled(&compress_result.content);
+        assert_compress_tool_result_applied(&compress_result.content);
     }
     if let Some(write_todos_result) = messages
         .iter()

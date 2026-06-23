@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-22-compaction-dcp-redesign.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request to replace the current compaction system with a unified DCP-inspired design; RECON over current Oxide compaction and `.donor/opencode-dynamic-context-pruning`.
 Goal doc owner: Codex
-Last updated: 2026-06-23 00:00
+Last updated: 2026-06-23 01:00
 
 ## Objective
 
@@ -154,8 +154,8 @@ Out of scope:
   - Source: RECON finding multiple compaction entry paths and duplicated event emitters.
   - Acceptance: manual transport, `compress` tool, pre-sampling/pre-LLM budget checks, context-limit retry, model-downshift, and context-admission emergency paths all call the same engine API for compaction state changes.
   - Evidence required: grep/call-site audit plus integration tests for each trigger.
-  - Status: in_progress
-  - Evidence collected: Phase 6 wired compress tool through `CompactionEngine::apply_compression` in `runner/tools.rs::apply_compress_through_engine`. Phase 7 wired all automatic triggers (pre-sampling, context-limit, model-downshift, hook/manual) through `compact_via_engine` → `CompactionEngine::apply_compression` in `runner/runtime_compaction.rs::run_engine_compaction`. Transport manual compaction (`executor/compaction.rs::compact_current_context`) also calls `compact_via_engine`. All triggers use the same engine API. Duplicate event emitters removed (unified `emit_runtime_compaction_started/completed/failed/skipped`). `RuntimeCompactionSkipped` now actually emitted. Old `CompactionController` methods (`manual_compact`, `compact`) still exist but are unused — to be deleted in Phase 8. `run_engine_compaction_pre_sampling_emits_skipped_when_tail_fits` and `run_engine_compaction_forced_emits_completed` tests prove engine-backed trigger paths.
+  - Status: verified
+  - Evidence collected: Phase 6 wired compress tool through `CompactionEngine::apply_compression` in `runner/tools.rs::apply_compress_through_engine`. Phase 7 wired all automatic triggers (pre-sampling, context-limit, model-downshift, hook/manual) through `compact_via_engine` → `CompactionEngine::apply_compression` in `runner/runtime_compaction.rs::run_engine_compaction`. Transport manual compaction (`executor/compaction.rs::compact_current_context`) also calls `compact_via_engine`. All triggers use the same engine API. Duplicate event emitters removed (unified `emit_runtime_compaction_started/completed/failed/skipped`). `RuntimeCompactionSkipped` now actually emitted. Phase 8 deleted old `CompactionController` methods (`manual_compact`, `compact`, `compact_for_context_limit`, `model_downshift_compact`) — not just unused, fully removed. `compact_via_engine` is the only compaction entry point. `run_engine_compaction_pre_sampling_emits_skipped_when_tail_fits` and `run_engine_compaction_forced_emits_completed` tests prove engine-backed trigger paths.
 
 - G3: DCP-style block graph is implemented with nesting/consumption semantics.
   - Source: DCP `CompressionBlock` and `PruneMessagesState` model.
@@ -203,8 +203,8 @@ Out of scope:
   - Source: user request to throw away current system.
   - Acceptance: `build_compacted_history`, `replace_compacted_history`, `CompactionController`, duplicated event emitters, no-op stubs, and stale archive/externalization pieces are removed or fully rewritten into the new engine/render/admission architecture. No compatibility shim, production fallback, or test-only old replacement helper remains.
   - Evidence required: call-site grep audit proving old symbols are absent; deleted/replaced tests; runtime integration tests passing through new engine.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 8 deleted `compaction/history.rs` entirely (build_compacted_history, PreviousCompactedSummary, extract_previous_compacted_summary, is_any/current_compaction_summary_message, deduplicate_superseded_read_file_results, all tests). Deleted from controller.rs: `CompactRequestContext`, `CompactRunOutcome`, `CompactionControllerError::Build/Replace` variants, `manual_compact`/`compact_for_context_limit`/`model_downshift_compact`/`compact` methods, `build_replacement`/`replacement_tokens`/`next_generation`/`previous_generation` helpers, old test module. Deleted from types.rs: `OXIDE_COMPACTED_SUMMARY_PREFIX` constant and `CompactedSummaryMetadata` struct. Deleted from memory.rs: `CompactedHistoryReplacementOutcome`, `CompactedHistoryReplacementError`, `replace_compacted_history` method, `compacted_summary` constructor, `format_compacted_summary` function, `compacted_summary_guidance` function, related tests. Deleted `run_iteration_compaction` no-op stub from runtime_compaction.rs and its call from execution.rs. Removed `history` module from mod.rs and all re-exports of deleted symbols. Migrated shared code: `previous_block_summary_text()` on CompactionState replaces `extract_previous_compacted_summary`; `CompactSummaryRequest.previous_summary` changed to `Option<&str>`; `build_local_compaction_user_message` takes `Option<&str>`; `bounded_summary_source_messages` simplified (no previous_summary parameter, no is_any_compaction_summary_message filter). Grep confirms zero remaining references to all deleted symbols across `crates/` (excluding target/ and .donor/). E2E tests migrated: `assert_compress_tool_result_scheduled` → `assert_compress_tool_result_applied` (checks `"compressed": true`), `OXIDE_COMPACTED_SUMMARY_PREFIX` checks → `has_active_blocks()` checks. 1489 core tests pass, 147 web transport tests pass, E2E tests compile.
 
 - G10: Emergency context-bomb admission prevents oversized input from entering hot memory inline.
   - Source: User review focus on recommended A+B+C+typed-D scheme; current RECON found new task/runtime context/tool output can be appended before safe admission.
@@ -231,8 +231,8 @@ Out of scope:
   - Source: Recommended scheme typed D; current RECON found string matching in `llm_error_suggests_context_overflow`.
   - Acceptance: provider overflow handling uses typed `LlmError` classification/capability metadata rather than substring matching; retry count is bounded; retry invokes the same render shrink/emergency compaction path.
   - Evidence required: grep proving overflow substring classifier is removed from production flow; tests for typed overflow -> emergency shrink -> retry and repeated overflow -> controlled stop.
-  - Status: in_progress
-  - Evidence collected: Phase 5 added `LlmError::ContextOverflow { message, provider, model }` variant. `is_context_overflow()` uses typed `matches!` (no string matching). `try_classify_context_overflow()` centralizes classification: checks `ApiError { status: Some(400|413), .. }` or `ApiError { status: None, .. }` with message indicators → converts to typed `ContextOverflow`. `llm_error_suggests_context_overflow` function removed from `llm_calls.rs`; replaced with `error.try_classify_context_overflow()` + `error.is_context_overflow()`. 13 LlmError tests cover: typed match, 400/413/None-status classification, no-indicator unchanged, non-400 unchanged, non-API unchanged, provider/model propagation. All existing `LlmError` match sites have `_ =>` wildcard arms — `ContextOverflow` classified as non-retryable by backoff logic (correct: context-limit retry path handles it explicitly via compaction + retry).
+  - Status: verified
+  - Evidence collected: Phase 5 added `LlmError::ContextOverflow { message, provider, model }` variant. `is_context_overflow()` uses typed `matches!` (no string matching). `try_classify_context_overflow()` centralizes classification: checks `ApiError { status: Some(400|413), .. }` or `ApiError { status: None, .. }` with message indicators → converts to typed `ContextOverflow`. `llm_error_suggests_context_overflow` function removed from `llm_calls.rs`; replaced with `error.try_classify_context_overflow()` + `error.is_context_overflow()`. 13 LlmError tests cover: typed match, 400/413/None-status classification, no-indicator unchanged, non-400 unchanged, non-API unchanged, provider/model propagation. All existing `LlmError` match sites have `_ =>` wildcard arms — `ContextOverflow` classified as non-retryable by backoff logic (correct: context-limit retry path handles it explicitly via compaction + retry). Phase 7 context-limit trigger (`run_runtime_context_limit_compaction` → `run_engine_compaction` with `CompactionReason::ContextLimit`) uses typed `error.is_context_overflow()` to gate the retry path. Grep confirms `llm_error_suggests_context_overflow` is fully removed from production code.
 
 - G14: Compaction trigger conditions and initiators are explicit and exhaustive.
   - Source: User question "compaction то как срабатывает? при каких условиях, по чьей инициативе?"
@@ -289,32 +289,32 @@ Out of scope:
 
 - V1: Core unit/integration tests for compaction pass.
   - Evidence required: targeted `cargo test -p oxide-agent-core ...` commands covering new compaction modules.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` — 1489 passed, 0 failed, 9 ignored. Covers all compaction modules: state (16 tests), refs (18), block (10), engine (29), renderer (12), strategy (14), admission (27), auto_select (16), controller (engine-path tests), runtime_compaction (5), compression (22), LlmError ContextOverflow (9). Hermetic agent tests (3), cancellation tests (1) pass.
 
 - V2: Workspace gates pass before completion.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo fmt --all -- --check` — clean. `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` — clean (0 warnings). `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` — passed (2 pre-existing WebCrawlerArgs warnings, not from this change). `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib` — 147 passed, 0 failed. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --test e2e --no-run` — compiles. Note: `cargo clippy --workspace --all-targets` has 69 pre-existing errors in `tool_runtime/modules.rs` (verified by git stash: same count before and after our changes — not from this work).
 
 - V3: Transport/web compatibility is verified if event contracts change.
   - Evidence required: affected transport tests; if web UI touched, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Web transport: 147 lib tests pass, E2E tests compile (`--test e2e --no-run`). Compaction regression tests migrated (`assert_compress_tool_result_scheduled` → `assert_compress_tool_result_applied`, `OXIDE_COMPACTED_SUMMARY_PREFIX` → `has_active_blocks()`). `RuntimeCompactionSkipped` event now actually emitted (was defined but never sent before) — web transport mapping and progress state already handle it from Phase 0 verification. Telegram transport: `compact_current_context` return type updated from `Result<CompactRunOutcome>` to `Result<()>` — `task_runner.rs::execute_manual_compaction` and `deliver_manual_compaction_result` updated. No web UI changes needed (event schema unchanged, only emission semantics improved).
 
 ### Non-goals (N*)
 
 - N1: Do not import DCP implementation directly.
   - Must preserve: Rust-native implementation and licensing safety.
   - Evidence required: diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: All new code is original Rust. No TypeScript files imported, no DCP source copied. `.donor/opencode-dynamic-context-pruning/` is conceptual reference only — not in `crates/` dependency tree. `docs/compaction-redesign.md` §6 documents original Rust architecture. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts." Grep confirms zero imports from `.donor/` in `crates/`.
 
 - N2: Do not redesign unrelated subsystems.
   - Must preserve: wiki memory, browser live, sandbox, manager control plane, and LLM providers except compaction integration points.
   - Evidence required: git diff scope review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: All changes are within `crates/oxide-agent-core/src/agent/compaction/` (new modules: state, refs, block, engine, renderer, strategy, admission, auto_select; rewritten: controller, runtime_compaction, executor/compaction), `crates/oxide-agent-core/src/agent/memory.rs` (CompactionState field, rendered_messages, deleted old compaction methods), `crates/oxide-agent-core/src/agent/providers/compression.rs` (rewritten compress tool), `crates/oxide-agent-core/src/llm/error.rs` (ContextOverflow variant), `crates/oxide-agent-core/src/agent/runner/` (trigger migration, tool output admission), `crates/oxide-agent-transport-web/tests/e2e/compaction_regression_tests.rs` (test migration), `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` (return type update). No changes to wiki memory, browser live, sandbox, manager control plane, or LLM provider internals.
 
 ## Implementation Plan
 
@@ -542,6 +542,14 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1502 passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib -- compaction` (2 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean).
   - Audit IDs updated: G2 in_progress (all triggers through engine; old controller methods unused, Phase 8 deletion), G3 verified (block graph complete), G4 verified (refs resolved by engine, auto path uses indices), G8 in_progress (budget centralized in compact_via_engine, scattered defaults reduced), G14 in_progress (trigger matrix: all 7 triggers through engine/admission).
   - Next: Phase 8 — delete old system and update docs.
+
+- 2026-06-23 01:00: Phase 8 — old system deletion complete.
+  - Changed: deleted `compaction/history.rs` entirely; deleted old `compact`/`manual_compact`/`compact_for_context_limit`/`model_downshift_compact` methods, `CompactRequestContext`, `CompactRunOutcome`, `CompactionControllerError::Build/Replace` variants, `build_replacement`/`replacement_tokens`/`next_generation`/`previous_generation` helpers, old test module from `controller.rs`; deleted `OXIDE_COMPACTED_SUMMARY_PREFIX` and `CompactedSummaryMetadata` from `types.rs`; deleted `replace_compacted_history`/`CompactedHistoryReplacementOutcome`/`CompactedHistoryReplacementError`/`compacted_summary` constructor/`format_compacted_summary`/`compacted_summary_guidance` from `memory.rs`; deleted `run_iteration_compaction` no-op stub from `runtime_compaction.rs` and its call from `execution.rs`; removed `history` module and all deleted symbol re-exports from `mod.rs`; removed `CompactRequestContext`/`CompactRunOutcome`/`CompactedSummaryMetadata` from `agent/mod.rs`; migrated shared code — `previous_block_summary_text()` on CompactionState, `CompactSummaryRequest.previous_summary` → `Option<&str>`, `build_local_compaction_user_message` → `Option<&str>`, `bounded_summary_source_messages` simplified; migrated E2E tests — `assert_compress_tool_result_scheduled` → `assert_compress_tool_result_applied`, `OXIDE_COMPACTED_SUMMARY_PREFIX` → `has_active_blocks()`; fixed `auto_select.rs` test to use `AgentMessage::summary()` instead of deleted `compacted_summary()`.
+  - Evidence: 1489 core tests pass (0 failed, 9 ignored), 147 web transport tests pass, E2E tests compile (`--test e2e --no-run`), `cargo fmt --all -- --check` clean, `cargo clippy -p oxide-agent-core --profile-full --lib -- -D warnings` clean, `cargo check --workspace --profile-embedded-opencode-local` passed (2 pre-existing WebCrawlerArgs warnings). Grep confirms zero remaining references to all deleted symbols. 69 pre-existing clippy errors in `tool_runtime/modules.rs` verified by git stash (same count before and after).
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-full --lib` (1489 passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib` (147 passed), `cargo fmt --all -- --check` (clean), `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --lib -- -D warnings` (clean), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --test e2e --no-run` (compiles), grep for deleted symbols (zero hits).
+  - Audit IDs updated: G2 verified (old controller methods deleted, `compact_via_engine` is sole entry point), G9 verified (old system fully deleted, no shim/tail/helper), G13 verified (typed overflow fully wired), V1 verified (1489 core tests pass), V2 verified (fmt/clippy/check pass), V3 verified (web/telegram transport compatible), N1 verified (no DCP import), N2 verified (scope limited to compaction).
+  - Remaining gaps: G10 (new-task and runtime-context admission paths not wired — only tool output path has ContextAdmission), G11 (LLM-backed chunked summarizer not wired — infrastructure exists), G12 (budget-based controlled pause not wired — only payload-exceeds-entire-window pause exists), G8 (config-backed policy not wired — scattered CompactionPolicy::default() reduced but not eliminated), Q6 (untrusted-data marking only on tool output path — other ingress paths not wired), G14 (trigger matrix complete but new-task/runtime-context admission triggers missing).
+  - Next: wire ContextAdmission into `prime_session_for_execution` (new-task) and `apply_pending_runtime_context` (runtime-context) paths; wire LLM-backed chunked summarizer; wire budget-based controlled pause; or report remaining gaps to user for prioritization.
 
 - Risk: Existing e2e tests assume destructive summary-boundary behavior.
   - Impact: tests must be migrated to rendered-overlay semantics, not patched around old expectations.

@@ -19,15 +19,6 @@ use anyhow::{Result, anyhow};
 use tracing::warn;
 
 impl AgentRunner {
-    pub(super) async fn run_iteration_compaction(
-        &mut self,
-        _ctx: &mut AgentRunnerContext<'_>,
-        _state: &mut RunState,
-        _iteration: usize,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     pub(super) async fn run_manual_compaction_checkpoint(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,

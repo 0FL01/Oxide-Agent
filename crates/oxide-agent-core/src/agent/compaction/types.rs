@@ -3,9 +3,6 @@
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
-/// Stable marker for the new runtime/session-level compacted summary format.
-pub const OXIDE_COMPACTED_SUMMARY_PREFIX: &str = "[OXIDE_COMPACTED_SUMMARY_V1]";
-
 const WIKI_MEMORY_LOOKUP_TOOLS: &[&str] =
     &["wiki_memory_list", "wiki_memory_read", "wiki_memory_search"];
 
@@ -147,40 +144,6 @@ impl CompactionBackend {
             Self::LocalLlmSummary => "local_llm_summary",
         }
     }
-}
-
-/// Minimal metadata embedded in the new compacted summary message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompactedSummaryMetadata {
-    /// Monotonic compacted-summary generation within the session.
-    pub generation: u32,
-    /// Runtime reason that requested compaction.
-    pub reason: CompactionReason,
-    /// Runtime phase where compaction happened.
-    pub phase: CompactionPhase,
-    /// Approximate hot-memory tokens before replacement.
-    pub token_before: usize,
-    /// Approximate hot-memory tokens after replacement.
-    pub token_after: usize,
-    /// Hot-memory item count before replacement.
-    pub history_items_before: usize,
-    /// Hot-memory item count after replacement.
-    pub history_items_after: usize,
-    /// Provider used for summary generation.
-    pub provider: String,
-    /// Model/route used for summary generation.
-    pub route: String,
-    /// Summary backend.
-    pub backend: CompactionBackend,
-    /// RFC3339 timestamp or caller-provided timestamp string.
-    pub created_at: String,
-    /// Whether a previous current-format compacted summary was detected.
-    pub previous_summary_detected: bool,
-    /// Whether history repair changed replacement output.
-    pub repair_applied: bool,
-    /// Whether scoped durable wiki lookup tools were exposed for the next model request.
-    #[serde(default)]
-    pub wiki_memory_lookup_available: bool,
 }
 
 /// Static policy knobs for the compaction subsystem.

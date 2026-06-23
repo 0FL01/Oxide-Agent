@@ -133,18 +133,8 @@ impl AgentRunner {
         let cancellation_token = ctx.agent.cancellation_token().clone();
         if state.take_manual_compaction_request() {
             let Some(compaction_result) = Self::await_until_cancelled(
-                cancellation_token.clone(),
-                self.run_manual_compaction_checkpoint(ctx, state),
-            )
-            .await
-            else {
-                return Err(self.cancelled_error(ctx).await);
-            };
-            compaction_result?;
-        } else {
-            let Some(compaction_result) = Self::await_until_cancelled(
                 cancellation_token,
-                self.run_iteration_compaction(ctx, state, iteration),
+                self.run_manual_compaction_checkpoint(ctx, state),
             )
             .await
             else {

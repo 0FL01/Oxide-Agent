@@ -1,6 +1,5 @@
 //! Compact task backend contracts.
 
-use super::PreviousCompactedSummary;
 use crate::agent::memory::AgentMessage;
 use crate::config::ModelInfo;
 use async_trait::async_trait;
@@ -15,8 +14,8 @@ pub struct CompactSummaryRequest<'a> {
     pub route: &'a ModelInfo,
     /// Source hot-memory messages to summarize.
     pub messages: &'a [AgentMessage],
-    /// Previous current-format compacted summary, if one was detected.
-    pub previous_summary: Option<&'a PreviousCompactedSummary>,
+    /// Previous compaction summary text, if one exists in the block graph.
+    pub previous_summary: Option<&'a str>,
 }
 
 /// Plain text summary returned by a compact backend.

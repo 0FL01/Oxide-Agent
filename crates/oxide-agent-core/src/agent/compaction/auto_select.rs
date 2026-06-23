@@ -534,26 +534,8 @@ mod tests {
         let messages = vec![
             AgentMessage::topic_agents_md("# Topic"),
             AgentMessage::user_task("Do the thing."),
-            // Legacy summary message — treated as pinned.
-            AgentMessage::compacted_summary(
-                "Old summary.",
-                &crate::agent::compaction::CompactedSummaryMetadata {
-                    generation: 1,
-                    reason: crate::agent::compaction::CompactionReason::Manual,
-                    phase: crate::agent::compaction::CompactionPhase::Manual,
-                    token_before: 100,
-                    token_after: 10,
-                    history_items_before: 5,
-                    history_items_after: 1,
-                    provider: "mock".to_string(),
-                    route: "mock".to_string(),
-                    backend: crate::agent::compaction::CompactionBackend::LocalLlmSummary,
-                    created_at: "2026-01-01T00:00:00Z".to_string(),
-                    previous_summary_detected: false,
-                    repair_applied: false,
-                    wiki_memory_lookup_available: false,
-                },
-            ),
+            // Summary-kind message — treated as pinned.
+            AgentMessage::summary("Old summary."),
             AgentMessage::user_turn("old 1"),
             AgentMessage::user_turn("old 2"),
             AgentMessage::user_turn("recent 1"),

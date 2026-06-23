@@ -6,7 +6,7 @@
 //! Phase 3: block graph (`blocks: BTreeMap<BlockRef, CompressionBlock>`).
 //! Later phases add strategy state.
 
-use super::block::CompressionBlock;
+use super::block::{CompressionBlock, SummaryPart};
 use super::refs::BlockRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -74,6 +74,32 @@ impl CompactionState {
     #[must_use]
     pub fn has_active_blocks(&self) -> bool {
         self.blocks.values().any(CompressionBlock::is_active)
+    }
+
+    /// Return the summary text from the most recent active block, if any.
+    ///
+    /// Used by `compact_via_engine` to chain the previous summary into the
+    /// next LLM summarization prompt. Only `SummaryPart::Text` parts are
+    /// extracted — `BlockRef` parts reference consumed blocks whose summaries
+    /// are already embedded in their own blocks.
+    #[must_use]
+    pub fn previous_block_summary_text(&self) -> Option<String> {
+        self.blocks
+            .values()
+            .filter(|b| b.is_active())
+            .max_by_key(|b| b.block_ref().as_u32())
+            .map(|block| {
+                block
+                    .summary()
+                    .iter()
+                    .filter_map(|part| match part {
+                        SummaryPart::Text(text) => Some(text.as_str()),
+                        SummaryPart::BlockRef(_) => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .filter(|text| !text.is_empty())
     }
 }
 
@@ -215,5 +241,109 @@ mod tests {
         }
         // Don't insert b2 — just verify b1 is now inactive
         assert!(!state.has_active_blocks());
+    }
+
+    #[test]
+    fn previous_block_summary_text_returns_none_for_empty_state() {
+        let state = CompactionState::default();
+        assert_eq!(state.previous_block_summary_text(), None);
+    }
+
+    #[test]
+    fn previous_block_summary_text_returns_latest_active_block_text() {
+        use crate::agent::compaction::block::{SummaryPart, new_block};
+
+        let mut state = CompactionState::default();
+        let b1 = state.allocate_block_id();
+        state.blocks_mut().insert(
+            b1,
+            new_block(
+                b1,
+                vec![0, 1],
+                vec![],
+                vec![SummaryPart::Text("first summary".into())],
+                0,
+            ),
+        );
+        let b2 = state.allocate_block_id();
+        state.blocks_mut().insert(
+            b2,
+            new_block(
+                b2,
+                vec![2, 3],
+                vec![],
+                vec![SummaryPart::Text("second summary".into())],
+                0,
+            ),
+        );
+
+        assert_eq!(
+            state.previous_block_summary_text(),
+            Some("second summary".to_string())
+        );
+    }
+
+    #[test]
+    fn previous_block_summary_text_skips_inactive_blocks() {
+        use crate::agent::compaction::block::{SummaryPart, mark_consumed, new_block};
+
+        let mut state = CompactionState::default();
+        let b1 = state.allocate_block_id();
+        state.blocks_mut().insert(
+            b1,
+            new_block(
+                b1,
+                vec![0, 1],
+                vec![],
+                vec![SummaryPart::Text("old summary".into())],
+                0,
+            ),
+        );
+        let b2 = state.allocate_block_id();
+        state.blocks_mut().insert(
+            b2,
+            new_block(
+                b2,
+                vec![2, 3],
+                vec![b1],
+                vec![SummaryPart::Text("new summary".into())],
+                0,
+            ),
+        );
+        // Mark b1 as consumed by b2
+        if let Some(block) = state.blocks_mut().get_mut(&b1) {
+            mark_consumed(block, b2);
+        }
+
+        assert_eq!(
+            state.previous_block_summary_text(),
+            Some("new summary".to_string())
+        );
+    }
+
+    #[test]
+    fn previous_block_summary_text_combines_multiple_text_parts() {
+        use crate::agent::compaction::block::{SummaryPart, new_block};
+
+        let mut state = CompactionState::default();
+        let b1 = state.allocate_block_id();
+        state.blocks_mut().insert(
+            b1,
+            new_block(
+                b1,
+                vec![0, 1],
+                vec![],
+                vec![
+                    SummaryPart::Text("part one".into()),
+                    SummaryPart::Text("part two".into()),
+                ],
+                0,
+            ),
+        );
+
+        assert_eq!(
+            state.previous_block_summary_text(),
+            Some("part one\npart two".to_string())
+        );
     }
 }

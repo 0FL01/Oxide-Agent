@@ -1,6 +1,5 @@
 //! Prompt builders for context compaction.
 
-use super::history::{PreviousCompactedSummary, is_any_compaction_summary_message};
 use crate::agent::memory::{AgentMessage, MessageRole};
 
 const MESSAGE_REASONING_PREVIEW_CHARS: usize = 500;
@@ -37,12 +36,12 @@ NEXT_STEPS: <pending actions and remaining work>"#
 #[must_use]
 pub fn build_local_compaction_user_message(
     task: &str,
-    previous_summary: Option<&PreviousCompactedSummary>,
+    previous_summary: Option<&str>,
     messages: &[AgentMessage],
 ) -> String {
     let previous_summary_section = previous_summary
-        .map(|summary| summary.content.trim())
-        .filter(|summary| !summary.is_empty())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .unwrap_or("none");
     let mut sections = vec![
         format!("## Current Task\n{}", task.trim()),
@@ -52,7 +51,6 @@ pub fn build_local_compaction_user_message(
     let message_sections = messages
         .iter()
         .enumerate()
-        .filter(|(_, message)| !is_any_compaction_summary_message(message))
         .map(|(index, message)| {
             let role = match message.role {
                 MessageRole::System => "system",
@@ -74,7 +72,7 @@ pub fn build_local_compaction_user_message(
         .collect::<Vec<_>>();
 
     sections.push(if message_sections.is_empty() {
-        "## Source History\nNo non-summary source messages.".to_string()
+        "## Source History\nNo source messages.".to_string()
     } else {
         format!("## Source History\n{}", message_sections.join("\n\n"))
     });

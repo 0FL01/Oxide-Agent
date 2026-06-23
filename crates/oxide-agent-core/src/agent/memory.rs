@@ -4,16 +4,14 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRenderer,
-    CompactionRetention, CompactionState, OXIDE_COMPACTED_SUMMARY_PREFIX, RenderPolicy,
-    count_tokens_cached,
+    AgentMessageKind, ArchiveRef, CompactionRenderer, CompactionRetention, CompactionState,
+    RenderPolicy, count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
+use crate::agent::recovery::repair_agent_message_history_runtime;
 use crate::llm::{Message, TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
@@ -186,29 +184,6 @@ pub struct PrunedArtifact {
     /// Optional archive reference when the payload was also externalized.
     #[serde(default)]
     pub archive_ref: Option<ArchiveRef>,
-}
-
-/// Outcome of an atomic compacted-history replacement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactedHistoryReplacementOutcome {
-    /// Approximate token count before replacement.
-    pub token_before: usize,
-    /// Approximate token count after replacement.
-    pub token_after: usize,
-    /// Message count before replacement.
-    pub history_items_before: usize,
-    /// Message count after replacement.
-    pub history_items_after: usize,
-    /// Validation repair result. Normal replacement requires `applied == false`.
-    pub repair_outcome: HistoryRepairOutcome,
-}
-
-/// Error that prevents compacted-history replacement before mutation.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum CompactedHistoryReplacementError {
-    /// Replacement would require runtime history repair, so the builder is unsafe.
-    #[error("compacted history replacement failed tool-history validation")]
-    InvalidToolHistory(HistoryRepairOutcome),
 }
 
 /// Role of a message sender in agent memory
@@ -544,28 +519,6 @@ impl AgentMessage {
         }
     }
 
-    /// Create a Codex-style runtime compacted summary message.
-    pub fn compacted_summary(
-        summary_text: impl AsRef<str>,
-        metadata: &CompactedSummaryMetadata,
-    ) -> Self {
-        Self {
-            kind: AgentMessageKind::Summary,
-            role: MessageRole::System,
-            content: format_compacted_summary(summary_text.as_ref(), metadata),
-            created_at_unix: Some(current_timestamp_unix_secs()),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            attachments: Vec::new(),
-            externalized_payload: None,
-            pruned_artifact: None,
-        }
-    }
-
     /// Resolve the semantic kind for this message.
     #[must_use]
     pub fn resolved_kind(&self) -> AgentMessageKind {
@@ -847,37 +800,6 @@ impl AgentMemory {
         self.repair_history_after_mutation("replace_messages");
     }
 
-    /// Atomically replace hot memory with prevalidated compacted history.
-    ///
-    /// Unlike `replace_messages`, this method validates the replacement before
-    /// mutation and rejects histories that would need tool-call repair.
-    pub fn replace_compacted_history(
-        &mut self,
-        messages: Vec<AgentMessage>,
-    ) -> Result<CompactedHistoryReplacementOutcome, CompactedHistoryReplacementError> {
-        let token_before = self.token_count;
-        let history_items_before = self.messages.len();
-        let (validated, repair_outcome) = repair_agent_message_history_runtime(&messages);
-        if repair_outcome.applied || validated.len() != messages.len() {
-            return Err(CompactedHistoryReplacementError::InvalidToolHistory(
-                repair_outcome,
-            ));
-        }
-
-        self.messages = messages;
-        self.last_api_usage = None;
-        self.compaction_state = CompactionState::default();
-        self.recalculate_token_count();
-
-        Ok(CompactedHistoryReplacementOutcome {
-            token_before,
-            token_after: self.token_count,
-            history_items_before,
-            history_items_after: self.messages.len(),
-            repair_outcome,
-        })
-    }
-
     fn repair_history_after_mutation(&mut self, boundary: &'static str) {
         let (repaired_messages, outcome) = repair_agent_message_history_runtime(&self.messages);
         if !outcome.applied {
@@ -1028,42 +950,6 @@ fn format_duration_for_prompt(gap_seconds: i64) -> String {
 fn format_duration_part(value: i64, unit: &str) -> String {
     let suffix = if value == 1 { "" } else { "s" };
     format!("{value} {unit}{suffix}")
-}
-
-fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
-    let guidance = compacted_summary_guidance(metadata.wiki_memory_lookup_available);
-    let wiki_metadata_line = if metadata.wiki_memory_lookup_available {
-        "wiki_memory_lookup_available: true\n"
-    } else {
-        ""
-    };
-    // Only `generation` and `wiki_memory_lookup_available` are kept in prompt-visible text.
-    // `generation` is required by `previous_generation()` in controller.rs to chain
-    // compaction generations correctly. `wiki_memory_lookup_available` affects the model's
-    // tool-use decisions. All other metadata (reason, phase, provider, route, token counts,
-    // created_at, etc.) is purely diagnostic and is already logged via
-    // `log_runtime_compaction_success` (runtime_compaction.rs).
-    // Keeping them out of the prompt prevents cache-busting on every compaction round.
-    format!(
-        "{prefix}\n\
-generation: {generation}\n\
-{wiki_metadata_line}\n\
-{guidance}\n\n\
-{summary}",
-        prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
-        generation = metadata.generation,
-        wiki_metadata_line = wiki_metadata_line,
-        guidance = guidance,
-        summary = summary_text.trim(),
-    )
-}
-
-fn compacted_summary_guidance(wiki_memory_lookup_available: bool) -> &'static str {
-    if wiki_memory_lookup_available {
-        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages. If a missing durable fact, preference, decision, procedure, or project detail matters, use wiki_memory_search, wiki_memory_read, or wiki_memory_list before guessing. Wiki Memory is durable background, not a full transcript."
-    } else {
-        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
-    }
 }
 
 impl AgentMessage {
@@ -1461,50 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_compacted_history_replaces_valid_history_atomically() {
-        let mut memory = AgentMemory::new(100_000);
-        memory.add_message(AgentMessage::user("Before"));
-        let token_before = memory.token_count();
-
-        let outcome = memory
-            .replace_compacted_history(vec![
-                AgentMessage::summary("[OXIDE_COMPACTED_SUMMARY_V1]\nsummary"),
-                AgentMessage::user("After"),
-            ])
-            .expect("valid compacted history replaces memory");
-
-        assert_eq!(outcome.token_before, token_before);
-        assert_eq!(outcome.history_items_before, 1);
-        assert_eq!(outcome.history_items_after, 2);
-        assert!(!outcome.repair_outcome.applied);
-        assert_eq!(memory.get_messages()[1].content, "After");
-        assert!(memory.token_count() > 0);
-    }
-
-    #[test]
-    fn replace_compacted_history_rejects_invalid_history_without_mutation() {
-        let mut memory = AgentMemory::new(100_000);
-        memory.add_message(AgentMessage::user("Before"));
-        let token_before = memory.token_count();
-
-        let err = memory
-            .replace_compacted_history(vec![AgentMessage::tool(
-                "call-orphan",
-                "search",
-                "orphan result",
-            )])
-            .expect_err("orphan tool result is rejected");
-
-        assert!(matches!(
-            err,
-            CompactedHistoryReplacementError::InvalidToolHistory(_)
-        ));
-        assert_eq!(memory.get_messages().len(), 1);
-        assert_eq!(memory.get_messages()[0].content, "Before");
-        assert_eq!(memory.token_count(), token_before);
-    }
-
-    #[test]
     fn test_topic_agents_md_detection() {
         let mut memory = AgentMemory::new(100_000);
         assert!(!memory.has_topic_agents_md());
@@ -1564,59 +1406,6 @@ mod tests {
 
         assert_eq!(summary.resolved_kind(), AgentMessageKind::Summary);
         assert_eq!(summary.retention(), CompactionRetention::Pinned);
-    }
-
-    fn compacted_summary_metadata(wiki_memory_lookup_available: bool) -> CompactedSummaryMetadata {
-        CompactedSummaryMetadata {
-            generation: 1,
-            reason: crate::agent::compaction::CompactionReason::Manual,
-            phase: crate::agent::compaction::CompactionPhase::Manual,
-            token_before: 100,
-            token_after: 10,
-            history_items_before: 3,
-            history_items_after: 1,
-            provider: "mock".to_string(),
-            route: "mock-model".to_string(),
-            backend: crate::agent::compaction::CompactionBackend::LocalLlmSummary,
-            created_at: "2026-05-21T20:10:00+03:00".to_string(),
-            previous_summary_detected: false,
-            repair_applied: false,
-            wiki_memory_lookup_available,
-        }
-    }
-
-    #[test]
-    fn compacted_summary_guidance_mentions_wiki_when_lookup_tools_available() {
-        let summary = AgentMessage::compacted_summary(
-            "Current state and next steps.",
-            &compacted_summary_metadata(true),
-        );
-
-        assert!(summary.content.contains("Agent Mode hot context compacted"));
-        assert!(
-            summary
-                .content
-                .contains("wiki_memory_lookup_available: true")
-        );
-        assert!(summary.content.contains("wiki_memory_search"));
-        assert!(
-            summary
-                .content
-                .contains("Wiki Memory is durable background, not a full transcript.")
-        );
-    }
-
-    #[test]
-    fn compacted_summary_fallback_guidance_does_not_mention_wiki() {
-        let summary = AgentMessage::compacted_summary(
-            "Current state and next steps.",
-            &compacted_summary_metadata(false),
-        );
-
-        assert!(summary.content.contains(
-            "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
-        ));
-        assert!(!summary.content.to_ascii_lowercase().contains("wiki"));
     }
 
     #[test]
@@ -1731,122 +1520,6 @@ mod tests {
                 .get_messages()
                 .iter()
                 .any(|message| message.content.starts_with("[Previous context compressed]"))
-        );
-    }
-
-    /// Compacted summary must not contain volatile metadata (timestamps, provider,
-    /// route, token counts) that changes between compaction rounds and busts the
-    /// prompt cache. Only `wiki_memory_lookup_available` is kept for tool-use
-    /// decisions. Full metadata is logged via `log_runtime_compaction_success`.
-    #[test]
-    fn compacted_summary_excludes_volatile_metadata() {
-        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
-
-        let metadata = CompactedSummaryMetadata {
-            generation: 3,
-            reason: CompactionReason::PreTurn,
-            phase: CompactionPhase::PreSampling,
-            token_before: 99_876,
-            token_after: 12_345,
-            history_items_before: 87,
-            history_items_after: 23,
-            provider: "openrouter".to_string(),
-            route: "anthropic/claude-sonnet-4".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-06-01T14:32:17.849032+00:00".to_string(),
-            previous_summary_detected: true,
-            repair_applied: false,
-            wiki_memory_lookup_available: true,
-        };
-
-        let summary = format_compacted_summary(
-            "The user asked to deploy the service. Three containers are running.",
-            &metadata,
-        );
-
-        assert!(summary.starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX));
-        assert!(summary.contains("generation: 3"));
-        assert!(summary.contains("wiki_memory_lookup_available: true"));
-        assert!(summary.contains("Agent Mode hot context compacted"));
-        assert!(summary.contains("deploy the service"));
-
-        // Volatile fields must NOT appear in prompt-visible text.
-        assert!(!summary.contains("reason:"));
-        assert!(!summary.contains("phase:"));
-        assert!(!summary.contains("provider:"));
-        assert!(!summary.contains("route:"));
-        assert!(!summary.contains("backend:"));
-        assert!(!summary.contains("token_before:"));
-        assert!(!summary.contains("token_after:"));
-        assert!(!summary.contains("history_items_before:"));
-        assert!(!summary.contains("history_items_after:"));
-        assert!(!summary.contains("created_at:"));
-        assert!(!summary.contains("previous_summary_detected:"));
-        assert!(!summary.contains("repair_applied:"));
-        assert!(!summary.contains("2026-06-01"));
-        assert!(!summary.contains("openrouter"));
-        assert!(!summary.contains("99_876"));
-    }
-
-    /// Two summaries with different metadata but same semantic text produce
-    /// nearly identical prompt-visible content — `generation` is the only
-    /// metadata field that differs (it is required for compaction chain).
-    #[test]
-    fn compacted_summary_differs_only_in_generation_across_metadata() {
-        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
-
-        let metadata_a = CompactedSummaryMetadata {
-            generation: 1,
-            reason: CompactionReason::Manual,
-            phase: CompactionPhase::Manual,
-            token_before: 50_000,
-            token_after: 10_000,
-            history_items_before: 40,
-            history_items_after: 15,
-            provider: "opencode-go".to_string(),
-            route: "deepseek-v4-flash".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-01-01T00:00:00+00:00".to_string(),
-            previous_summary_detected: false,
-            repair_applied: false,
-            wiki_memory_lookup_available: false,
-        };
-
-        let metadata_b = CompactedSummaryMetadata {
-            generation: 5,
-            reason: CompactionReason::ContextLimit,
-            phase: CompactionPhase::MidTurn,
-            token_before: 120_000,
-            token_after: 30_000,
-            history_items_before: 100,
-            history_items_after: 40,
-            provider: "openrouter".to_string(),
-            route: "anthropic/claude-sonnet-4".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-12-31T23:59:59+00:00".to_string(),
-            previous_summary_detected: true,
-            repair_applied: true,
-            wiki_memory_lookup_available: false,
-        };
-
-        let summary_a = format_compacted_summary("Same semantic content.", &metadata_a);
-        let summary_b = format_compacted_summary("Same semantic content.", &metadata_b);
-
-        // Only the generation line differs.
-        assert!(summary_a.contains("generation: 1"));
-        assert!(summary_b.contains("generation: 5"));
-
-        // Stripping the generation line makes them identical.
-        let strip_gen = |s: &str| -> String {
-            s.lines()
-                .filter(|line| !line.starts_with("generation:"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        assert_eq!(
-            strip_gen(&summary_a),
-            strip_gen(&summary_b),
-            "summaries with identical semantic text must differ only in generation"
         );
     }
 }
