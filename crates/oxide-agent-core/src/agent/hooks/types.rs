@@ -99,9 +99,17 @@ pub struct HookContext<'a> {
     pub continuation_count: usize,
     /// Maximum allowed continuations before stopping
     pub max_continuations: usize,
-    /// Current token count in memory
-    pub token_count: usize,
-    /// Maximum allowed tokens for memory
+    /// Current model-facing rendered token count.
+    ///
+    /// Hooks that protect the context window must use this value, because it
+    /// matches the messages sent to LLM providers after compaction rendering.
+    pub rendered_tokens: usize,
+    /// Current durable raw transcript token count.
+    ///
+    /// This is diagnostic/storage pressure only. It can exceed the model-facing
+    /// context after compaction and must not drive context-window hooks.
+    pub raw_tokens: usize,
+    /// Maximum allowed rendered tokens for memory
     pub max_tokens: usize,
     /// Whether this is a sub-agent
     pub is_sub_agent: bool,
@@ -131,7 +139,8 @@ impl<'a> HookContext<'a> {
             iteration,
             continuation_count,
             max_continuations,
-            token_count: 0,
+            rendered_tokens: 0,
+            raw_tokens: 0,
             max_tokens: usize::MAX,
             is_sub_agent: false,
             available_tools: &[],
@@ -150,8 +159,14 @@ impl<'a> HookContext<'a> {
 
     /// Add token usage metadata to the hook context.
     #[must_use]
-    pub const fn with_tokens(mut self, token_count: usize, max_tokens: usize) -> Self {
-        self.token_count = token_count;
+    pub const fn with_token_usage(
+        mut self,
+        rendered_tokens: usize,
+        raw_tokens: usize,
+        max_tokens: usize,
+    ) -> Self {
+        self.rendered_tokens = rendered_tokens;
+        self.raw_tokens = raw_tokens;
         self.max_tokens = max_tokens;
         self
     }

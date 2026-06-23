@@ -22,11 +22,14 @@ use super::block::CompressionSelection;
 use super::budget::count_tokens_cached;
 use super::refs::MessageRef;
 use super::state::CompactionState;
-use super::types::{AgentMessageKind, CompactionPolicy};
+use super::types::{AgentMessageKind, CompactionPolicy, is_browser_live_tool};
 use crate::agent::memory::AgentMessage;
 
 /// Minimum number of user-role messages that must remain in the recent tail.
 const MIN_RECENT_USER_TURNS: usize = 3;
+const MIN_TARGET_TOKENS: usize = 4_000;
+const BROWSER_RECENT_TAIL_CONTEXT_FRACTION: usize = 5;
+const BROWSER_RECENT_TAIL_MAX_TOKENS: usize = 40_000;
 
 /// Compute the index after all leading pinned messages.
 ///
@@ -202,8 +205,6 @@ pub fn target_history_tokens(
     tool_schema_tokens: usize,
     policy: &CompactionPolicy,
 ) -> usize {
-    const MIN_TARGET_TOKENS: usize = 4_000;
-
     let warning_threshold_tokens =
         context_window.saturating_mul(policy.warning_threshold_percent as usize) / 100;
     let compact_threshold_tokens =
@@ -226,6 +227,48 @@ pub fn target_history_tokens(
     // Fall back to the remaining budget after overhead, clamped to a minimum.
     let hard_target = context_window.saturating_sub(request_overhead);
     hard_target.max(MIN_TARGET_TOKENS).min(context_window)
+}
+
+/// Compute the recent-tail target for a concrete memory transcript.
+///
+/// Browser Live observations are high-frequency, replaceable page state. Keeping
+/// a warning-threshold-sized recent tail (~100k tokens on large routes) makes a
+/// browser-heavy task re-enter compaction after every action. When Browser Live
+/// output is present, cap the recent tail to a smaller model-facing working set;
+/// older browser observations are summarized into compaction blocks while the
+/// latest observation and screenshot artifact remain visible.
+pub fn target_history_tokens_for_messages(
+    messages: &[AgentMessage],
+    context_window: usize,
+    system_prompt_tokens: usize,
+    tool_schema_tokens: usize,
+    policy: &CompactionPolicy,
+) -> usize {
+    let base = target_history_tokens(
+        context_window,
+        system_prompt_tokens,
+        tool_schema_tokens,
+        policy,
+    );
+
+    if !contains_browser_live_tool_output(messages) {
+        return base;
+    }
+
+    let request_overhead = system_prompt_tokens
+        .saturating_add(tool_schema_tokens)
+        .saturating_add(policy.hard_reserve_tokens);
+    let available = context_window.saturating_sub(request_overhead);
+    let browser_cap = (context_window / BROWSER_RECENT_TAIL_CONTEXT_FRACTION)
+        .clamp(MIN_TARGET_TOKENS, BROWSER_RECENT_TAIL_MAX_TOKENS)
+        .min(available);
+    base.min(browser_cap.max(MIN_TARGET_TOKENS.min(available)))
+}
+
+fn contains_browser_live_tool_output(messages: &[AgentMessage]) -> bool {
+    messages
+        .iter()
+        .any(|message| is_browser_live_tool(message.tool_name.as_deref()))
 }
 
 /// Select the compressible range for automatic compaction.
@@ -532,6 +575,44 @@ mod tests {
         // compact_target = 10_000 * 85% = 8_500 - 15_192 → 0
         // hard_target = 10_000 - 15_192 → 0, max with 4_000 = 4_000, min with 10_000 = 4_000
         assert_eq!(tokens, 4_000);
+    }
+
+    #[test]
+    fn browser_history_target_is_capped_below_warning_tail() {
+        let messages = vec![
+            AgentMessage::user_task("Find listings"),
+            AgentMessage::tool("call-browser", "browser_execute", "browser payload"),
+        ];
+
+        let tokens = target_history_tokens_for_messages(
+            &messages,
+            200_000,
+            8_000,
+            7_000,
+            &CompactionPolicy::default(),
+        );
+
+        assert_eq!(tokens, BROWSER_RECENT_TAIL_MAX_TOKENS);
+    }
+
+    #[test]
+    fn non_browser_history_target_keeps_warning_tail() {
+        let messages = vec![
+            AgentMessage::user_task("Read files"),
+            AgentMessage::tool("call-read", "read_file", "file payload"),
+        ];
+
+        let base = target_history_tokens(200_000, 8_000, 7_000, &CompactionPolicy::default());
+        let tokens = target_history_tokens_for_messages(
+            &messages,
+            200_000,
+            8_000,
+            7_000,
+            &CompactionPolicy::default(),
+        );
+
+        assert_eq!(tokens, base);
+        assert!(tokens > BROWSER_RECENT_TAIL_MAX_TOKENS);
     }
 
     #[test]

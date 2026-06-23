@@ -7,8 +7,8 @@ use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
     ActionRequest, BrowserAction, BrowserObservation, BrowserProfile, CloseReason,
     CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DebugLevel,
-    NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat,
-    ScreenshotQuery, Viewport, validate_action_fields,
+    DomSnapshotNode, NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact,
+    ScreenshotFormat, ScreenshotQuery, Viewport, validate_action_fields,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -45,6 +45,14 @@ pub const TOOL_BROWSER_DEBUG: &str = "browser_debug";
 pub const TOOL_BROWSER_CLOSE: &str = "browser_close";
 /// `browser_save_screenshot` tool name.
 pub const TOOL_BROWSER_SAVE_SCREENSHOT: &str = "browser_save_screenshot";
+
+const MODEL_DOM_NODE_LIMIT: usize = 20;
+const MODEL_DOM_TEXT_CHARS: usize = 120;
+const MODEL_DOM_VALUE_CHARS: usize = 80;
+const MODEL_DOM_ATTR_LIMIT: usize = 4;
+const MODEL_DOM_ATTR_VALUE_CHARS: usize = 120;
+const MODEL_URL_CHARS: usize = 240;
+const MODEL_TITLE_CHARS: usize = 160;
 
 /// Browser Live provider backing native tool executors.
 #[derive(Clone)]
@@ -1117,8 +1125,7 @@ impl ToolExecutor for BrowserLiveToolExecutor {
                 )));
             }
         };
-        let text = serde_json::to_string_pretty(&payload)
-            .map_err(|error| ToolRuntimeError::Internal(error.to_string()))?;
+        let text = browser_stdout_summary(&payload);
         let mut output = normalizer.success(&invocation, &text, "");
         output.structured_payload = Some(payload);
         if let Some(image) = image_attachment {
@@ -1297,12 +1304,13 @@ fn observation_payload(
         "session_id": session_id,
         "observation_id": frame.observation_id,
         "action_seq": frame.action_seq,
-        "url": frame.url,
-        "title": frame.title,
+        "url": truncate_browser_field(&frame.url, MODEL_URL_CHARS),
+        "title": truncate_browser_field(&frame.title, MODEL_TITLE_CHARS),
         "loading_state": frame.loading_state,
         "network_summary": frame.network_summary,
         "console_summary": frame.console_summary,
-        "dom_snapshot": frame.dom_snapshot,
+        "dom_snapshot": model_dom_snapshot(&frame.dom_snapshot),
+        "dom_snapshot_summary": model_dom_snapshot_summary(&frame.dom_snapshot),
         "dom_snapshot_error": frame.dom_snapshot_error,
         "screenshot": {
             "screenshot_id": screenshot.screenshot_id,
@@ -1314,6 +1322,107 @@ fn observation_payload(
             "redacted": screenshot.redacted,
         }
     })
+}
+
+fn model_dom_snapshot(nodes: &[DomSnapshotNode]) -> Vec<Value> {
+    nodes
+        .iter()
+        .take(MODEL_DOM_NODE_LIMIT)
+        .map(model_dom_node)
+        .collect()
+}
+
+fn model_dom_node(node: &DomSnapshotNode) -> Value {
+    let mut item = serde_json::Map::new();
+    item.insert("selector".to_string(), json!(node.selector));
+    item.insert("tag".to_string(), json!(node.tag));
+    if let Some(text) = node.text.as_deref().filter(|text| !text.is_empty()) {
+        item.insert(
+            "text".to_string(),
+            json!(truncate_browser_field(text, MODEL_DOM_TEXT_CHARS)),
+        );
+    }
+    if let Some(value) = node.value.as_deref().filter(|value| !value.is_empty()) {
+        item.insert(
+            "value".to_string(),
+            json!(truncate_browser_field(value, MODEL_DOM_VALUE_CHARS)),
+        );
+    }
+    if let Some(href) = node.href.as_deref().filter(|href| !href.is_empty()) {
+        item.insert(
+            "href".to_string(),
+            json!(truncate_browser_field(href, MODEL_URL_CHARS)),
+        );
+    }
+    let attributes: serde_json::Map<String, Value> = node
+        .attributes
+        .iter()
+        .take(MODEL_DOM_ATTR_LIMIT)
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                json!(truncate_browser_field(value, MODEL_DOM_ATTR_VALUE_CHARS)),
+            )
+        })
+        .collect();
+    if !attributes.is_empty() {
+        item.insert("attributes".to_string(), Value::Object(attributes));
+    }
+    Value::Object(item)
+}
+
+fn model_dom_snapshot_summary(nodes: &[DomSnapshotNode]) -> Value {
+    json!({
+        "total_nodes": nodes.len(),
+        "returned_nodes": nodes.len().min(MODEL_DOM_NODE_LIMIT),
+        "truncated": nodes.len() > MODEL_DOM_NODE_LIMIT,
+        "node_limit": MODEL_DOM_NODE_LIMIT,
+        "full_data_access": "Use browser_extract with a targeted selector or network filter; full DOM is kept in browser session state, not hot memory."
+    })
+}
+
+fn browser_stdout_summary(payload: &Value) -> String {
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("ok");
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let observation = payload
+        .get("post_observation")
+        .filter(|value| value.is_object())
+        .unwrap_or(payload);
+    let action_seq = observation
+        .get("action_seq")
+        .or_else(|| payload.get("action_seq"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let title = observation
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let url = observation
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!(
+        "browser_tool status={} session_id={} action_seq={} title={} url={}",
+        status,
+        session_id,
+        action_seq,
+        truncate_browser_field(title, MODEL_TITLE_CHARS),
+        truncate_browser_field(url, MODEL_URL_CHARS)
+    )
+}
+
+fn truncate_browser_field(text: &str, limit: usize) -> String {
+    let mut result: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        result.push('…');
+    }
+    result
 }
 
 fn execute_payload(
@@ -1580,14 +1689,14 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_OBSERVE => (
-            "Return compact browser state (url, title, loading state, network/console summaries, optional DOM snapshot) and attach the latest screenshot as a native image for vision models.",
+            "Return bounded model-facing browser state (url, title, loading state, network/console summaries, DOM stats and a small DOM sample) and attach the latest screenshot as a native image for vision models. Use browser_extract for targeted/full DOM or network data.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
                 "properties": {
                     "session_id": {"type": "string"},
                     "fresh": {"type": "boolean", "default": false, "description": "capture a fresh screenshot instead of reusing the last cached one"},
-                    "include_dom": {"type": "boolean", "default": true, "description": "include a DOM snapshot of interactive elements, data-* attributes and resolved hrefs"},
+                    "include_dom": {"type": "boolean", "default": true, "description": "capture DOM state; model output is bounded to a small interactive-element sample plus summary stats"},
                     "include_a11y": {"type": "boolean", "default": false},
                     "max_debug_items": {"type": "integer", "minimum": 0, "maximum": 100}
                 },
@@ -1595,7 +1704,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXECUTE => (
-            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot and DOM snapshot, then call this tool with exactly one action (click, fill, type_text, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values. For SPA hash-based URLs (e.g. one-time secret pages) use `navigate` with `force_reload: true` to guarantee a clean page state.",
+            "Execute a single concrete browser action in the session. The main agent should first call `browser_observe` to see the attached screenshot and bounded DOM sample, then call this tool with exactly one action (click, fill, type_text, navigate, execute_javascript, wait_for_selector, etc.). Use `browser_extract` to pull structured data such as network response bodies or DOM values. For SPA hash-based URLs (e.g. one-time secret pages) use `navigate` with `force_reload: true` to guarantee a clean page state.",
             json!({
                 "type": "object",
                 "required": ["session_id", "action"],
@@ -1609,7 +1718,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXTRACT => (
-            "Extract structured data from the current page: network response bodies or DOM element properties and attributes.",
+            "Extract targeted structured data from the current page: network response bodies or DOM element properties and attributes. Use this instead of relying on full browser_observe/browser_execute DOM dumps.",
             json!({
                 "type": "object",
                 "required": ["session_id", "source"],
@@ -2233,9 +2342,19 @@ mod tests {
         assert!(observe.success);
         assert!(close.success);
         let observe_text = observe.stdout.text.as_deref().expect("observe stdout");
-        assert!(observe_text.contains("artifact://browser/task-1/"));
         assert!(!observe_text.contains("base64"));
         assert!(!observe_text.contains("data:image"));
+        assert!(observe_text.starts_with("browser_tool status="));
+        let observe_payload = observe
+            .structured_payload
+            .as_ref()
+            .expect("observe payload");
+        assert!(
+            observe_payload["screenshot"]["artifact_uri"]
+                .as_str()
+                .expect("artifact uri")
+                .contains("artifact://browser/task-1/")
+        );
         let image = observe
             .image_attachment
             .as_ref()
@@ -2385,6 +2504,67 @@ mod tests {
             .as_array()
             .expect("dom_snapshot");
         assert!(!dom_snapshot.is_empty());
+        assert!(post_observation["dom_snapshot_summary"].is_object());
+    }
+
+    #[test]
+    fn browser_model_dom_projection_is_bounded() {
+        let nodes: Vec<DomSnapshotNode> = (0..MODEL_DOM_NODE_LIMIT + 5)
+            .map(|index| DomSnapshotNode {
+                selector: format!("a.item-{index}"),
+                tag: "a".to_string(),
+                text: Some("x".repeat(MODEL_DOM_TEXT_CHARS + 20)),
+                value: Some("v".repeat(MODEL_DOM_VALUE_CHARS + 20)),
+                href: Some(format!("https://example.test/item/{index}")),
+                attributes: (0..MODEL_DOM_ATTR_LIMIT + 3)
+                    .map(|attr| {
+                        (
+                            format!("data-attr-{attr}"),
+                            "a".repeat(MODEL_DOM_ATTR_VALUE_CHARS + 20),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let projected = model_dom_snapshot(&nodes);
+        let summary = model_dom_snapshot_summary(&nodes);
+
+        assert_eq!(projected.len(), MODEL_DOM_NODE_LIMIT);
+        assert_eq!(summary["total_nodes"], json!(MODEL_DOM_NODE_LIMIT + 5));
+        assert_eq!(summary["returned_nodes"], json!(MODEL_DOM_NODE_LIMIT));
+        assert_eq!(summary["truncated"], json!(true));
+        assert!(projected[0]["text"].as_str().expect("text").ends_with('…'));
+        assert_eq!(
+            projected[0]["attributes"]
+                .as_object()
+                .expect("attributes")
+                .len(),
+            MODEL_DOM_ATTR_LIMIT
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_tool_stdout_is_summary_not_duplicate_payload() {
+        let provider = test_provider();
+        let executors = provider.tool_runtime_executors();
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+        let session_id = start.structured_payload.as_ref().expect("payload")["session_id"]
+            .as_str()
+            .expect("session id");
+        let observe_args = format!(r#"{{"session_id":"{session_id}"}}"#);
+
+        let result = execute(&executors, TOOL_BROWSER_OBSERVE, &observe_args).await;
+        let stdout = result
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout summary should fit inline");
+
+        assert!(stdout.starts_with("browser_tool status="));
+        assert!(!stdout.contains("dom_snapshot"));
+        assert!(stdout.len() < 512);
+        assert!(result.structured_payload.is_some());
     }
 
     #[tokio::test]

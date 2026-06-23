@@ -48,7 +48,7 @@ impl Hook for SubAgentSafetyHook {
                     };
                 }
 
-                if context.token_count >= self.config.max_tokens {
+                if context.rendered_tokens >= self.config.max_tokens {
                     return HookResult::Block {
                         reason: format!(
                             "Sub-agent token limit reached ({})",

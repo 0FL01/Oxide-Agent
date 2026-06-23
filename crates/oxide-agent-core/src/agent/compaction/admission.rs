@@ -22,6 +22,7 @@
 
 use crate::agent::compaction::archive::ArchiveRef;
 use crate::agent::compaction::count_tokens_cached;
+use crate::agent::compaction::types::is_browser_live_tool_name;
 use crate::agent::memory::ExternalizedPayload;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -202,6 +203,11 @@ impl ContextAdmission {
 
     /// Maximum characters for head/tail previews in the manifest.
     const PREVIEW_CHARS: usize = 500;
+    /// Browser Live observations are high-frequency replaceable state. Keep
+    /// their inline budget much smaller than generic tool output; the full page
+    /// state remains available through browser session state and targeted
+    /// `browser_extract` calls.
+    const BROWSER_INLINE_MAX_TOKENS: usize = 12_000;
 
     /// Evaluate whether a payload can enter hot memory inline.
     ///
@@ -230,10 +236,7 @@ impl ContextAdmission {
         }
 
         // Inline threshold: min(INLINE_MIN_TOKENS, route_window / INLINE_FRACTION).
-        let inline_threshold = budget
-            .route_context_window
-            .div_ceil(Self::INLINE_FRACTION)
-            .max(Self::INLINE_MIN_TOKENS);
+        let inline_threshold = Self::inline_threshold(descriptor, budget);
 
         // Inline: payload is within the inline threshold (not oversized).
         // Budget enforcement for a full context is the pre-LLM trigger's job.
@@ -247,6 +250,21 @@ impl ContextAdmission {
         // (Phase 7) will compact before the next LLM call.
         let manifest = Self::create_manifest(descriptor, payload_tokens);
         AdmissionDecision::Manifest(manifest)
+    }
+
+    fn inline_threshold(descriptor: &PayloadDescriptor, budget: &AdmissionBudget) -> usize {
+        let generic_threshold = budget
+            .route_context_window
+            .div_ceil(Self::INLINE_FRACTION)
+            .max(Self::INLINE_MIN_TOKENS);
+
+        if let PayloadKind::ToolOutput { tool_name } = &descriptor.kind
+            && is_browser_live_tool_name(tool_name)
+        {
+            return generic_threshold.min(Self::BROWSER_INLINE_MAX_TOKENS);
+        }
+
+        generic_threshold
     }
 
     /// Build a [`ManifestSpec`] from a payload descriptor.
@@ -634,6 +652,46 @@ mod tests {
             }
             other => panic!("expected Manifest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn browser_tool_output_uses_smaller_inline_threshold_than_generic_tools() {
+        // ~15K tokens: below the generic 200K/4 threshold, above the Browser
+        // Live 12K threshold.
+        let content = "x".repeat(120_000);
+        let budget = AdmissionBudget {
+            rendered_tokens: 100,
+            route_context_window: 200_000,
+            system_prompt_tokens: 8_000,
+            tool_schema_tokens: 7_000,
+            hard_reserve: 8_192,
+        };
+
+        let browser = PayloadDescriptor {
+            kind: PayloadKind::ToolOutput {
+                tool_name: "browser_execute".to_string(),
+            },
+            content: content.clone(),
+            source: Some("browser".to_string()),
+            size_bytes: content.len(),
+        };
+        let generic = PayloadDescriptor {
+            kind: PayloadKind::ToolOutput {
+                tool_name: "read_file".to_string(),
+            },
+            content,
+            source: Some("file".to_string()),
+            size_bytes: 120_000,
+        };
+
+        assert!(matches!(
+            ContextAdmission::evaluate(&browser, &budget),
+            AdmissionDecision::Manifest(_)
+        ));
+        assert!(matches!(
+            ContextAdmission::evaluate(&generic, &budget),
+            AdmissionDecision::Inline
+        ));
     }
 
     #[test]

@@ -6,12 +6,34 @@ use serde::{Deserialize, Serialize};
 const WIKI_MEMORY_LOOKUP_TOOLS: &[&str] =
     &["wiki_memory_list", "wiki_memory_read", "wiki_memory_search"];
 
+const BROWSER_LIVE_TOOLS: &[&str] = &[
+    "browser_start",
+    "browser_observe",
+    "browser_execute",
+    "browser_extract",
+    "browser_debug",
+    "browser_close",
+    "browser_save_screenshot",
+];
+
 /// Return whether scoped durable wiki lookup tools are actually exposed to this run.
 #[must_use]
 pub fn wiki_memory_lookup_available(tools: &[ToolDefinition]) -> bool {
     WIKI_MEMORY_LOOKUP_TOOLS
         .iter()
         .all(|required| tools.iter().any(|tool| tool.name == *required))
+}
+
+/// Return whether a tool name belongs to the Browser Live provider.
+#[must_use]
+pub fn is_browser_live_tool_name(tool_name: &str) -> bool {
+    BROWSER_LIVE_TOOLS.contains(&tool_name)
+}
+
+/// Return whether an optional tool name belongs to the Browser Live provider.
+#[must_use]
+pub fn is_browser_live_tool(tool_name: Option<&str>) -> bool {
+    tool_name.is_some_and(is_browser_live_tool_name)
 }
 
 /// Stable semantic kind for an entry stored in hot agent memory.

@@ -86,7 +86,7 @@ impl Hook for HotContextHealthHook {
             return HookResult::Continue;
         };
 
-        let current_tokens = context.token_count;
+        let current_tokens = context.rendered_tokens;
         let soft_limit = self.effective_soft_limit(context);
         if current_tokens < soft_limit {
             return HookResult::Continue;
@@ -117,10 +117,14 @@ mod tests {
     use crate::agent::providers::TodoList;
     use crate::llm::ToolDefinition;
 
-    fn context(token_count: usize, max_tokens: usize) -> HookContext<'static> {
+    fn context(rendered_tokens: usize, max_tokens: usize) -> HookContext<'static> {
         let todos = Box::leak(Box::new(TodoList::new()));
         let memory = Box::leak(Box::new(AgentMemory::new(max_tokens)));
-        HookContext::new(todos, memory, 0, 0, 4).with_tokens(token_count, max_tokens)
+        HookContext::new(todos, memory, 0, 0, 4).with_token_usage(
+            rendered_tokens,
+            rendered_tokens,
+            max_tokens,
+        )
     }
 
     #[test]
@@ -148,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn hard_limit_uses_rendered_tokens_not_raw_tokens() {
+        let hook = HotContextHealthHook::new();
+        let todos = Box::leak(Box::new(TodoList::new()));
+        let memory = Box::leak(Box::new(AgentMemory::new(100)));
+        let context = HookContext::new(todos, memory, 0, 0, 4).with_token_usage(10, 90, 100);
+
+        let result = hook.handle(&HookEvent::BeforeIteration { iteration: 1 }, &context);
+
+        assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
     fn soft_limit_mentions_compress_when_available() {
         let hook = HotContextHealthHook::new();
         let todos = Box::leak(Box::new(TodoList::new()));
@@ -159,7 +175,7 @@ mod tests {
         }];
         let context = HookContext::new(todos, memory, 0, 0, 4)
             .with_available_tools(&tools)
-            .with_tokens(66, 100);
+            .with_token_usage(66, 99, 100);
 
         let result = hook.handle(&HookEvent::BeforeIteration { iteration: 1 }, &context);
 

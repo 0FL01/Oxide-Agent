@@ -148,7 +148,8 @@ impl CompactionController {
         // Compute target token budget for the recent tail.
         let system_prompt_tokens = count_tokens_cached(system_prompt);
         let tool_tokens = tool_schema_tokens(tools);
-        let target_tokens = auto_select::target_history_tokens(
+        let target_tokens = auto_select::target_history_tokens_for_messages(
+            memory.get_messages(),
             context_window,
             system_prompt_tokens,
             tool_tokens,
