@@ -799,3 +799,65 @@ async fn execute_new_task_remembers_task_and_appends_single_user_task() {
         .count();
     assert_eq!(user_task_count, 1);
 }
+
+#[cfg(oxide_module_llm_provider_opencode_go)]
+#[tokio::test]
+async fn new_task_admission_inline_for_normal_input() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#,
+    );
+    executor.session_mut().memory.set_max_tokens(5000);
+
+    let result = executor.execute("Ship the feature", None).await;
+    assert!(result.is_ok());
+
+    let user_task_msg = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .find(|m| m.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .expect("UserTask message should exist");
+
+    // Inline: content is the raw text, no externalized payload.
+    assert_eq!(user_task_msg.content, "Ship the feature");
+    assert!(user_task_msg.externalized_payload.is_none());
+}
+
+#[cfg(oxide_module_llm_provider_opencode_go)]
+#[tokio::test]
+async fn new_task_admission_manifest_for_oversized_input() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#,
+    );
+    // inline_threshold = max(2000, 5000/4) = 2000 tokens.
+    // A ~12000-char varied-text string is ~3000 tokens → Manifest.
+    executor.session_mut().memory.set_max_tokens(5000);
+
+    let huge_task = "The quick brown fox jumps over the lazy dog. ".repeat(300);
+
+    let result = executor.execute(&huge_task, None).await;
+    assert!(result.is_ok());
+
+    let user_task_msg = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .find(|m| m.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .expect("UserTask message should exist");
+
+    // Manifest: content is bounded with manifest header, not the full raw text.
+    assert!(user_task_msg.content.contains("[Externalized content"));
+    // Manifest is ~1500 chars (head+tail preview + metadata); raw is ~13200 chars.
+    assert!(user_task_msg.content.len() < huge_task.len() / 2);
+
+    // Lossless raw content preserved in externalized_payload.
+    assert!(user_task_msg.externalized_payload.is_some());
+    let payload = user_task_msg.externalized_payload.as_ref().unwrap();
+    let raw = payload
+        .inline_fallback
+        .as_ref()
+        .expect("inline_fallback should be set");
+    assert!(raw.contains(&huge_task));
+}

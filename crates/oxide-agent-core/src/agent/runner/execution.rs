@@ -2,7 +2,9 @@
 
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{
+    AdmissionDecision, CompactionTrigger, ContextAdmission, PayloadDescriptor, PayloadKind,
+};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
@@ -216,11 +218,39 @@ impl AgentRunner {
         }
 
         for injection in pending_context {
-            ctx.messages
-                .push(crate::llm::Message::user(&injection.content));
-            let message = AgentMessage::runtime_context(injection.content)
-                .with_user_attachments(injection.attachments);
-            ctx.agent.memory_mut().add_message(message);
+            let budget = Self::compute_admission_budget(ctx);
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::RuntimeContext,
+                content: injection.content.clone(),
+                source: None,
+                size_bytes: injection.content.len(),
+            };
+            match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => {
+                    ctx.messages
+                        .push(crate::llm::Message::user(&injection.content));
+                    let message = AgentMessage::runtime_context(injection.content)
+                        .with_user_attachments(injection.attachments);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+                AdmissionDecision::Manifest(spec) => {
+                    ctx.messages
+                        .push(crate::llm::Message::user(&spec.manifest_content));
+                    let mut message = AgentMessage::runtime_context(spec.manifest_content.clone())
+                        .with_user_attachments(injection.attachments);
+                    message.externalized_payload = Some(spec.externalized_payload);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[Runtime context withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    ctx.messages.push(crate::llm::Message::user(&placeholder));
+                    let message = AgentMessage::runtime_context(placeholder);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+            }
         }
     }
 

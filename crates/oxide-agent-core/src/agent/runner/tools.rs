@@ -525,7 +525,7 @@ impl AgentRunner {
     /// Uses the route's `context_window_tokens` (the real provider constraint)
     /// rather than `memory.max_tokens()` (which may be set artificially small
     /// for compaction threshold testing).
-    fn compute_admission_budget(ctx: &AgentRunnerContext<'_>) -> AdmissionBudget {
+    pub(super) fn compute_admission_budget(ctx: &AgentRunnerContext<'_>) -> AdmissionBudget {
         let memory = ctx.agent.memory();
         let route_context_window = ctx
             .config

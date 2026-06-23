@@ -6,6 +6,9 @@ use super::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
     AgentUserInput,
 };
+use crate::agent::compaction::{
+    AdmissionBudget, AdmissionDecision, ContextAdmission, PayloadDescriptor, PayloadKind,
+};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
@@ -293,8 +296,44 @@ impl AgentExecutor {
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         if let Some(user_input) = user_input {
             self.session.remember_task(task);
-            let user_message = AgentMessage::user_task(user_input.text_projection())
-                .with_user_attachments(user_input.attachments.clone());
+            let user_text = user_input.text_projection().to_string();
+
+            // Admission gate: evaluate user task before hot-memory mutation.
+            // At executor time we don't have route/system-prompt/tool-schema info,
+            // so we use memory.max_tokens() as the context window estimate with
+            // zero overhead — conservative (overestimates available space).
+            // The pre-LLM budget trigger re-checks with accurate numbers before
+            // the first LLM call.
+            let budget = AdmissionBudget {
+                rendered_tokens: self.session.memory.token_count(),
+                route_context_window: self.session.memory.max_tokens(),
+                system_prompt_tokens: 0,
+                tool_schema_tokens: 0,
+                hard_reserve: 8_192,
+            };
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::NewTask,
+                content: user_text.clone(),
+                source: None,
+                size_bytes: user_text.len(),
+            };
+            let user_message = match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => AgentMessage::user_task(user_text)
+                    .with_user_attachments(user_input.attachments.clone()),
+                AdmissionDecision::Manifest(spec) => {
+                    let mut msg = AgentMessage::user_task(spec.manifest_content.clone())
+                        .with_user_attachments(user_input.attachments.clone());
+                    msg.externalized_payload = Some(spec.externalized_payload);
+                    msg
+                }
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[User task withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    AgentMessage::user_task(placeholder)
+                }
+            };
             if let Some(context) = self
                 .session
                 .memory
