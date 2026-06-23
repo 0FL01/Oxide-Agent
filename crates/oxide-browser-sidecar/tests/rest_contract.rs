@@ -6,7 +6,7 @@
 //! consumes.
 
 use oxide_browser_contracts::{
-    ActionRequest, BrowserAction, BrowserProfile, CloseReason, CloseSessionRequest,
+    ActionRequest, BrowserAction, BrowserMode, BrowserProfile, CloseReason, CloseSessionRequest,
     CreateSessionRequest, GotoRequest, Viewport, WaitUntil,
 };
 use oxide_browser_sidecar::{AppState, create_app};
@@ -67,6 +67,7 @@ async fn full_rest_contract_on_real_chromium() {
     let create_req = CreateSessionRequest {
         task_id: "cp6-test".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::DiagnosticDebug,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,
@@ -211,7 +212,7 @@ async fn full_rest_contract_on_real_chromium() {
         resp["screenshot"]["artifact_uri"].as_str().is_some(),
         "has artifact_uri"
     );
-    assert_eq!(resp["screenshot"]["mime_type"], "image/png");
+    assert_eq!(resp["screenshot"]["mime_type"], "image/jpeg");
 
     // 8. Screenshot/latest (binary).
     let resp = http
@@ -228,16 +229,13 @@ async fn full_rest_contract_on_real_chromium() {
         .and_then(|v| v.to_str().ok())
         .expect("content-type");
     assert!(
-        content_type.contains("image/png"),
-        "binary content-type is image/png"
+        content_type.contains("image/jpeg"),
+        "binary content-type is image/jpeg"
     );
     let bytes = resp.bytes().await.expect("screenshot bytes");
     assert!(!bytes.is_empty(), "screenshot bytes non-empty");
-    // PNG signature.
-    assert_eq!(
-        &bytes[..8],
-        &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-    );
+    // JPEG SOI marker.
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8]);
 
     // 9. Debug/network.
     let resp: Value = http
@@ -316,6 +314,7 @@ async fn goto_force_reload_works() {
     let create_req = CreateSessionRequest {
         task_id: "cp6-reload".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::StealthClean,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,
@@ -388,6 +387,7 @@ async fn action_get_element_value_returns_result() {
     let create_req = CreateSessionRequest {
         task_id: "cp6-value".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::StealthClean,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,

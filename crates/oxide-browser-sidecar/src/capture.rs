@@ -1,4 +1,4 @@
-//! Network and console capture on the same CDP connection (stealth-safe).
+//! Network and console capture on the same CDP connection.
 //!
 //! Replaces the Python sidecar's `CDPListener` — but on the **single** session
 //! WebSocket (G3) and **without** `Runtime.enable` (G4).
@@ -7,9 +7,9 @@
 //!
 //! | Source | CDP command | Stealth-safe? |
 //! |--------|-------------|---------------|
-//! | Network requests | `Network.enable` | Yes — no `Runtime.enable` needed |
-//! | Browser-level logs | `Log.enable` | Yes — independent domain |
-//! | JS `console.*` calls | Injected JS interceptor | Yes — `Runtime.evaluate` only |
+//! | Network requests | `Network.enable` | Diagnostic mode only |
+//! | Browser-level logs | `Log.enable` | Diagnostic mode only |
+//! | JS `console.*` calls | Injected JS interceptor | Diagnostic mode only |
 //!
 //! The JS interceptor overrides `console.log/warn/error/debug/info` and stores
 //! entries in a global array. It is injected via
@@ -150,9 +150,40 @@ pub struct CaptureCollector {
     /// domain commands are sent — zero behavior change.
     engine: Option<Arc<AdblockEngine>>,
     /// Consent auto-dismiss injection script. When `Some`, injected via
-    /// `Page.addScriptToEvaluateOnNewDocument` with `worldName: "consent"`
+    /// `Page.addScriptToEvaluateOnNewDocument` with `worldName: "oxide_consent"`
     /// in `start()`. When `None`, no consent script is injected.
     consent_script: Option<Arc<String>>,
+    /// Whether Network/Log/console diagnostics are allowed for this session.
+    config: CaptureConfig,
+}
+
+/// Diagnostic capture policy for one browser session.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct CaptureConfig {
+    /// Enable CDP `Network` domain and retain network history.
+    pub record_network: bool,
+    /// Enable browser/JS console diagnostics and inject the console interceptor.
+    pub record_console: bool,
+}
+
+impl CaptureConfig {
+    /// No diagnostics.  Used by stealth-clean sessions.
+    #[must_use]
+    pub const fn clean() -> Self {
+        Self {
+            record_network: false,
+            record_console: false,
+        }
+    }
+
+    /// Full diagnostics.  Used by explicit diagnostic sessions and legacy tests.
+    #[must_use]
+    pub const fn diagnostic() -> Self {
+        Self {
+            record_network: true,
+            record_console: true,
+        }
+    }
 }
 
 impl CaptureCollector {
@@ -164,6 +195,15 @@ impl CaptureCollector {
     /// `consent_script` to enable cookie consent banner auto-dismissal via
     /// `Page.addScriptToEvaluateOnNewDocument`.
     pub fn new(engine: Option<Arc<AdblockEngine>>, consent_script: Option<Arc<String>>) -> Self {
+        Self::with_config(engine, consent_script, CaptureConfig::diagnostic())
+    }
+
+    /// Create a collector with an explicit diagnostic policy.
+    pub fn with_config(
+        engine: Option<Arc<AdblockEngine>>,
+        consent_script: Option<Arc<String>>,
+        config: CaptureConfig,
+    ) -> Self {
         Self {
             network_items: std::sync::Mutex::new(Vec::new()),
             console_items: std::sync::Mutex::new(Vec::new()),
@@ -171,11 +211,12 @@ impl CaptureCollector {
             current_url: std::sync::Mutex::new(None),
             engine,
             consent_script,
+            config,
         }
     }
 
-    /// Start capture: subscribe to events, enable `Network` + `Log` domains,
-    /// inject console interceptor, and spawn a background event-processing task.
+    /// Start capture: subscribe to events, enable configured diagnostic domains,
+    /// inject configured scripts, and spawn a background event-processing task.
     ///
     /// **Never sends `Runtime.enable`** — stealth-safe (G4).
     /// Uses the same CDP connection as all other commands (G3).
@@ -186,18 +227,26 @@ impl CaptureCollector {
         // Subscribe BEFORE enabling domains to avoid missing early events.
         let mut events = cdp.subscribe();
 
-        // Enable Network domain for network event capture.
-        cdp.send_command("Network.enable", Value::Null, CAPTURE_TIMEOUT)
-            .await
-            .map_err(|e| CaptureError::Cdp(e.to_string()))?;
-        debug!("Network.enable sent for capture");
+        if collector.config.record_network {
+            // Enable Network domain for network event capture.
+            cdp.send_command("Network.enable", Value::Null, CAPTURE_TIMEOUT)
+                .await
+                .map_err(|e| CaptureError::Cdp(e.to_string()))?;
+            debug!("Network.enable sent for capture");
+        } else {
+            debug!("Network capture disabled for this session");
+        }
 
-        // Enable Log domain for browser-level log entries.
-        // Log.enable does NOT require Runtime.enable — it is an independent domain.
-        cdp.send_command("Log.enable", Value::Null, CAPTURE_TIMEOUT)
-            .await
-            .map_err(|e| CaptureError::Cdp(e.to_string()))?;
-        debug!("Log.enable sent for capture");
+        if collector.config.record_console {
+            // Enable Log domain for browser-level log entries.
+            // Log.enable does NOT require Runtime.enable — it is an independent domain.
+            cdp.send_command("Log.enable", Value::Null, CAPTURE_TIMEOUT)
+                .await
+                .map_err(|e| CaptureError::Cdp(e.to_string()))?;
+            debug!("Log.enable sent for capture");
+        } else {
+            debug!("Console capture disabled for this session");
+        }
 
         // Enable Fetch domain for ad blocking if engine is present.
         // Fetch.enable does NOT require Runtime.enable — it is an independent
@@ -215,27 +264,29 @@ impl CaptureCollector {
             info!("Fetch.enable sent for ad blocking");
         }
 
-        // Inject console interceptor via Page.addScriptToEvaluateOnNewDocument
-        // (survives navigations) + Runtime.evaluate (patches current page).
-        // Runtime.evaluate works WITHOUT Runtime.enable — verified in CP0.
-        let _ = cdp
-            .send_command(
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": CONSOLE_INTERCEPTOR_JS }),
-                CAPTURE_TIMEOUT,
-            )
-            .await;
-        let _ = cdp
-            .send_command(
-                "Runtime.evaluate",
-                json!({ "expression": CONSOLE_INTERCEPTOR_JS }),
-                CAPTURE_TIMEOUT,
-            )
-            .await;
-        debug!("console interceptor injected");
+        if collector.config.record_console {
+            // Inject console interceptor via Page.addScriptToEvaluateOnNewDocument
+            // (survives navigations) + Runtime.evaluate (patches current page).
+            // Runtime.evaluate works WITHOUT Runtime.enable — verified in CP0.
+            let _ = cdp
+                .send_command(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({ "source": CONSOLE_INTERCEPTOR_JS }),
+                    CAPTURE_TIMEOUT,
+                )
+                .await;
+            let _ = cdp
+                .send_command(
+                    "Runtime.evaluate",
+                    json!({ "expression": CONSOLE_INTERCEPTOR_JS }),
+                    CAPTURE_TIMEOUT,
+                )
+                .await;
+            debug!("console interceptor injected");
+        }
 
         // Inject consent auto-dismiss engine via Page.addScriptToEvaluateOnNewDocument
-        // in a named isolated world ("consent") for stealth — page JS cannot see
+        // in a named isolated world ("oxide_consent") — page JS cannot see
         // the engine code, only the DOM effects (button clicks, class additions).
         // The engine auto-detects CMP banners via CSS selectors and dismisses them
         // by clicking through the CMP's own UI (reject all consent categories).
@@ -245,14 +296,15 @@ impl CaptureCollector {
         // duplicate in the main world (different worldName).
         //
         // Runs at document_start (before any page JS), survives navigations.
-        // Stealth-safe: Fetch.enable (ad blocking) and Page domains are
-        // independent; this injection has zero interaction with them.
+        // Only diagnostic sessions receive this optional intervention; clean
+        // sessions pass `None` and skip this branch entirely.
         if let Some(script) = &collector.consent_script {
             let _ = cdp
                 .send_command(
                     "Page.addScriptToEvaluateOnNewDocument",
                     json!({
-                        "source": script.as_str()
+                        "source": script.as_str(),
+                        "worldName": "oxide_consent"
                     }),
                     CAPTURE_TIMEOUT,
                 )

@@ -3,7 +3,7 @@
 use super::client::{BrowserSidecar, IdempotencyKey};
 use super::error::BrowserSidecarError;
 use super::types::{
-    ActionRequest, ActionResponse, ActionResult, ActionStatus, BrowserDescriptor,
+    ActionRequest, ActionResponse, ActionResult, ActionStatus, BrowserDescriptor, BrowserMode,
     BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleDebugPayload,
     ConsoleDebugQuery, ConsoleDebugResponse, ConsoleItem, ConsoleLevel, ConsoleSummary,
     CreateSessionRequest, CreateSessionResponse, DOM_EXTRACT_DEFAULT_MAX_RESULTS,
@@ -48,6 +48,7 @@ struct FakeState {
     network_items: Vec<NetworkItem>,
     console_items: Vec<ConsoleItem>,
     crash_next_request: bool,
+    last_create_request: Option<CreateSessionRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +82,7 @@ impl FakeBrowserSidecar {
                 network_items: Vec::new(),
                 console_items: Vec::new(),
                 crash_next_request: false,
+                last_create_request: None,
             })),
         }
     }
@@ -197,6 +199,10 @@ impl FakeBrowserSidecar {
             .count()
     }
 
+    pub(crate) fn last_create_request(&self) -> Option<CreateSessionRequest> {
+        self.state().last_create_request.clone()
+    }
+
     fn state(&self) -> MutexGuard<'_, FakeState> {
         self.state.lock().expect("fake sidecar state lock")
     }
@@ -216,6 +222,7 @@ impl BrowserSidecar for FakeBrowserSidecar {
     ) -> Result<CreateSessionResponse, BrowserSidecarError> {
         self.maybe_crash()?;
         let mut state = self.state();
+        state.last_create_request = Some(request.clone());
         let session_id = format!("fake-br-{}", state.next_session);
         state.next_session += 1;
         let url = request
@@ -1181,6 +1188,7 @@ mod tests {
         CreateSessionRequest {
             task_id: "task-fake".to_string(),
             profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::DiagnosticDebug,
             viewport: Viewport::default(),
             timezone: Some("UTC".to_string()),
             locale: Some("en-US".to_string()),

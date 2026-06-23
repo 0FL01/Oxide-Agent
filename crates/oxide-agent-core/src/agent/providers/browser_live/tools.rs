@@ -5,12 +5,12 @@ use super::error::BrowserSidecarError;
 use super::metrics::BrowserMetricsCollector;
 use super::session::{BrowserFrame, BrowserSessionState};
 use super::types::{
-    BrowserAction, BrowserObservation, BrowserProfile, CloseReason, CloseSessionRequest,
-    ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest, DOM_EXTRACT_DEFAULT_MAX_RESULTS,
-    DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS, DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS, DebugLevel,
-    DomExtractField, DomExtractPayload, DomExtractRequest, DomSnapshotNode, NetworkDebugQuery,
-    NetworkFilter, ObserveQuery, ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport,
-    validate_action_fields,
+    BrowserAction, BrowserMode, BrowserObservation, BrowserProfile, CloseReason,
+    CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest,
+    DOM_EXTRACT_DEFAULT_MAX_RESULTS, DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS,
+    DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS, DebugLevel, DomExtractField, DomExtractPayload,
+    DomExtractRequest, DomSnapshotNode, NetworkDebugQuery, NetworkFilter, ObserveQuery,
+    ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport, validate_action_fields,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -316,14 +316,21 @@ impl BrowserLiveProvider {
         if let Some(start_url) = &args.start_url {
             tracing::Span::current().record("start_url", tracing::field::display(start_url));
         }
+        let diagnostic_debug = args.diagnostic_debug.unwrap_or(false);
+        let mode = if diagnostic_debug {
+            BrowserMode::DiagnosticDebug
+        } else {
+            BrowserMode::StealthClean
+        };
         let request = CreateSessionRequest {
             task_id: task_id.clone(),
             profile: BrowserProfile::Ephemeral,
+            mode,
             viewport,
             timezone: args.timezone,
             locale: args.locale,
-            record_console: true,
-            record_network: true,
+            record_console: diagnostic_debug,
+            record_network: diagnostic_debug,
             allow_downloads: false,
             allow_uploads: false,
             start_url: args.start_url,
@@ -355,6 +362,8 @@ impl BrowserLiveProvider {
         Ok(json!({
             "status": "started",
             "session_id": response.session_id,
+            "mode": browser_mode_name(mode),
+            "diagnostics_enabled": diagnostic_debug,
             "artifact_root": response.artifact_root,
             "viewport": response.viewport,
             "browser": response.browser,
@@ -1168,6 +1177,8 @@ struct StartArgs {
     timezone: Option<String>,
     #[serde(default)]
     locale: Option<String>,
+    #[serde(default)]
+    diagnostic_debug: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1318,6 +1329,13 @@ fn sidecar_runtime_error(error: BrowserSidecarError) -> ToolRuntimeError {
             ToolRuntimeError::InvalidArguments(error.to_string())
         }
         _ => ToolRuntimeError::Failure(error.agent_message()),
+    }
+}
+
+fn browser_mode_name(mode: BrowserMode) -> &'static str {
+    match mode {
+        BrowserMode::StealthClean => "stealth_clean",
+        BrowserMode::DiagnosticDebug => "diagnostic_debug",
     }
 }
 
@@ -1710,13 +1728,18 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
                     "task_id": {"type": "string"},
                     "start_url": {"type": "string"},
                     "timezone": {"type": "string"},
-                    "locale": {"type": "string"}
+                    "locale": {"type": "string"},
+                    "diagnostic_debug": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "explicitly start a non-stealth diagnostic session with network/console capture; leave false for anti-bot-sensitive sites"
+                    }
                 },
                 "additionalProperties": false
             }),
         ),
         TOOL_BROWSER_OBSERVE => (
-            "Return bounded model-facing browser state (url, title, loading state, network/console summaries, DOM stats and a small DOM sample) and attach the latest screenshot as a native image for vision models. Use browser_extract for targeted/full DOM or network data.",
+            "Return bounded model-facing browser state (url, title, loading state, optional network/console summaries, DOM stats and a small DOM sample) and attach the latest screenshot as a native image for vision models. Use browser_extract for targeted/full DOM or network data; network data exists only for diagnostic_debug sessions.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
@@ -1745,7 +1768,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_EXTRACT => (
-            "Extract targeted structured data from the current page: network response bodies or DOM element properties and attributes. Use this instead of relying on full browser_observe/browser_execute DOM dumps.",
+            "Extract targeted structured data from the current page: DOM element properties/attributes, or network response bodies when the session was started with diagnostic_debug=true. Use this instead of relying on full browser_observe/browser_execute DOM dumps.",
             json!({
                 "type": "object",
                 "required": ["session_id", "source"],
@@ -1782,7 +1805,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_DEBUG => (
-            "Fetch browser console/network debug summaries as compact artifact-backed diagnostics. Defaults to current action only; set all_history=true to inspect older/suppressed diagnostics.",
+            "Fetch browser console/network debug summaries as compact artifact-backed diagnostics. Data is populated only for sessions started with diagnostic_debug=true. Defaults to current action only; set all_history=true to inspect older/suppressed diagnostics.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
@@ -2401,6 +2424,63 @@ mod tests {
             close.structured_payload.as_ref().expect("payload")["status"],
             "closed"
         );
+    }
+
+    #[tokio::test]
+    async fn browser_start_defaults_to_stealth_clean_without_diagnostics() {
+        let fake = FakeBrowserSidecar::new();
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake.clone()),
+            BrowserArtifactSettings::default(),
+            None,
+            None,
+            0,
+            "test".to_string(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+
+        let start = execute(&executors, TOOL_BROWSER_START, r#"{"task_id":"task-1"}"#).await;
+
+        assert!(start.success);
+        let request = fake.last_create_request().expect("create request");
+        assert_eq!(request.mode, BrowserMode::StealthClean);
+        assert!(!request.record_console);
+        assert!(!request.record_network);
+        let payload = start.structured_payload.as_ref().expect("payload");
+        assert_eq!(payload["mode"], "stealth_clean");
+        assert_eq!(payload["diagnostics_enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn browser_start_diagnostic_debug_opts_in_to_diagnostics() {
+        let fake = FakeBrowserSidecar::new();
+        let provider = Arc::new(BrowserLiveProvider::new(
+            Arc::new(fake.clone()),
+            BrowserArtifactSettings::default(),
+            None,
+            None,
+            0,
+            "test".to_string(),
+            None,
+        ));
+        let executors = provider.tool_runtime_executors();
+
+        let start = execute(
+            &executors,
+            TOOL_BROWSER_START,
+            r#"{"task_id":"task-1","diagnostic_debug":true}"#,
+        )
+        .await;
+
+        assert!(start.success);
+        let request = fake.last_create_request().expect("create request");
+        assert_eq!(request.mode, BrowserMode::DiagnosticDebug);
+        assert!(request.record_console);
+        assert!(request.record_network);
+        let payload = start.structured_payload.as_ref().expect("payload");
+        assert_eq!(payload["mode"], "diagnostic_debug");
+        assert_eq!(payload["diagnostics_enabled"], true);
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! Run: cargo test -p oxide-browser-sidecar --test quiescence_verify -- --ignored --nocapture
 
 use oxide_browser_contracts::{
-    BrowserProfile, CreateSessionRequest, GotoRequest, Viewport, WaitUntil,
+    BrowserMode, BrowserProfile, CreateSessionRequest, GotoRequest, Viewport, WaitUntil,
 };
 use oxide_browser_sidecar::{AppState, create_app};
 use serde_json::Value;
@@ -83,6 +83,7 @@ async fn create_session(base: &str, http: &reqwest::Client) -> String {
     let create_req = CreateSessionRequest {
         task_id: "quiescence-test".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::DiagnosticDebug,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,

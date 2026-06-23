@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use oxide_browser_contracts::{
-    BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleItem,
+    BrowserMode, BrowserObservation, CloseSessionRequest, CloseSessionResponse, ConsoleItem,
     CreateSessionRequest, CreateSessionResponse, NetworkItem, ScreenshotArtifact, SidecarErrorBody,
     Viewport,
 };
@@ -24,7 +24,7 @@ use tracing::{info, warn};
 
 use crate::adblock::AdblockEngine;
 use crate::browser::ChromiumProcess;
-use crate::capture::CaptureCollector;
+use crate::capture::{CaptureCollector, CaptureConfig};
 use crate::cdp::CdpClient;
 
 /// Default navigation timeout (matches Python sidecar's 60s goto).
@@ -71,6 +71,8 @@ pub struct BrowserSession {
     /// so it survives `force_reload`. `None` when consent dismissal is
     /// disabled.
     consent_script: Option<Arc<String>>,
+    /// Effective diagnostic capture policy for this session.
+    capture_config: CaptureConfig,
 }
 
 impl BrowserSession {
@@ -90,13 +92,17 @@ impl BrowserSession {
             .context("launch Chromium")?;
 
         let page_id = chromium.page_target_id().to_string();
+        let capture_config = capture_config_for_request(req);
+        let effective_adblock = adblock_for_request(req, adblock);
+        let effective_consent_script = consent_script_for_request(req, consent_script);
 
         // Start capture collector before navigation so we catch the initial
         // page load's network events. Runs on the same CDP WebSocket (G3)
         // and never sends Runtime enable (G4).
-        let capture = Arc::new(CaptureCollector::new(
-            adblock.clone(),
-            consent_script.clone(),
+        let capture = Arc::new(CaptureCollector::with_config(
+            effective_adblock.clone(),
+            effective_consent_script.clone(),
+            capture_config,
         ));
         CaptureCollector::start(&cdp, capture.clone())
             .await
@@ -145,8 +151,9 @@ impl BrowserSession {
             last_observation: StdMutex::new(None),
             network_history: StdMutex::new(Vec::new()),
             console_history: StdMutex::new(Vec::new()),
-            adblock,
-            consent_script,
+            adblock: effective_adblock,
+            consent_script: effective_consent_script,
+            capture_config,
         })
     }
 
@@ -206,9 +213,10 @@ impl BrowserSession {
 
         // Start fresh capture collector (reuse the same adblock engine
         // and consent script).
-        let new_capture = Arc::new(CaptureCollector::new(
+        let new_capture = Arc::new(CaptureCollector::with_config(
             self.adblock.clone(),
             self.consent_script.clone(),
+            self.capture_config,
         ));
         CaptureCollector::start(&new_cdp, new_capture.clone())
             .await
@@ -359,6 +367,36 @@ impl BrowserSession {
     pub async fn shutdown(&self) -> Result<()> {
         let mut inner = self.inner.lock().await;
         inner.chromium.shutdown().await
+    }
+}
+
+fn capture_config_for_request(req: &CreateSessionRequest) -> CaptureConfig {
+    match req.mode {
+        BrowserMode::StealthClean => CaptureConfig::clean(),
+        BrowserMode::DiagnosticDebug => CaptureConfig {
+            record_network: req.record_network,
+            record_console: req.record_console,
+        },
+    }
+}
+
+fn adblock_for_request(
+    req: &CreateSessionRequest,
+    adblock: Option<Arc<AdblockEngine>>,
+) -> Option<Arc<AdblockEngine>> {
+    match req.mode {
+        BrowserMode::StealthClean => None,
+        BrowserMode::DiagnosticDebug => adblock,
+    }
+}
+
+fn consent_script_for_request(
+    req: &CreateSessionRequest,
+    consent_script: Option<Arc<String>>,
+) -> Option<Arc<String>> {
+    match req.mode {
+        BrowserMode::StealthClean => None,
+        BrowserMode::DiagnosticDebug => consent_script,
     }
 }
 
@@ -668,7 +706,9 @@ pub fn safe(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_browser_contracts::{BrowserProfile, CloseReason, CreateSessionRequest, Viewport};
+    use oxide_browser_contracts::{
+        BrowserMode, BrowserProfile, CloseReason, CreateSessionRequest, Viewport,
+    };
 
     #[tokio::test]
     async fn create_rejects_at_capacity_without_launching_chromium() {
@@ -676,6 +716,7 @@ mod tests {
         let req = CreateSessionRequest {
             task_id: "test-cap".to_string(),
             profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::StealthClean,
             viewport: Viewport::default(),
             timezone: None,
             locale: None,
@@ -707,6 +748,7 @@ mod tests {
         let req = CreateSessionRequest {
             task_id: "test-cap-ok".to_string(),
             profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::StealthClean,
             viewport: Viewport::default(),
             timezone: None,
             locale: None,
@@ -736,5 +778,51 @@ mod tests {
                 "should not reject at capacity when under cap"
             );
         }
+    }
+
+    #[test]
+    fn stealth_clean_ignores_requested_diagnostics_and_interventions() {
+        let req = CreateSessionRequest {
+            task_id: "test-clean".to_string(),
+            profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::StealthClean,
+            viewport: Viewport::default(),
+            timezone: None,
+            locale: None,
+            record_console: true,
+            record_network: true,
+            allow_downloads: false,
+            allow_uploads: false,
+            start_url: None,
+        };
+
+        assert_eq!(capture_config_for_request(&req), CaptureConfig::clean());
+        assert!(consent_script_for_request(&req, Some(Arc::new("script".to_string()))).is_none());
+    }
+
+    #[test]
+    fn diagnostic_debug_respects_requested_capture_flags() {
+        let req = CreateSessionRequest {
+            task_id: "test-debug".to_string(),
+            profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::DiagnosticDebug,
+            viewport: Viewport::default(),
+            timezone: None,
+            locale: None,
+            record_console: true,
+            record_network: false,
+            allow_downloads: false,
+            allow_uploads: false,
+            start_url: None,
+        };
+
+        assert_eq!(
+            capture_config_for_request(&req),
+            CaptureConfig {
+                record_console: true,
+                record_network: false,
+            }
+        );
+        assert!(consent_script_for_request(&req, Some(Arc::new("script".to_string()))).is_some());
     }
 }

@@ -8,7 +8,7 @@
 //! ```
 
 use oxide_browser_contracts::{
-    BrowserProfile, CloseReason, CloseSessionRequest, CreateSessionRequest, Viewport,
+    BrowserMode, BrowserProfile, CloseReason, CloseSessionRequest, CreateSessionRequest, Viewport,
 };
 use oxide_browser_sidecar::{AppState, create_app, session::SessionManager};
 use std::sync::Arc;
@@ -53,6 +53,7 @@ async fn session_lifecycle() {
     let create_req = CreateSessionRequest {
         task_id: "integration-test".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::StealthClean,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,

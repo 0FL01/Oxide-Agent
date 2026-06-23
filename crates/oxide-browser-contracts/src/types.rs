@@ -49,6 +49,24 @@ pub enum BrowserProfile {
     Ephemeral,
 }
 
+/// Browser instrumentation mode.
+///
+/// This is the root contract between the agent and the sidecar: the caller
+/// declares the browser persona intent, and the sidecar decides which CDP
+/// domains / page-visible scripts are allowed for that intent.  The caller must
+/// not infer downstream stealth details by toggling individual diagnostics.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserMode {
+    /// Clean browsing persona for external sites.  The sidecar must not install
+    /// diagnostic page-visible scripts or optional page interventions.
+    #[default]
+    StealthClean,
+    /// Explicit diagnostic session.  Network/console capture and optional
+    /// page interventions may be enabled and are not stealth-guaranteed.
+    DiagnosticDebug,
+}
+
 /// Request for `POST /sessions`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateSessionRequest {
@@ -56,6 +74,9 @@ pub struct CreateSessionRequest {
     pub task_id: String,
     /// Browser profile policy.
     pub profile: BrowserProfile,
+    /// Browser instrumentation/stealth intent.
+    #[serde(default)]
+    pub mode: BrowserMode,
     /// Fixed viewport used for screenshots and coordinate validation.
     pub viewport: Viewport,
     /// Session timezone.
@@ -1021,6 +1042,7 @@ mod tests {
         let request = CreateSessionRequest {
             task_id: "task-1".to_string(),
             profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::DiagnosticDebug,
             viewport: Viewport::default(),
             timezone: Some("UTC".to_string()),
             locale: Some("en-US".to_string()),
@@ -1033,8 +1055,21 @@ mod tests {
 
         let value = serde_json::to_value(request).expect("serialize");
         assert_eq!(value["profile"], "ephemeral");
+        assert_eq!(value["mode"], "diagnostic_debug");
         assert_eq!(value["viewport"]["width"], 1365);
         assert_eq!(value["start_url"], "https://example.com");
+    }
+
+    #[test]
+    fn create_session_defaults_to_stealth_clean_mode() {
+        let request: CreateSessionRequest = serde_json::from_value(json!({
+            "task_id": "task-1",
+            "profile": "ephemeral",
+            "viewport": {"width": 1365, "height": 768, "device_scale_factor": 1.0}
+        }))
+        .expect("deserialize request without mode");
+
+        assert_eq!(request.mode, BrowserMode::StealthClean);
     }
 
     #[test]

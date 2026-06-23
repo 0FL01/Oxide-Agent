@@ -2,7 +2,7 @@
 //!
 //! Stripped Consent-O-Matic engine (2,130 lines, zero chrome.* deps) injected
 //! via CDP `Page.addScriptToEvaluateOnNewDocument` in a named isolated world
-//! (`"consent"`). The engine detects CMP banners via CSS selectors and
+//! (`"oxide_consent"`). The engine detects CMP banners via CSS selectors and
 //! dismisses them by clicking through the CMP's own UI (reject all consent
 //! categories). Rules are loaded from `CONSENT_FILTERS` file path.
 //!
@@ -86,7 +86,7 @@ impl ConsentConfig {
     /// The full injection script (engine classes + bootstrap + rules).
     ///
     /// Inject via `Page.addScriptToEvaluateOnNewDocument` with
-    /// `worldName: "consent"` for stealth-safe isolated world execution.
+    /// `worldName: "oxide_consent"` for isolated world execution.
     pub fn injection_script(&self) -> &str {
         &self.injection_script
     }

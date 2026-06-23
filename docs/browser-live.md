@@ -36,6 +36,15 @@ The sidecar is a direct CDP client (no Playwright/Selenium shim), which is the
 strongest starting position per 2026 bot-detection benchmarks. The following
 hardening measures are built in:
 
+### Clean vs diagnostic sessions
+
+`browser_start` defaults to a `stealth_clean` browser mode. In this mode the
+sidecar does not enable diagnostic network/console capture, does not inject the
+console interceptor, and does not run optional page interventions such as
+ad-blocking or consent-banner auto-dismissal. Those tools are available only in
+explicit diagnostic sessions (`diagnostic_debug: true`) and diagnostic sessions
+are not stealth-guaranteed.
+
 ### Command-line flags
 
 - `--disable-blink-features=AutomationControlled` is set so `navigator.webdriver`
@@ -69,6 +78,9 @@ scrolling, SPA hash navigation, stealth patches, console interceptor) stays
 in the main world where it must be visible to the page.
 
 ### Console interceptor hardening
+
+The console interceptor exists only in explicit diagnostic sessions. Clean
+sessions never install it.
 
 The console interceptor overrides `console.log/warn/error/debug/info` to
 capture entries. A `WeakMap`-backed `Function.prototype.toString` override

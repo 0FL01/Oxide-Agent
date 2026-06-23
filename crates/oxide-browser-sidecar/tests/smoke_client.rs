@@ -8,7 +8,7 @@
 //! Also measures per-step latency for Q1 (compared to CP0 baseline).
 
 use oxide_browser_contracts::{
-    ActionRequest, BrowserAction, BrowserProfile, CloseReason, CloseSessionRequest,
+    ActionRequest, BrowserAction, BrowserMode, BrowserProfile, CloseReason, CloseSessionRequest,
     CreateSessionRequest, GotoRequest, ObserveQuery, ScreenshotQuery, Viewport, WaitUntil,
 };
 use oxide_browser_sidecar::{AppState, create_app};
@@ -101,6 +101,7 @@ async fn smoke_test_browser_sidecar_client_contract() {
     let req = CreateSessionRequest {
         task_id: "smoke-task".to_string(),
         profile: BrowserProfile::Ephemeral,
+        mode: BrowserMode::StealthClean,
         viewport: Viewport::default(),
         timezone: None,
         locale: None,

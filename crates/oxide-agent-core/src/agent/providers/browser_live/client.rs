@@ -691,7 +691,7 @@ fn truncate_for_error(body: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::providers::browser_live::types::{BrowserProfile, Viewport};
+    use crate::agent::providers::browser_live::types::{BrowserMode, BrowserProfile, Viewport};
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -834,6 +834,7 @@ mod tests {
         CreateSessionRequest {
             task_id: "task-1".to_string(),
             profile: BrowserProfile::Ephemeral,
+            mode: BrowserMode::DiagnosticDebug,
             viewport: Viewport::default(),
             timezone: Some("UTC".to_string()),
             locale: Some("en-US".to_string()),
