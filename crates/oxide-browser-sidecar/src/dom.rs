@@ -468,6 +468,9 @@ fn dom_extract_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_browser_contracts::{
+        DOM_SNAPSHOT_INTERACTIVE_SELECTORS, DOM_SNAPSHOT_SIDE_MAX_NODES,
+    };
 
     #[test]
     fn dom_snapshot_script_contains_key_selectors() {
@@ -475,11 +478,16 @@ mod tests {
         assert!(DOM_SNAPSHOT_SCRIPT.contains("[role=\"button\"]"));
         assert!(DOM_SNAPSHOT_SCRIPT.contains("[role=\"link\"]"));
         assert!(DOM_SNAPSHOT_SCRIPT.contains("[data-clipboard-text]"));
-    }
-
-    #[test]
-    fn dom_snapshot_script_has_max_150() {
-        assert!(DOM_SNAPSHOT_SCRIPT.contains("const MAX = 150"));
+        // The contract constant and the JS script must agree.
+        for selector in DOM_SNAPSHOT_INTERACTIVE_SELECTORS {
+            assert!(
+                DOM_SNAPSHOT_SCRIPT.contains(selector),
+                "DOM_SNAPSHOT_SCRIPT missing contract selector {selector:?}"
+            );
+        }
+        assert!(
+            DOM_SNAPSHOT_SCRIPT.contains(&format!("const MAX = {}", DOM_SNAPSHOT_SIDE_MAX_NODES))
+        );
     }
 
     #[test]

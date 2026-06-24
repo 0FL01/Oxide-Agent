@@ -331,6 +331,25 @@ pub struct BrowserObservation {
     pub console_summary: Option<ConsoleSummary>,
 }
 
+/// CSS selectors captured by the DOM snapshot — interactive elements only.
+///
+/// This is the authoritative contract: the sidecar's `DOM_SNAPSHOT_SCRIPT`
+/// must match this list. The core surfaces it in `dom_snapshot_summary` so
+/// the agent knows *what* is in the snapshot, not just *how many*.
+pub const DOM_SNAPSHOT_INTERACTIVE_SELECTORS: &[&str] = &[
+    "a",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[role=\"button\"]",
+    "[role=\"link\"]",
+    "[data-clipboard-text]",
+];
+
+/// Maximum number of interactive elements the sidecar collects per snapshot.
+pub const DOM_SNAPSHOT_SIDE_MAX_NODES: usize = 150;
+
 /// Default number of DOM root matches returned by extract endpoint.
 pub const DOM_EXTRACT_DEFAULT_MAX_RESULTS: u32 = 10;
 /// Hard maximum number of DOM root matches returned by extract endpoint.

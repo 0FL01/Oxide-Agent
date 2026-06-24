@@ -8,9 +8,10 @@ use super::types::{
     BrowserAction, BrowserMode, BrowserObservation, BrowserProfile, CloseReason,
     CloseSessionRequest, ConsoleDebugQuery, ConsoleLevel, CreateSessionRequest,
     DOM_EXTRACT_DEFAULT_MAX_RESULTS, DOM_EXTRACT_DEFAULT_MAX_TOTAL_CHARS,
-    DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS, DebugLevel, DomExtractField, DomExtractPayload,
-    DomExtractRequest, DomSnapshotNode, NetworkDebugQuery, NetworkFilter, ObserveQuery,
-    ScreenshotArtifact, ScreenshotFormat, ScreenshotQuery, Viewport, validate_action_fields,
+    DOM_EXTRACT_DEFAULT_MAX_VALUE_CHARS, DOM_SNAPSHOT_INTERACTIVE_SELECTORS,
+    DOM_SNAPSHOT_SIDE_MAX_NODES, DebugLevel, DomExtractField, DomExtractPayload, DomExtractRequest,
+    DomSnapshotNode, NetworkDebugQuery, NetworkFilter, ObserveQuery, ScreenshotArtifact,
+    ScreenshotFormat, ScreenshotQuery, Viewport, validate_action_fields,
 };
 use super::verification::{
     BrowserActionVerification, BrowserVerificationStatus, timeout_report, verify_by_result,
@@ -1422,6 +1423,10 @@ fn model_dom_snapshot_summary(nodes: &[DomSnapshotNode]) -> Value {
         "returned_nodes": nodes.len().min(MODEL_DOM_NODE_LIMIT),
         "truncated": nodes.len() > MODEL_DOM_NODE_LIMIT,
         "node_limit": MODEL_DOM_NODE_LIMIT,
+        "snapshot_scope": "interactive_elements_only",
+        "included_selectors": DOM_SNAPSHOT_INTERACTIVE_SELECTORS,
+        "side_max_nodes": DOM_SNAPSHOT_SIDE_MAX_NODES,
+        "note": "DOM snapshot contains ONLY interactive elements (links, buttons, inputs, selects). Page content (article text, listing titles, prices, images) lives in non-interactive div/span/p and is NOT captured here. This does NOT mean the page failed to load. Use browser_extract with a CSS selector to read specific page content.",
         "full_data_access": "Use browser_extract with a targeted selector or network filter; full DOM is kept in browser session state, not hot memory."
     })
 }
@@ -1739,7 +1744,7 @@ fn browser_tool_definition(name: &str) -> crate::llm::ToolDefinition {
             }),
         ),
         TOOL_BROWSER_OBSERVE => (
-            "Return bounded model-facing browser state (url, title, loading state, optional network/console summaries, DOM stats and a small DOM sample) and attach the latest screenshot as a native image for vision models. Use browser_extract for targeted/full DOM or network data; network data exists only for diagnostic_debug sessions.",
+            "Return bounded model-facing browser state (url, title, loading state, optional network/console summaries, DOM stats and a small DOM sample) and attach the latest screenshot as a native image for vision models. The DOM sample contains ONLY interactive elements (a, button, input, select, [role=button/link]) — not page content text. Use browser_extract with a CSS selector for targeted/full DOM or page content; network data exists only for diagnostic_debug sessions.",
             json!({
                 "type": "object",
                 "required": ["session_id"],
@@ -2626,6 +2631,23 @@ mod tests {
         assert_eq!(summary["total_nodes"], json!(MODEL_DOM_NODE_LIMIT + 5));
         assert_eq!(summary["returned_nodes"], json!(MODEL_DOM_NODE_LIMIT));
         assert_eq!(summary["truncated"], json!(true));
+        assert_eq!(
+            summary["snapshot_scope"],
+            json!("interactive_elements_only")
+        );
+        assert!(summary["included_selectors"].is_array());
+        assert!(
+            !summary["included_selectors"]
+                .as_array()
+                .expect("selectors")
+                .is_empty()
+        );
+        assert!(
+            summary["note"]
+                .as_str()
+                .expect("note")
+                .contains("interactive")
+        );
         assert!(projected[0]["text"].as_str().expect("text").ends_with('…'));
         assert_eq!(
             projected[0]["attributes"]
