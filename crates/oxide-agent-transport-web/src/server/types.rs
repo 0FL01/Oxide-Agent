@@ -15,6 +15,8 @@ use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::{config::AgentSettings, llm::LlmClient};
 #[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::storage::SqlxLifeStorage;
+#[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
     CurrentUser, ListAgentProfilesResponse, ListSessionsResponse, UserSettingsResponse,
@@ -217,6 +219,8 @@ pub struct AppState {
     /// Durable storage handle for browser artifact BYTEA storage.
     /// `Some` when `WebStoreKind::Sqlx`, `None` for in-memory/custom stores.
     pub storage: Option<Arc<dyn StorageProvider>>,
+    #[cfg(feature = "storage-sqlx")]
+    pub life_storage: Option<Arc<SqlxLifeStorage>>,
 }
 
 impl AppState {
@@ -274,6 +278,8 @@ impl AppState {
             auto_title_enabled: true,
             large_input_attachments_supported: sandbox_backend_available(),
             storage: None,
+            #[cfg(feature = "storage-sqlx")]
+            life_storage: None,
         }
     }
 
@@ -284,12 +290,14 @@ impl AppState {
     ) -> Self {
         let storage_provider: Arc<dyn StorageProvider> =
             Arc::clone(&sqlx_storage) as Arc<dyn StorageProvider>;
+        let life_storage = Arc::new(SqlxLifeStorage::new(sqlx_storage.pool().clone()));
         let mut state = Self::new_with_web_store_kind(
             session_manager,
             Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
             WebStoreKind::Sqlx,
         );
         state.storage = Some(storage_provider);
+        state.life_storage = Some(life_storage);
         state
     }
 
@@ -350,6 +358,12 @@ impl AppState {
     #[must_use]
     pub fn storage(&self) -> Option<Arc<dyn StorageProvider>> {
         self.storage.clone()
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    #[must_use]
+    pub fn life_storage(&self) -> Option<Arc<SqlxLifeStorage>> {
+        self.life_storage.clone()
     }
 
     #[must_use]

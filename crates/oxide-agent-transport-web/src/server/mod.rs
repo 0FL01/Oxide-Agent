@@ -23,6 +23,7 @@ mod auth_helpers;
 mod auth_routes;
 mod auto_title;
 mod converters;
+mod life_routes;
 mod model_routes;
 mod router;
 mod search_probe;
@@ -44,6 +45,7 @@ pub(crate) use auth_routes::{
     api_bootstrap, api_change_password, api_login, api_logout, api_me, api_register,
 };
 use converters::*;
+pub(crate) use life_routes::{api_get_life_state, api_submit_life_input};
 pub(crate) use model_routes::{
     api_list_model_routes, api_refresh_model_routes, canonical_model_selection,
     default_session_model_selection,

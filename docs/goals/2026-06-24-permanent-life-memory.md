@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-24-permanent-life-memory.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed phase, compress before starting the next phase, and stop only on verified completion or an exact blocker with required external action.
 Source spec: `docs/prd/PRD-perm.md`
 Goal doc owner: Codex
-Last updated: 2026-06-24 08:00
+Last updated: 2026-06-24 09:00
 
 ## Objective
 
@@ -196,15 +196,15 @@ Out of scope:
   - Source: PRD §14-15, §19.
   - Acceptance: Web `/life` and Telegram private-DM `/life` can submit to `LifeGateway`; ordinary web session and Telegram topic paths remain unchanged; linking flow is explicit; group/forum ambient life memory is not enabled.
   - Evidence required: route/handler tests or compile checks, grep/call-site audit of ordinary paths, manual/API tests where implemented.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 9 added backend-only Web life endpoints `GET /api/v1/life/state` and `POST /api/v1/life/inputs` in `crates/oxide-agent-transport-web/src/server/life_routes.rs`, registered in `router.rs`, with shared DTOs in `oxide-agent-web-contracts/src/life.rs`. Both routes call `authenticated_user_with_csrf`; when SQLx/Postgres life storage is unavailable they return `503 BackendUnavailable` instead of falling back to process memory. The submit route constructs a `LifeInputSubmission` containing only provider, provider subject, content, attachments, and metadata, then calls `LifeGateway`; it does not accept caller-selected generation/run/context ids. Phase 9 also added an authorized Telegram branch that matches only explicit `/life` or `/life@bot` text, rejects non-private chats with `Life mode only accepts explicit /life messages in private chat.`, rejects empty payloads with `Usage: /life <message>`, and submits private-DM payloads through `LifeGateway` with provider subject and transport metadata. Tests/commands: `cargo check -p oxide-agent-web-contracts` passed; `cargo test -p oxide-agent-web-contracts` passed; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` passed; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life -- --nocapture` passed; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local` passed; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local life_command -- --nocapture` passed. Grep/diff audit shows ordinary web session routes remain registered separately under `/api/v1/sessions*`, and Telegram non-`/life` text still falls through to the existing command/start/AgentMode branches.
 
 - G14: User-visible inspector/API can view and manage memory state.
   - Source: PRD §14.2-14.3, §20 criteria 14.
   - Acceptance: API contracts exist for state, turns, events, profile, operating profile, task states, friction patterns, support protocols, memory search/conflicts/forget, generations rebuild/activate/wipe; UI implementation may be phased but contracts and backend paths must preserve source-of-truth semantics.
   - Evidence required: API contract tests, route tests, and wasm check if UI touched.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 9 added the first backend state/submit contracts: `ApiLifeStateResponse { principal_user_id, active_memory_generation_id }`, `ApiLifeSubmitRequest`, and `ApiLifeSubmitResponse`, plus authenticated Web routes for state and input submission. Full G14 remains pending for turns/events/profile/operating-profile/task/friction/protocol/memory-search/conflict/forget/generation-rebuild/activate/wipe API contracts and route tests.
 
 ### Quality/security/non-functional requirements (Q*)
 
@@ -248,7 +248,7 @@ Out of scope:
   - Acceptance: curator uses existing `llm/client.rs`; storage remains SQLx/Postgres; new crate is justified by PRD bounded context; no extra queues/services beyond Engram derived engine already in PRD.
   - Evidence required: dependency/Cargo diff review, grep for new clients/providers, Cargo metadata/check.
   - Status: pending
-  - Evidence collected: Phase 2 introduced no provider/client implementations and no new external service. `oxide-agent-life` initially depended only on already-used workspace ecosystem crates (`serde`, `serde_json`, `thiserror`, `uuid`). Phase 3 added only already-used direct Postgres crates (`async-trait`, `sqlx-core`, `sqlx-postgres`, `tokio` dev-dependency) to implement the approved SQLx/Postgres source-of-truth storage; no new storage backend or provider/client was added. Phase 4 reused those dependencies and added no new crates/services/providers; gateway allocator/store/clock are narrow in-process traits needed to keep transport identity and time allocation out of callers. Phase 7 adds no dependencies and no new LLM provider/client; `PostRunMemoryCurator` is a narrow trait plus `StaticMemoryCurator` test adapter, leaving future live implementation to existing `llm/client.rs`. Phase 8 adds no dependencies and no HTTP client/provider; Engram remains a trait plus in-memory test backend/outbox projector. `cargo tree -p oxide-agent-life -i sqlx-sqlite` reported no matching package. `cargo run -p xtask -- module-registry check` passed in Phase 2; no `module_registry.toml` diff in Phases 3-8. Full Q6 remains pending because later live Engram/transport/API work must continue preserving the constraint.
+  - Evidence collected: Phase 2 introduced no provider/client implementations and no new external service. `oxide-agent-life` initially depended only on already-used workspace ecosystem crates (`serde`, `serde_json`, `thiserror`, `uuid`). Phase 3 added only already-used direct Postgres crates (`async-trait`, `sqlx-core`, `sqlx-postgres`, `tokio` dev-dependency) to implement the approved SQLx/Postgres source-of-truth storage; no new storage backend or provider/client was added. Phase 4 reused those dependencies and added no new crates/services/providers; gateway allocator/store/clock are narrow in-process traits needed to keep transport identity and time allocation out of callers. Phase 7 adds no dependencies and no new LLM provider/client; `PostRunMemoryCurator` is a narrow trait plus `StaticMemoryCurator` test adapter, leaving future live implementation to existing `llm/client.rs`. Phase 8 adds no dependencies and no HTTP client/provider; Engram remains a trait plus in-memory test backend/outbox projector. Phase 9 adds only optional local `oxide-agent-life` dependencies to Web/Telegram transports under existing `storage-sqlx` feature gates and no new external crates/services/providers. `cargo tree -p oxide-agent-life -i sqlx-sqlite` reported no matching package. `cargo run -p xtask -- module-registry check` passed in Phase 2 and Phase 9; no `module_registry.toml` diff in Phases 3-9. Full Q6 remains pending because later live Engram/API work must continue preserving the constraint.
 
 ### Validation requirements (V*)
 
@@ -256,7 +256,7 @@ Out of scope:
   - Source: `AGENTS.md` format/lint.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` or documented scoped alternative with exact blocker.
   - Status: verified
-  - Evidence collected: Phase 1 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 2 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 3 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 4 ran `git diff --check` (passed), `cargo fmt --all -- --check` (passed), and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 5 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 6 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 7 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 8 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed).
+  - Evidence collected: Phase 1 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 2 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 3 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 4 ran `git diff --check` (passed), `cargo fmt --all -- --check` (passed), and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 5 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 6 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 7 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 8 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 9 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed).
 
 - V2: Workspace compile/test gates pass or failures are classified with evidence.
   - Source: `AGENTS.md` build/testing.
@@ -272,6 +272,8 @@ Out of scope:
 
   - Phase 8 addendum: `cargo check -p oxide-agent-life` passed, `cargo test -p oxide-agent-life` passed (25 tests), focused `cargo test -p oxide-agent-life engram -- --nocapture` passed (3 tests), real-Postgres focused `sqlx_life_storage_migrates_and_scopes_memory_by_active_generation` passed against temporary `postgres:18-alpine` on port `55438` and now covers outbox claim/retry/flush plus active memory-by-id dereference, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with existing core warnings. Workspace `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran broadly but failed only on known pre-existing core proptest whitespace-only `thought` in `crates/oxide-agent-core/tests/proptest_remediation.rs::proptest_valid_structured_output_parses`; tracked diff touches only `oxide-agent-life`, generated `.proptest-regressions` artifact was removed.
 
+  - Phase 9 addendum: `cargo check -p oxide-agent-web-contracts` passed; `cargo test -p oxide-agent-web-contracts` passed; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` passed; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life -- --nocapture` passed; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local` passed; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local life_command -- --nocapture` passed; `cargo test -p oxide-agent-life` passed; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with existing core warnings. Workspace `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran broadly but failed only on the known pre-existing core proptest whitespace-only `thought` in `crates/oxide-agent-core/tests/proptest_remediation.rs::proptest_valid_structured_output_parses`; tracked diff has no changes under `crates/oxide-agent-core/tests/proptest_remediation.rs`, and generated `.proptest-regressions` artifact was removed.
+
 - V3: Module registry/profile checks pass if profile/module wiring changes.
   - Source: `AGENTS.md` module registry.
   - Evidence required: `cargo run -p xtask -- module-registry check` after any module registry/profile change, or note that no module registry change occurred.
@@ -281,8 +283,8 @@ Out of scope:
 - V4: Web UI wasm check passes if `oxide-agent-web-ui` is touched.
   - Source: `AGENTS.md` format/lint.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` when UI changes; otherwise not applicable evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Not applicable through Phase 9: `git diff --name-only` and `git status --short` show no files under `crates/oxide-agent-web-ui/`. Phase 9 changed backend Web transport, Telegram transport, shared web contracts, `Cargo.lock`, and this goal doc only; therefore the wasm-specific gate was not required.
 
 - V5: Engram live contract verification is recorded before live HTTP adapter is enabled.
   - Source: PRD §17.1 and П0.5.
@@ -296,8 +298,8 @@ Out of scope:
   - Source: PRD §4.3, §19.
   - Must preserve: existing `web-session-*` and Telegram context-key behavior remains available and semantically unchanged.
   - Evidence required: grep/call-site audit and existing transport tests/checks.
-  - Status: pending
-  - Evidence collected: Phase 4 changed only `oxide-agent-life`, `migrations/0010_life_mode.sql`, and this goal doc; `git diff --name-only -- crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-transport-telegram crates/oxide-agent-core/module_registry.toml` returned no changes. Gateway tests use fake submissions and do not alter Web/Telegram session/topic paths. Full N1 remains pending until later transport integration phases also preserve ordinary modes.
+  - Status: verified
+  - Evidence collected: Phase 4 changed only `oxide-agent-life`, `migrations/0010_life_mode.sql`, and this goal doc; `git diff --name-only -- crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-transport-telegram crates/oxide-agent-core/module_registry.toml` returned no changes. Gateway tests use fake submissions and do not alter Web/Telegram session/topic paths. Phase 9 adds life-specific Web routes under `/api/v1/life/*` while preserving existing `/api/v1/sessions*` route registrations; no `oxide-agent-web-ui` session code was touched. Telegram integration adds a branch before ordinary command/text handlers but its filter is only `life_command_payload(msg.text()).is_some()`, and `life_command_payload_requires_explicit_life_command` proves ordinary text and `/start` do not match. The handler rejects group/forum `/life` messages instead of treating ambient topic content as life memory. Existing focused transport checks and full workspace check/test passed.
 
 - N2: Engram is not source of truth and does not write back into Postgres.
   - Source: PRD §13.5-13.6.
@@ -310,8 +312,8 @@ Out of scope:
   - Source: PRD §2.9, §5 Mine 8.
   - Must preserve: no reminder destination-contract rewrite unless separately approved.
   - Evidence required: diff review showing reminder schema/contract untouched or separately approved.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 9 diff touches `Cargo.lock`, `oxide-agent-web-contracts`, `oxide-agent-transport-web`, `oxide-agent-transport-telegram/src/runner.rs`, and this goal doc only. Grep/diff review shows no changes to reminder provider/storage/scheduler contracts and no cross-transport reminder destination rewrite.
 
 ## Implementation Plan
 
@@ -426,6 +428,7 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
 - 2026-06-24: `LifeGateway` creates DB-queued input records but leaves `run_id` as `None` until Phase 6 worker/runtime owns run claiming and lifecycle; process memory does not become canonical run state.
 - 2026-06-24: Phase 5 keeps `oxide-agent-life` independent from `oxide-agent-core` prompt DTOs; life context assembly emits life-local typed blocks/semantics, and a later worker/runtime adapter can map them into core `PromptContextBlock`s without making the bounded context depend on the execution crate.
 - 2026-06-24: Phase 6 keeps `oxide-agent-life` independent from `oxide-agent-core::AgentMemoryScope`; life exposes `StableLifeMemoryScope { user_id, context_key: "life", flow_id: "main" }` and persists checkpoints to `agent_memory_snapshots`, while a later runtime adapter can convert to core types.
+- 2026-06-24: Phase 9 deliberately exposes backend-only life endpoints and a private-DM Telegram command without touching Web UI; broad inspector/manage APIs remain G14/Phase 10 work, and explicit link-token flow remains G4 work.
 
 ## Progress Log
 
@@ -498,6 +501,13 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Commands: `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (25 passed), `cargo test -p oxide-agent-life engram -- --nocapture` (3 passed), `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@127.0.0.1:55438/oxide_agent_test cargo test -p oxide-agent-life sqlx_life_storage_migrates_and_scopes_memory_by_active_generation -- --nocapture` (1 passed against temporary Postgres), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (failed only on known pre-existing core proptest whitespace-only `thought`; artifact removed), `git diff --check` (passed).
   - Audit IDs updated: G9, G12, N2 verified; Q6 and V5 evidence extended but remain pending for later live adapter/legal verification; V1/V2 evidence extended.
   - Next: commit Phase 8, compress, then start Phase 9 backend Web/Telegram integration points.
+
+- 2026-06-24 09:00: Phase 9 completed — backend Web/Telegram integration points.
+  - Changed: added shared Web life DTOs; added authenticated Web `GET /api/v1/life/state` and `POST /api/v1/life/inputs` routes backed by `SqlxLifeStorage` and `LifeGateway`; wired optional `oxide-agent-life` dependencies into Web/Telegram `storage-sqlx` features; added Telegram authorized private-DM `/life` submission handler and explicit-command parser test.
+  - Evidence: Web routes require authenticated user with CSRF before state/submit, return service-unavailable without SQLx/Postgres life storage, and submit through the narrow `LifeInputSubmission` gateway contract. Telegram route matches only `/life`/`/life@bot`, rejects group/forum chats, rejects empty payloads, and preserves existing non-life text/command routing. No Web UI files or reminder contracts were touched. `git grep`/diff reviewed `/api/v1/life`, `/api/v1/sessions`, `/life`, `life_storage`, and reminder paths.
+  - Commands: `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-web-contracts` (passed), `cargo test -p oxide-agent-web-contracts` (passed), `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` (passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life -- --nocapture` (passed), `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local` (passed), `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local life_command -- --nocapture` (passed), `cargo test -p oxide-agent-life` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing warnings), `cargo run -p xtask -- module-registry check` (passed), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (failed only on known pre-existing core proptest whitespace-only `thought`; generated artifact removed), `git diff --check` (passed).
+  - Audit IDs updated: G13, N1, N3, V4 verified; G14/Q6/V1/V2 evidence extended; G4 remains pending for explicit link-token flow.
+  - Next: commit Phase 9, compress, then start Phase 10 rebuild/wipe tooling and final hardening.
 
 ## Risks and Blockers
 

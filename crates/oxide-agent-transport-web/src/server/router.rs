@@ -15,11 +15,12 @@ use super::{
     AppState, api_bootstrap, api_cancel_task, api_change_password, api_create_agent_profile,
     api_create_session_with_request, api_create_task, api_create_task_version,
     api_delete_agent_profile, api_delete_session, api_download_artifact, api_download_task_file,
-    api_get_session, api_get_settings, api_get_task, api_get_task_events, api_get_task_progress,
-    api_list_agent_profiles, api_list_model_routes, api_list_sessions, api_list_tasks, api_login,
-    api_logout, api_me, api_public_config, api_refresh_model_routes, api_register, api_resume_task,
-    api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_large_input, api_upload_task_attachments, auto_title, health, sse, static_assets,
+    api_get_life_state, api_get_session, api_get_settings, api_get_task, api_get_task_events,
+    api_get_task_progress, api_list_agent_profiles, api_list_model_routes, api_list_sessions,
+    api_list_tasks, api_login, api_logout, api_me, api_public_config, api_refresh_model_routes,
+    api_register, api_resume_task, api_submit_life_input, api_update_agent_profile,
+    api_update_session, api_update_session_profile, api_update_settings, api_upload_large_input,
+    api_upload_task_attachments, auto_title, health, sse, static_assets,
 };
 
 pub fn build_router(state: AppState) -> Router {
@@ -39,6 +40,8 @@ pub fn build_router(state: AppState) -> Router {
             get(api_get_settings).patch(api_update_settings),
         )
         .route("/api/v1/model-routes", get(api_list_model_routes))
+        .route("/api/v1/life/state", get(api_get_life_state))
+        .route("/api/v1/life/inputs", post(api_submit_life_input))
         .route(
             "/api/v1/model-routes/refresh",
             post(api_refresh_model_routes),
