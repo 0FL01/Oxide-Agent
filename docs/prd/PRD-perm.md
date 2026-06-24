@@ -24,12 +24,14 @@
 - **`permanent life mode` делается отдельно**
 - **источник истины** для life mode = `Postgres`, не `Engram`
 - **`Engram` = производный long-term memory engine / retrieval index**, rebuildable из данных Oxide
+- **память life mode = AuDHD-first external executive-function system**, не нейротипичная fact notebook
+- **canonical long-term memory ledger** живет в Postgres; Engram только индексирует его для recall
 - **один life principal** должен быть доступен и из web, и из Telegram
 - **никакой интеграции Engram в обычные web-session / telegram-topic session**
 
 Корневой тезис:
 
-> `Permanent life mode` нельзя честно построить на текущих transport-scoped chat sessions. Его надо строить как отдельный продуктовый режим со стабильной identity-моделью, собственной БД-моделью, собственным runtime-контрактом и отдельной memory-пайплайной: `Postgres hot/default context + Engram long-term memory`.
+> `Permanent life mode` нельзя честно построить на текущих transport-scoped chat sessions и нельзя свести к нейротипичной памяти “сохранил факт → иногда нашел факт”. Его надо строить как отдельный продуктовый режим со стабильной identity-моделью, собственной БД-моделью, собственным runtime-контрактом и AuDHD-first memory-пайплайной: `Postgres operating profile + task/resume state + canonical memory ledger + hot context + Engram derived recall index`.
 
 ---
 
@@ -220,21 +222,30 @@
 - **один long-lived principal**
 - **один canonical transcript/event stream**
 - **один stable memory scope**
-- **один default context state**
-- **один long-term memory namespace**
+- **один deterministic operating profile** под confirmed AuDHD-пользователя
+- **один current task / resume / open-loop state**
+- **один canonical long-term memory ledger** в Postgres
+- **один derived long-term memory namespace** в Engram для recall
 - **два интерфейса доступа**: web и Telegram
 
 У life mode нет концепции `web-session-<uuid>` и нет привязки к Telegram thread как к identity.
+
+Главное продуктовое отличие:
+
+> Life mode не является “памятью фактов о пользователе”. Для основного пользователя с AuDHD это должна быть внешняя executive-function система: держать цель, контекст, открытые петли, точку возврата, правила анти-перегруза, friction patterns и только затем — долговременные факты.
 
 ### 4.2. Что life mode обязан уметь
 
 1. Пользователь пишет из web или Telegram — попадает в одну и ту же жизнь.
 2. Контекст между устройствами и транспортами не теряется.
 3. Последние активные вещи доступны сразу из Postgres hot/default context.
-4. Долговременные факты, процедуры, проекты, предпочтения, биографические вещи и прошлые решения доступны через Engram recall.
-5. Пользователь может смотреть, редактировать, удалять память.
-6. Секреты не утекают в Engram.
-7. Life mode не ломает и не загрязняет обычный chat mode.
+4. Агент всегда получает deterministic AuDHD operating contract: как отвечать, как не перегружать, как возвращать пользователя в задачу.
+5. Агент хранит и восстанавливает task resume packet: текущая цель, зачем она нужна, где остановились, next action, open loops, blockers.
+6. Агент хранит friction patterns и support protocols: что ломает выполнение и какой response pattern помогает.
+7. Долговременные факты, процедуры, проекты, предпочтения, биографические вещи и прошлые решения хранятся canonical в Postgres и доступны через Engram-derived recall.
+8. Пользователь может смотреть, редактировать, удалять память, operating profile, support protocols и open loops.
+9. Секреты не утекают в Engram.
+10. Life mode не ломает и не загрязняет обычный chat mode.
 
 ### 4.3. Что life mode не делает
 
@@ -243,6 +254,8 @@
 - не запоминает ambient group/forum chat как “личную жизнь” пользователя
 - не использует OpenAI-compatible `/v1/chat/completions` Engram как agent runtime
 - не делает Engram источником истины
+- не делает silent diagnosis и не выводит neurotype из поведения без explicit user confirmation
+- не “нормализует” пользователя под нейротипичный workflow: broad questions, option overload, passive reminders, fact-only recall
 
 ---
 
@@ -285,6 +298,7 @@
 Решение:
 
 - source of truth = Oxide Postgres transcript + structured profile + snapshots
+- canonical durable memory ledger = Postgres, не Engram facts
 - Engram = derived long-term memory index / recall engine
 - rebuild должен быть возможен из Postgres
 
@@ -314,8 +328,9 @@
 Решение:
 
 - `life_context_overrides` в Postgres с TTL
-- `life_profile_state` в Postgres для deterministic defaults
-- Engram только для long-term semantic/episodic/procedural memory
+- `life_principals.profile_state` в Postgres для deterministic defaults
+- `life_principals.operating_profile` / `life_support_protocols` в Postgres для deterministic AuDHD support contract
+- Engram только для derived recall по canonical Postgres memory
 
 ### Мина 6. Нельзя складывать секреты в memory engine
 
@@ -339,7 +354,7 @@
 
 - вынести generic `DynamicPromptContextProvider`
 - chat mode продолжит использовать wiki provider
-- life mode получит свой provider: `PG deterministic state + hot handoff + Engram recall`
+- life mode получит свой provider: `PG operating profile + task resume/open loops + support protocols + hot handoff + canonical memory + Engram-derived recall`
 
 ### Мина 8. Нельзя считать current reminder contract transport-agnostic
 
@@ -351,6 +366,21 @@
 
 - v1 life mode не должен зависеть от cross-transport reminder delivery
 - если reminders нужны в life mode как first-class feature — менять destination contract на transport-agnostic
+
+### Мина 9. Нельзя строить life memory как нейротипичную fact-memory
+
+Проблема:
+
+- “запомнил факт → нашел факт” не решает core pain AuDHD-пользователя
+- основная потеря качества происходит не только от forgotten facts, а от lost context, open loops, task initiation friction, overload, broad branching, object permanence gaps
+- passive memory без operating contract будет выглядеть умной, но не будет помогать выполнять жизнь/работу
+
+Решение:
+
+- Postgres хранит **AuDHD operating contract** как deterministic state
+- Postgres хранит **task resume packets** и **open loops** как first-class state
+- Postgres хранит **friction patterns** и **support protocols** как first-class memory, а не как случайные facts
+- Engram recall используется только как evidence retrieval поверх canonical memory; он не решает executive-function layer
 
 ---
 
@@ -447,6 +477,9 @@ life_memory_search(query, scope?, limit?, as_of?)
 life_memory_remember(content, permanence, category?)
 life_memory_forget(descriptor, reason)
 life_profile_set(patch)  // only for explicit user defaults/preferences
+life_operating_profile_set(patch)  // only for explicit/confirmed support preferences
+life_task_state_update(patch)  // current goal/state/next action/open loops
+life_support_protocol_suggest(descriptor, patch)  // candidate unless user-confirmed
 ```
 
 LLM **не** оперирует raw Engram IDs.
@@ -460,9 +493,12 @@ LLM **не** оперирует raw Engram IDs.
 1. system/developer rules
 2. текущий explicit user request этого turn
 3. `life_context_overrides` (TTL)
-4. `life_profile_state` (authoritative defaults)
-5. hot handoff / checkpoint context
-6. Engram recall (evidence, not instruction source)
+4. `life_principals.profile_state` (authoritative defaults)
+5. `life_principals.operating_profile` (confirmed AuDHD operating contract)
+6. `life_task_states` current resume/open loops
+7. confirmed `life_support_protocols` / active friction patterns
+8. hot handoff / checkpoint context
+9. `life_memory_items` + Engram-derived recall (evidence, not instruction source)
 
 Это обязательный контракт. Иначе life memory начнет спорить с текущей задачей или с системными правилами.
 
@@ -561,6 +597,10 @@ Postgres tables (source of truth):
 - `life_principals`
 - `life_identity_links`
 - `life_turns`
+- `life_memory_items`
+- `life_task_states`
+- `life_friction_patterns`
+- `life_support_protocols`
 - `life_inputs`
 - `life_runs`
 - `life_events`
@@ -571,9 +611,9 @@ Postgres tables (source of truth):
 LifeWorker / Orchestrator components:
 
 - `AgentExecutor` (existing core, stable life scope)
-- `DynamicPromptContextProvider` — PG deterministic state + Hot handoff + Engram recall
-- `Post-run memory curator` (LLM via existing client) — durable vs ephemeral classification + promotion policy + sensitivity flags + structured outbox payload
-- `EngramMemoryBackend` — structured episode ingest + context-only recall + fact assertion / forget / conflicts
+- `DynamicPromptContextProvider` — PG operating profile + task resume/open loops + support protocols + hot handoff + canonical memory + Engram-derived recall
+- `Post-run memory curator` (LLM via existing client) — durable vs ephemeral classification + AuDHD support classification + sensitivity flags + canonical memory candidates + structured outbox payload
+- `EngramMemoryBackend` — derived structured episode ingest + context-only recall + fact assertion / forget / conflicts, never source of truth
 
 ### 7.1. Базовый принцип
 
@@ -640,6 +680,7 @@ flow_id     = "main"
 CREATE TABLE life_principals (
     principal_user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
     profile_state JSONB NOT NULL,
+    operating_profile JSONB NOT NULL,
     settings JSONB NOT NULL,
     schema_version INTEGER NOT NULL DEFAULT 1,
     created_at BIGINT NOT NULL,
@@ -650,6 +691,7 @@ CREATE TABLE life_principals (
 Смысл:
 
 - authoritative structured state
+- confirmed AuDHD operating contract / anti-overload defaults
 - life feature flag / settings
 
 #### `life_identity_links`
@@ -804,12 +846,129 @@ CREATE TABLE life_context_overrides (
 - `answer_verbosity = "detailed"` до конца дня
 - `current_focus = "prepare PRD"` на 2 часа
 
-### 9.6. `life_engram_outbox`
+### 9.6. `life_memory_items` — canonical durable memory ledger
+
+```sql
+CREATE TABLE life_memory_items (
+    memory_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'biography',
+        'preference',
+        'project_principle',
+        'procedure',
+        'decision',
+        'episode',
+        'operating_rule',
+        'friction_pattern',
+        'support_protocol'
+    )),
+    authority TEXT NOT NULL CHECK (authority IN ('user_asserted', 'user_confirmed', 'curator_suggested', 'system_derived')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'deleted', 'candidate')),
+    text TEXT NOT NULL,
+    structured JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tags TEXT[] NOT NULL DEFAULT '{}',
+    evidence_turn_ids UUID[] NOT NULL DEFAULT '{}',
+    sensitivity TEXT NOT NULL CHECK (sensitivity IN ('clean', 'personal', 'redacted', 'secret_blocked')),
+    valid_from BIGINT,
+    valid_to BIGINT,
+    supersedes_memory_id UUID REFERENCES life_memory_items(memory_id),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+```
+
+Это — не outbox и не Engram mirror. Это canonical product memory в Postgres.
+
+Назначение:
+
+- хранить долговременные факты/решения/процедуры canonical, с evidence и authority
+- хранить AuDHD-relevant operating rules как память первого класса
+- давать source для rebuild Engram
+- позволять inspect/edit/delete без зависимости от чужих `fact_id`
+
+### 9.7. `life_task_states` — resume packets / open loops
+
+```sql
+CREATE TABLE life_task_states (
+    task_state_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL,
+    current_goal TEXT NOT NULL,
+    why TEXT,
+    current_state JSONB NOT NULL DEFAULT '[]'::jsonb,
+    next_action TEXT,
+    open_loops JSONB NOT NULL DEFAULT '[]'::jsonb,
+    blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'abandoned')),
+    last_turn_id UUID REFERENCES life_turns(turn_id),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE(principal_user_id, project_key)
+);
+```
+
+Назначение:
+
+- решать AuDHD context-loss / object-permanence проблему
+- хранить “где мы остановились” отдельно от transcript и hot snapshot
+- давать агенту deterministic resume packet перед каждым run
+- не заставлять пользователя заново формулировать контекст после паузы
+
+### 9.8. `life_friction_patterns`
+
+```sql
+CREATE TABLE life_friction_patterns (
+    pattern_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('overload_trigger', 'task_initiation_barrier', 'context_loss', 'communication_mismatch', 'sensory_or_energy_constraint')),
+    trigger_descriptor TEXT NOT NULL,
+    preferred_response JSONB NOT NULL,
+    evidence_turn_ids UUID[] NOT NULL DEFAULT '{}',
+    authority TEXT NOT NULL CHECK (authority IN ('user_asserted', 'user_confirmed', 'curator_suggested')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'deleted', 'candidate')),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+```
+
+Назначение:
+
+- хранить не “у пользователя ADHD”, а конкретные verified friction patterns этого пользователя
+- предотвращать повторение response patterns, которые ломают выполнение
+- давать prompt provider-у правила анти-перегруза и task initiation support
+
+### 9.9. `life_support_protocols`
+
+```sql
+CREATE TABLE life_support_protocols (
+    protocol_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    trigger_descriptor TEXT NOT NULL,
+    steps JSONB NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    evidence_turn_ids UUID[] NOT NULL DEFAULT '{}',
+    authority TEXT NOT NULL CHECK (authority IN ('user_asserted', 'user_confirmed', 'curator_suggested')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'deleted', 'candidate')),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+```
+
+Назначение:
+
+- хранить reusable procedures: start protocol, overload protocol, context restore protocol, decision narrowing protocol
+- отделять user-confirmed support from model guesses
+- inject только relevant protocols, чтобы не перегружать prompt
+
+### 9.10. `life_engram_outbox`
 
 ```sql
 CREATE TABLE life_engram_outbox (
     outbox_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    source_memory_id UUID REFERENCES life_memory_items(memory_id),
     idempotency_key TEXT NOT NULL UNIQUE,
     payload JSONB NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'flushing', 'flushed', 'dead')),
@@ -821,7 +980,9 @@ CREATE TABLE life_engram_outbox (
 );
 ```
 
-### 9.7. Используем существующий `agent_memory_snapshots`
+Это delivery queue из canonical Postgres memory в Engram-derived index. Это не модель памяти.
+
+### 9.11. Используем существующий `agent_memory_snapshots`
 
 Life mode не изобретает новый hot-memory storage.
 
@@ -839,15 +1000,30 @@ Life mode не изобретает новый hot-memory storage.
 
 ## 10. Memory model
 
-### 10.1. Слои памяти
+### 10.1. Root principle: memory = external executive function
 
-#### Layer A. `life_profile_state` в Postgres
+Для AuDHD-пользователя нейротипичная модель памяти бесполезна, если она ограничена facts/preferences recall.
 
-Это authoritative deterministic state.
+Правильная память life mode должна отвечать не только на “что пользователь сказал раньше?”, а на:
 
-Содержит только то, что должно быть надежно доступно **каждый run**, без риска retrieval miss.
+- какая сейчас цель;
+- зачем эта цель нужна;
+- где мы остановились;
+- какой следующий маленький action;
+- какие open loops нельзя потерять;
+- что перегружает пользователя;
+- какой response protocol помогает стартовать/вернуться/сузить решение;
+- какие факты/решения/procedures релевантны текущей задаче.
 
-Примеры:
+Поэтому source of truth делится на deterministic operating state, task state и canonical memory ledger. Engram получает derived index только после этого.
+
+### 10.2. Слои памяти
+
+#### Layer A. `profile_state` + `operating_profile` в `life_principals`
+
+Это authoritative deterministic state, injected **каждый run** без retrieval miss.
+
+`profile_state` содержит обычные deterministic defaults:
 
 - display name
 - timezone
@@ -856,7 +1032,105 @@ Life mode не изобретает новый hot-memory storage.
 - confirmed durable user preferences
 - pinned constraints / standing instructions
 
-#### Layer B. `AgentMemory` snapshot в Postgres
+`operating_profile` содержит confirmed AuDHD operating contract:
+
+```text
+neurotype:
+  user_confirmed_label: "AuDHD"
+  do_not_medicalize: true
+  never_infer_without_confirmation: true
+
+communication:
+  prefer:
+    - direct technical language
+    - clear current-state summary
+    - one recommended next step
+    - bounded choices only when blocked
+  avoid:
+    - vague open-ended questions
+    - option overload
+    - motivational fluff
+    - hidden assumptions
+
+task_support:
+  role: "external executive-function support"
+  always_track:
+    - current_goal
+    - why_it_matters
+    - current_state
+    - next_action
+    - open_loops
+    - blockers
+
+overload_protocol:
+  when_detected:
+    - stop adding branches
+    - compress context
+    - name the single next action
+    - ask at most one concrete question if blocked
+```
+
+Это не медицинская диагностика. Это user-confirmed operating contract.
+
+#### Layer B. `life_task_states`
+
+Это task resume / open-loop state.
+
+Содержит:
+
+- project key
+- current goal
+- why
+- current state bullets
+- next action
+- open loops
+- blockers
+- last source turn
+
+Это решает класс AuDHD context-loss: пользователь возвращается через часы/дни, и агент не спрашивает “чем помочь?”, а восстанавливает точку продолжения.
+
+#### Layer C. `life_memory_items`
+
+Это canonical durable memory ledger в Postgres.
+
+Содержит:
+
+- биографические факты
+- project principles
+- decisions
+- procedures
+- user preferences
+- operating rules
+- friction patterns
+- support protocols
+- episodes worth preserving
+
+Каждая запись имеет `authority`, `status`, `evidence_turn_ids`, `sensitivity`, `valid_from/valid_to`, optional supersession.
+
+Это главный durable memory layer. Engram не является его заменой.
+
+#### Layer D. `life_friction_patterns` и `life_support_protocols`
+
+Это specialized projections для prompt provider-а.
+
+Они могут дублироваться/ссылаться из `life_memory_items`, но нужны как быстрый deterministic read path для AuDHD support.
+
+Примеры friction patterns:
+
+- large unranked option lists перегружают пользователя;
+- broad “что хочешь делать?” ломает task initiation;
+- потеря контекста после паузы требует resume packet;
+- слишком длинный план без первого action вызывает paralysis.
+
+Примеры support protocols:
+
+- start protocol;
+- overload protocol;
+- context restore protocol;
+- decision narrowing protocol;
+- “review after RECON” protocol.
+
+#### Layer E. `agent_memory_snapshots`
 
 Это hot runtime state:
 
@@ -865,26 +1139,26 @@ Life mode не изобретает новый hot-memory storage.
 - текущий working state
 - pending user input state
 
-Это то, что нужно для continuity между runs и after restart.
+Это нужно для continuity между runs и after restart, но это не вся permanent memory.
 
-#### Layer C. `life_turns`
+#### Layer F. `life_turns`
 
 Это canonical append-only transcript.
 
 Назначение:
 
 - audit/debug/rebuild
+- source evidence для memory items
 - fallback source
-- feed для Engram outbox
+- feed для curator и Engram outbox
 
-#### Layer D. `Engram`
+#### Layer G. `Engram`
 
-Это long-term memory engine / retrieval index:
+Это derived long-term memory retrieval index:
 
-- episodic memory
-- semantic memory
-- procedural memory
-- contradiction history / provenance / supersession
+- semantic/episodic/procedural recall
+- contradiction history / provenance / supersession внутри derived engine
+- candidate retrieval by query
 
 **Не source of truth.**
 
@@ -892,35 +1166,50 @@ Life mode не изобретает новый hot-memory storage.
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ Layer A. life_profile_state (Postgres)                       │
+│ Layer A. profile_state + operating_profile (Postgres)        │
 │                                                               │
 │  ВСЕГДА injected, БЕЗ поиска, БЕЗ retrieval miss              │
-│  имя, timezone, язык, стиль, standing constraints             │
-│  ↑ только из explicit user action / confirmed instruction     │
+│  identity/defaults + confirmed AuDHD operating contract       │
+│  ↑ only explicit user action / confirmed instruction          │
 │                                                               │
 │  Curator формирует КАНДИДАТЫ → применяются из user turn       │
 │  Engram НЕ пишет сюда (§13.6 — запрещено)                     │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer B. agent_memory_snapshots (Postgres, existing table)    │
+│ Layer B. life_task_states (Postgres)                         │
+│                                                               │
+│  current goal / why / state / next action / open loops        │
+│  deterministic resume packet для AuDHD context restoration    │
+├──────────────────────────────────────────────────────────────┤
+│ Layer C. life_memory_items (Postgres canonical ledger)        │
+│                                                               │
+│  durable facts / decisions / procedures / operating rules     │
+│  authority + evidence + sensitivity + supersession            │
+├──────────────────────────────────────────────────────────────┤
+│ Layer D. friction_patterns + support_protocols (Postgres)     │
+│                                                               │
+│  verified triggers and response procedures                    │
+│  быстрый read path для анти-перегруза и task initiation       │
+├──────────────────────────────────────────────────────────────┤
+│ Layer E. agent_memory_snapshots (Postgres, existing table)    │
 │                                                               │
 │  scope = (principal_user_id, "life", "main")                  │
 │  последние сообщения, compaction summary, working state       │
 │  синхронный final checkpoint в конце run                      │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer C. life_turns (Postgres, append-only)                   │
+│ Layer F. life_turns (Postgres, append-only)                   │
 │                                                               │
 │  полный протокол жизни: role, transport, content, redaction   │
-│  audit / debug / rebuild Engram из transcript                 │
+│  audit / debug / source evidence / rebuild Engram             │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer D. Engram (derived, rebuildable)                        │
+│ Layer G. Engram (derived, rebuildable)                        │
 │                                                               │
-│  episodic / semantic / procedural / contradictions            │
-│  recall → EVIDENCE в prompt, НЕ instruction                   │
-│  если Engram умер — жизнь продолжается на Layers A-C          │
+│  recall candidates → dereference canonical PG memory          │
+│  recall → EVIDENCE в prompt, НЕ instruction/source of truth   │
+│  если Engram умер — жизнь продолжается на Layers A-F          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 10.2. Почему default context memory должен жить в Postgres
+### 10.3. Почему AuDHD operating state должен жить в Postgres
 
 Потому что есть класс вещей, которые retrieval не имеет права “иногда не вспомнить”:
 
@@ -929,36 +1218,56 @@ Life mode не изобретает новый hot-memory storage.
 - timezone
 - пользовательское имя
 - явные standing constraints
+- confirmed AuDHD support preferences
+- anti-overload rules
+- current task resume packet
+- active open loops
+- blocked decisions
 
 Эти данные должны быть injected deterministically, а не доставаться только через semantic retrieval.
 
-### 10.3. Promotion policy
+### 10.4. Promotion policy
 
-#### В `life_profile_state` попадает только:
+#### В `profile_state` / `operating_profile` попадает только:
 
 - явное действие пользователя в UI
-- explicit user instruction вида “по умолчанию …”, “запомни как настройку …”
+- explicit user instruction вида “по умолчанию …”, “мне помогает когда …”, “не делай так …”
 - подтвержденное изменение профиля
+- accepted curator candidate, если подтверждение произошло через user turn / UI action
 
-#### В Engram manual/assertive memory попадает:
+#### В `life_task_states` попадает:
 
-- явное `remember this permanently`
-- подтвержденные долгоживущие предпочтения/биография/проекты/процедуры
+- текущая задача, которую life runtime реально ведет
+- goal/why/state/next_action/open_loops, извлеченные из завершенного или прерванного run
+- explicit user correction: “нет, мы остановились не там”
 
-#### В Engram episodic memory попадает:
+#### В `life_memory_items` попадает:
 
-- turns, события, outcomes, решения, tool observations
+- explicit `remember this permanently`
+- confirmed долговременные предпочтения/биография/проекты/процедуры
+- project principles and decisions
+- user-confirmed operating rules
+- user-confirmed friction patterns/support protocols
+- episodes/outcomes worth preserving
+
+#### В Engram попадает:
+
+- derived projection из `life_memory_items` и selected transcript episodes
+- только после sensitivity gate
+- с `external_id = memory_id` / turn-based provenance, чтобы recall всегда dereference-ился в Postgres
 
 #### В durable memory **не** попадает:
 
 - временное состояние дня
-- текущая одноразовая задача
+- текущая одноразовая задача без long-lived relevance
 - мимолетная style override
 - raw secrets
+- непроверенный neurotype inference
+- curator guess как authoritative state без user confirmation
 
-### 10.4. Secret/sensitivity gate
+### 10.5. Secret/sensitivity gate
 
-Перед записью в `life_engram_outbox` обязательно:
+Перед записью в `life_memory_items` и `life_engram_outbox` обязательно:
 
 1. sensitivity classification
 2. redaction / deny
@@ -966,32 +1275,38 @@ Life mode не изобретает новый hot-memory storage.
 
 Иначе personal life mode очень быстро станет хранилищем токенов и паролей, что архитектурно недопустимо.
 
-### 10.5. Post-run memory curator
+### 10.6. Post-run memory curator
 
-Static promotion rules (§10.3) надёжно работают для explicit cases: "запомни навсегда", "по умолчанию отвечай X". Но есть класс borderline cases где deterministic rules недостаточны:
+Static promotion rules (§10.4) надёжно работают для explicit cases: "запомни навсегда", "по умолчанию отвечай X", "мне помогает когда Y". Но есть класс borderline cases где deterministic rules недостаточны:
 
-- "Я последние полгода работаю над Oxide Agent, это мой основной проект" — durable fact (биография/проект), но нет маркера "запомни"
+- "Я последние полгода работаю над Oxide Agent, это мой основной проект" — durable project fact, но нет маркера "запомни"
+- "Когда ты даешь пять вариантов без рекомендации, я зависаю" — friction pattern/support rule, но не classic preference
 - "Раньше я предпочитал подробные ответы, но сейчас мне нужна краткость" — profile update с supersession, не явное "по умолчанию"
 - borderline sensitivity — не явный секрет, но содержит персональные данные
 
-Для этих случаев life mode использует **post-run memory curator** — single LLM-вызов после завершённого run, перед outbox.
+Для этих случаев life mode использует **post-run memory curator** — single LLM-вызов после завершённого run, перед canonical memory/outbox.
 
 #### Что curator делает
 
 Curator получает transcript завершённого run и для каждого candidate memory item определяет:
 
-- `durable_fact` — долговременный факт → Engram (authoritative или episodic по promotion policy)
-- `profile_update` — confirmed default/preference → кандидат в `life_profile_state` (применяется только из confirmed user turn)
+- `durable_fact` — долговременный факт → candidate `life_memory_items`
+- `project_decision` / `procedure` — canonical project memory → candidate `life_memory_items`
+- `operating_profile_update` — confirmed default/support preference → candidate для `operating_profile`
+- `task_state_update` — goal/current state/next action/open loops → candidate для `life_task_states`
+- `friction_pattern` — что ломает выполнение → candidate `life_friction_patterns` + `life_memory_items`
+- `support_protocol` — reusable response procedure → candidate `life_support_protocols` + `life_memory_items`
 - `ephemeral` — мимолётное, не в durable memory
 - `secret_candidate` — флаг для sensitivity gate
-- `skip` — не worth remembering
+- `skip` — not worth remembering
 
 #### Что curator НЕ делает
 
 - НЕ является continuously-running агентом — fire-and-forget после run
 - НЕ имеет tools — single structured-output LLM call
-- НЕ пишет в Engram напрямую — формирует payload для outbox
-- НЕ пишет в `life_profile_state` напрямую — формирует кандидаты, применяется из user turn
+- НЕ пишет в Engram напрямую — формирует payload для canonical write/outbox
+- НЕ пишет в `profile_state` / `operating_profile` напрямую — формирует кандидаты, применяемые из confirmed user turn / UI action
+- НЕ делает diagnosis и НЕ выводит AuDHD из поведения
 - НЕ инициирует обратный поток из Engram в Postgres (см. §13.6)
 
 #### Runtime — переиспользование существующего LLM client
@@ -1009,11 +1324,11 @@ Temperature не задаётся — используется default пров�
 
 #### Why not deterministic-only
 
-Current wiki planner (`wiki_memory/planner.rs`) — deterministic, keyword heuristics (`contains("запомни")`). Достаточно для explicit cases. Но для personal life mode класс borderline cases шире. Deterministic rules либо пропустят durable facts без маркера, либо запишут мимолётное как durable. Curator закрывает этот класс через LLM understanding, не regex.
+Current wiki planner (`wiki_memory/planner.rs`) — deterministic, keyword heuristics (`contains("запомни")`). Достаточно для explicit cases. Но для personal life mode класс borderline cases шире. Deterministic rules либо пропустят durable facts/friction patterns без маркера, либо запишут мимолётное как durable. Curator закрывает этот класс через LLM understanding, не regex.
 
 #### Relationship to existing wiki planner
 
-Wiki planner остаётся для chat mode (behavior change = 0). Curator — только для life mode. Разные bounded contexts, разные sinks (wiki pages vs engram outbox), общий паттерн (post-run analysis).
+Wiki planner остаётся для chat mode (behavior change = 0). Curator — только для life mode. Разные bounded contexts, разные sinks (wiki pages vs canonical life memory/outbox), общий паттерн (post-run analysis).
 
 ---
 
@@ -1044,6 +1359,9 @@ pub struct PromptContextBlock {
 
 - `DeterministicRuleLike`
 - `AuthoritativeUserDefault`
+- `OperatingContract`
+- `TaskResume`
+- `SupportProtocol`
 - `EvidenceOnly`
 
 ### 11.2. Chat mode и life mode после refactor
@@ -1057,10 +1375,13 @@ pub struct PromptContextBlock {
 
 Использует свой provider:
 
-1. `Life deterministic state`
-2. `Life active overrides`
-3. `Life hot handoff`
-4. `Life long-term memory recall`
+1. `Life profile/defaults`
+2. `Life AuDHD operating contract`
+3. `Life active task resume / open loops`
+4. `Life active overrides`
+5. `Life support protocols / friction patterns`
+6. `Life hot handoff`
+7. `Life canonical long-term memory + Engram-derived recall evidence`
 
 ### 11.3. Как должен выглядеть life memory block
 
@@ -1073,8 +1394,26 @@ pub struct PromptContextBlock {
 - Timezone: UTC+3
 - Standing preference: be direct; no fluff
 
+## AuDHD Operating Contract
+- Role: external executive-function support, not passive Q&A.
+- Avoid vague broad questions and option overload.
+- Prefer current-state summary + one recommended next action.
+- When overload is detected: stop branching, compress, name the next action.
+
+## Current Task Resume
+- Project: Permanent Life Mode
+- Current goal: adapt memory architecture for AuDHD user.
+- Why: neurotypical fact-memory is not useful for the primary user.
+- Current state: Postgres source of truth; Engram derived; need canonical memory ledger + operating profile.
+- Next action: update PRD storage/memory/runtime sections.
+- Open loops: verify prompt block order; add support protocol inspector.
+
 ## Active Temporary Overrides
 - Today only: answer in extra detail
+
+## Support Protocols
+- Context restore protocol: summarize goal, state, next action; do not ask “what do you want to do?” first.
+- Decision narrowing protocol: give one recommendation plus at most two alternatives when blocked.
 
 ## Long-Term Memory (evidence)
 - [2026-06-18, explicit] User prefers architecture-first decisions over local patches.
@@ -1085,6 +1424,7 @@ pub struct PromptContextBlock {
 Требование:
 
 - `Long-Term Memory` должен быть framed как **evidence**, а не как instruction source
+- `AuDHD Operating Contract`, `Current Task Resume`, `Support Protocols` должны приходить из Postgres source of truth, не из Engram recall
 
 ---
 
@@ -1118,7 +1458,9 @@ life:<principal_user_id>
 
 ```text
 claim lock
-load principal state
+load principal state: profile_state + operating_profile
+load active life_task_states / open loops
+load relevant friction_patterns + support_protocols
 hydrate AgentSession from agent_memory_snapshots(scope=life/main)
 build dynamic prompt context
 run AgentExecutor
@@ -1127,10 +1469,11 @@ stream AgentEvents -> life_events
 on finish:
   - write assistant turn
   - persist final checkpoint synchronously
-  - run post-run memory curator (LLM via existing client, §10.5)
-      → structured payload: durable/ephemeral/profile/secret classification
+  - update life_task_states / open loops from observed run state
+  - run post-run memory curator (LLM via existing client, §10.6)
+      → structured payload: durable/profile/operating/task/friction/protocol/ephemeral/secret classification
   - sensitivity gate (rules + curator flags, §10.4)
-  - write engram outbox row(s) with curated payload
+  - write canonical life_memory_items / protocol candidates / outbox row(s)
   - mark run completed
 release lock
 ```
@@ -1154,7 +1497,7 @@ release lock
 Требование:
 
 - в конце run обязателен **synchronous final snapshot commit**
-- он должен коммититься вместе с final assistant turn и Engram outbox row
+- он должен коммититься вместе с final assistant turn, `life_task_states` update и canonical memory/outbox mutations
 
 Так life mode не теряет последнюю консистентную точку после ответа пользователю.
 
@@ -1179,16 +1522,21 @@ release lock
     LifeWorker
        │
        ├─ pg_advisory_xact_lock("life:<principal>")  ◄── один lock
-       ├─ load profile_state из Postgres (Layer A, мгновенно, ВСЕГДА)
-       ├─ load hot snapshot из Postgres (Layer B, мгновенно, ВСЕГДА)
-       ├─ recall из Engram (Layer D, только если нужно)
+       ├─ load profile_state + operating_profile из Postgres (Layer A, ВСЕГДА)
+       ├─ load active task_state/open_loops из Postgres (Layer B, ВСЕГДА если есть active project)
+       ├─ load support protocols/friction patterns из Postgres (Layer D, deterministic)
+       ├─ load hot snapshot из Postgres (Layer E, ВСЕГДА)
+       ├─ recall из Engram → candidate ids → dereference PG memory (Layer G, если нужно)
        │
        │  Собранный prompt:
        │  ┌─────────────────────────────────────────┐
        │  │ ## Life Defaults          (Layer A)     │
+       │  │ ## AuDHD Operating Contract (Layer A)   │
+       │  │ ## Current Task Resume    (Layer B)     │
        │  │ ## Active Overrides       (TTL)         │
-       │  │ ## Hot Handoff            (Layer B)     │
-       │  │ ## Long-Term Memory       (Layer D)     │
+       │  │ ## Support Protocols      (Layer D)     │
+       │  │ ## Hot Handoff            (Layer E)     │
+       │  │ ## Long-Term Memory       (Layer C/G)   │
        │  │   (evidence, НЕ instruction)            │
        │  │ [system rules]                          │
        │  │ [user message]                          │
@@ -1201,10 +1549,11 @@ release lock
 Шаг 3. Final commit — синхронно в Postgres (одна транзакция)
 ════════════════════════════════════════════════════════════
     ├─ INSERT life_turns (role=assistant, content=response)
+    ├─ UPSERT life_task_states (resume packet / open loops)
     ├─ UPDATE agent_memory_snapshots (final checkpoint)
     └─ UPDATE life_runs SET status=completed
 
-    Если процесс упал здесь → ответ и snapshot сохранены.
+    Если процесс упал здесь → ответ, resume packet и snapshot сохранены.
 
 
 Шаг 4. Post-run curator — что worth remembering
@@ -1212,25 +1561,30 @@ release lock
     Curator (LLM, single call, fire-and-forget, existing llm/client.rs)
     получает transcript завершённого run → классифицирует:
     │
-    ├─ durable_fact    → Engram (authoritative или episodic)
-    ├─ profile_update  → кандидат в life_profile_state (из user turn)
-    ├─ ephemeral       → не в durable memory
-    ├─ secret_candidate→ флаг для sensitivity gate
-    └─ skip            → не worth remembering
+    ├─ durable_fact       → candidate life_memory_items
+    ├─ project_decision   → candidate life_memory_items
+    ├─ operating_update   → candidate operating_profile (только после confirmation)
+    ├─ task_state_update  → candidate/upsert life_task_states
+    ├─ friction_pattern   → candidate life_friction_patterns + life_memory_items
+    ├─ support_protocol   → candidate life_support_protocols + life_memory_items
+    ├─ ephemeral          → не в durable memory
+    ├─ secret_candidate   → флаг для sensitivity gate
+    └─ skip               → не worth remembering
 
 
 Шаг 5. Sensitivity gate
 ═══════════════════════
     payload от curator → rules + curator flags
        │
-       ├─ clean     → outbox как есть
-       ├─ redacted  → секрет заменён, outbox обезличенным
-       └─ secret    → DENY, маршрут в private_secrets
+       ├─ clean     → canonical memory/task/protocol write + outbox projection
+       ├─ redacted  → canonical redacted write + redacted outbox projection
+       └─ secret    → DENY memory/outbox, маршрут в private_secrets
 
 
-Шаг 6. Outbox — почтовый ящик для Engram
-═════════════════════════════════════════
-    INSERT life_engram_outbox (pending, idempotency_key)
+Шаг 6. Canonical memory + Outbox
+════════════════════════════════
+    UPSERT life_memory_items / life_friction_patterns / life_support_protocols
+    INSERT life_engram_outbox (pending, idempotency_key, source_memory_id)
     Postgres = source of truth. Engram может быть недоступен — ничего не теряется.
 
 
@@ -1352,15 +1706,20 @@ pub trait LifeLongTermMemoryBackend: Send + Sync {
 Всегда:
 
 - `life_turns`
-- `life_profile_state`
+- `life_principals.profile_state`
+- `life_principals.operating_profile`
+- `life_memory_items`
+- `life_task_states`
+- `life_friction_patterns`
+- `life_support_protocols`
 - `agent_memory_snapshots`
 - `life_context_overrides`
 
 Если Engram умер / сломан / переписывается на Rust:
 
 - replay outbox
-- reindex from transcript
-- rebuild semantic memory
+- reindex from `life_memory_items` + selected transcript episodes
+- rebuild semantic memory without losing canonical AuDHD operating/task state
 
 ### 13.6. Запрещённый обратный поток
 
@@ -1368,19 +1727,19 @@ Engram → Postgres source of truth — архитектурно запрещё�
 
 Запрещено:
 
-- Engram (или curator, или любой компонент над Engram) пишет в `life_profile_state`
+- Engram (или curator, или любой компонент над Engram) пишет в `profile_state`, `operating_profile`, `life_task_states`, `life_friction_patterns`, `life_support_protocols`
 - Engram recall инициирует update durable state без explicit user confirmation
-- Engram выступает источником для profile defaults
+- Engram выступает источником для profile defaults / operating contract / support protocols
 
 Разрешено:
 
-- Engram recall → evidence в prompt → agent response → user confirms/corrects → profile updated from user turn
+- Engram recall → candidate ids/evidence → Oxide dereference canonical PG memory → prompt evidence → agent response → user confirms/corrects → source-of-truth updated from user turn/UI action
 
 Почему:
 
 - Engram = derived, rebuildable (§13.5). Если derived пишет в source of truth, source отравлен derived индексом
 - Engram consolidation может отставать → stale fact → profile update → устаревший state как "истина"
-- Profile state writable только из explicit user actions (§10.3 promotion policy)
+- Profile/operating/task/support state writable только из explicit user actions или accepted candidates по §10.4 promotion policy
 
 #### ASCII-схема запрещённого и разрешённого потока
 
@@ -1393,8 +1752,8 @@ Engram → Postgres source of truth — архитектурно запрещё�
                                               └──────────────┘
   ↑ нарушает инвариант: derived не отравляет source
 
-  Curator ─────► profile_state напрямую
-  ↑ profile writable только из confirmed user turns
+  Curator ─────► profile_state / operating_profile напрямую
+  ↑ source-of-truth writable только из confirmed user turns/UI actions
 
   Engram ─────► /v1/chat/completions как runtime
   ↑ Engram не агент, не runtime, dumb engine
@@ -1407,15 +1766,17 @@ Engram → Postgres source of truth — архитектурно запрещё�
                                               ┌──────────────┐
   User turn ──► life_turns ──► Postgres ─────► │  Postgres    │
                                               │  source of    │
-  Curator ───► outbox payload (pending) ─────► │  truth        │
+  Curator ───► canonical memory candidates ──► │  truth        │
                                               └──────┬───────┘
                                                      │
-  Outbox worker ────────────────────────────► Engram (derived)
+  Outbox worker ◄── life_engram_outbox ◄────── canonical PG memory
+       │
+       └────────────────────────────────────► Engram (derived)
                                                      │
   Recall ◄──────────────────────────────────── Engram
      │
      ▼
-  prompt (evidence) → agent → user confirms → profile update
+   prompt (evidence) → agent → user confirms → PG source update
 ```
 
 ### 13.7. Rerank — отложенный вопрос
@@ -1461,6 +1822,13 @@ POST   /api/life/messages
 GET    /api/life/runs/{run_id}/events   // SSE
 GET    /api/life/profile
 PATCH  /api/life/profile
+GET    /api/life/operating-profile
+PATCH  /api/life/operating-profile
+GET    /api/life/task-states
+PATCH  /api/life/task-states/{project_key}
+GET    /api/life/friction-patterns
+GET    /api/life/support-protocols
+PATCH  /api/life/support-protocols/{protocol_id}
 GET    /api/life/memory/search?q=...
 GET    /api/life/memory/conflicts
 POST   /api/life/memory/forget
@@ -1473,8 +1841,14 @@ POST   /api/life/link/telegram
 - live progress текущего run
 - memory inspector:
   - profile defaults
+  - AuDHD operating profile
+  - current task resume packet
+  - open loops / blockers
+  - friction patterns
+  - support protocols
   - temporary overrides
-  - recalled memory
+  - canonical durable memory items
+  - recalled memory evidence
   - conflict queue
   - delete/forget actions
 - account linking status для Telegram
@@ -1521,14 +1895,14 @@ Life mode в Telegram должен жить только в private chat с бо
 Пользователь в `/life` пишет:
 
 ```text
-Меня зовут Алекс. По умолчанию отвечай по-русски, коротко и технично.
+Меня зовут Алекс. По умолчанию отвечай по-русски, коротко и технично. У меня AuDHD: мне помогает, когда ты держишь контекст, не задаешь широкие вопросы, даешь одно рекомендуемое следующее действие и явно ведешь open loops.
 ```
 
 Система делает:
 
 1. `life_turns` вставляет user turn
 2. `life_runs` создает run
-3. `life_profile_state` обновляет:
+3. `life_principals.profile_state` обновляет:
 
 ```json
 {
@@ -1537,9 +1911,26 @@ Life mode в Telegram должен жить только в private chat с бо
 }
 ```
 
-4. `agent_memory_snapshots(user_id=principal, context_key='life', flow_id='main')` обновляется после run
-5. `life_engram_outbox` получает structured episode
-6. worker пушит episode/assertions в Engram namespace `life:<principal>`
+4. `life_principals.operating_profile` обновляет confirmed support contract:
+
+```json
+{
+  "neurotype": {"user_confirmed_label": "AuDHD", "do_not_medicalize": true},
+  "task_support": {
+    "role": "external executive-function support",
+    "always_track": ["current_goal", "current_state", "next_action", "open_loops"]
+  },
+  "communication": {
+    "avoid": ["broad_open_questions", "option_overload"],
+    "prefer": ["one_recommended_next_action", "explicit_context_restore"]
+  }
+}
+```
+
+5. `life_support_protocols` получает confirmed context restore / decision narrowing protocols
+6. `agent_memory_snapshots(user_id=principal, context_key='life', flow_id='main')` обновляется после run
+7. `life_memory_items` получает canonical operating rule items с evidence `turn_id`
+8. `life_engram_outbox` получает projection этих canonical memory items для derived recall
 
 #### Шаг 2. Telegram
 
@@ -1553,9 +1944,10 @@ Life mode в Telegram должен жить только в private chat с бо
 
 1. резолвит тот же `principal_user_id` через `life_identity_links`
 2. гидратит тот же `AgentMemoryScope(principal, "life", "main")`
-3. injects deterministic defaults из PG
-4. при необходимости добирает long-term evidence из Engram
-5. отвечает:
+3. injects deterministic defaults + operating profile из PG
+4. injects relevant support protocols из PG
+5. при необходимости добирает long-term evidence через Engram-derived recall с dereference в `life_memory_items`
+6. отвечает:
 
 ```text
 По умолчанию — по-русски, коротко и технично.
@@ -1574,8 +1966,8 @@ Life mode в Telegram должен жить только в private chat с бо
 Система должна:
 
 - создать `life_context_overrides(key='answer_verbosity', value='detailed', expires_at=end_of_day)`
-- **не** обновлять `life_profile_state.default_style`
-- **не** писать это как durable preference в Engram
+- **не** обновлять `life_principals.profile_state.communication.default_style`
+- **не** писать это как durable preference в `life_memory_items` / Engram
 
 На следующий день, если override истек, assistant возвращается к дефолтному краткому стилю.
 
@@ -1590,15 +1982,16 @@ Life mode в Telegram должен жить только в private chat с бо
 Система должна:
 
 1. записать user turn в `life_turns`
-2. создать `life_engram_outbox` с `authoritative=true`
-3. отправить в Engram manual assertion / structured episode
-4. на следующем вопросе:
+2. создать `life_memory_items(kind='project_principle', authority='user_asserted', evidence_turn_ids=[turn_id])`
+3. создать `life_engram_outbox(source_memory_id=memory_id)` как projection в derived index
+4. отправить в Engram structured assertion с `external_id = memory_id`
+5. на следующем вопросе:
 
 ```text
 Какой у меня принцип по архитектурным исправлениям?
 ```
 
-assistant должен достать это как durable memory и ответить по существу.
+assistant должен получить candidate из Engram, dereference canonical `life_memory_items(memory_id)`, проверить `status/sensitivity`, inject как evidence и ответить по существу.
 
 ### 16.4. Example D — follow-up во время активного run из другого транспорта
 
@@ -1634,6 +2027,50 @@ assistant должен достать это как durable memory и ответ
 - либо отказывается хранить как memory
 - transcript может быть redacted
 - `private_secrets` остается единственным местом для такого типа данных
+
+### 16.6. Example F — AuDHD context restore после паузы
+
+Сценарий:
+
+1. Пользователь три дня не открывал `/life`.
+2. Затем пишет:
+
+```text
+Я потерял контекст. С чего начать?
+```
+
+Правильное поведение:
+
+- runtime читает `life_principals.operating_profile`
+- runtime читает active `life_task_states(project_key='permanent-life-mode')`
+- runtime injects context restore protocol из `life_support_protocols`
+- assistant **не** спрашивает “чем помочь?” и **не** вываливает весь backlog
+- assistant отвечает:
+
+```text
+Мы проектируем Permanent Life Mode. Последняя точка: заменить нейротипичную fact-memory на AuDHD-first operating memory. Следующее действие: проверить, что в PRD storage/runtime/examples больше не пишут память напрямую в Engram.
+```
+
+### 16.7. Example G — overload / option narrowing
+
+Пользователь пишет:
+
+```text
+Слишком много веток, я завис.
+```
+
+Правильное поведение:
+
+- runtime detects overload phrase только как trigger для already-confirmed protocol, не как diagnosis
+- prompt получает `overload_protocol`
+- assistant прекращает добавлять варианты
+- assistant дает один следующий action и максимум один вопрос, если реально blocked
+
+Пример ответа:
+
+```text
+Стоп. Сужаю до одного шага: сейчас фиксируем только storage layer. Следующее действие — добавить `life_task_states`, `life_memory_items`, `life_support_protocols` в Phase 1. Остальные ветки не трогаем.
+```
 
 ---
 
@@ -1751,7 +2188,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 Ожидание:
 
-- life mode продолжает работать на `PG deterministic state + hot snapshot + transcript`
+- life mode продолжает работать на `PG operating/profile state + task resume/open loops + canonical memory + hot snapshot + transcript`
 - outbox копится
 - degraded mode прозрачно наблюдаем
 
@@ -1760,6 +2197,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 Сценарий:
 
 - run с borderline durable fact (без явного "запомни")
+- run с borderline AuDHD friction pattern/support protocol (без явного "запомни")
 - run с мимолётным упоминанием
 - run с borderline sensitivity
 - run с assistant free-form text который мог бы стать "фактом"
@@ -1767,10 +2205,38 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 Ожидание:
 
 - curator классифицирует durable vs ephemeral правильно
+- curator классифицирует task_state/friction_pattern/support_protocol candidates отдельно от classic facts
 - curator не продвигает assistant free-form как authoritative
 - curator флагирует borderline sensitivity для gate
-- curator не пишет в `life_profile_state` напрямую
+- curator не пишет в `profile_state` / `operating_profile` / support tables напрямую
 - curator использует существующий LLM client (нет нового provider)
+
+#### Проверка 12. AuDHD context restore contract
+
+Сценарий:
+
+- создать active `life_task_states` с goal/current_state/next_action/open_loops
+- отправить input: "я потерял контекст, с чего начать?"
+
+Ожидание:
+
+- prompt содержит `AuDHD Operating Contract`
+- prompt содержит `Current Task Resume`
+- assistant не задает broad "чем помочь?"
+- assistant возвращает current goal + next action + open loops кратко
+
+#### Проверка 13. Overload / option narrowing contract
+
+Сценарий:
+
+- configured support protocol для overload
+- input: "слишком много веток, я завис"
+
+Ожидание:
+
+- runtime использует confirmed protocol, не делает diagnosis
+- assistant прекращает branch expansion
+- assistant дает один recommended next action и максимум один blocking question
 
 ---
 
@@ -1789,6 +2255,10 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
    - `life_identity_links`
    - `life_link_tokens`
    - `life_turns`
+   - `life_memory_items`
+   - `life_task_states`
+   - `life_friction_patterns`
+   - `life_support_protocols`
    - `life_inputs`
    - `life_runs`
    - `life_events`
@@ -1805,30 +2275,42 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 4. Per-principal advisory lock
 5. DB event sink
 
-### Phase 3. Postgres default/hot context
+### Phase 3. Postgres AuDHD operating/task/hot context
 
-1. `life_profile_state`
-2. stable scope `("life","main")`
-3. final synchronous checkpoint commit
-4. temporary overrides with TTL
+1. `life_principals.profile_state`
+2. `life_principals.operating_profile`
+3. `life_task_states` resume/open-loop provider
+4. `life_friction_patterns` / `life_support_protocols` provider
+5. stable scope `("life","main")`
+6. final synchronous checkpoint commit
+7. temporary overrides with TTL
 
-### Phase 4. Engram adapter
+### Phase 4. Canonical memory ledger + curator + outbox
+
+1. `life_memory_items` read/write/inspect/forget service
+2. post-run memory curator (LLM via existing `llm/client.rs`, env-configured model, §10.6)
+3. sensitivity gate before canonical memory/outbox writes
+4. canonical write transaction: memory items + task state + protocol/friction candidates
+5. outbox worker payload projection with `source_memory_id`
+
+### Phase 5. Engram adapter
 
 1. `LifeLongTermMemoryBackend`
 2. patched/forked Engram internal API or local wrapper
 3. structured episode ingest
 4. context-only recall
 5. outbox worker + retries + idempotency
-6. post-run memory curator (LLM via existing `llm/client.rs`, env-configured model, §10.5)
+6. recall result dereference into canonical `life_memory_items`
 
-### Phase 5. Web/Telegram UX
+### Phase 6. Web/Telegram UX
 
 1. Web `/life`
 2. Telegram `/life` DM router + linking
 3. SSE/updates from `life_events`
 4. memory inspector/editor/conflict review
+5. operating profile / task resume / friction / protocol inspector
 
-### Phase 6. Hardening
+### Phase 7. Hardening
 
 1. secret gate
 2. rebuild-from-transcript tooling
@@ -1869,6 +2351,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 - новые migrations для life tables
 - existing `agent_memory_snapshots` reused
+- storage services for canonical memory ledger, task resume, operating support tables
 
 ### Не трогать по смыслу
 
@@ -1885,17 +2368,21 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 1. Обычный chat mode не делает Engram calls.
 2. Life mode использует stable scope `(principal_user_id, 'life', 'main')`.
 3. Один и тот же linked user видит одну и ту же жизнь в web и Telegram.
-4. После рестарта life mode продолжает работу из Postgres snapshot + transcript.
+4. После рестарта life mode продолжает работу из Postgres operating profile + task state + canonical memory + snapshot + transcript.
 5. Concurrent inputs из web/Telegram сериализуются per principal.
 6. Temporary overrides истекают и не загрязняют durable profile.
-7. Explicit permanent memory доступна к recall из обоих транспортов.
-8. Assistant free-form output не становится authoritative memory по умолчанию.
-9. Secrets не уходят в Engram.
-10. Пользователь может inspect/edit/forget memory.
-11. Engram может быть заменен на fork / Rust rewrite без изменения life-mode product contract.
-12. Curator не пишет в source of truth напрямую; profile updates только из confirmed user turns.
-13. Curator использует существующий LLM client infrastructure, без нового provider/client.
-14. Обратный поток Engram → Postgres source of truth отсутствует.
+7. Explicit permanent memory пишется в `life_memory_items`, а Engram получает только derived projection.
+8. Explicit permanent memory доступна к recall из обоих транспортов через Engram-derived candidate + PG dereference.
+9. Assistant free-form output не становится authoritative memory по умолчанию.
+10. `operating_profile` injected каждый run и не выводится из поведения без confirmation.
+11. Active `life_task_states` injected как resume packet; context-loss запрос получает goal/state/next action, а не broad question.
+12. `life_friction_patterns` / `life_support_protocols` поддерживают overload/task-initiation scenarios без diagnosis.
+13. Secrets не уходят в Engram.
+14. Пользователь может inspect/edit/forget memory, operating profile, task state, friction patterns and support protocols.
+15. Engram может быть заменен на fork / Rust rewrite без изменения life-mode product contract.
+16. Curator не пишет в source of truth напрямую; profile/operating updates только из confirmed user turns/UI actions.
+17. Curator использует существующий LLM client infrastructure, без нового provider/client.
+18. Обратный поток Engram → Postgres source of truth отсутствует.
 
 ---
 
@@ -1931,17 +2418,18 @@ transport-telegram      // life DM router + linking
 │ Curator      │ LLM single call (existing llm/client.rs)       │
 │              │ env: LIFE_CURATOR_PROVIDER + LIFE_CURATOR_MODEL│
 │              │ temperature = provider default                 │
+│              │ candidates: memory/task/friction/protocol       │
 │              │ fire-and-forget после run, без tools           │
 ├──────────────┼───────────────────────────────────────────────┤
 │ Sensitivity  │ rules-based gate + curator flags               │
 │ gate         │ clean / redacted / secret                      │
 ├──────────────┼───────────────────────────────────────────────┤
 │ Outbox       │ Rust background task, НЕ LLM                   │
-│ worker       │ retries + idempotency → Engram HTTP            │
+│ worker       │ canonical PG memory projection → Engram HTTP   │
 ├──────────────┼───────────────────────────────────────────────┤
 │ Engram       │ external dumb engine                           │
 │              │ episodes + facts + contradictions              │
-│              │ rebuildable из life_turns                      │
+│              │ rebuildable из life_memory_items + life_turns   │
 ├──────────────┼───────────────────────────────────────────────┤
 │ EngramMemory │ Rust adapter, trait LifeLongTermMemoryBackend  │
 │ Backend      │ recall_context / append_episode / assert_fact  │
@@ -1952,11 +2440,13 @@ transport-telegram      // life DM router + linking
 
 ## 22. Финальная рекомендация
 
-Делать `permanent life mode` как отдельный продуктовый режим с тремя слоями памяти:
+Делать `permanent life mode` как отдельный продуктовый режим с AuDHD-first memory architecture:
 
-1. **Postgres authoritative defaults/profile state**
-2. **Postgres hot context + transcript + queue + checkpoint**
-3. **Engram as derived long-term memory engine**
+1. **Postgres authoritative profile + confirmed AuDHD operating profile**
+2. **Postgres task resume/open-loop state**
+3. **Postgres canonical long-term memory ledger** (`life_memory_items`, friction patterns, support protocols)
+4. **Postgres hot context + transcript + queue + checkpoint**
+5. **Engram as derived recall index**, rebuildable and replaceable
 
 Не интегрировать Engram в обычный chat mode.
 
@@ -1966,7 +2456,9 @@ transport-telegram      // life DM router + linking
 
 Не хранить secrets в memory engine.
 
-Сначала выстроить principal model + DB-backed runtime + generic prompt context seam, и только потом подключать Engram через правильный internal contract.
+Не строить life mode как нейротипичную fact-memory. Главная функция памяти — external executive-function support: восстановить контекст, удержать цель/open loops, сузить перегруз и только затем достать долговременные facts/evidence.
+
+Сначала выстроить principal model + DB-backed runtime + generic prompt context seam + Postgres operating/task/canonical memory layers, и только потом подключать Engram через правильный internal contract.
 
 ---
 
@@ -2015,4 +2507,3 @@ transport-telegram      // life DM router + linking
 - `https://raw.githubusercontent.com/ly-wang19/engram/main/engram/types.py`
 - `https://raw.githubusercontent.com/ly-wang19/engram/main/COMMERCIAL-LICENSE.md`
 - `https://arxiv.org/abs/2606.09900`
-
