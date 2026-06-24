@@ -26,6 +26,7 @@
 - **`Engram` = производный long-term memory engine / retrieval index**, rebuildable из данных Oxide
 - **память life mode = AuDHD-first external executive-function system**, не нейротипичная fact notebook
 - **canonical long-term memory ledger** живет в Postgres; Engram только индексирует его для recall
+- **вся rebuildable materialized memory привязана к `memory_generation_id`**: можно собрать новое поколение памяти, сравнить, активировать, откатить или wipe-нуть без разрушения source transcript
 - **один life principal** должен быть доступен и из web, и из Telegram
 - **никакой интеграции Engram в обычные web-session / telegram-topic session**
 
@@ -597,6 +598,8 @@ Postgres tables (source of truth):
 - `life_principals`
 - `life_identity_links`
 - `life_turns`
+- `life_memory_generations`
+- `life_active_memory_generations`
 - `life_memory_items`
 - `life_task_states`
 - `life_friction_patterns`
@@ -607,6 +610,8 @@ Postgres tables (source of truth):
 - `life_context_overrides`
 - `life_engram_outbox`
 - `agent_memory_snapshots` (existing, reused)
+
+Migration order must create `life_memory_generations` / `life_active_memory_generations` before any table that has a `memory_generation_id` FK. Section order below is conceptual; migration order is part of the storage contract.
 
 LifeWorker / Orchestrator components:
 
@@ -796,6 +801,7 @@ CREATE TABLE life_inputs (
 CREATE TABLE life_runs (
     run_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE RESTRICT,
     status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
     started_at BIGINT,
     finished_at BIGINT,
@@ -846,12 +852,62 @@ CREATE TABLE life_context_overrides (
 - `answer_verbosity = "detailed"` до конца дня
 - `current_focus = "prepare PRD"` на 2 часа
 
-### 9.6. `life_memory_items` — canonical durable memory ledger
+### 9.6. `life_memory_generations` — rebuild / wipe boundary
+
+```sql
+CREATE TABLE life_memory_generations (
+    memory_generation_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    generation_number BIGINT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('building', 'active', 'archived', 'failed', 'deleted')),
+    source_generation_id UUID REFERENCES life_memory_generations(memory_generation_id),
+    build_reason TEXT NOT NULL,
+    build_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source_scope JSONB NOT NULL DEFAULT '{}'::jsonb,
+    comparison_report JSONB NOT NULL DEFAULT '{}'::jsonb,
+    activated_at BIGINT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE(principal_user_id, generation_number)
+);
+```
+
+Назначение:
+
+- сделать rebuild/wipe first-class product operation, а не side effect Engram reindex;
+- привязать curator policy, prompt policy, source transcript range, selected seed memories и Engram namespace к конкретному поколению;
+- позволить собрать generation N+1 рядом с active generation N, сравнить diff, активировать или удалить;
+- дать rollback: old active generation остается `archived`, пока пользователь/оператор не решит hard-wipe.
+
+`build_policy` хранит версию curator prompt/schema, model/provider, sensitivity policy, AuDHD support policy и projection policy. Это обязательно: без этого через месяц невозможно понять, почему память была собрана именно так.
+
+`source_scope` хранит границу источников rebuild-а: transcript interval, seed generation, excluded memory ids, manual corrections. Transcript (`life_turns`) остается source evidence и сам не принадлежит generation.
+
+### 9.7. `life_active_memory_generations` — active pointer
+
+```sql
+CREATE TABLE life_active_memory_generations (
+    principal_user_id BIGINT PRIMARY KEY REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE RESTRICT,
+    activated_at BIGINT NOT NULL,
+    activation_reason TEXT NOT NULL
+);
+```
+
+Назначение:
+
+- ровно одно active memory generation на principal;
+- prompt context provider, curator, Engram adapter и inspector всегда начинают read path с этого pointer-а;
+- activation/rollback = атомарная смена pointer-а + смена статусов generations;
+- никакой read path не имеет права читать memory-owned rows без `memory_generation_id = active_memory_generation_id`.
+
+### 9.8. `life_memory_items` — canonical durable memory ledger
 
 ```sql
 CREATE TABLE life_memory_items (
     memory_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE CASCADE,
     kind TEXT NOT NULL CHECK (kind IN (
         'biography',
         'preference',
@@ -886,13 +942,15 @@ CREATE TABLE life_memory_items (
 - хранить AuDHD-relevant operating rules как память первого класса
 - давать source для rebuild Engram
 - позволять inspect/edit/delete без зависимости от чужих `fact_id`
+- позволять parallel rebuild: old/new interpretations одного transcript могут жить рядом в разных `memory_generation_id`
 
-### 9.7. `life_task_states` — resume packets / open loops
+### 9.9. `life_task_states` — resume packets / open loops
 
 ```sql
 CREATE TABLE life_task_states (
     task_state_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE CASCADE,
     project_key TEXT NOT NULL,
     current_goal TEXT NOT NULL,
     why TEXT,
@@ -904,7 +962,7 @@ CREATE TABLE life_task_states (
     last_turn_id UUID REFERENCES life_turns(turn_id),
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
-    UNIQUE(principal_user_id, project_key)
+    UNIQUE(principal_user_id, memory_generation_id, project_key)
 );
 ```
 
@@ -914,13 +972,15 @@ CREATE TABLE life_task_states (
 - хранить “где мы остановились” отдельно от transcript и hot snapshot
 - давать агенту deterministic resume packet перед каждым run
 - не заставлять пользователя заново формулировать контекст после паузы
+- позволять rebuild task resume packets без перезаписи active generation до activation
 
-### 9.8. `life_friction_patterns`
+### 9.10. `life_friction_patterns`
 
 ```sql
 CREATE TABLE life_friction_patterns (
     pattern_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE CASCADE,
     kind TEXT NOT NULL CHECK (kind IN ('overload_trigger', 'task_initiation_barrier', 'context_loss', 'communication_mismatch', 'sensory_or_energy_constraint')),
     trigger_descriptor TEXT NOT NULL,
     preferred_response JSONB NOT NULL,
@@ -937,13 +997,15 @@ CREATE TABLE life_friction_patterns (
 - хранить не “у пользователя ADHD”, а конкретные verified friction patterns этого пользователя
 - предотвращать повторение response patterns, которые ломают выполнение
 - давать prompt provider-у правила анти-перегруза и task initiation support
+- позволять сравнить old/new AuDHD friction model перед activation
 
-### 9.9. `life_support_protocols`
+### 9.11. `life_support_protocols`
 
 ```sql
 CREATE TABLE life_support_protocols (
     protocol_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     trigger_descriptor TEXT NOT NULL,
     steps JSONB NOT NULL,
@@ -961,13 +1023,15 @@ CREATE TABLE life_support_protocols (
 - хранить reusable procedures: start protocol, overload protocol, context restore protocol, decision narrowing protocol
 - отделять user-confirmed support from model guesses
 - inject только relevant protocols, чтобы не перегружать prompt
+- позволять rebuild support protocols under a new policy without mutating the active prompt behavior
 
-### 9.10. `life_engram_outbox`
+### 9.12. `life_engram_outbox`
 
 ```sql
 CREATE TABLE life_engram_outbox (
     outbox_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    memory_generation_id UUID NOT NULL REFERENCES life_memory_generations(memory_generation_id) ON DELETE CASCADE,
     source_memory_id UUID REFERENCES life_memory_items(memory_id),
     idempotency_key TEXT NOT NULL UNIQUE,
     payload JSONB NOT NULL,
@@ -982,7 +1046,9 @@ CREATE TABLE life_engram_outbox (
 
 Это delivery queue из canonical Postgres memory в Engram-derived index. Это не модель памяти.
 
-### 9.11. Используем существующий `agent_memory_snapshots`
+Engram namespace/idempotency key обязаны включать `memory_generation_id`. Иначе rebuild generation N+1 смешает recall с generation N, и old memory протечет в prompt после wipe/rollback.
+
+### 9.13. Используем существующий `agent_memory_snapshots`
 
 Life mode не изобретает новый hot-memory storage.
 
@@ -1018,6 +1084,32 @@ Life mode не изобретает новый hot-memory storage.
 Поэтому source of truth делится на deterministic operating state, task state и canonical memory ledger. Engram получает derived index только после этого.
 
 ### 10.2. Слои памяти
+
+#### Layer 0. `memory_generation_id`
+
+Это граница пластичности памяти.
+
+Каждый rebuildable materialized memory слой, который может быть rebuilt/compared/activated, обязан быть привязан к `memory_generation_id`:
+
+- `life_memory_items`
+- `life_task_states`
+- `life_friction_patterns`
+- `life_support_protocols`
+- `life_engram_outbox`
+- `life_runs` фиксирует generation, под которой был собран prompt
+
+`life_turns` не принадлежит generation: transcript — source evidence для rebuild-а. `life_identity_links` и базовый principal envelope тоже не generation-owned: это identity/security boundary.
+
+Правило read path:
+
+```text
+resolve principal
+→ load active_memory_generation_id
+→ все memory reads фильтруются по active_memory_generation_id
+→ Engram recall namespace тоже active_memory_generation_id
+```
+
+Запрещено читать memory-owned rows только по `principal_user_id`. Это протечка старой/удаленной generation в prompt.
 
 #### Layer A. `profile_state` + `operating_profile` в `life_principals`
 
@@ -1071,6 +1163,8 @@ overload_protocol:
 ```
 
 Это не медицинская диагностика. Это user-confirmed operating contract.
+
+Layer A не переписывается curator rebuild-ом silently. Если rebuild/reset предлагает изменить `profile_state` или `operating_profile`, это candidate patch в `life_memory_generations.comparison_report/source_scope`, который применяется только через explicit user confirmation / UI action. Privacy hard wipe может сбросить Layer A, но это отдельная подтвержденная destructive operation, не обычная generation activation.
 
 #### Layer B. `life_task_states`
 
@@ -1209,6 +1303,16 @@ overload_protocol:
 └──────────────────────────────────────────────────────────────┘
 ```
 
+Над всеми слоями находится active generation pointer:
+
+```text
+life_active_memory_generations(principal_user_id)
+  → memory_generation_id
+  → фильтр для Layers B/C/D/G и audit marker для runs
+```
+
+Generation N+1 может быть построена параллельно с active generation N. Пока pointer не переключен, prompt продолжает видеть только generation N.
+
 ### 10.3. Почему AuDHD operating state должен жить в Postgres
 
 Потому что есть класс вещей, которые retrieval не имеет права “иногда не вспомнить”:
@@ -1329,6 +1433,68 @@ Current wiki planner (`wiki_memory/planner.rs`) — deterministic, keyword heuri
 #### Relationship to existing wiki planner
 
 Wiki planner остаётся для chat mode (behavior change = 0). Curator — только для life mode. Разные bounded contexts, разные sinks (wiki pages vs canonical life memory/outbox), общий паттерн (post-run analysis).
+
+### 10.7. Memory generations / plastic rebuild contract
+
+`memory_generation_id` делает память пластичной: rebuild создает новое materialized поколение памяти, не мутируя active поколение до explicit activation.
+
+#### Lifecycle
+
+```text
+generation N (active)
+  ├─ используется runtime/prompt/Engram recall сейчас
+  └─ остается rollback target
+
+build generation N+1 (building)
+  ├─ source = life_turns + selected generation N memories + manual corrections
+  ├─ policy = curator schema/prompt/model + AuDHD support policy + sensitivity policy
+  ├─ writes rows with memory_generation_id = N+1
+  ├─ writes Engram namespace/index = life:<principal>:gen:<N+1>
+  └─ produces comparison_report against N
+
+activate N+1
+  ├─ atomically switch life_active_memory_generations pointer
+  ├─ mark N archived, N+1 active
+  ├─ prompt reads only N+1
+  └─ Engram recall reads only namespace N+1
+```
+
+Rollback = same operation in reverse: switch active pointer back to archived generation N. No rewrite of transcript is required.
+
+#### Rebuild modes
+
+1. **Derived-only rebuild** — wipe/recreate Engram namespace for one generation from `life_memory_items` + selected `life_turns`.
+2. **Task/support rebuild** — create new generation with regenerated `life_task_states`, `life_friction_patterns`, `life_support_protocols`, compare before activation.
+3. **Canonical reinterpretation** — create new generation of `life_memory_items` using a new curator/policy, old generation remains archived for diff/rollback.
+4. **Soft memory reset** — create near-empty generation that keeps only explicit seed memories chosen by user/operator.
+5. **Privacy hard wipe** — delete source evidence and all generations/derived indexes for selected scope; this is irreversible and separate from rebuild.
+
+#### Wipe semantics
+
+```text
+soft reset:
+  create new generation with empty/minimal memory
+  keep life_turns and archived generations for audit/rollback
+
+generation wipe:
+  delete archived generation rows + its Engram namespace
+  active generation unaffected
+
+derived wipe:
+  delete only Engram namespace/outbox delivery state
+  rebuild from active Postgres generation
+
+privacy hard wipe:
+  delete/redact life_turns source evidence
+  delete all affected memory generations and derived indexes
+  cannot be reconstructed afterwards
+```
+
+Главный инвариант:
+
+> Rebuild никогда не пишет поверх active generation. Он строит новую generation, сравнивает, и только activation меняет read path.
+
+Это закрывает класс ошибок “новый curator испортил память” и “старый recall протек после wipe”.
 
 ---
 
@@ -1458,9 +1624,10 @@ life:<principal_user_id>
 
 ```text
 claim lock
+load active memory_generation_id
 load principal state: profile_state + operating_profile
-load active life_task_states / open loops
-load relevant friction_patterns + support_protocols
+load active generation life_task_states / open loops
+load active generation friction_patterns + support_protocols
 hydrate AgentSession from agent_memory_snapshots(scope=life/main)
 build dynamic prompt context
 run AgentExecutor
@@ -1522,11 +1689,12 @@ release lock
     LifeWorker
        │
        ├─ pg_advisory_xact_lock("life:<principal>")  ◄── один lock
+       ├─ load active_memory_generation_id из Postgres (Layer 0, ВСЕГДА)
        ├─ load profile_state + operating_profile из Postgres (Layer A, ВСЕГДА)
-       ├─ load active task_state/open_loops из Postgres (Layer B, ВСЕГДА если есть active project)
-       ├─ load support protocols/friction patterns из Postgres (Layer D, deterministic)
+       ├─ load active generation task_state/open_loops из Postgres (Layer B, ВСЕГДА если есть active project)
+       ├─ load active generation support protocols/friction patterns из Postgres (Layer D, deterministic)
        ├─ load hot snapshot из Postgres (Layer E, ВСЕГДА)
-       ├─ recall из Engram → candidate ids → dereference PG memory (Layer G, если нужно)
+       ├─ recall из Engram active generation namespace → candidate ids → dereference PG memory (Layer G, если нужно)
        │
        │  Собранный prompt:
        │  ┌─────────────────────────────────────────┐
@@ -1706,6 +1874,8 @@ pub trait LifeLongTermMemoryBackend: Send + Sync {
 Всегда:
 
 - `life_turns`
+- `life_memory_generations`
+- `life_active_memory_generations`
 - `life_principals.profile_state`
 - `life_principals.operating_profile`
 - `life_memory_items`
@@ -1718,7 +1888,7 @@ pub trait LifeLongTermMemoryBackend: Send + Sync {
 Если Engram умер / сломан / переписывается на Rust:
 
 - replay outbox
-- reindex from `life_memory_items` + selected transcript episodes
+- reindex active generation from `life_memory_items` + selected transcript episodes
 - rebuild semantic memory without losing canonical AuDHD operating/task state
 
 ### 13.6. Запрещённый обратный поток
@@ -1832,6 +2002,10 @@ PATCH  /api/life/support-protocols/{protocol_id}
 GET    /api/life/memory/search?q=...
 GET    /api/life/memory/conflicts
 POST   /api/life/memory/forget
+GET    /api/life/memory/generations
+POST   /api/life/memory/generations/rebuild
+POST   /api/life/memory/generations/{generation_id}/activate
+POST   /api/life/memory/generations/{generation_id}/wipe
 POST   /api/life/link/telegram
 ```
 
@@ -1901,8 +2075,9 @@ Life mode в Telegram должен жить только в private chat с бо
 Система делает:
 
 1. `life_turns` вставляет user turn
-2. `life_runs` создает run
-3. `life_principals.profile_state` обновляет:
+2. если это первый life run, создает generation `1` в `life_memory_generations` и active pointer в `life_active_memory_generations`
+3. `life_runs` создает run с active `memory_generation_id`
+4. `life_principals.profile_state` обновляет:
 
 ```json
 {
@@ -1911,7 +2086,7 @@ Life mode в Telegram должен жить только в private chat с бо
 }
 ```
 
-4. `life_principals.operating_profile` обновляет confirmed support contract:
+5. `life_principals.operating_profile` обновляет confirmed support contract:
 
 ```json
 {
@@ -1927,10 +2102,10 @@ Life mode в Telegram должен жить только в private chat с бо
 }
 ```
 
-5. `life_support_protocols` получает confirmed context restore / decision narrowing protocols
-6. `agent_memory_snapshots(user_id=principal, context_key='life', flow_id='main')` обновляется после run
-7. `life_memory_items` получает canonical operating rule items с evidence `turn_id`
-8. `life_engram_outbox` получает projection этих canonical memory items для derived recall
+6. `life_support_protocols` получает confirmed context restore / decision narrowing protocols с active `memory_generation_id`
+7. `agent_memory_snapshots(user_id=principal, context_key='life', flow_id='main')` обновляется после run
+8. `life_memory_items` получает canonical operating rule items с active `memory_generation_id` и evidence `turn_id`
+9. `life_engram_outbox` получает projection этих canonical memory items для derived recall namespace этой generation
 
 #### Шаг 2. Telegram
 
@@ -1943,11 +2118,12 @@ Life mode в Telegram должен жить только в private chat с бо
 Система:
 
 1. резолвит тот же `principal_user_id` через `life_identity_links`
-2. гидратит тот же `AgentMemoryScope(principal, "life", "main")`
-3. injects deterministic defaults + operating profile из PG
-4. injects relevant support protocols из PG
-5. при необходимости добирает long-term evidence через Engram-derived recall с dereference в `life_memory_items`
-6. отвечает:
+2. читает active `memory_generation_id`
+3. гидратит тот же `AgentMemoryScope(principal, "life", "main")`
+4. injects deterministic defaults + operating profile из PG
+5. injects relevant support protocols из PG только из active generation
+6. при необходимости добирает long-term evidence через Engram-derived recall active generation namespace с dereference в `life_memory_items`
+7. отвечает:
 
 ```text
 По умолчанию — по-русски, коротко и технично.
@@ -1982,16 +2158,17 @@ Life mode в Telegram должен жить только в private chat с бо
 Система должна:
 
 1. записать user turn в `life_turns`
-2. создать `life_memory_items(kind='project_principle', authority='user_asserted', evidence_turn_ids=[turn_id])`
-3. создать `life_engram_outbox(source_memory_id=memory_id)` как projection в derived index
-4. отправить в Engram structured assertion с `external_id = memory_id`
-5. на следующем вопросе:
+2. прочитать active `memory_generation_id`
+3. создать `life_memory_items(kind='project_principle', memory_generation_id=active_generation, authority='user_asserted', evidence_turn_ids=[turn_id])`
+4. создать `life_engram_outbox(memory_generation_id=active_generation, source_memory_id=memory_id)` как projection в derived index
+5. отправить в Engram structured assertion с `external_id = memory_id` в namespace active generation
+6. на следующем вопросе:
 
 ```text
 Какой у меня принцип по архитектурным исправлениям?
 ```
 
-assistant должен получить candidate из Engram, dereference canonical `life_memory_items(memory_id)`, проверить `status/sensitivity`, inject как evidence и ответить по существу.
+assistant должен получить candidate из Engram active generation namespace, dereference canonical `life_memory_items(memory_id)`, проверить `memory_generation_id/status/sensitivity`, inject как evidence и ответить по существу.
 
 ### 16.4. Example D — follow-up во время активного run из другого транспорта
 
@@ -2042,8 +2219,9 @@ assistant должен получить candidate из Engram, dereference canon
 Правильное поведение:
 
 - runtime читает `life_principals.operating_profile`
-- runtime читает active `life_task_states(project_key='permanent-life-mode')`
-- runtime injects context restore protocol из `life_support_protocols`
+- runtime читает active `memory_generation_id`
+- runtime читает active generation `life_task_states(project_key='permanent-life-mode')`
+- runtime injects context restore protocol из active generation `life_support_protocols`
 - assistant **не** спрашивает “чем помочь?” и **не** вываливает весь backlog
 - assistant отвечает:
 
@@ -2182,13 +2360,13 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 - ответ не потерян
 - hot snapshot не потерян
-- outbox pending и будет допушен после рестарта
+- outbox pending содержит `memory_generation_id` и будет допушен в правильный Engram namespace после рестарта
 
 #### Проверка 10. Engram unavailable
 
 Ожидание:
 
-- life mode продолжает работать на `PG operating/profile state + task resume/open loops + canonical memory + hot snapshot + transcript`
+- life mode продолжает работать на `PG operating/profile state + active generation task resume/open loops + canonical memory + hot snapshot + transcript`
 - outbox копится
 - degraded mode прозрачно наблюдаем
 
@@ -2215,7 +2393,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 Сценарий:
 
-- создать active `life_task_states` с goal/current_state/next_action/open_loops
+- создать active generation `life_task_states` с goal/current_state/next_action/open_loops
 - отправить input: "я потерял контекст, с чего начать?"
 
 Ожидание:
@@ -2229,7 +2407,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 Сценарий:
 
-- configured support protocol для overload
+- configured support protocol для overload в active generation
 - input: "слишком много веток, я завис"
 
 Ожидание:
@@ -2255,6 +2433,8 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
    - `life_identity_links`
    - `life_link_tokens`
    - `life_turns`
+   - `life_memory_generations`
+   - `life_active_memory_generations`
    - `life_memory_items`
    - `life_task_states`
    - `life_friction_patterns`
@@ -2288,11 +2468,12 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 
 ### Phase 4. Canonical memory ledger + curator + outbox
 
-1. `life_memory_items` read/write/inspect/forget service
+1. `life_memory_items` read/write/inspect/forget service with mandatory active `memory_generation_id` filter
 2. post-run memory curator (LLM via existing `llm/client.rs`, env-configured model, §10.6)
 3. sensitivity gate before canonical memory/outbox writes
 4. canonical write transaction: memory items + task state + protocol/friction candidates
 5. outbox worker payload projection with `source_memory_id`
+6. memory generation build/compare/activate/rollback service
 
 ### Phase 5. Engram adapter
 
@@ -2300,7 +2481,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 2. patched/forked Engram internal API or local wrapper
 3. structured episode ingest
 4. context-only recall
-5. outbox worker + retries + idempotency
+5. outbox worker + retries + idempotency scoped by `memory_generation_id`
 6. recall result dereference into canonical `life_memory_items`
 
 ### Phase 6. Web/Telegram UX
@@ -2314,10 +2495,11 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 ### Phase 7. Hardening
 
 1. secret gate
-2. rebuild-from-transcript tooling
+2. rebuild-from-transcript tooling with memory generations
 3. degraded-mode observability
 4. concurrency tests
-5. migration/import tools if later понадобятся
+5. generation soft reset / derived wipe / privacy hard wipe tooling
+6. migration/import tools if later понадобятся
 
 ---
 
@@ -2384,6 +2566,9 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 16. Curator не пишет в source of truth напрямую; profile/operating updates только из confirmed user turns/UI actions.
 17. Curator использует существующий LLM client infrastructure, без нового provider/client.
 18. Обратный поток Engram → Postgres source of truth отсутствует.
+19. Every memory-owned read path filters by active `memory_generation_id`; old/archived/deleted generations cannot enter prompt or Engram recall.
+20. A new memory generation can be built and compared without mutating the active generation; activation/rollback is an atomic active-pointer switch.
+21. Derived wipe, generation wipe, soft reset and privacy hard wipe have distinct semantics and deletion order.
 
 ---
 
@@ -2491,8 +2676,9 @@ Ownership по директориям:
 1. **Postgres authoritative profile + confirmed AuDHD operating profile**
 2. **Postgres task resume/open-loop state**
 3. **Postgres canonical long-term memory ledger** (`life_memory_items`, friction patterns, support protocols)
-4. **Postgres hot context + transcript + queue + checkpoint**
-5. **Engram as derived recall index**, rebuildable and replaceable
+4. **Postgres memory generations** for rebuild/compare/activate/rollback/wipe
+5. **Postgres hot context + transcript + queue + checkpoint**
+6. **Engram as derived recall index**, rebuildable and replaceable per active generation
 
 Не интегрировать Engram в обычный chat mode.
 
