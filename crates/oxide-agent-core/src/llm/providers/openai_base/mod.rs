@@ -60,7 +60,7 @@ impl OpenAIBaseProvider {
     ) -> Self {
         let endpoint = chat_completions_url(&api_base);
         Self {
-            client: ChatCompletionsClient::new(http_client, endpoint, api_key, "", profile),
+            client: ChatCompletionsClient::new(http_client, endpoint, api_key, profile),
         }
     }
 

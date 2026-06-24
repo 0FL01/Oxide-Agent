@@ -55,7 +55,6 @@ impl OpenRouterProvider {
                 http_client,
                 endpoint,
                 Some(api_key),
-                "",
                 ChatCompletionsProfile::openrouter(),
             ),
         }
@@ -362,8 +361,8 @@ mod tests {
         let body = request_body(&request_rx.await.expect("request captured"));
         assert_eq!(body["provider"], json!({"require_parameters": true}));
         assert!(body.get("tool_choice").is_none());
-        // OpenRouter now has JsonModePolicy::Standard; json_mode=true with
-        // tools sets response_format (P0.5 probes confirm support).
+        // json_mode=true with tools sets response_format (P0.5 probes
+        // confirm all ChatCompletions providers accept json_object + tools).
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 

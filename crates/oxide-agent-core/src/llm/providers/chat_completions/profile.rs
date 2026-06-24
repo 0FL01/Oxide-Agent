@@ -15,25 +15,9 @@ pub(crate) enum EndpointPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AuthPolicy {
-    Bearer,
-    /// Available for providers that require no authentication header.
-    #[allow(dead_code)]
-    NoAuth,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatToolChoicePolicy {
     AutoWhenToolsExist,
     Omit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonModePolicy {
-    /// Available for providers that do not support `response_format`.
-    #[allow(dead_code)]
-    None,
-    Standard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,10 +69,8 @@ pub struct ChatCompletionsProfile {
     pub(crate) label: &'static str,
     pub(crate) default_endpoint: &'static str,
     pub(crate) endpoint: EndpointPolicy,
-    pub(crate) auth: AuthPolicy,
     pub(crate) extra_headers: &'static [(&'static str, &'static str)],
     pub(crate) tool_choice: ChatToolChoicePolicy,
-    pub(crate) json_mode: JsonModePolicy,
     pub(crate) thinking: ChatThinkingPolicy,
     pub(crate) reasoning: ChatReasoningPolicy,
     pub(crate) streaming: ChatStreamingPolicy,
@@ -133,10 +115,8 @@ impl ChatCompletionsProfile {
             label: "generic",
             default_endpoint: "",
             endpoint: EndpointPolicy::AppendChatCompletions,
-            auth: AuthPolicy::Bearer,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
-            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
             reasoning: ChatReasoningPolicy::None,
             streaming: ChatStreamingPolicy::NonStreaming,
@@ -164,10 +144,8 @@ impl ChatCompletionsProfile {
             label: "zai",
             default_endpoint: "https://api.z.ai/api/coding/paas/v4",
             endpoint: EndpointPolicy::AppendChatCompletions,
-            auth: AuthPolicy::Bearer,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
-            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::ZaiEnabledUnlessJsonMode,
             reasoning: ChatReasoningPolicy::None,
             streaming: ChatStreamingPolicy::ZaiUnlessNativeJsonMode,
@@ -196,10 +174,8 @@ impl ChatCompletionsProfile {
             label: "openrouter",
             default_endpoint: "https://openrouter.ai/api/v1/chat/completions",
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
-            auth: AuthPolicy::Bearer,
             extra_headers: OPENROUTER_HEADERS,
             tool_choice: ChatToolChoicePolicy::Omit,
-            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
             reasoning: ChatReasoningPolicy::None,
             streaming: ChatStreamingPolicy::NonStreaming,
@@ -228,10 +204,8 @@ impl ChatCompletionsProfile {
             label: "opencode_go",
             default_endpoint: "https://opencode.ai/zen/go/v1/chat/completions",
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
-            auth: AuthPolicy::Bearer,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
-            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
             reasoning: ChatReasoningPolicy::OpenCodeGo {
                 default_effort: "high",
@@ -262,10 +236,8 @@ impl ChatCompletionsProfile {
             label: "opencode_zen",
             default_endpoint: "https://opencode.ai/zen/v1/chat/completions",
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
-            auth: AuthPolicy::Bearer,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
-            json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
             reasoning: ChatReasoningPolicy::OpenCodeGo {
                 default_effort: "high",
@@ -320,8 +292,6 @@ mod tests {
 
         assert_eq!(p.label, "generic");
         assert_eq!(p.endpoint, EndpointPolicy::AppendChatCompletions);
-        assert_eq!(p.auth, AuthPolicy::Bearer);
-        assert_eq!(p.json_mode, JsonModePolicy::Standard);
         assert_eq!(p.response_content, ChatResponseContentPolicy::StringOnly);
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);

@@ -212,7 +212,6 @@ fn build_generic_chat_completions_provider(
         ctx.http_client.clone(),
         endpoint,
         config.api_key.clone(),
-        "",
         profile,
     );
 

@@ -8,7 +8,7 @@ pub(crate) use crate::llm::providers::chat_completions::profile::ChatCompletions
 #[cfg(test)]
 pub(crate) use crate::llm::providers::chat_completions::profile::{
     ChatReasoningPolicy as ReasoningPolicy, ChatResponseContentPolicy as ResponseContentPolicy,
-    ChatStreamingPolicy as StreamPolicy, ChatThinkingPolicy as ThinkingPolicy, JsonModePolicy,
+    ChatStreamingPolicy as StreamPolicy, ChatThinkingPolicy as ThinkingPolicy,
     StructuredOutputPolicy,
 };
 
@@ -30,7 +30,6 @@ mod tests {
         assert!((p.temperatures.chat - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.tools - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.reasoning - 0.95).abs() < f32::EPSILON);
-        assert_eq!(p.json_mode, JsonModePolicy::Standard);
         assert_eq!(p.parallel_tool_calls, None);
         assert_eq!(p.reasoning, ReasoningPolicy::None);
         assert_eq!(p.thinking, ThinkingPolicy::ZaiEnabledUnlessJsonMode);

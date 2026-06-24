@@ -2,7 +2,7 @@
 
 use super::profile::{
     ChatCompletionsProfile, ChatReasoningPolicy, ChatStreamingPolicy, ChatThinkingPolicy,
-    ChatToolChoicePolicy, JsonModePolicy,
+    ChatToolChoicePolicy,
 };
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::media;
@@ -87,7 +87,7 @@ pub(crate) fn build_text_body(
         "content": user_message,
     }));
 
-    let supports_reasoning = model_supports_reasoning(options, model_id);
+    let supports_reasoning = model_supports_reasoning(options);
     let mut body = json!({
         "model": model_id,
         "messages": messages,
@@ -99,7 +99,7 @@ pub(crate) fn build_text_body(
         },
     });
     apply_streaming_policy(&mut body, options.profile, false);
-    apply_reasoning_policy(&mut body, model_id, options, supports_reasoning);
+    apply_reasoning_policy(&mut body, options, supports_reasoning);
     body
 }
 
@@ -116,8 +116,11 @@ pub(crate) fn build_tool_body(
 ) -> Value {
     let openai_tools = prepare_tools_json(tools);
     let has_tools = !openai_tools.is_empty();
-    let native_json_mode = should_use_native_json_mode(options.profile, json_mode, has_tools);
-    let supports_reasoning = model_supports_reasoning(options, model_id);
+    // P0.5 probes confirm all ChatCompletions-profile providers accept
+    // json_object together with tools; structured output is enforced
+    // provider-side even when tools are present.
+    let native_json_mode = json_mode;
+    let supports_reasoning = model_supports_reasoning(options);
     let effective_temperature = if supports_reasoning {
         temperature.unwrap_or(options.profile.temperatures.reasoning)
     } else {
@@ -157,7 +160,7 @@ pub(crate) fn build_tool_body(
     }
 
     apply_thinking_policy(&mut body, options.profile, native_json_mode);
-    apply_reasoning_policy(&mut body, model_id, options, supports_reasoning);
+    apply_reasoning_policy(&mut body, options, supports_reasoning);
 
     body
 }
@@ -192,16 +195,12 @@ pub(crate) fn build_image_body(
         "temperature": temperature,
     });
     apply_streaming_policy(&mut body, options.profile, false);
-    apply_reasoning_policy(
-        &mut body,
-        model_id,
-        options,
-        model_supports_reasoning(options, model_id),
-    );
+    apply_reasoning_policy(&mut body, options, model_supports_reasoning(options));
     body
 }
 
 #[must_use]
+#[allow(dead_code)] // Live in profile-full (openrouter); dead in web/embedded profiles.
 pub(crate) fn build_audio_body(
     audio_bytes: &[u8],
     mime_type: &str,
@@ -233,6 +232,7 @@ pub(crate) fn build_audio_body(
 }
 
 #[must_use]
+#[allow(dead_code)] // Live in profile-full (openrouter); dead in web/embedded profiles.
 pub(crate) fn build_video_body(
     video_bytes: &[u8],
     mime_type: &str,
@@ -297,31 +297,18 @@ pub(crate) fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
 }
 
 #[must_use]
-pub(crate) fn image_data_url(image_bytes: &[u8]) -> String {
+fn image_data_url(image_bytes: &[u8]) -> String {
     media::image_data_url(image_bytes)
 }
 
 #[must_use]
-pub(crate) fn image_data_url_with_mime(image_bytes: &[u8], mime_type: &str) -> String {
+fn image_data_url_with_mime(image_bytes: &[u8], mime_type: &str) -> String {
     media::image_data_url_with_mime(image_bytes, mime_type)
 }
 
 #[cfg(test)]
 pub(crate) fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
     media::infer_image_mime_type(image_bytes)
-}
-
-/// Decide whether to set `response_format: {type: "json_object"}` in the
-/// request body.  P0.5 probes confirm all ChatCompletions-profile providers
-/// accept `json_object` together with `tools`, so structured output is
-/// enforced provider-side even when tools are present.
-#[must_use]
-pub(crate) fn should_use_native_json_mode(
-    profile: ChatCompletionsProfile,
-    json_mode: bool,
-    _has_tools: bool,
-) -> bool {
-    matches!(profile.json_mode, JsonModePolicy::Standard) && json_mode
 }
 
 fn prepare_generic_messages(
@@ -581,7 +568,6 @@ fn apply_thinking_policy(
 
 fn apply_reasoning_policy(
     body: &mut Value,
-    model_id: &str,
     options: ChatRequestOptions<'_>,
     supports_reasoning: bool,
 ) {
@@ -592,14 +578,12 @@ fn apply_reasoning_policy(
     match options.profile.reasoning {
         ChatReasoningPolicy::None => {}
         ChatReasoningPolicy::OpenCodeGo { default_effort } => {
-            let _ = model_id;
             body["reasoning_effort"] = json!(options.reasoning_effort.unwrap_or(default_effort));
         }
     }
 }
 
-fn model_supports_reasoning(options: ChatRequestOptions<'_>, model_id: &str) -> bool {
-    let _ = model_id;
+fn model_supports_reasoning(options: ChatRequestOptions<'_>) -> bool {
     if let Some(supports) = options.model_supports_reasoning {
         return supports;
     }
@@ -827,8 +811,8 @@ mod tests {
 
         assert_eq!(body["provider"], json!({"require_parameters": true}));
         assert!(body.get("tool_choice").is_none());
-        // OpenRouter now has JsonModePolicy::Standard; json_mode=true with
-        // tools sets response_format (P0.5 probes confirm support).
+        // json_mode=true with tools sets response_format (P0.5 probes
+        // confirm all ChatCompletions providers accept json_object + tools).
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
         assert!(body.get("stream").is_none());
     }

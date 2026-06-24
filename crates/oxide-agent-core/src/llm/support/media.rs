@@ -54,6 +54,7 @@ pub(crate) fn base64_data(bytes: &[u8]) -> String {
 }
 
 #[must_use]
+#[allow(dead_code)] // Live in profile-full (openrouter audio); dead in web/embedded profiles.
 pub(crate) fn audio_input_format(mime_type: &str) -> &'static str {
     let normalized = mime_type
         .split(';')

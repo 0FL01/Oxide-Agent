@@ -151,7 +151,7 @@ fn empty_id_tool_call(
     CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
 }
 
-pub(crate) fn normalize_tool_arguments(value: &Value) -> String {
+fn normalize_tool_arguments(value: &Value) -> String {
     match value {
         Value::String(raw) => normalize_tool_arguments_str(raw),
         other => serde_json::to_string(other).unwrap_or_default(),
@@ -257,10 +257,7 @@ pub(crate) fn parse_openrouter_rate_limit(body: &str) -> Option<u64> {
     (wait_secs > 0).then_some(wait_secs as u64)
 }
 
-pub(crate) fn extract_error_response(
-    profile: ChatCompletionsProfile,
-    response: &Value,
-) -> Option<String> {
+fn extract_error_response(profile: ChatCompletionsProfile, response: &Value) -> Option<String> {
     if profile.label != "opencode_go" {
         return None;
     }

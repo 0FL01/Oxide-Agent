@@ -3,7 +3,7 @@
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 
-use super::profile::{AuthPolicy, ChatCompletionsProfile};
+use super::profile::ChatCompletionsProfile;
 use super::response as chat_response;
 use crate::llm::LlmError;
 use crate::llm::support::http::send_json_request;
@@ -13,7 +13,6 @@ pub(crate) struct ChatCompletionsClientConfig {
     pub(crate) http_client: HttpClient,
     pub(crate) endpoint: String,
     pub(crate) api_key: Option<String>,
-    pub(crate) model: String,
     pub(crate) profile: ChatCompletionsProfile,
 }
 
@@ -22,10 +21,6 @@ pub(crate) struct ChatCompletionsClient {
     http_client: HttpClient,
     endpoint: String,
     api_key: Option<String>,
-    /// Stored for diagnostic/test inspection; production code passes the model
-    /// in the request body rather than reading it back from the client.
-    #[allow(dead_code)]
-    model: String,
     profile: ChatCompletionsProfile,
 }
 
@@ -35,14 +30,12 @@ impl ChatCompletionsClient {
         http_client: HttpClient,
         endpoint: impl Into<String>,
         api_key: Option<String>,
-        model: impl Into<String>,
         profile: ChatCompletionsProfile,
     ) -> Self {
         Self::from_config(ChatCompletionsClientConfig {
             http_client,
             endpoint: endpoint.into(),
             api_key,
-            model: model.into(),
             profile,
         })
     }
@@ -53,7 +46,6 @@ impl ChatCompletionsClient {
             http_client: config.http_client,
             endpoint: config.endpoint,
             api_key: config.api_key,
-            model: config.model,
             profile: config.profile,
         }
     }
@@ -63,12 +55,6 @@ impl ChatCompletionsClient {
         &self.endpoint
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn model(&self) -> &str {
-        &self.model
-    }
-
     #[must_use]
     pub(crate) fn profile(&self) -> ChatCompletionsProfile {
         self.profile
@@ -76,15 +62,11 @@ impl ChatCompletionsClient {
 
     #[must_use]
     pub(crate) fn auth_header(&self) -> Option<String> {
-        match self.profile.auth {
-            AuthPolicy::Bearer => self
-                .api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(|key| format!("Bearer {key}")),
-            AuthPolicy::NoAuth => None,
-        }
+        self.api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(|key| format!("Bearer {key}"))
     }
 
     #[cfg(test)]
@@ -127,12 +109,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_shell_keeps_endpoint_model_profile_and_bearer_auth() {
+    fn client_shell_keeps_endpoint_profile_and_bearer_auth() {
         let client = ChatCompletionsClient::new(
             crate::llm::support::http::create_http_client(),
             "https://example.test/v1/chat/completions",
             Some(" token ".to_string()),
-            "model-a",
             ChatCompletionsProfile::generic(),
         );
 
@@ -140,7 +121,6 @@ mod tests {
             client.endpoint(),
             "https://example.test/v1/chat/completions"
         );
-        assert_eq!(client.model(), "model-a");
         assert_eq!(client.profile().label, "generic");
         assert_eq!(client.auth_header().as_deref(), Some("Bearer token"));
         assert_eq!(client.extra_headers(), &[]);

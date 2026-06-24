@@ -164,7 +164,6 @@ impl OpenCodeGoProvider {
             http_client,
             api_base,
             Some(api_key),
-            "",
             profile.chat_completions_profile(),
         );
         Arc::clone(&model_catalog).spawn_background_refresh();
