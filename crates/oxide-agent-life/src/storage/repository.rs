@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider,
+    ActiveMemoryGeneration, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput,
     LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeSupportProtocol, LifeTaskState,
-    MemoryGenerationId, MemoryScope, PrincipalUserId, ProviderSubject, TimestampMillis,
+    LifeTurn, MemoryGenerationId, MemoryScope, PrincipalUserId, ProviderSubject, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -36,6 +36,14 @@ pub enum LifeStorageError {
         principal_user_id: PrincipalUserId,
         /// Target generation.
         generation_id: MemoryGenerationId,
+    },
+    /// A provider subject is already linked to another principal.
+    #[error("life identity link conflict for {provider}:{provider_subject}")]
+    IdentityLinkConflict {
+        /// Provider namespace.
+        provider: LifeIdentityProvider,
+        /// Provider-local subject.
+        provider_subject: ProviderSubject,
     },
     /// A closed enum contained an unknown stored value.
     #[error("unknown life storage enum {type_name} value '{value}'")]
@@ -98,6 +106,18 @@ pub trait LifeStorageRepository: Send + Sync {
         &self,
         principal_user_id: PrincipalUserId,
     ) -> LifeStorageResult<Option<ActiveMemoryGeneration>>;
+
+    /// Returns the next generation number for a principal.
+    async fn next_memory_generation_number(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<i64>;
+
+    /// Appends a canonical transcript turn.
+    async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
+
+    /// Enqueues a canonical user input for future worker processing.
+    async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
 
     /// Inserts or updates a canonical memory item.
     async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()>;

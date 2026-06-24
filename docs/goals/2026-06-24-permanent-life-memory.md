@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-24-permanent-life-memory.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed phase, compress before starting the next phase, and stop only on verified completion or an exact blocker with required external action.
 Source spec: `docs/prd/PRD-perm.md`
 Goal doc owner: Codex
-Last updated: 2026-06-24 03:00
+Last updated: 2026-06-24 04:00
 
 ## Objective
 
@@ -134,7 +134,7 @@ Out of scope:
   - Acceptance: `(provider, provider_subject)` resolves to a canonical `principal_user_id`; web and Telegram subjects can link to one principal; transports do not pass life identity internals.
   - Evidence required: unit/integration tests for principal creation, link lookup, duplicate link rejection, web-first token linking, Telegram-first allocator path or documented blocked subset.
   - Status: pending
-  - Evidence collected: Phase 3 SQLx repository adds `upsert_principal`, `link_identity`, and `resolve_identity(provider, provider_subject)` over `life_principals` and `life_identity_links`; focused storage test validates web provider subject resolves to the canonical `principal_user_id`. Full G4 remains pending for duplicate-link/link-token/gateway onboarding coverage.
+  - Evidence collected: Phase 3 SQLx repository adds `upsert_principal`, `link_identity`, and `resolve_identity(provider, provider_subject)` over `life_principals` and `life_identity_links`; focused storage test validates web provider subject resolves to the canonical `principal_user_id`. Phase 4 adds transport-neutral `LifeGateway` with receiver-owned `LifePrincipalAllocator`, existing identity reuse, new principal onboarding, and first-generation bootstrap. `link_identity` now rejects mismatched duplicate provider subjects instead of relinking them; SQLx storage test asserts `IdentityLinkConflict` for duplicate `(provider, provider_subject)` with another principal. Gateway tests prove transports submit only provider/subject/content/attachments/metadata and never principal/generation ids. Full G4 remains pending for explicit link-token flow coverage.
 
 - G5: Memory generations are first-class and every memory-owned read path is generation-scoped.
   - Source: PRD §1, §9.6-9.12, §10.2 Layer 0, §10.7, §20 criteria 19-21.
@@ -147,8 +147,8 @@ Out of scope:
   - Source: PRD §6.1, §12.1, §16 examples.
   - Acceptance: `submit_life_input(provider, provider_subject, content, attachments, metadata)` resolves principal, creates first generation if needed, writes user `life_turns`, writes queued `life_inputs`, and returns queued/started run info without caller-selected context ids.
   - Evidence required: gateway tests for first-run generation creation, existing principal path, unknown/unlinked provider behavior, attachment metadata preservation.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 4 implements `LifeGateway::submit_life_input` over the narrow `LifeInputSubmission { provider, provider_subject, content, attachments, metadata }` contract. Gateway resolves existing identity or allocates/creates a new `life_principals` row through `LifePrincipalAllocator`, creates and activates first `life_memory_generations` row when no active generation exists, appends a user `LifeTurn`, enqueues a queued `LifeInput`, and returns `SubmitLifeInputResult` with resolved principal, active `MemoryScope`, turn id, input id, and `run_id: None` until worker ownership in Phase 6. `life_turns`/`LifeTurn` gained `transport_metadata` so gateway preserves submitted metadata durably instead of dropping/smuggling it. Tests: `submit_creates_principal_generation_turn_and_input`, `submit_reuses_existing_identity_and_active_generation`, `submit_rejects_empty_content_before_allocating_principal`, and real-Postgres `sqlx_life_gateway_submit_persists_turn_metadata_and_input`.
 
 - G7: LifeWorker runtime is DB-backed, serialized, and restart-safe.
   - Source: PRD §2.5-2.6, §5 Mine 2, §12.
@@ -220,7 +220,7 @@ Out of scope:
   - Acceptance: life inputs/runs/events/checkpoints/memory are persisted; `SessionRegistry` can only be optimization, not source.
   - Evidence required: storage tests, restart/crash scenario tests, code audit.
   - Status: pending
-  - Evidence collected: Phase 3 added source-of-truth life tables and `SqlxLifeStorage` repository over Postgres; no process-local registry/session state was introduced. Clean-Postgres test exercises persisted principals, identity links, generations, memory items, task states, friction patterns, and support protocols. Full Q2 remains pending for gateway queue/worker/restart/crash scenarios.
+  - Evidence collected: Phase 3 added source-of-truth life tables and `SqlxLifeStorage` repository over Postgres; no process-local registry/session state was introduced. Clean-Postgres test exercises persisted principals, identity links, generations, memory items, task states, friction patterns, and support protocols. Phase 4 gateway writes canonical turns and queued inputs through storage, and real-Postgres focused test verifies submitted content, attachments, transport metadata, active generation, and queued input are persisted. Full Q2 remains pending for worker/restart/crash scenarios.
 
 - Q3: No raw secrets reach prompts, durable memory, or Engram.
   - Source: PRD §2.8, §5 Mine 6, §10.5.
@@ -248,7 +248,7 @@ Out of scope:
   - Acceptance: curator uses existing `llm/client.rs`; storage remains SQLx/Postgres; new crate is justified by PRD bounded context; no extra queues/services beyond Engram derived engine already in PRD.
   - Evidence required: dependency/Cargo diff review, grep for new clients/providers, Cargo metadata/check.
   - Status: pending
-  - Evidence collected: Phase 2 introduced no provider/client implementations and no new external service. `oxide-agent-life` initially depended only on already-used workspace ecosystem crates (`serde`, `serde_json`, `thiserror`, `uuid`). Phase 3 added only already-used direct Postgres crates (`async-trait`, `sqlx-core`, `sqlx-postgres`, `tokio` dev-dependency) to implement the approved SQLx/Postgres source-of-truth storage; no new storage backend or provider/client was added. `cargo tree -p oxide-agent-life -i sqlx-sqlite` reported no matching package. `cargo run -p xtask -- module-registry check` passed in Phase 2; no `module_registry.toml` diff in Phase 3. Full Q6 remains pending because later curator/Engram phases must continue preserving the constraint.
+  - Evidence collected: Phase 2 introduced no provider/client implementations and no new external service. `oxide-agent-life` initially depended only on already-used workspace ecosystem crates (`serde`, `serde_json`, `thiserror`, `uuid`). Phase 3 added only already-used direct Postgres crates (`async-trait`, `sqlx-core`, `sqlx-postgres`, `tokio` dev-dependency) to implement the approved SQLx/Postgres source-of-truth storage; no new storage backend or provider/client was added. Phase 4 reused those dependencies and added no new crates/services/providers; gateway allocator/store/clock are narrow in-process traits needed to keep transport identity and time allocation out of callers. `cargo tree -p oxide-agent-life -i sqlx-sqlite` reported no matching package. `cargo run -p xtask -- module-registry check` passed in Phase 2; no `module_registry.toml` diff in Phases 3-4. Full Q6 remains pending because later curator/Engram phases must continue preserving the constraint.
 
 ### Validation requirements (V*)
 
@@ -256,13 +256,13 @@ Out of scope:
   - Source: `AGENTS.md` format/lint.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` or documented scoped alternative with exact blocker.
   - Status: verified
-  - Evidence collected: Phase 1 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 2 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 3 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed).
+  - Evidence collected: Phase 1 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 2 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 3 ran `cargo fmt --all -- --check` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), and `git diff --check` (passed). Phase 4 ran `git diff --check` (passed), `cargo fmt --all -- --check` (passed), and `cargo clippy --workspace --all-targets -- -D warnings` (passed).
 
 - V2: Workspace compile/test gates pass or failures are classified with evidence.
   - Source: `AGENTS.md` build/testing.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local`; additional scoped tests for touched crates.
   - Status: verified
-  - Evidence collected: Phase 1 ran `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing rustc unused/dead-code warnings). Focused tests passed for dynamic block order and wiki provider/skip behavior. `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran broadly and failed only on the known pre-existing `crates/oxide-agent-core/tests/proptest_remediation.rs` whitespace-only `thought` property; failing file had no diff and generated `.proptest-regressions` artifact was removed. Phase 2 ran `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (3 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with the same existing core warnings), and workspace `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` again failed only on the same known pre-existing core proptest with untouched failing file; generated `.proptest-regressions` artifact was removed. Phase 3 ran `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (4 passed, SQLx test skips without `OXIDE_DATABASE_TEST_URL`), clean-Postgres focused SQLx test with explicit `OXIDE_DATABASE_TEST_URL` (1 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (passed completely).
+  - Evidence collected: Phase 1 ran `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing rustc unused/dead-code warnings). Focused tests passed for dynamic block order and wiki provider/skip behavior. `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran broadly and failed only on the known pre-existing `crates/oxide-agent-core/tests/proptest_remediation.rs` whitespace-only `thought` property; failing file had no diff and generated `.proptest-regressions` artifact was removed. Phase 2 ran `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (3 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with the same existing core warnings), and workspace `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` again failed only on the same known pre-existing core proptest with untouched failing file; generated `.proptest-regressions` artifact was removed. Phase 3 ran `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (4 passed, SQLx test skips without `OXIDE_DATABASE_TEST_URL`), clean-Postgres focused SQLx test with explicit `OXIDE_DATABASE_TEST_URL` (1 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (passed completely). Phase 4 focused checks: `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (8 passed; SQLx tests skip without `OXIDE_DATABASE_TEST_URL`), two real-Postgres focused SQLx tests passed against temporary `postgres:18-alpine` on port `55434`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with existing core warnings, and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` passed.
 
 - V3: Module registry/profile checks pass if profile/module wiring changes.
   - Source: `AGENTS.md` module registry.
@@ -289,7 +289,7 @@ Out of scope:
   - Must preserve: existing `web-session-*` and Telegram context-key behavior remains available and semantically unchanged.
   - Evidence required: grep/call-site audit and existing transport tests/checks.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 4 changed only `oxide-agent-life`, `migrations/0010_life_mode.sql`, and this goal doc; `git diff --name-only -- crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-transport-telegram crates/oxide-agent-core/module_registry.toml` returned no changes. Gateway tests use fake submissions and do not alter Web/Telegram session/topic paths. Full N1 remains pending until later transport integration phases also preserve ordinary modes.
 
 - N2: Engram is not source of truth and does not write back into Postgres.
   - Source: PRD §13.5-13.6.
@@ -414,6 +414,8 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
 - 2026-06-24: Treat live Engram HTTP adapter as blocked behind PRD §17.1 verification; implement traits/test backend first so PG source-of-truth work can proceed.
 - 2026-06-24: Commits are per phase/checkpoint; after each phase commit, compress conversation context before continuing.
 - 2026-06-24: `oxide-agent-life` uses direct `sqlx-core` + `sqlx-postgres` dependencies, matching existing repo SQLx/Postgres practice and avoiding the top-level `sqlx` crate/SQLite feature surface.
+- 2026-06-24: Phase 4 adds `life_turns.transport_metadata` because the approved Transport -> LifeGateway contract includes metadata; dropping it or hiding it in attachments/source_ref would violate the boundary.
+- 2026-06-24: `LifeGateway` creates DB-queued input records but leaves `run_id` as `None` until Phase 6 worker/runtime owns run claiming and lifecycle; process memory does not become canonical run state.
 
 ## Progress Log
 
@@ -451,6 +453,13 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Commands: `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (4 passed), `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@127.0.0.1:55433/oxide_agent_test cargo test -p oxide-agent-life sqlx_life_storage_migrates_and_scopes_memory_by_active_generation -- --nocapture` (1 passed against clean temporary Postgres), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `git diff --check` (passed), `cargo tree -p oxide-agent-life -i sqlx-sqlite` (no matching package).
   - Audit IDs updated: G3 verified; G4/G5/G9/Q2/Q5/Q6 partial evidence added; V1/V2 evidence extended.
   - Next: commit Phase 3, compress, then start Phase 4 LifeGateway submit path.
+
+- 2026-06-24 04:00: Phase 4 completed — LifeGateway submit path.
+  - Changed: implemented transport-neutral `LifeGateway` with narrow store/allocator/clock boundaries; added first-generation bootstrap, existing identity reuse, new principal onboarding, canonical `LifeTurn` append, queued `LifeInput` creation, empty-content rejection, metadata preservation, and duplicate identity-link conflict semantics; added `transport_metadata` to `life_turns`/`LifeTurn`.
+  - Evidence: gateway unit tests cover new principal+generation+turn+input path, existing linked identity with active generation, and empty-content rejection. SQLx storage now supports `next_memory_generation_number`, `append_turn`, and `enqueue_input`; real-Postgres `sqlx_life_gateway_submit_persists_turn_metadata_and_input` verifies submitted Telegram content, attachments, metadata, active generation, and queued input persisted in DB. Existing SQLx generation test now also checks duplicate provider-subject relinking is rejected.
+  - Commands: `git diff --check` (passed), `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (8 passed), `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@127.0.0.1:55434/oxide_agent_test cargo test -p oxide-agent-life sqlx_life_gateway_submit_persists_turn_metadata_and_input -- --nocapture` (1 passed against temporary Postgres), `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@127.0.0.1:55434/oxide_agent_test cargo test -p oxide-agent-life sqlx_life_storage_migrates_and_scopes_memory_by_active_generation -- --nocapture` (1 passed), temp container stopped, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (passed).
+  - Audit IDs updated: G6 verified; G4/Q2/Q6/N1 partial evidence added; V1/V2 evidence extended.
+  - Next: run final Phase 4 validation, commit, compress, then start Phase 5 context assembler and AuDHD memory provider.
 
 ## Risks and Blockers
 

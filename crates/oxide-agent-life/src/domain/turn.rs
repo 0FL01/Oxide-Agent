@@ -59,6 +59,8 @@ pub struct LifeTurn {
     pub content: String,
     /// Attachment references, not raw bytes.
     pub attachments: Value,
+    /// Transport metadata captured by the gateway without letting transports own life state.
+    pub transport_metadata: Value,
     /// Redaction state.
     pub redaction_state: RedactionState,
     /// Creation timestamp.

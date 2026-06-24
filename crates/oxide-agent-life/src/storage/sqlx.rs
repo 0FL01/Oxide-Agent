@@ -11,10 +11,11 @@ use uuid::Uuid;
 
 use crate::domain::{
     ActiveMemoryGeneration, FrictionPatternId, FrictionPatternKind, LifeFrictionPattern,
-    LifeIdentityLink, LifeIdentityProvider, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal,
-    LifeSupportProtocol, LifeTaskState, MemoryAuthority, MemoryGenerationId,
-    MemoryGenerationStatus, MemoryItemId, MemoryItemKind, MemoryItemStatus, MemoryScope,
-    MemorySensitivity, PrincipalUserId, ProviderSubject, SupportProtocolId, SupportStateStatus,
+    LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus, LifeMemoryGeneration,
+    LifeMemoryItem, LifePrincipal, LifeSourceTransport, LifeSupportProtocol, LifeTaskState,
+    LifeTurn, LifeTurnRole, MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus,
+    MemoryItemId, MemoryItemKind, MemoryItemStatus, MemoryScope, MemorySensitivity,
+    PrincipalUserId, ProviderSubject, RedactionState, SupportProtocolId, SupportStateStatus,
     TaskStateId, TaskStateStatus, TimestampMillis, TurnId,
 };
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
@@ -118,16 +119,17 @@ impl LifeStorageRepository for SqlxLifeStorage {
     }
 
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()> {
-        query::<Postgres>(
+        let row = query::<Postgres>(
             r#"
             INSERT INTO life_identity_links (
                 provider, provider_subject, principal_user_id, verified_at, created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (provider, provider_subject) DO UPDATE
-            SET principal_user_id = EXCLUDED.principal_user_id,
-                verified_at = EXCLUDED.verified_at,
+            SET verified_at = EXCLUDED.verified_at,
                 updated_at = EXCLUDED.updated_at
+            WHERE life_identity_links.principal_user_id = EXCLUDED.principal_user_id
+            RETURNING principal_user_id
             "#,
         )
         .bind(link.provider.as_str())
@@ -136,9 +138,16 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .bind(link.verified_at.map(TimestampMillis::get))
         .bind(link.created_at.get())
         .bind(link.updated_at.get())
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(db_error)?;
+
+        if row.is_none() {
+            return Err(LifeStorageError::IdentityLinkConflict {
+                provider: link.provider,
+                provider_subject: link.provider_subject.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -306,6 +315,77 @@ impl LifeStorageRepository for SqlxLifeStorage {
             ),
             activated_at: TimestampMillis::new(row.get::<i64, _>("activated_at")),
         }))
+    }
+
+    async fn next_memory_generation_number(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<i64> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT COALESCE(MAX(generation_number), 0) + 1 AS next_generation_number
+            FROM life_memory_generations
+            WHERE principal_user_id = $1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(row.get::<i64, _>("next_generation_number"))
+    }
+
+    async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_turns (
+                turn_id, principal_user_id, run_id, role, source_transport,
+                source_ref, content, attachments, transport_metadata,
+                redaction_state, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "#,
+        )
+        .bind(turn.turn_id.as_uuid())
+        .bind(turn.principal_user_id.get())
+        .bind(turn.run_id.map(crate::domain::RunId::as_uuid))
+        .bind(turn_role_as_str(turn.role))
+        .bind(source_transport_as_str(turn.source_transport))
+        .bind(&turn.source_ref)
+        .bind(&turn.content)
+        .bind(&turn.attachments)
+        .bind(&turn.transport_metadata)
+        .bind(redaction_state_as_str(turn.redaction_state))
+        .bind(turn.created_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_inputs (
+                input_id, principal_user_id, turn_id, status, claimed_by,
+                claimed_at, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(input.input_id.as_uuid())
+        .bind(input.principal_user_id.get())
+        .bind(input.turn_id.as_uuid())
+        .bind(input_status_as_str(input.status))
+        .bind(&input.claimed_by)
+        .bind(input.claimed_at.map(TimestampMillis::get))
+        .bind(input.created_at.get())
+        .bind(input.updated_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
     }
 
     async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()> {
@@ -570,6 +650,40 @@ fn db_error(error: sqlx_core::error::Error) -> LifeStorageError {
     LifeStorageError::Database(error.to_string())
 }
 
+fn turn_role_as_str(role: LifeTurnRole) -> &'static str {
+    match role {
+        LifeTurnRole::User => "user",
+        LifeTurnRole::Assistant => "assistant",
+        LifeTurnRole::System => "system",
+        LifeTurnRole::Tool => "tool",
+    }
+}
+
+fn source_transport_as_str(source_transport: LifeSourceTransport) -> &'static str {
+    match source_transport {
+        LifeSourceTransport::Web => "web",
+        LifeSourceTransport::Telegram => "telegram",
+        LifeSourceTransport::Internal => "internal",
+    }
+}
+
+fn redaction_state_as_str(redaction_state: RedactionState) -> &'static str {
+    match redaction_state {
+        RedactionState::Clean => "clean",
+        RedactionState::Redacted => "redacted",
+        RedactionState::SecretBlocked => "secret_blocked",
+    }
+}
+
+fn input_status_as_str(status: LifeInputStatus) -> &'static str {
+    match status {
+        LifeInputStatus::Queued => "queued",
+        LifeInputStatus::Claimed => "claimed",
+        LifeInputStatus::Consumed => "consumed",
+        LifeInputStatus::Dead => "dead",
+    }
+}
+
 fn generation_status_as_str(status: MemoryGenerationStatus) -> &'static str {
     match status {
         MemoryGenerationStatus::Building => "building",
@@ -825,9 +939,15 @@ fn support_protocol_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<Lif
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicI64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
+    use async_trait::async_trait;
     use serde_json::json;
     use sqlx_postgres::PgPoolOptions;
+
+    use crate::gateway::{
+        LifeClock, LifeGateway, LifeGatewayResult, LifeInputSubmission, LifePrincipalAllocator,
+    };
 
     use super::*;
 
@@ -856,7 +976,10 @@ mod tests {
 
         let link = LifeIdentityLink {
             provider: LifeIdentityProvider::Web,
-            provider_subject: must(ProviderSubject::new("web-user-1"), "provider subject"),
+            provider_subject: must(
+                ProviderSubject::new(format!("web-user-{}", principal_user_id.get())),
+                "provider subject",
+            ),
             principal_user_id,
             verified_at: Some(now),
             created_at: now,
@@ -870,6 +993,37 @@ mod tests {
             "resolve identity",
         );
         assert_eq!(resolved, Some(principal_user_id));
+
+        let conflicting_principal_user_id = unique_principal_user_id();
+        let conflicting_principal = LifePrincipal {
+            principal_user_id: conflicting_principal_user_id,
+            profile_state: json!({}),
+            operating_profile: json!({}),
+            settings: json!({}),
+            schema_version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_principal(&conflicting_principal).await,
+            "upsert conflicting principal",
+        );
+        let conflicting_link = LifeIdentityLink {
+            provider: LifeIdentityProvider::Web,
+            provider_subject: link.provider_subject.clone(),
+            principal_user_id: conflicting_principal_user_id,
+            verified_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        };
+        let conflict = storage
+            .link_identity(&conflicting_link)
+            .await
+            .expect_err("duplicate provider subject must not relink principal");
+        assert!(matches!(
+            conflict,
+            LifeStorageError::IdentityLinkConflict { .. }
+        ));
 
         let gen1 = generation(principal_user_id, 1, MemoryGenerationStatus::Building, now);
         let gen2 = generation(
@@ -1081,6 +1235,90 @@ mod tests {
         assert_eq!(patterns[0].trigger_descriptor, "old overload");
     }
 
+    #[tokio::test]
+    async fn sqlx_life_gateway_submit_persists_turn_metadata_and_input() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_100_000);
+        let gateway = LifeGateway::with_clock(
+            storage.clone(),
+            FixedAllocator(principal_user_id),
+            FixedClock(now),
+        );
+        let submission = LifeInputSubmission {
+            provider: LifeIdentityProvider::Telegram,
+            provider_subject: must(
+                ProviderSubject::new(format!("telegram-user-gateway-{}", principal_user_id.get())),
+                "subject",
+            ),
+            content: "restore context".to_owned(),
+            attachments: json!([{"kind": "voice", "ref": "file-1"}]),
+            metadata: json!({"chat_id": 42, "message_id": 7}),
+        };
+
+        let result = must(
+            gateway.submit_life_input(submission).await,
+            "submit life input",
+        );
+
+        assert_eq!(result.principal_user_id, principal_user_id);
+        assert_eq!(result.memory_scope.principal_user_id, principal_user_id);
+
+        let turn_row = must(
+            query::<Postgres>(
+                r#"
+                SELECT content, source_transport, attachments, transport_metadata
+                FROM life_turns
+                WHERE turn_id = $1 AND principal_user_id = $2
+                "#,
+            )
+            .bind(result.turn_id.as_uuid())
+            .bind(principal_user_id.get())
+            .fetch_one(storage.pool())
+            .await,
+            "load submitted turn",
+        );
+        assert_eq!(turn_row.get::<String, _>("content"), "restore context");
+        assert_eq!(turn_row.get::<String, _>("source_transport"), "telegram");
+        assert_eq!(
+            turn_row.get::<serde_json::Value, _>("attachments"),
+            json!([{"kind": "voice", "ref": "file-1"}])
+        );
+        assert_eq!(
+            turn_row.get::<serde_json::Value, _>("transport_metadata"),
+            json!({"chat_id": 42, "message_id": 7})
+        );
+
+        let input_status = must(
+            query::<Postgres>(
+                r#"
+                SELECT status
+                FROM life_inputs
+                WHERE input_id = $1 AND turn_id = $2 AND principal_user_id = $3
+                "#,
+            )
+            .bind(result.input_id.as_uuid())
+            .bind(result.turn_id.as_uuid())
+            .bind(principal_user_id.get())
+            .fetch_one(storage.pool())
+            .await,
+            "load queued input",
+        )
+        .get::<String, _>("status");
+        assert_eq!(input_status, "queued");
+
+        let active = must(
+            storage.active_generation(principal_user_id).await,
+            "load active generation",
+        );
+        assert_eq!(
+            active.map(|generation| generation.scope),
+            Some(result.memory_scope)
+        );
+    }
+
     async fn sqlx_test_storage() -> Option<SqlxLifeStorage> {
         let Ok(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL") else {
             eprintln!("OXIDE_DATABASE_TEST_URL not set; skipping SQLx/Postgres life storage test");
@@ -1106,8 +1344,33 @@ mod tests {
     }
 
     fn unique_principal_user_id() -> PrincipalUserId {
-        let value = 2_000_000_000_000 + USER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock after unix epoch")
+            .as_nanos();
+        let time_component =
+            i64::try_from(nanos % 1_000_000_000_000).expect("time component should fit into i64");
+        let value =
+            2_000_000_000_000 + time_component + USER_COUNTER.fetch_add(1, Ordering::Relaxed);
         must(PrincipalUserId::new(value), "principal user id")
+    }
+
+    struct FixedAllocator(PrincipalUserId);
+
+    #[async_trait]
+    impl LifePrincipalAllocator for FixedAllocator {
+        async fn allocate_principal_user_id(&self) -> LifeGatewayResult<PrincipalUserId> {
+            Ok(self.0)
+        }
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    struct FixedClock(TimestampMillis);
+
+    impl LifeClock for FixedClock {
+        fn now(&self) -> LifeGatewayResult<TimestampMillis> {
+            Ok(self.0)
+        }
     }
 
     fn generation(

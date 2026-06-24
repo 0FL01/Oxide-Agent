@@ -79,6 +79,7 @@ CREATE TABLE life_turns (
     source_ref TEXT,
     content TEXT NOT NULL,
     attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    transport_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     redaction_state TEXT NOT NULL DEFAULT 'clean' CHECK (redaction_state IN ('clean', 'redacted', 'secret_blocked')),
     created_at BIGINT NOT NULL
 );

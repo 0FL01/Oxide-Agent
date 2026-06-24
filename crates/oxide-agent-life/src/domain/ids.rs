@@ -104,3 +104,9 @@ impl ProviderSubject {
         &self.0
     }
 }
+
+impl fmt::Display for ProviderSubject {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}

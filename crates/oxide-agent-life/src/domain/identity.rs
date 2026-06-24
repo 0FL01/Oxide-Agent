@@ -1,6 +1,6 @@
 //! Transport-neutral life identity links.
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,12 @@ impl LifeIdentityProvider {
             Self::Web => "web",
             Self::Telegram => "telegram",
         }
+    }
+}
+
+impl fmt::Display for LifeIdentityProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
