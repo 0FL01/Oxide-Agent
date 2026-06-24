@@ -117,11 +117,6 @@ const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
             .with_env("CHATGPT_AUTH_PATH"),
     ];
 #[allow(dead_code)]
-const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "Mistral API key.")
-        .with_env("MISTRAL_API_KEY")
-        .secret()];
-#[allow(dead_code)]
 const ANTHROPIC_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[
         ModuleConfigProperty::string("api_key", "Anthropic API key.")
@@ -159,7 +154,7 @@ const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     .with_default("1800"),
     ModuleConfigProperty::string(
         "providers.N.profile",
-        "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+        "Behavioral profile for provider instance N: 'generic' (default) or 'zai'. Controls response parsing, temperatures, streaming, thinking, and structured-output model gating.",
     )
     .with_env("OPENAI_BASE_PROVIDERS__N__PROFILE"),
 ];
@@ -331,14 +326,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/openai-chatgpt"],
         CHATGPT_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-mistral",
-        "llm-provider/mistral",
-        LlmProvider,
-        ["llm-provider/mistral"],
-        MISTRAL_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

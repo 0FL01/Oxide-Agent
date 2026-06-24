@@ -15,7 +15,6 @@ use crate::llm::LlmProvider;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -23,7 +22,6 @@ use crate::llm::LlmProvider;
 use crate::llm::support;
 
 #[cfg(any(
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -40,7 +38,6 @@ pub(crate) struct LlmProviderBuildContext {
     #[cfg(any(
         oxide_module_llm_provider_openai_chatgpt,
         oxide_module_llm_provider_anthropic,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_openai_base,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
@@ -54,7 +51,6 @@ impl LlmProviderBuildContext {
             #[cfg(any(
                 oxide_module_llm_provider_openai_chatgpt,
                 oxide_module_llm_provider_anthropic,
-                oxide_module_llm_provider_mistral,
                 oxide_module_llm_provider_openai_base,
                 oxide_module_llm_provider_opencode_go,
                 oxide_module_llm_provider_openrouter
@@ -68,7 +64,6 @@ impl LlmProviderBuildContext {
 /// to user config yet; legacy modules remain the stable public surface.
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -82,7 +77,6 @@ pub(crate) enum GenericProviderKind {
 
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -107,7 +101,6 @@ impl GenericProviderKind {
 /// optional `profile`) without introducing an untested public settings stanza.
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -124,7 +117,6 @@ pub(crate) struct GenericEndpointProviderConfig {
 
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -150,7 +142,6 @@ impl GenericEndpointProviderConfig {
 
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -159,7 +150,6 @@ impl GenericEndpointProviderConfig {
 #[derive(Debug, Clone)]
 pub(crate) enum GenericEndpointClient {
     #[cfg(any(
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_openai_base,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
@@ -174,7 +164,6 @@ pub(crate) enum GenericEndpointClient {
 
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -190,7 +179,6 @@ pub(crate) struct GenericEndpointProvider {
 
 #[cfg(any(
     oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -209,7 +197,6 @@ pub(crate) fn build_generic_endpoint_provider(
 }
 
 #[cfg(any(
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -240,13 +227,11 @@ fn build_generic_chat_completions_provider(
 #[cfg(all(
     any(
         oxide_module_llm_provider_anthropic,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_openai_base,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
     ),
     not(any(
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_openai_base,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
@@ -289,7 +274,6 @@ fn build_generic_messages_provider(
 #[cfg(all(
     any(
         oxide_module_llm_provider_anthropic,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_openai_base,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
@@ -308,7 +292,6 @@ fn build_generic_messages_provider(
 }
 
 #[cfg(any(
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -324,7 +307,6 @@ fn resolve_generic_chat_completions_profile(
         .as_deref()
     {
         None | Some("generic") => Ok(ChatCompletionsProfile::generic()),
-        Some("mistral") => Ok(ChatCompletionsProfile::mistral()),
         Some("zai") => Ok(ChatCompletionsProfile::zai()),
         Some("openrouter") => Ok(ChatCompletionsProfile::openrouter()),
         Some("opencode_go") => Ok(ChatCompletionsProfile::opencode_go()),
@@ -551,8 +533,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 
     #[cfg(oxide_module_llm_provider_openai_chatgpt)]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
-    #[cfg(oxide_module_llm_provider_mistral)]
-    modules.push(Box::new(super::openai_base::MistralProviderModule));
     #[cfg(oxide_module_llm_provider_anthropic)]
     modules.push(Box::new(super::anthropic::AnthropicProviderModule));
     #[cfg(oxide_module_llm_provider_openai_base)]
@@ -571,7 +551,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 #[cfg_attr(
     not(any(
         oxide_module_llm_provider_openai_chatgpt,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_anthropic,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
@@ -659,21 +638,21 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
-    fn openai_base_profile_env_selects_mistral_profile() {
+    fn openai_base_profile_env_selects_zai_profile() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         test_remove_env("OPENAI_BASE_API_BASE");
-        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "custom-mistral");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "custom-zai");
         test_set_env(
             "OPENAI_BASE_PROVIDERS__0__API_BASE",
-            "https://api.mistral.ai/v1",
+            "https://api.z.ai/api/coding/paas/v4",
         );
-        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
 
         let providers = build_configured_providers(&AgentSettings::default());
 
-        assert!(providers.contains_key("openai-base:custom-mistral"));
+        assert!(providers.contains_key("openai-base:custom-zai"));
 
         test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
         test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
@@ -961,14 +940,12 @@ mod tests {
 
     #[cfg(all(
         oxide_module_llm_provider_openai_chatgpt,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_anthropic,
         oxide_module_llm_provider_opencode_go,
         oxide_module_llm_provider_openrouter
     ))]
     #[test]
     fn legacy_aliases_still_build_same_provider_modules() {
-        assert_eq!(provider_module_id("mistral"), Some("llm-provider/mistral"));
         assert_eq!(
             provider_module_id("openrouter"),
             Some("llm-provider/openrouter")
@@ -991,29 +968,6 @@ mod tests {
         );
         assert_eq!(canonical_route_provider("openai-base"), None);
         assert!(super::GenericProviderKind::from_config_value("chatgpt").is_err());
-    }
-
-    #[cfg(oxide_module_llm_provider_mistral)]
-    #[test]
-    fn mistral_module_registers_provider_id_and_aliases() {
-        let settings = settings_with_provider_key("llm-provider/mistral", "test-mistral-key");
-
-        let providers = build_configured_providers(&settings);
-
-        assert!(providers.contains_key("llm-provider/mistral"));
-        assert!(providers.contains_key("mistral"));
-        assert_eq!(provider_module_id("mistral"), Some("llm-provider/mistral"));
-    }
-
-    #[cfg(oxide_module_llm_provider_mistral)]
-    #[test]
-    fn mistral_module_owns_media_capabilities() {
-        let capabilities = super::provider_media_capabilities("llm-provider/mistral")
-            .expect("provider should resolve");
-
-        assert!(capabilities.supports_audio_transcription);
-        assert!(!capabilities.supports_image_understanding);
-        assert!(!capabilities.supports_video_understanding);
     }
 
     #[cfg(oxide_module_llm_provider_openai_chatgpt)]

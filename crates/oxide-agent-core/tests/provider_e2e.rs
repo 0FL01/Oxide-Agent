@@ -6,7 +6,7 @@
     oxide_module_llm_provider_openai_chatgpt,
 ))]
 
-//! Live-contract tests for providers not covered by `anthropic_e2e.rs` / `mistral_e2e.rs`.
+//! Live-contract tests for providers not covered by dedicated provider E2E files.
 //!
 //! Each test is double-gated: `RUN_LLM_E2E_CHECKS=1` env + valid API key.
 //! Without keys, tests skip cleanly.

@@ -146,8 +146,8 @@ fn estimate_rendered_message_tokens(message: &Message) -> usize {
     if let Some(reasoning) = message.reasoning_content.as_deref() {
         tokens = tokens.saturating_add(estimate_text_tokens(reasoning));
     }
-    if let Some(tool_call_id) = message.tool_call_id.as_deref() {
-        tokens = tokens.saturating_add(estimate_text_tokens(tool_call_id));
+    if let Some(correlation) = message.resolved_tool_call_correlation() {
+        tokens = tokens.saturating_add(estimate_text_tokens(correlation.wire_tool_call_id()));
     }
     if let Some(name) = message.name.as_deref() {
         tokens = tokens.saturating_add(estimate_text_tokens(name));

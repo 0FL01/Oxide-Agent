@@ -133,7 +133,6 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
-            None,
         );
 
         let res_json = self.client.post_json(&body).await?;
@@ -240,12 +239,11 @@ impl LlmProvider for OpenRouterProvider {
             temperature,
             json_mode,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
-            None,
         );
 
         let res_json = self.client.post_json(&body).await?;
 
-        chat_response::parse_chat_response(res_json, self.profile(), None)
+        chat_response::parse_chat_response(res_json, self.profile())
     }
 }
 

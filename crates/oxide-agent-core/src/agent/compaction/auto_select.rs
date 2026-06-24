@@ -446,7 +446,7 @@ mod tests {
         ];
         let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
         assert!(result.is_some());
-        let selection = result.unwrap();
+        let selection = result.expect("compressible middle produces a range");
         match selection {
             CompressionSelection::Range { start, end } => {
                 assert_eq!(start.to_index(), 2); // After pinned prefix
@@ -485,7 +485,7 @@ mod tests {
         // Small target budget — only recent 3 user turns fit in tail.
         let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
         assert!(result.is_some());
-        match result.unwrap() {
+        match result.expect("tool batch tail selection exists") {
             CompressionSelection::Range { start, end } => {
                 let start_idx = start.to_index();
                 let end_idx = end.to_index();
@@ -520,7 +520,7 @@ mod tests {
             messages.push(AgentMessage::assistant_with_tools(
                 format!("Step {i}"),
                 vec![ToolCall::new(
-                    &format!("call-{i}"),
+                    format!("call-{i}"),
                     ToolCallFunction {
                         name: "browser_execute".to_string(),
                         arguments: "{}".to_string(),
@@ -546,7 +546,7 @@ mod tests {
             result.is_some(),
             "tool-heavy session with few user turns must produce a compressible range, not skip"
         );
-        match result.unwrap() {
+        match result.expect("tool-heavy session produces a range") {
             CompressionSelection::Range { start, end } => {
                 assert_eq!(start.to_index(), 2, "range starts after pinned prefix");
                 // End is before the tail (which contains the last tool batch).
@@ -647,7 +647,7 @@ mod tests {
         // compressible middle (indices 3-4), up to the tail (indices 5-7).
         let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
         assert!(result.is_some());
-        match result.unwrap() {
+        match result.expect("active block is included in range") {
             CompressionSelection::Range { start, end } => {
                 assert_eq!(start.to_index(), 1); // Include active block
                 assert_eq!(end.to_index(), 4); // Before tail
@@ -706,7 +706,7 @@ mod tests {
 
         let result = select_automatic_compression_range(&messages, &state, TAIL_TARGET);
         assert!(result.is_some());
-        match result.unwrap() {
+        match result.expect("summary-pinned history produces a range") {
             CompressionSelection::Range { start, end } => {
                 // Pinned prefix = 3 (TopicAgentsMd + UserTask + Summary)
                 assert_eq!(start.to_index(), 3);

@@ -1,15 +1,8 @@
 pub(crate) mod module;
 pub(crate) mod profile;
-pub(crate) mod tool_ids;
-pub(crate) mod transcription;
 
-#[cfg(oxide_module_llm_provider_mistral)]
-pub(crate) use module::MistralProviderModule;
 pub(crate) use module::OpenAIBaseProviderModule;
 pub(crate) use profile::OpenAICompatibleProfile;
-pub(crate) use tool_ids::ToolCallIdMapper;
-
-use std::sync::{Arc, Mutex};
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
 #[cfg(test)]
@@ -31,8 +24,6 @@ use serde_json::Value;
 /// LLM provider for generic OpenAI-compatible Chat Completions endpoints.
 pub struct OpenAIBaseProvider {
     client: ChatCompletionsClient,
-    transcription_base: String,
-    tool_id_mapper: Arc<Mutex<ToolCallIdMapper>>,
 }
 
 impl OpenAIBaseProvider {
@@ -60,17 +51,6 @@ impl OpenAIBaseProvider {
         )
     }
 
-    /// Convenience constructor for a Mistral-profiled provider.
-    #[must_use]
-    pub fn new_mistral(api_key: Option<String>, http_client: HttpClient) -> Self {
-        Self::new_with_client_and_profile(
-            api_key,
-            "https://api.mistral.ai/v1".to_string(),
-            http_client,
-            OpenAICompatibleProfile::mistral(),
-        )
-    }
-
     #[must_use]
     pub fn new_with_client_and_profile(
         api_key: Option<String>,
@@ -81,8 +61,6 @@ impl OpenAIBaseProvider {
         let endpoint = chat_completions_url(&api_base);
         Self {
             client: ChatCompletionsClient::new(http_client, endpoint, api_key, "", profile),
-            transcription_base: api_base,
-            tool_id_mapper: Arc::new(Mutex::new(ToolCallIdMapper::new())),
         }
     }
 
@@ -112,21 +90,7 @@ fn chat_completions_url(api_base: &str) -> String {
 fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
     let options =
         chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::generic());
-    chat_completions_request::prepare_messages(system_prompt, history, options, None)
-}
-
-/// Mistral-strict message layout: history system messages are collected and
-/// prepended before the main system prompt. Tool-call IDs are mapped through
-/// the [`ToolCallIdMapper`] to 9-character alphanumeric format.
-#[cfg(test)]
-fn prepare_structured_messages_mistral(
-    system_prompt: &str,
-    history: &[Message],
-    id_mapper: &mut ToolCallIdMapper,
-) -> Vec<Value> {
-    let options =
-        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::mistral());
-    chat_completions_request::prepare_messages(system_prompt, history, options, Some(id_mapper))
+    chat_completions_request::prepare_messages(system_prompt, history, options)
 }
 
 fn build_tool_chat_body(
@@ -138,7 +102,6 @@ fn build_tool_chat_body(
     temperature: Option<f32>,
     json_mode: bool,
     options: chat_completions_request::ChatRequestOptions<'_>,
-    tool_id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     chat_completions_request::build_tool_body(
         system_prompt,
@@ -149,7 +112,6 @@ fn build_tool_chat_body(
         temperature,
         json_mode,
         options,
-        Some(tool_id_mapper),
     )
 }
 
@@ -190,9 +152,8 @@ fn normalize_tool_arguments_str(raw: &str) -> String {
 fn parse_chat_response(
     response: Value,
     profile: &OpenAICompatibleProfile,
-    id_mapper: &ToolCallIdMapper,
 ) -> Result<ChatResponse, LlmError> {
-    chat_completions_response::parse_chat_response(response, *profile, Some(id_mapper))
+    chat_completions_response::parse_chat_response(response, *profile)
 }
 
 fn should_stream_chat_response(body: &Value) -> bool {
@@ -317,21 +278,15 @@ impl LlmProvider for OpenAIBaseProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        let body = {
-            let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
-            let profile = self.profile();
-            let body = chat_completions_request::build_text_body(
-                system_prompt,
-                history,
-                user_message,
-                model_id,
-                max_tokens,
-                chat_request_options(&profile),
-                Some(&mut *mapper),
-            );
-            drop(mapper);
-            body
-        };
+        let profile = self.profile();
+        let body = chat_completions_request::build_text_body(
+            system_prompt,
+            history,
+            user_message,
+            model_id,
+            max_tokens,
+            chat_request_options(&profile),
+        );
         let auth = self.auth_header();
         let res_json = send_json_request(
             self.client.http_client(),
@@ -351,25 +306,10 @@ impl LlmProvider for OpenAIBaseProvider {
         mime_type: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
-        let profile = self.profile();
-        let Some(audio_profile) = profile.audio_transcription else {
-            return Err(LlmError::unknown(format!(
-                "Audio transcription not supported by {} profile",
-                profile.label,
-            )));
-        };
-
-        transcription::transcribe_audio(
-            self.client.http_client(),
-            self.client.api_key(),
-            &self.transcription_base,
-            audio_bytes,
-            mime_type,
-            model_id,
-            &audio_profile,
-            profile.label,
-        )
-        .await
+        let _ = (audio_bytes, mime_type, model_id);
+        Err(LlmError::unknown(
+            "Audio transcription not supported by OpenAI Base provider".to_string(),
+        ))
     }
 
     async fn analyze_image(
@@ -407,25 +347,18 @@ impl LlmProvider for OpenAIBaseProvider {
             json_mode,
             reasoning_effort,
         } = request;
-        let body = {
-            let mut mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
-            let profile = self.profile();
-            let body = build_tool_chat_body(
-                system_prompt,
-                history,
-                tools,
-                model_id,
-                max_tokens,
-                temperature,
-                json_mode,
-                chat_request_options(&profile).with_reasoning_effort(reasoning_effort),
-                &mut mapper,
-            );
-            drop(mapper);
-            body
-        };
-        let auth = self.auth_header();
         let profile = self.profile();
+        let body = build_tool_chat_body(
+            system_prompt,
+            history,
+            tools,
+            model_id,
+            max_tokens,
+            temperature,
+            json_mode,
+            chat_request_options(&profile).with_reasoning_effort(reasoning_effort),
+        );
+        let auth = self.auth_header();
         if should_stream_chat_response(&body) {
             return send_streaming_chat_request(
                 self.client.http_client(),
@@ -446,15 +379,14 @@ impl LlmProvider for OpenAIBaseProvider {
         )
         .await
         .map_err(|error| apply_profile_rate_limit_wait(error, &profile))?;
-        let mapper = self.tool_id_mapper.lock().expect("mapper lock poisoned");
-        parse_chat_response(res_json, &profile, &mapper)
+        parse_chat_response(res_json, &profile)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator, ToolCallIdMapper,
+        OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator,
         build_image_analysis_body, build_tool_chat_body, chat_completions_url,
         chat_request_options, decode_utf8_prefix, finalize_streaming_tool_calls,
         finish_streaming_chat_response, infer_image_mime_type, normalize_newlines_in_place,
@@ -462,8 +394,7 @@ mod tests {
         process_chat_sse_event, send_streaming_chat_request,
     };
     use crate::llm::{
-        ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolCall,
-        ToolCallFunction, ToolDefinition,
+        ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolDefinition,
     };
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -483,10 +414,6 @@ mod tests {
 
     fn generic_profile() -> OpenAICompatibleProfile {
         OpenAICompatibleProfile::generic()
-    }
-
-    fn mistral_profile() -> OpenAICompatibleProfile {
-        OpenAICompatibleProfile::mistral()
     }
 
     fn zai_profile() -> OpenAICompatibleProfile {
@@ -559,26 +486,22 @@ mod tests {
     fn openai_base_wrapper_uses_chat_completions_profile_constructor() {
         let provider = OpenAIBaseProvider::new_with_client_and_profile(
             Some(" token ".to_string()),
-            "https://api.mistral.ai/v1".to_string(),
+            "https://api.z.ai/api/coding/paas/v4".to_string(),
             crate::llm::support::http::create_http_client(),
-            OpenAICompatibleProfile::mistral(),
+            OpenAICompatibleProfile::zai(),
         );
 
-        assert_eq!(
-            provider.client.profile(),
-            OpenAICompatibleProfile::mistral()
-        );
-        assert_eq!(provider.client.profile().label, "mistral");
+        assert_eq!(provider.client.profile(), OpenAICompatibleProfile::zai());
+        assert_eq!(provider.client.profile().label, "zai");
         assert_eq!(
             provider.client.endpoint(),
-            "https://api.mistral.ai/v1/chat/completions"
+            "https://api.z.ai/api/coding/paas/v4/chat/completions"
         );
         assert_eq!(provider.auth_header().as_deref(), Some("Bearer token"));
     }
 
     #[test]
     fn builds_tool_chat_body_with_tools_and_without_parallel_tool_calls() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "You are helpful.",
             &[],
@@ -588,7 +511,6 @@ mod tests {
             None,
             true,
             chat_request_options(&generic_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert_eq!(body["model"], json!("local-model"));
@@ -601,7 +523,6 @@ mod tests {
 
     #[test]
     fn adds_json_mode_only_without_tools() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -611,7 +532,6 @@ mod tests {
             None,
             true,
             chat_request_options(&generic_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
@@ -622,7 +542,6 @@ mod tests {
         let user = Message::user("What is this?").with_user_content_parts(vec![
             MessageContentPart::image("image/png", b"png".to_vec()),
         ]);
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[user],
@@ -632,7 +551,6 @@ mod tests {
             None,
             false,
             chat_request_options(&generic_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         let content = &body["messages"][1]["content"];
@@ -735,89 +653,10 @@ mod tests {
             }
         });
 
-        let parsed = parse_chat_response(response, &generic_profile(), &ToolCallIdMapper::new())
-            .expect("response parses");
+        let parsed = parse_chat_response(response, &generic_profile()).expect("response parses");
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "call_1");
         assert_eq!(parsed.usage.expect("usage").cached_tokens, Some(7));
-    }
-
-    // -----------------------------------------------------------------------
-    // Mistral message layout policy tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn mistral_prepare_structured_messages_formats_tool_message() {
-        use super::prepare_structured_messages_mistral;
-        let mut mapper = ToolCallIdMapper::new();
-        let history = vec![Message::tool(
-            "call_abc123",
-            "get_weather",
-            "{\"temperature\": 20}",
-        )];
-        let messages =
-            prepare_structured_messages_mistral("You are helpful.", &history, &mut mapper);
-
-        let tool_msg = &messages[1];
-        assert_eq!(tool_msg["role"], json!("tool"));
-        assert_eq!(tool_msg["content"], json!("{\"temperature\": 20}"));
-        // "call_abc123" -> filter -> "callabc123" -> last 9 -> "allabc123"
-        assert_eq!(tool_msg["tool_call_id"], json!("allabc123"));
-        assert_eq!(tool_msg["name"], json!("get_weather"));
-    }
-
-    #[test]
-    fn mistral_prepare_structured_messages_preserves_assistant_tool_calls() {
-        use super::prepare_structured_messages_mistral;
-        let mut mapper = ToolCallIdMapper::new();
-        let history = vec![Message::assistant_with_tools(
-            "I'll get the weather.",
-            vec![ToolCall::new(
-                "call_xyz".to_string(),
-                ToolCallFunction {
-                    name: "get_weather".to_string(),
-                    arguments: "{\"city\":\"Paris\"}".to_string(),
-                },
-                false,
-            )],
-        )];
-        let messages =
-            prepare_structured_messages_mistral("You are helpful.", &history, &mut mapper);
-
-        let assistant_msg = &messages[1];
-        assert_eq!(assistant_msg["role"], json!("assistant"));
-        assert_eq!(assistant_msg["content"], json!("I'll get the weather."));
-        let tool_calls = assistant_msg["tool_calls"]
-            .as_array()
-            .expect("tool_calls should be present");
-        assert_eq!(tool_calls.len(), 1);
-        // "call_xyz" -> filter -> "callxyz" -> last 9 -> "callxyz" (7 chars)
-        assert_eq!(tool_calls[0]["id"], json!("callxyz"));
-        assert_eq!(tool_calls[0]["function"]["name"], json!("get_weather"));
-    }
-
-    #[test]
-    fn mistral_system_messages_collected_before_main_system_prompt() {
-        use super::prepare_structured_messages_mistral;
-        let mut mapper = ToolCallIdMapper::new();
-        let history = vec![
-            Message {
-                role: "system".to_string(),
-                content: "History system instruction".to_string(),
-                ..Message::user("")
-            },
-            Message::user("Hello"),
-        ];
-        let messages =
-            prepare_structured_messages_mistral("Main system prompt", &history, &mut mapper);
-
-        // Order: history system, main system, user
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0]["role"], json!("system"));
-        assert_eq!(messages[0]["content"], json!("History system instruction"));
-        assert_eq!(messages[1]["role"], json!("system"));
-        assert_eq!(messages[1]["content"], json!("Main system prompt"));
-        assert_eq!(messages[2]["role"], json!("user"));
     }
 
     #[test]
@@ -843,199 +682,6 @@ mod tests {
     }
 
     #[test]
-    fn mistral_bidirectional_id_mapping_roundtrip() {
-        use super::prepare_structured_messages_mistral;
-        let mut mapper = ToolCallIdMapper::new();
-        let original_id = "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14";
-
-        // Step 1: Register the original ID
-        let mistral_id = mapper.register(original_id.to_string());
-        assert_eq!(mistral_id, "43acb9e14");
-
-        // Step 2: Prepare tool result message -- should use mapped ID
-        let history = vec![Message::tool(
-            original_id,
-            "get_weather",
-            "{\"temperature\": 20}",
-        )];
-        let messages = prepare_structured_messages_mistral("sys", &history, &mut mapper);
-        let tool_msg = &messages[1];
-        assert_eq!(tool_msg["tool_call_id"], json!(mistral_id));
-    }
-
-    // -----------------------------------------------------------------------
-    // Mistral response content policy tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn mistral_parse_content_array_with_reasoning_chunks() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": [
-                        {"type": "thinking", "content": "Let me think about this"},
-                        {"type": "text", "text": "Hello world"}
-                    ],
-                    "role": "assistant"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
-        });
-        let mapper = ToolCallIdMapper::new();
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        assert_eq!(parsed.content.as_deref(), Some("Hello world"));
-        assert_eq!(
-            parsed.reasoning_content.as_deref(),
-            Some("Let me think about this")
-        );
-    }
-
-    #[test]
-    fn mistral_parse_top_level_reasoning_content_fallback() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": "Hello",
-                    "reasoning_content": "Internal reasoning",
-                    "role": "assistant"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
-        });
-        let mapper = ToolCallIdMapper::new();
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        assert_eq!(parsed.content.as_deref(), Some("Hello"));
-        // reasoning_content from string content is None; top-level fallback kicks in
-        assert_eq!(
-            parsed.reasoning_content.as_deref(),
-            Some("Internal reasoning")
-        );
-    }
-
-    #[test]
-    fn mistral_parse_tool_calls_with_known_mapping() {
-        let mut mapper = ToolCallIdMapper::new();
-        let original_id = "call_44456aeb-f16d-4c5e-8f38-f1243acb9e14";
-        let mistral_id = mapper.register(original_id.to_string());
-        assert_eq!(mistral_id, "43acb9e14");
-
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": null,
-                    "tool_calls": [{
-                        "id": mistral_id,
-                        "type": "function",
-                        "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}
-                    }],
-                    "role": "assistant"
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-        });
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        assert_eq!(parsed.tool_calls.len(), 1);
-        // Known mapping: invocation_id restores original ID, wire ID is the mistral ID
-        assert_eq!(parsed.tool_calls[0].invocation_id().as_str(), original_id);
-        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), mistral_id);
-    }
-
-    #[test]
-    fn mistral_parse_unknown_tool_call_id_becomes_provider_correlated() {
-        let mapper = ToolCallIdMapper::new(); // empty mapper = no known mappings
-
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "D681PevKs",
-                        "type": "function",
-                        "function": {"name": "search", "arguments": "{}"}
-                    }],
-                    "role": "assistant"
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-        });
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        assert_eq!(parsed.tool_calls.len(), 1);
-        // Unknown mapping: provider-correlated (uses provider ID as-is)
-        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "D681PevKs");
-    }
-
-    #[test]
-    fn mistral_parse_empty_tool_call_id_becomes_uncorrelated() {
-        let mapper = ToolCallIdMapper::new();
-
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "  ",
-                        "type": "function",
-                        "function": {"name": "run_code", "arguments": "{}"}
-                    }],
-                    "role": "assistant"
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
-        });
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        assert_eq!(parsed.tool_calls.len(), 1);
-        // Empty ID: uncorrelated -- has no provider_tool_call_id (uses generated UUID)
-        assert!(
-            parsed.tool_calls[0]
-                .tool_call_correlation
-                .as_ref()
-                .is_none_or(|c| c.provider_tool_call_id.is_none())
-        );
-        // wire_tool_call_id falls back to invocation_id (generated UUID)
-        assert!(
-            parsed.tool_calls[0]
-                .wire_tool_call_id()
-                .starts_with("call_")
-        );
-    }
-
-    #[test]
-    fn mistral_parse_cached_tokens_in_usage() {
-        let response = json!({
-            "choices": [{
-                "message": {
-                    "content": "Hello",
-                    "role": "assistant"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 10,
-                "total_tokens": 110,
-                "prompt_tokens_details": {"cached_tokens": 42}
-            }
-        });
-        let mapper = ToolCallIdMapper::new();
-        let parsed =
-            parse_chat_response(response, &mistral_profile(), &mapper).expect("response parses");
-        let usage = parsed.usage.expect("usage present");
-        assert_eq!(usage.prompt_tokens, 100);
-        assert_eq!(usage.completion_tokens, 10);
-        assert_eq!(usage.cached_tokens, Some(42));
-    }
-
-    #[test]
     fn generic_parse_preserves_string_only_behavior() {
         // Generic profile (StringOnly) does NOT handle content arrays
         let response = json!({
@@ -1048,9 +694,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
         });
-        let mapper = ToolCallIdMapper::new();
-        let parsed =
-            parse_chat_response(response, &generic_profile(), &mapper).expect("response parses");
+        let parsed = parse_chat_response(response, &generic_profile()).expect("response parses");
         assert_eq!(parsed.content.as_deref(), Some("Simple text"));
         assert!(parsed.reasoning_content.is_none());
     }
@@ -1061,108 +705,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn mistral_tool_body_includes_parallel_tool_calls_and_tool_choice() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[sample_tool()],
-            "mistral-large-latest",
-            4096,
-            None,
-            false,
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        assert_eq!(body["tool_choice"], json!("auto"));
-        assert_eq!(body["parallel_tool_calls"], json!(true));
-        assert!(body.get("tools").is_some());
-    }
-
-    #[test]
-    fn mistral_reasoning_model_tool_body_includes_reasoning_effort() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[sample_tool()],
-            "mistral-small-2603",
-            4096,
-            None,
-            false,
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        assert_eq!(body["reasoning_effort"], json!("high"));
-        // Reasoning model uses reasoning_temperature (0.7), not tool_temperature
-        let temp = body["temperature"].as_f64().expect("temperature present");
-        assert!((temp - 0.7).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mistral_regular_model_tool_body_uses_tool_temperature() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[sample_tool()],
-            "mistral-large-latest",
-            4096,
-            None,
-            false,
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        // Regular model: no reasoning_effort
-        assert!(body.get("reasoning_effort").is_none());
-        // tool_temperature = 0.7
-        let temp = body["temperature"].as_f64().expect("temperature present");
-        assert!((temp - 0.7).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mistral_tool_body_explicit_temperature_overrides_default() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[],
-            "mistral-large-latest",
-            4096,
-            Some(0.23),
-            false,
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        let temp = body["temperature"].as_f64().expect("temperature present");
-        assert!((temp - 0.23).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mistral_reasoning_model_tool_body_explicit_effort_overrides_default() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[sample_tool()],
-            "mistral-small-2603",
-            4096,
-            None,
-            false,
-            chat_request_options(&mistral_profile()).with_reasoning_effort(Some("none")),
-            &mut mapper,
-        );
-
-        assert_eq!(body["reasoning_effort"], json!("none"));
-    }
-
-    #[test]
     fn generic_tool_body_no_parallel_or_reasoning() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1172,7 +715,6 @@ mod tests {
             None,
             false,
             chat_request_options(&generic_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert!(body.get("parallel_tool_calls").is_none());
@@ -1181,7 +723,6 @@ mod tests {
 
     #[test]
     fn zai_tool_body_sets_stream_and_enabled_thinking() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1191,7 +732,6 @@ mod tests {
             None,
             false,
             chat_request_options(&zai_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert_eq!(body["stream"], json!(true));
@@ -1203,7 +743,6 @@ mod tests {
 
     #[test]
     fn zai_plain_body_without_json_streams_with_enabled_thinking() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1213,7 +752,6 @@ mod tests {
             None,
             false,
             chat_request_options(&zai_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert_eq!(body["stream"], json!(true));
@@ -1223,7 +761,6 @@ mod tests {
 
     #[test]
     fn zai_native_json_body_disables_thinking_and_streaming() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1233,7 +770,6 @@ mod tests {
             None,
             true,
             chat_request_options(&zai_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert_eq!(body["stream"], json!(false));
@@ -1243,7 +779,6 @@ mod tests {
 
     #[test]
     fn zai_json_with_tools_uses_native_json_mode() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1253,7 +788,6 @@ mod tests {
             None,
             true,
             chat_request_options(&zai_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         // P0.5 probes confirm json_object + tools is accepted by ZAI.
@@ -1266,7 +800,6 @@ mod tests {
 
     #[test]
     fn generic_tool_body_does_not_send_zai_thinking() {
-        let mut mapper = ToolCallIdMapper::new();
         let body = build_tool_chat_body(
             "system",
             &[],
@@ -1276,7 +809,6 @@ mod tests {
             None,
             false,
             chat_request_options(&generic_profile()).with_reasoning_effort(None),
-            &mut mapper,
         );
 
         assert!(body.get("thinking").is_none());
@@ -1592,42 +1124,5 @@ mod tests {
             LlmError::RateLimit { wait_secs, .. } => assert_eq!(wait_secs, Some(17)),
             other => panic!("expected rate limit, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn json_mode_added_with_tools_for_mistral_profile() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[sample_tool()],
-            "local-model",
-            1024,
-            None,
-            true, // json_mode = true
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        // P0.5 probes confirm json_object + tools is accepted by Mistral.
-        assert_eq!(body["response_format"], json!({"type": "json_object"}));
-    }
-
-    #[test]
-    fn json_mode_added_without_tools_for_mistral_profile() {
-        let mut mapper = ToolCallIdMapper::new();
-        let body = build_tool_chat_body(
-            "system",
-            &[],
-            &[],
-            "local-model",
-            1024,
-            None,
-            true, // json_mode = true
-            chat_request_options(&mistral_profile()).with_reasoning_effort(None),
-            &mut mapper,
-        );
-
-        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 }

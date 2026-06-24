@@ -6,7 +6,6 @@ cargo_features = ["profile-full"]
 "integration/mcp-mattermost" = { enabled = true }
 "integration/ssh-mcp" = { enabled = true }
 "llm-provider/minimax" = { enabled = true }
-"llm-provider/mistral" = { enabled = true }
 "llm-provider/openai-base" = { enabled = true }
 "llm-provider/openai-chatgpt" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }

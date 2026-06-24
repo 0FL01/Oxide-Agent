@@ -441,7 +441,6 @@ fn prepare_responses_request(system_prompt: &str, history: &[Message]) -> (Strin
                 if let Some(result) = msg
                     .resolved_tool_call_correlation()
                     .map(|correlation| correlation.wire_tool_call_id().to_string())
-                    .or_else(|| msg.tool_call_id.clone())
                 {
                     input.push(json!({
                         "type": "function_call_output",

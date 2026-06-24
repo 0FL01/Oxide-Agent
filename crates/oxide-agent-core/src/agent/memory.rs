@@ -41,7 +41,10 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
-    /// Provider-facing tool call id echoed by chat-like providers.
+    /// Legacy provider-facing tool call id retained for backward-compatible
+    /// deserialization of old checkpoints. New serialization omits this field;
+    /// `tool_call_correlation` is the sole persisted source of truth.
+    #[serde(skip_serializing)]
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
     #[serde(default)]
@@ -50,9 +53,6 @@ pub struct AgentMessage {
     pub tool_name: Option<String>,
     /// Tool calls made by assistant
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Canonical correlation metadata for assistant tool call batches.
-    #[serde(default)]
-    pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
     /// Safe persisted refs for user-provided attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AgentMessageAttachment>,
@@ -217,7 +217,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -244,7 +244,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -268,7 +268,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -287,7 +287,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -306,7 +306,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -325,7 +325,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -347,7 +347,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -366,7 +366,7 @@ impl AgentMessage {
 
     /// Create a new tool response message with explicit canonical correlation metadata.
     pub fn tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: &str,
@@ -377,11 +377,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -406,7 +406,7 @@ impl AgentMessage {
 
     /// Create a tool result placeholder with explicit canonical correlation metadata.
     pub fn externalized_tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: impl Into<String>,
@@ -418,11 +418,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
@@ -449,7 +449,7 @@ impl AgentMessage {
 
     /// Create a pruned tool result placeholder with explicit canonical correlation metadata.
     pub fn pruned_tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: impl Into<String>,
@@ -462,11 +462,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
@@ -484,8 +484,6 @@ impl AgentMessage {
         reasoning: Option<String>,
         tool_calls: Vec<ToolCall>,
     ) -> Self {
-        let tool_call_correlations = (!tool_calls.is_empty())
-            .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
@@ -496,7 +494,6 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: Some(tool_calls),
-            tool_call_correlations,
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -559,16 +556,13 @@ impl AgentMessage {
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
+    ///
+    /// Derives from each `ToolCall`'s own correlation. Since `ToolCall::new()`
+    /// always seeds the correlation, this never needs a separate stored vector.
     #[must_use]
     pub fn resolved_tool_call_correlations(&self) -> Option<Vec<ToolCallCorrelation>> {
         let tool_calls = self.tool_calls.as_ref()?;
-        let derived: Vec<ToolCallCorrelation> =
-            tool_calls.iter().map(ToolCall::correlation).collect();
-
-        match &self.tool_call_correlations {
-            Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
-            _ => Some(derived),
-        }
+        Some(tool_calls.iter().map(ToolCall::correlation).collect())
     }
 
     /// Return the stable text projection used by compaction and text-only providers.
@@ -1413,7 +1407,8 @@ mod tests {
         let message = AgentMessage::tool("call-1", "execute_command", "stdout");
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_call_id"], json!("call-1"));
+        // tool_call_id is no longer serialized; correlation is the sole persisted identity.
+        assert!(value.get("tool_call_id").is_none() || value["tool_call_id"].is_null());
         assert_eq!(
             value["tool_call_correlation"]["invocation_id"],
             json!("call-1")
@@ -1450,9 +1445,12 @@ mod tests {
         );
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        // id is skip_serializing; correlation is the sole persisted identity.
+        assert!(
+            value["tool_calls"][0].get("id").is_none() || value["tool_calls"][0]["id"].is_null()
+        );
         assert_eq!(
-            value["tool_call_correlations"][0]["invocation_id"],
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
             json!("call-1")
         );
     }
@@ -1467,7 +1465,10 @@ mod tests {
         let value = serde_json::to_value(&message).expect("message serializes");
 
         assert_eq!(value["reasoning"], json!("thinking trace"));
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        assert_eq!(
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
+            json!("call-1")
+        );
     }
 
     #[test]
@@ -1492,7 +1493,6 @@ mod tests {
         });
         let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
-        assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
             Some(vec![ToolCallCorrelation::new("call-wire")])

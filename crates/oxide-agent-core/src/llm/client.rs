@@ -956,73 +956,14 @@ mod tests {
         assert_eq!(route.provider, "openrouter");
     }
 
-    #[cfg(all(
-        oxide_module_llm_provider_openrouter,
-        oxide_module_llm_provider_mistral
-    ))]
-    #[test]
-    fn media_resolver_rejects_media_route_when_modality_is_not_supported() {
-        let settings = with_provider_key(
-            with_provider_key(
-                AgentSettings {
-                    agent_model_id: Some("agent-openrouter".to_string()),
-                    agent_model_provider: Some("openrouter".to_string()),
-                    media_model_id: Some("media-mistral".to_string()),
-                    media_model_provider: Some("mistral".to_string()),
-                    ..AgentSettings::default()
-                },
-                "llm-provider/openrouter",
-                "test-openrouter-key",
-            ),
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        let error = llm
-            .resolve_media_model_for_image()
-            .expect_err("media route should not fall back to agent route");
-
-        assert!(matches!(
-            error,
-            crate::llm::LlmError::MissingConfig(message)
-                if message.contains("image understanding")
-        ));
-    }
-
-    #[cfg(oxide_module_llm_provider_mistral)]
-    #[test]
-    fn media_resolver_allows_mistral_for_audio_stt_only() {
-        let settings = with_provider_key(
-            AgentSettings {
-                agent_model_id: Some("agent-mistral".to_string()),
-                agent_model_provider: Some("mistral".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                ..AgentSettings::default()
-            },
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        let audio_route = llm
-            .resolve_media_model_for_audio_stt()
-            .expect("mistral should support stt route");
-
-        assert_eq!(audio_route.id, "media-mistral");
-        assert_eq!(audio_route.provider, "mistral");
-        assert!(llm.resolve_media_model_for_video().is_err());
-    }
-
     #[test]
     fn media_resolver_rejects_unconfigured_provider_routes() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
+                media_model_id: Some("media-missing".to_string()),
+                media_model_provider: Some("missing-provider".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -1072,60 +1013,6 @@ mod tests {
                 .expect("video route"),
             "google/gemini-3-flash-preview"
         );
-    }
-
-    #[cfg(all(
-        oxide_module_llm_provider_openrouter,
-        oxide_module_llm_provider_mistral
-    ))]
-    #[test]
-    fn media_name_resolver_does_not_fallback_to_agent_for_non_stt_modalities() {
-        let settings = with_provider_key(
-            with_provider_key(
-                AgentSettings {
-                    agent_model_id: Some("agent-openrouter".to_string()),
-                    agent_model_provider: Some("openrouter".to_string()),
-                    media_model_id: Some("media-mistral".to_string()),
-                    media_model_provider: Some("mistral".to_string()),
-                    ..AgentSettings::default()
-                },
-                "llm-provider/openrouter",
-                "test-openrouter-key",
-            ),
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        assert_eq!(
-            llm.resolve_media_model_name_for_audio_stt()
-                .expect("audio stt route"),
-            "media-mistral"
-        );
-        assert!(llm.resolve_media_model_name_for_image().is_err());
-        assert!(llm.resolve_media_model_name_for_video().is_err());
-    }
-
-    #[cfg(oxide_module_llm_provider_mistral)]
-    #[test]
-    fn multimodal_availability_is_modality_specific() {
-        let settings = with_provider_key(
-            AgentSettings {
-                agent_model_id: Some("agent-mistral".to_string()),
-                agent_model_provider: Some("mistral".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                ..AgentSettings::default()
-            },
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        assert!(llm.is_multimodal_available());
-        assert!(llm.is_audio_transcription_available());
-        assert!(!llm.is_image_understanding_available());
-        assert!(!llm.is_video_understanding_available());
     }
 
     #[test]

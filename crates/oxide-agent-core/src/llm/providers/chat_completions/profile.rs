@@ -23,7 +23,6 @@ pub(crate) enum AuthPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolCallIdPolicy {
     Preserve,
-    MistralNineAlnum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +33,6 @@ pub(crate) enum EmptyToolCallIdPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatMessageLayoutPolicy {
     GenericOpenAI,
-    MistralStrict,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,21 +53,9 @@ pub(crate) enum JsonModePolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ModelMatchPolicy {
-    None,
-    CaseInsensitiveContains(&'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatReasoningPolicy {
     None,
-    Mistral {
-        default_effort: &'static str,
-        model_match: ModelMatchPolicy,
-    },
-    OpenCodeGo {
-        default_effort: &'static str,
-    },
+    OpenCodeGo { default_effort: &'static str },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +103,6 @@ pub(crate) enum ImageInputPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AudioInputPolicy {
     None,
-    MultipartTranscription,
     OpenRouterInputAudio,
 }
 
@@ -132,15 +117,6 @@ pub(crate) struct ChatMediaPolicy {
     pub(crate) image: ImageInputPolicy,
     pub(crate) audio: AudioInputPolicy,
     pub(crate) video: VideoInputPolicy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AudioTranscriptionProfile {
-    pub(crate) endpoint_path: &'static str,
-    pub(crate) temperature: f32,
-    pub(crate) timeout_secs: u64,
-    pub(crate) max_retries: usize,
-    pub(crate) initial_backoff_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -185,7 +161,6 @@ pub struct ChatCompletionsProfile {
     /// 400 "text is not set" / "Param Incorrect" error.
     pub(crate) require_reasoning_content_on_tool_calls: bool,
     pub(crate) structured_output: StructuredOutputPolicy,
-    pub(crate) audio_transcription: Option<AudioTranscriptionProfile>,
 }
 
 impl ChatCompletionsProfile {
@@ -243,62 +218,8 @@ impl ChatCompletionsProfile {
             include_empty_system_message: false,
             require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::BaseCapability,
-            audio_transcription: None,
         }
     }
-
-    #[must_use]
-    pub(crate) const fn mistral() -> Self {
-        Self {
-            label: "mistral",
-            default_endpoint: "https://api.mistral.ai/v1",
-            endpoint: EndpointPolicy::AppendChatCompletions,
-            auth: AuthPolicy::Bearer,
-            extra_headers: &[],
-            tool_call_ids: ToolCallIdPolicy::MistralNineAlnum,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::MistralStrict,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
-            tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
-            json_mode: JsonModePolicy::Standard,
-            thinking: ChatThinkingPolicy::None,
-            reasoning: ChatReasoningPolicy::Mistral {
-                default_effort: "high",
-                model_match: ModelMatchPolicy::CaseInsensitiveContains("mistral-small-2603"),
-            },
-            streaming: ChatStreamingPolicy::NonStreaming,
-            include_stream_field: true,
-            rate_limit: RateLimitPolicy::RetryAfterHeader,
-            response_content: ChatResponseContentPolicy::StringOrChunkArrayWithReasoning,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::None,
-                audio: AudioInputPolicy::MultipartTranscription,
-                video: VideoInputPolicy::None,
-            },
-            capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
-            media_capabilities: MediaCapabilities::new(true, false, false),
-            temperatures: ChatTemperatures {
-                chat: 0.9,
-                tools: 0.7,
-                reasoning: 0.7,
-            },
-            parallel_tool_calls: Some(true),
-            parallel_tool_calls_only_with_tools: false,
-            require_parameters_with_tools: false,
-            include_empty_system_message: true,
-            require_reasoning_content_on_tool_calls: false,
-            structured_output: StructuredOutputPolicy::BaseCapability,
-            audio_transcription: Some(AudioTranscriptionProfile {
-                endpoint_path: "/audio/transcriptions",
-                temperature: 0.4,
-                timeout_secs: 120,
-                max_retries: 5,
-                initial_backoff_ms: 3_000,
-            }),
-        }
-    }
-
     #[must_use]
     pub(crate) const fn zai() -> Self {
         Self {
@@ -338,7 +259,6 @@ impl ChatCompletionsProfile {
             include_empty_system_message: false,
             require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::ZaiGlmToolModelsOnly,
-            audio_transcription: None,
         }
     }
 
@@ -381,7 +301,6 @@ impl ChatCompletionsProfile {
             include_empty_system_message: true,
             require_reasoning_content_on_tool_calls: false,
             structured_output: StructuredOutputPolicy::BaseCapability,
-            audio_transcription: None,
         }
     }
 
@@ -426,7 +345,6 @@ impl ChatCompletionsProfile {
             include_empty_system_message: false,
             require_reasoning_content_on_tool_calls: true,
             structured_output: StructuredOutputPolicy::BaseCapability,
-            audio_transcription: None,
         }
     }
 
@@ -471,20 +389,14 @@ impl ChatCompletionsProfile {
             include_empty_system_message: false,
             require_reasoning_content_on_tool_calls: true,
             structured_output: StructuredOutputPolicy::BaseCapability,
-            audio_transcription: None,
         }
     }
 
     #[must_use]
     pub(crate) fn is_reasoning_model(&self, model_id: &str) -> bool {
+        let _ = model_id;
         match self.reasoning {
             ChatReasoningPolicy::None | ChatReasoningPolicy::OpenCodeGo { .. } => false,
-            ChatReasoningPolicy::Mistral { model_match, .. } => match model_match {
-                ModelMatchPolicy::None => false,
-                ModelMatchPolicy::CaseInsensitiveContains(needle) => model_id
-                    .to_ascii_lowercase()
-                    .contains(needle.to_ascii_lowercase().as_str()),
-            },
         }
     }
 
@@ -526,23 +438,6 @@ mod tests {
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);
         assert!(p.media_capabilities.supports_image_understanding);
-    }
-
-    #[test]
-    fn mistral_profile_preserves_strict_layout_and_audio_policy() {
-        let p = ChatCompletionsProfile::mistral();
-
-        assert_eq!(p.label, "mistral");
-        assert_eq!(p.default_endpoint, "https://api.mistral.ai/v1");
-        assert_eq!(p.tool_call_ids, ToolCallIdPolicy::MistralNineAlnum);
-        assert_eq!(p.message_layout, ChatMessageLayoutPolicy::MistralStrict);
-        assert_eq!(p.parallel_tool_calls, Some(true));
-        assert!(p.capabilities.strict_tool_history());
-        assert!(p.media_capabilities.supports_audio_transcription);
-        assert_eq!(
-            p.audio_transcription.map(|audio| audio.endpoint_path),
-            Some("/audio/transcriptions")
-        );
     }
 
     #[test]

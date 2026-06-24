@@ -79,7 +79,6 @@ impl CompactionRenderer {
                     tool_call_correlation: None,
                     name: None,
                     tool_calls: None,
-                    tool_call_correlations: None,
                 });
             } else if covered.contains(&index) {
                 // Skip covered non-anchor message.
@@ -170,11 +169,10 @@ impl CompactionRenderer {
             content: msg.content.clone(),
             content_parts: Vec::new(),
             reasoning_content: msg.reasoning.clone(),
-            tool_call_id: msg.tool_call_id.clone(),
+            tool_call_id: None,
             tool_call_correlation: msg.resolved_tool_call_correlation(),
             name: msg.tool_name.clone(),
             tool_calls: msg.tool_calls.clone(),
-            tool_call_correlations: msg.resolved_tool_call_correlations(),
         }
     }
 }
@@ -221,14 +219,6 @@ mod tests {
 
     fn default_policy() -> RenderPolicy {
         RenderPolicy::default()
-    }
-
-    /// Policy with no turn protection — for testing strategy logic in isolation.
-    fn no_protection_policy() -> RenderPolicy {
-        RenderPolicy {
-            turn_protection: 0,
-            ..RenderPolicy::default()
-        }
     }
 
     fn simple_messages() -> Vec<AgentMessage> {
@@ -325,7 +315,7 @@ mod tests {
             text_summary(summary),
             0,
         )
-        .unwrap()
+        .expect("test block creation succeeds")
     }
 
     #[test]
@@ -399,7 +389,7 @@ mod tests {
             ],
             0,
         )
-        .unwrap();
+        .expect("nested block creation succeeds");
 
         let rendered = CompactionRenderer::render(&messages, &state, &default_policy());
 
@@ -433,7 +423,7 @@ mod tests {
             text_summary("b2 without ref"), // no BlockRef to b1
             0,
         )
-        .unwrap();
+        .expect("outer block creation succeeds");
 
         let rendered = CompactionRenderer::render(&messages, &state, &default_policy());
 

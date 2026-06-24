@@ -315,12 +315,10 @@ mod tests {
 
     #[cfg(all(
         oxide_module_llm_provider_openrouter,
-        oxide_module_llm_provider_mistral,
         oxide_module_llm_provider_opencode_go
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
-        let mistral = super::provider_media_capabilities("mistral");
         let opencode_go = super::provider_media_capabilities("opencode-go");
 
         for model_id in [
@@ -352,10 +350,6 @@ mod tests {
                 "{model_id}"
             );
         }
-
-        assert!(mistral.supports(super::MediaModality::AudioTranscription));
-        assert!(!mistral.supports(super::MediaModality::ImageUnderstanding));
-        assert!(!mistral.supports(super::MediaModality::VideoUnderstanding));
 
         assert!(!opencode_go.supports(super::MediaModality::AudioTranscription));
         assert!(!opencode_go.supports(super::MediaModality::ImageUnderstanding));

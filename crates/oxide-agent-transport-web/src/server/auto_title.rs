@@ -602,10 +602,10 @@ mod tests {
     #[test]
     fn non_opencode_title_calls_keep_low_reasoning() {
         let model = ModelInfo {
-            id: "mistral-small-2603".to_string(),
+            id: "glm-4.7".to_string(),
             max_output_tokens: 1000,
             context_window_tokens: 0,
-            provider: "mistral".to_string(),
+            provider: "openai-base:zai".to_string(),
             weight: 1,
         };
         assert_eq!(title_reasoning_effort(&model), Some("low"));

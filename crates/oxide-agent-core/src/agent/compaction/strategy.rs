@@ -125,10 +125,13 @@ pub fn compute_superseded_tool_results(
         let is_protected = index >= boundary;
 
         if msg.resolved_kind() == AgentMessageKind::ToolResult {
-            let Some(tool_call_id) = msg.tool_call_id.as_deref() else {
+            let Some(tool_call_id) = msg
+                .resolved_tool_call_correlation()
+                .map(|c| c.invocation_id.as_str().to_string())
+            else {
                 continue;
             };
-            let Some(detail) = call_details.get(tool_call_id) else {
+            let Some(detail) = call_details.get(&tool_call_id) else {
                 continue;
             };
 
@@ -190,7 +193,7 @@ fn build_tool_call_details(messages: &[AgentMessage]) -> HashMap<String, ToolCal
         for tc in tool_calls {
             let path = file_tool_path(&tc.function.arguments);
             map.insert(
-                tc.id.clone(),
+                tc.invocation_id().as_str().to_string(),
                 ToolCallDetail {
                     tool_name: tc.function.name.clone(),
                     args: tc.function.arguments.clone(),
@@ -244,7 +247,10 @@ pub fn compute_purge_error_inputs(
     let errored_call_ids: BTreeSet<String> = messages
         .iter()
         .filter(|msg| msg.resolved_kind() == AgentMessageKind::ToolResult && msg.is_pruned())
-        .filter_map(|msg| msg.tool_call_id.clone())
+        .filter_map(|msg| {
+            msg.resolved_tool_call_correlation()
+                .map(|c| c.invocation_id.as_str().to_string())
+        })
         .collect();
 
     if errored_call_ids.is_empty() {
@@ -266,7 +272,7 @@ pub fn compute_purge_error_inputs(
         };
         let has_errored = tool_calls
             .iter()
-            .any(|tc| errored_call_ids.contains(&tc.id));
+            .any(|tc| errored_call_ids.contains(tc.invocation_id().as_str()));
         if has_errored {
             purge_indices.insert(index);
         }
@@ -377,10 +383,6 @@ mod tests {
         // Empty messages, turn_protection=3 → all (zero) protected → boundary = 0
         let boundary = protected_boundary(&[], 3);
         assert_eq!(boundary, 0);
-    }
-
-    fn default_policy() -> RenderPolicy {
-        RenderPolicy::default()
     }
 
     /// Policy with no turn protection — for testing dedup/purge logic in isolation.

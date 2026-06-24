@@ -73,57 +73,6 @@ pub(super) fn accidental_structured_final_answer_provider() -> MockLlmProvider {
     provider
 }
 
-pub(super) fn context_overflow_then_summary_then_final_provider() -> MockLlmProvider {
-    let mut provider = MockLlmProvider::new();
-    let mut sequence = mockall::Sequence::new();
-    provider
-        .expect_chat_with_tools()
-        .times(1)
-        .in_sequence(&mut sequence)
-        .return_once(|_| Err(LlmError::api_error("maximum context length exceeded")));
-    provider
-        .expect_chat_with_tools()
-        .times(1)
-        .in_sequence(&mut sequence)
-        .return_once(|_| Ok(final_structured_response()));
-    provider.expect_complete_internal_text().times(1).returning(
-        |_, _, user_message, model_id, _| {
-            assert_eq!(model_id, "deepseek-v4-flash");
-            assert!(user_message.contains("## Source History"));
-            Ok("Runtime context-limit handoff summary.".to_string())
-        },
-    );
-    provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
-    provider
-        .expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
-    provider
-}
-
-pub(super) fn pre_sampling_summary_then_final_provider() -> MockLlmProvider {
-    let mut provider = MockLlmProvider::new();
-    provider
-        .expect_chat_with_tools()
-        .times(1)
-        .return_once(|_| Ok(final_structured_response()));
-    provider.expect_complete_internal_text().times(1).returning(
-        |_, _, user_message, model_id, _| {
-            assert_eq!(model_id, "deepseek-v4-flash");
-            assert!(user_message.contains("## Source History"));
-            Ok("Pre-sampling handoff summary.".to_string())
-        },
-    );
-    provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
-    provider
-        .expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
-    provider
-}
-
 pub(super) async fn collect_progress_events(
     progress_rx: &mut tokio::sync::mpsc::Receiver<crate::agent::progress::AgentEvent>,
 ) -> Vec<crate::agent::progress::AgentEvent> {

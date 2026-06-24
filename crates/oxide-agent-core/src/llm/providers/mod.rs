@@ -2,7 +2,6 @@
 pub mod anthropic;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -11,7 +10,6 @@ pub mod anthropic;
 #[allow(unused_imports, dead_code)]
 pub(crate) mod anthropic_messages;
 #[cfg(any(
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
     oxide_module_llm_provider_openrouter
@@ -22,7 +20,6 @@ pub(crate) mod chat_completions;
 pub mod chatgpt;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -41,7 +38,6 @@ pub mod opencode_go;
 pub mod openrouter;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -51,7 +47,6 @@ pub mod openrouter;
 mod protocol_profiles;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -61,7 +56,6 @@ mod protocol_profiles;
 mod tool_call_adapter;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -71,7 +65,6 @@ mod tool_call_adapter;
 mod tool_call_encoder;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,
@@ -81,7 +74,6 @@ mod tool_call_encoder;
 mod tool_correlation;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_mistral,
     oxide_module_llm_provider_anthropic,
     oxide_module_llm_provider_openai_base,
     oxide_module_llm_provider_opencode_go,

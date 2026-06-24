@@ -11,7 +11,7 @@ pub enum LlmError {
         status: Option<u16>,
         /// Human-readable error message.
         message: String,
-        /// Provider that produced the error (e.g. `"openrouter"`, `"mistral"`).
+        /// Provider that produced the error (e.g. `"openrouter"`, `"zai"`).
         /// Set by `LlmClient` when wrapping provider errors.
         provider: Option<String>,
         /// Model identifier that produced the error.
@@ -250,8 +250,8 @@ mod tests {
     #[test]
     fn unknown_carries_provider_model() {
         let error = LlmError::unknown("something went wrong")
-            .with_provider("mistral")
-            .with_model("mistral-small-latest");
+            .with_provider("zai")
+            .with_model("glm-4.6");
 
         match error {
             LlmError::Unknown {
@@ -259,8 +259,8 @@ mod tests {
                 model,
                 message,
             } => {
-                assert_eq!(provider.as_deref(), Some("mistral"));
-                assert_eq!(model.as_deref(), Some("mistral-small-latest"));
+                assert_eq!(provider.as_deref(), Some("zai"));
+                assert_eq!(model.as_deref(), Some("glm-4.6"));
                 assert_eq!(message, "something went wrong");
             }
             _ => panic!("expected Unknown"),
@@ -378,14 +378,14 @@ mod tests {
             provider: None,
             model: None,
         }
-        .with_provider("mistral")
-        .with_model("mistral-large");
+        .with_provider("openrouter")
+        .with_model("deepseek/deepseek-chat");
         match error {
             LlmError::ContextOverflow {
                 provider, model, ..
             } => {
-                assert_eq!(provider.as_deref(), Some("mistral"));
-                assert_eq!(model.as_deref(), Some("mistral-large"));
+                assert_eq!(provider.as_deref(), Some("openrouter"));
+                assert_eq!(model.as_deref(), Some("deepseek/deepseek-chat"));
             }
             _ => panic!("expected ContextOverflow"),
         }

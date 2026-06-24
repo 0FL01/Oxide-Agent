@@ -362,7 +362,8 @@ mod tests {
             start: MessageRef::from_index(1),
             end: MessageRef::from_index(3),
         };
-        let indices = CompactionEngine::resolve_selection(&messages, &sel).unwrap();
+        let indices =
+            CompactionEngine::resolve_selection(&messages, &sel).expect("valid range resolves");
         assert_eq!(indices, [1, 2, 3].into_iter().collect::<BTreeSet<_>>());
     }
 
@@ -373,7 +374,8 @@ mod tests {
             start: MessageRef::from_index(2),
             end: MessageRef::from_index(2),
         };
-        let indices = CompactionEngine::resolve_selection(&messages, &sel).unwrap();
+        let indices = CompactionEngine::resolve_selection(&messages, &sel)
+            .expect("single-message range resolves");
         assert_eq!(indices, [2].into_iter().collect::<BTreeSet<_>>());
     }
 
@@ -411,7 +413,8 @@ mod tests {
         let sel = CompressionSelection::Messages {
             refs: vec![MessageRef::from_index(0), MessageRef::from_index(2)],
         };
-        let indices = CompactionEngine::resolve_selection(&messages, &sel).unwrap();
+        let indices = CompactionEngine::resolve_selection(&messages, &sel)
+            .expect("message selection resolves");
         assert_eq!(indices, [0, 2].into_iter().collect::<BTreeSet<_>>());
     }
 
@@ -425,7 +428,8 @@ mod tests {
                 MessageRef::from_index(2),
             ],
         };
-        let indices = CompactionEngine::resolve_selection(&messages, &sel).unwrap();
+        let indices = CompactionEngine::resolve_selection(&messages, &sel)
+            .expect("duplicate refs are deduplicated");
         assert_eq!(indices, [1, 2].into_iter().collect::<BTreeSet<_>>());
     }
 
@@ -559,10 +563,13 @@ mod tests {
             text_summary("s"),
             0,
         )
-        .unwrap();
+        .expect("compression creates block");
         assert_eq!(block_ref, BlockRef::new(1));
         assert!(state.has_active_blocks());
-        let block = state.blocks().get(&block_ref).unwrap();
+        let block = state
+            .blocks()
+            .get(&block_ref)
+            .expect("created block exists");
         assert!(block.is_active());
         assert_eq!(block.direct_message_indices(), &[1, 2, 3]);
         assert!(block.consumed_block_refs().is_empty());
@@ -585,7 +592,7 @@ mod tests {
             text_summary("b1"),
             0,
         )
-        .unwrap();
+        .expect("first compression creates block");
 
         // Create b2 covering [1, 4] — consumes b1
         let sel2 = CompressionSelection::Range {
@@ -599,15 +606,15 @@ mod tests {
             text_summary("b2"),
             0,
         )
-        .unwrap();
+        .expect("second compression consumes first block");
 
         // b1 should be inactive (consumed by b2)
-        let block1 = state.blocks().get(&b1).unwrap();
+        let block1 = state.blocks().get(&b1).expect("first block exists");
         assert!(!block1.is_active());
         assert_eq!(block1.deactivated_by_block_ref(), Some(b2));
 
         // b2 should be active and consume b1
-        let block2 = state.blocks().get(&b2).unwrap();
+        let block2 = state.blocks().get(&b2).expect("second block exists");
         assert!(block2.is_active());
         assert_eq!(block2.consumed_block_refs(), &[b1]);
     }
@@ -623,7 +630,7 @@ mod tests {
             end: MessageRef::from_index(2),
         };
         CompactionEngine::apply_compression_at(&mut state, &messages, &sel1, text_summary("b1"), 0)
-            .unwrap();
+            .expect("first compression creates block");
 
         // Try to create b2 covering [2, 3] — partially overlaps b1
         let sel2 = CompressionSelection::Range {
@@ -637,7 +644,7 @@ mod tests {
             text_summary("b2"),
             0,
         )
-        .unwrap_err();
+        .expect_err("overlapping compression is rejected");
         assert!(matches!(err, CompactionError::OverlapsActiveBlock(_)));
     }
 
@@ -652,7 +659,7 @@ mod tests {
             end: MessageRef::from_index(2),
         };
         CompactionEngine::apply_compression_at(&mut state, &messages, &sel1, text_summary("b1"), 0)
-            .unwrap();
+            .expect("first compression creates block");
 
         // Create b2 covering [3, 4] — no overlap
         let sel2 = CompressionSelection::Range {
@@ -666,11 +673,23 @@ mod tests {
             text_summary("b2"),
             0,
         )
-        .unwrap();
+        .expect("non-overlapping compression creates block");
 
         // Both blocks should be active
-        assert!(state.blocks().get(&BlockRef::new(1)).unwrap().is_active());
-        assert!(state.blocks().get(&b2).unwrap().is_active());
+        assert!(
+            state
+                .blocks()
+                .get(&BlockRef::new(1))
+                .expect("first block exists")
+                .is_active()
+        );
+        assert!(
+            state
+                .blocks()
+                .get(&b2)
+                .expect("second block exists")
+                .is_active()
+        );
     }
 
     // --- Step 5: summary block ref validation ---
@@ -692,7 +711,7 @@ mod tests {
             text_summary("b1"),
             0,
         )
-        .unwrap();
+        .expect("first compression creates block");
 
         // Create b2 covering [1, 4] consuming b1, with valid block ref in summary
         let sel2 = CompressionSelection::Range {
@@ -704,9 +723,9 @@ mod tests {
             SummaryPart::BlockRef(b1),
         ];
         let b2 = CompactionEngine::apply_compression_at(&mut state, &messages, &sel2, summary, 0)
-            .unwrap();
+            .expect("summary with consumed block ref is accepted");
 
-        let block2 = state.blocks().get(&b2).unwrap();
+        let block2 = state.blocks().get(&b2).expect("second block exists");
         assert_eq!(block2.consumed_block_refs(), &[b1]);
     }
 
@@ -725,7 +744,7 @@ mod tests {
             SummaryPart::BlockRef(BlockRef::new(1)),
         ];
         let err = CompactionEngine::apply_compression_at(&mut state, &messages, &sel, summary, 0)
-            .unwrap_err();
+            .expect_err("invented block ref is rejected");
         assert_eq!(err, CompactionError::InvalidBlockRef(BlockRef::new(1)));
     }
 
@@ -746,7 +765,7 @@ mod tests {
             text_summary("b1"),
             0,
         )
-        .unwrap();
+        .expect("first compression creates block");
 
         // Create b2 covering [1, 4] with duplicate block ref
         let sel2 = CompressionSelection::Range {
@@ -759,7 +778,7 @@ mod tests {
             SummaryPart::BlockRef(b1),
         ];
         let err = CompactionEngine::apply_compression_at(&mut state, &messages, &sel2, summary, 0)
-            .unwrap_err();
+            .expect_err("duplicate block ref is rejected");
         assert_eq!(err, CompactionError::DuplicateBlockRef(b1));
     }
 
@@ -781,7 +800,7 @@ mod tests {
             text_summary("b1"),
             0,
         )
-        .unwrap();
+        .expect("first compression creates block");
 
         // Create b2 covering [1, 4] consuming b1, but don't reference b1 in summary
         let sel2 = CompressionSelection::Range {
@@ -790,10 +809,10 @@ mod tests {
         };
         let summary = text_summary("no block ref");
         let b2 = CompactionEngine::apply_compression_at(&mut state, &messages, &sel2, summary, 0)
-            .unwrap();
+            .expect("missing consumed ref is accepted");
 
         // Should succeed — b1 is still consumed
-        let block2 = state.blocks().get(&b2).unwrap();
+        let block2 = state.blocks().get(&b2).expect("second block exists");
         assert_eq!(block2.consumed_block_refs(), &[b1]);
     }
 
@@ -816,7 +835,7 @@ mod tests {
             text_summary("s"),
             0,
         )
-        .unwrap_err();
+        .expect_err("tool-batch split is rejected");
         assert!(matches!(err, CompactionError::SplitsToolBatch { .. }));
         // State should not be modified
         assert!(!state.has_active_blocks());
@@ -837,7 +856,7 @@ mod tests {
             text_summary("s"),
             0,
         )
-        .unwrap_err();
+        .expect_err("stale ref is rejected");
         assert!(matches!(err, CompactionError::InvalidMessageRef(_)));
     }
 
@@ -855,8 +874,11 @@ mod tests {
             text_summary("s"),
             0,
         )
-        .unwrap();
-        let block = state.blocks().get(&block_ref).unwrap();
+        .expect("message-mode compression creates block");
+        let block = state
+            .blocks()
+            .get(&block_ref)
+            .expect("created block exists");
         assert_eq!(block.direct_message_indices(), &[1, 3]);
     }
 
@@ -876,7 +898,7 @@ mod tests {
             text_summary("b1"),
             0,
         )
-        .unwrap();
+        .expect("first nested compression creates block");
 
         let b2 = CompactionEngine::apply_compression_at(
             &mut state,
@@ -888,7 +910,7 @@ mod tests {
             vec![SummaryPart::Text("b2".into()), SummaryPart::BlockRef(b1)],
             0,
         )
-        .unwrap();
+        .expect("second nested compression creates block");
 
         let b3 = CompactionEngine::apply_compression_at(
             &mut state,
@@ -900,18 +922,36 @@ mod tests {
             vec![SummaryPart::Text("b3".into()), SummaryPart::BlockRef(b2)],
             0,
         )
-        .unwrap();
+        .expect("third nested compression creates block");
 
         // b1 and b2 are inactive, b3 is active
-        assert!(!state.blocks().get(&b1).unwrap().is_active());
-        assert!(!state.blocks().get(&b2).unwrap().is_active());
-        assert!(state.blocks().get(&b3).unwrap().is_active());
+        assert!(
+            !state
+                .blocks()
+                .get(&b1)
+                .expect("first block exists")
+                .is_active()
+        );
+        assert!(
+            !state
+                .blocks()
+                .get(&b2)
+                .expect("second block exists")
+                .is_active()
+        );
+        assert!(
+            state
+                .blocks()
+                .get(&b3)
+                .expect("third block exists")
+                .is_active()
+        );
 
         // b3's effective indices include all messages via b2 → b1
         let effective = state
             .blocks()
             .get(&b3)
-            .unwrap()
+            .expect("third block exists")
             .effective_message_indices(&state);
         assert_eq!(
             effective,

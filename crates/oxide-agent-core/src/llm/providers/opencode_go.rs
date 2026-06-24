@@ -856,7 +856,6 @@ fn build_chat_completion_body(
         normalize_model_id(model_id),
         max_tokens,
         opencode_chat_request_options(model_id, None),
-        None,
     )
 }
 
@@ -897,7 +896,6 @@ fn build_tool_chat_body(
         temperature,
         json_mode,
         opencode_chat_request_options(model_id, reasoning_effort),
-        None,
     )
 }
 
@@ -912,7 +910,6 @@ fn prepare_structured_messages(
         history,
         chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::opencode_go())
             .with_native_image_parts(allow_native_image_parts),
-        None,
     )
 }
 
@@ -937,16 +934,12 @@ fn opencode_chat_request_options<'a>(
 }
 
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
-    chat_completions_response::parse_chat_response(
-        response,
-        ChatCompletionsProfile::opencode_go(),
-        None,
-    )
+    chat_completions_response::parse_chat_response(response, ChatCompletionsProfile::opencode_go())
 }
 
 #[cfg(test)]
 fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
-    chat_completions_response::parse_tool_calls(value, ChatCompletionsProfile::opencode_go(), None)
+    chat_completions_response::parse_tool_calls(value, ChatCompletionsProfile::opencode_go())
 }
 
 #[cfg(test)]

@@ -647,7 +647,14 @@ mod tests {
                 assert_eq!(payload.original_chars, 100_000);
                 assert!(payload.estimated_tokens > 0);
                 assert!(payload.inline_fallback.is_some());
-                assert_eq!(payload.inline_fallback.as_ref().unwrap().len(), 100_000);
+                assert_eq!(
+                    payload
+                        .inline_fallback
+                        .as_ref()
+                        .expect("manifest keeps inline fallback")
+                        .len(),
+                    100_000
+                );
                 assert_eq!(payload.archive_ref.storage_key, "inline");
             }
             other => panic!("expected Manifest, got {other:?}"),
@@ -748,7 +755,11 @@ mod tests {
         let decision = ContextAdmission::evaluate(&descriptor, &budget);
         match decision {
             AdmissionDecision::Manifest(spec) => {
-                let fallback = spec.externalized_payload.inline_fallback.as_ref().unwrap();
+                let fallback = spec
+                    .externalized_payload
+                    .inline_fallback
+                    .as_ref()
+                    .expect("manifest keeps inline fallback");
                 assert_eq!(fallback.len(), raw.len() * 1000);
                 assert_eq!(fallback.as_str(), &raw.repeat(1000));
             }
@@ -1021,7 +1032,7 @@ mod tests {
         };
         let result = summarize_in_chunks(&content, 50, "test context", &summarizer);
         assert!(result.is_ok());
-        let result = result.unwrap();
+        let result = result.expect("chunk summarization succeeds");
         assert!(!result.chunk_summaries.is_empty());
         assert!(!result.summary_of_summaries.is_empty());
         assert!(result.total_summary_tokens > 0);
@@ -1033,7 +1044,10 @@ mod tests {
         let summarizer = FailingSummarizer;
         let result = summarize_in_chunks(&content, 50, "test context", &summarizer);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), SummarizeError::Unavailable);
+        assert_eq!(
+            result.expect_err("unavailable summarizer fails"),
+            SummarizeError::Unavailable
+        );
     }
 
     #[test]
@@ -1042,7 +1056,7 @@ mod tests {
         let summarizer = PartialFailingSummarizer { fail_index: 0 };
         let result = summarize_in_chunks(&content, 50, "test context", &summarizer);
         assert!(result.is_err());
-        match result.unwrap_err() {
+        match result.expect_err("partial summarizer failure is propagated") {
             SummarizeError::Failed { chunk_index, .. } => {
                 assert_eq!(chunk_index, 0);
             }
@@ -1056,7 +1070,8 @@ mod tests {
         let summarizer = MockSummarizer {
             prefix: "S".to_string(),
         };
-        let result = summarize_in_chunks(content, 100, "ctx", &summarizer).unwrap();
+        let result = summarize_in_chunks(content, 100, "ctx", &summarizer)
+            .expect("single chunk summarization succeeds");
         assert_eq!(result.chunk_summaries.len(), 1);
         // Summary-of-summaries is the summarizer applied to the single chunk summary.
         assert!(result.summary_of_summaries.starts_with("S:"));

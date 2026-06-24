@@ -1654,7 +1654,9 @@ fn summarize_recent_messages(memory: &AgentMemory) -> Vec<serde_json::Value> {
             "content": content,
             "reasoning": reasoning,
             "tool_name": message.tool_name.as_deref(),
-            "tool_call_id": message.tool_call_id.as_deref(),
+            "tool_call_id": message
+                .resolved_tool_call_correlation()
+                .map(|c| c.invocation_id.into_inner()),
         }));
     }
     items.reverse();

@@ -50,7 +50,7 @@ impl Preprocessor {
     /// use oxide_agent_core::config::AgentSettings;
     /// use oxide_agent_core::llm::LlmClient;
     ///
-    /// let settings = AgentSettings::new().unwrap();
+    /// let settings = AgentSettings::new().expect("valid settings");
     /// let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// ```
@@ -87,7 +87,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let audio_bytes = vec![0; 100];
@@ -133,7 +133,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let image_bytes = vec![0; 100];
@@ -445,7 +445,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let input = AgentInput::Text("Hello".to_string());

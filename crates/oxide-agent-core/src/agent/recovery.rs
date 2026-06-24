@@ -72,24 +72,11 @@ pub fn prune_tool_history_by_availability(
                     continue;
                 };
 
-                let correlations = message
-                    .resolved_tool_call_correlations()
-                    .unwrap_or_else(|| tool_calls.iter().map(ToolCall::correlation).collect());
-
-                let retained_pairs = tool_calls
+                let retained_tool_calls: Vec<ToolCall> = tool_calls
                     .iter()
+                    .filter(|tool_call| available_tools.contains(&tool_call.function.name))
                     .cloned()
-                    .zip(correlations.into_iter())
-                    .filter(|(tool_call, _)| available_tools.contains(&tool_call.function.name))
-                    .collect::<Vec<_>>();
-                let retained_tool_calls = retained_pairs
-                    .iter()
-                    .map(|(tool_call, _)| tool_call.clone())
-                    .collect::<Vec<_>>();
-                let retained_tool_call_correlations = retained_pairs
-                    .into_iter()
-                    .map(|(_, correlation)| correlation)
-                    .collect::<Vec<_>>();
+                    .collect();
 
                 if retained_tool_calls.len() == tool_calls.len() {
                     rewritten.push(message.clone());
@@ -112,7 +99,6 @@ pub fn prune_tool_history_by_availability(
                     converted.kind = AgentMessageKind::AssistantResponse;
                     converted.role = MessageRole::Assistant;
                     converted.tool_calls = None;
-                    converted.tool_call_correlations = None;
                     outcome.converted_tool_call_messages =
                         outcome.converted_tool_call_messages.saturating_add(1);
                     rewritten.push(converted);
@@ -121,7 +107,6 @@ pub fn prune_tool_history_by_availability(
 
                 let mut rewritten_message = message.clone();
                 rewritten_message.tool_calls = Some(retained_tool_calls);
-                rewritten_message.tool_call_correlations = Some(retained_tool_call_correlations);
                 rewritten.push(rewritten_message);
             }
             AgentMessageKind::ToolResult => {
@@ -301,13 +286,6 @@ fn process_tool_results(
                 outcome.repaired_empty_wire_ids = outcome.repaired_empty_wire_ids.saturating_add(1);
             }
             repaired.tool_call_correlation = Some(canonical_corr.clone());
-            if repaired
-                .tool_call_id
-                .as_deref()
-                .is_none_or(|id| id.trim().is_empty())
-            {
-                repaired.tool_call_id = Some(inv_id.as_str().to_string());
-            }
             outcome.applied = true;
         }
 
@@ -365,16 +343,19 @@ fn build_repaired_batch(
             converted.kind = AgentMessageKind::AssistantResponse;
             converted.role = MessageRole::Assistant;
             converted.tool_calls = None;
-            converted.tool_call_correlations = None;
             outcome.applied = true;
             outcome.converted_tool_call_messages =
                 outcome.converted_tool_call_messages.saturating_add(1);
             batch.push(converted);
         }
     } else {
+        let repaired_calls: Vec<ToolCall> = calls
+            .into_iter()
+            .zip(correlations)
+            .map(|(call, corr)| call.with_correlation(corr))
+            .collect();
         let mut repaired = assistant;
-        repaired.tool_calls = Some(calls);
-        repaired.tool_call_correlations = Some(correlations);
+        repaired.tool_calls = Some(repaired_calls);
         batch.push(repaired);
     }
 
@@ -603,7 +584,13 @@ mod tests {
             .expect("assistant tool call must remain");
         assert_eq!(repaired_calls.len(), 1);
         assert_eq!(repaired_calls[0].id, "call-1");
-        assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(
+            repaired[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("call-1")
+        );
     }
 
     #[test]
@@ -673,7 +660,13 @@ mod tests {
         assert!(outcome.applied);
         assert_eq!(outcome.dropped_tool_results, 1);
         assert_eq!(repaired.len(), 2);
-        assert_eq!(repaired[1].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(
+            repaired[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("call-1")
+        );
         assert_eq!(repaired[1].content, "result-1");
     }
 
@@ -691,15 +684,17 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 tool_name: None,
-                tool_calls: Some(vec![ToolCall::new(
-                    "provider-a".to_string(),
-                    ToolCallFunction {
-                        name: "search".to_string(),
-                        arguments: "{}".to_string(),
-                    },
-                    false,
-                )]),
-                tool_call_correlations: Some(vec![correlation.clone()]),
+                tool_calls: Some(vec![
+                    ToolCall::new(
+                        "provider-a".to_string(),
+                        ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(correlation.clone()),
+                ]),
                 attachments: Vec::new(),
                 externalized_payload: None,
                 pruned_artifact: None,
@@ -714,7 +709,6 @@ mod tests {
                 tool_call_correlation: Some(correlation),
                 tool_name: Some("search".to_string()),
                 tool_calls: None,
-                tool_call_correlations: None,
                 attachments: Vec::new(),
                 externalized_payload: None,
                 pruned_artifact: None,
@@ -751,15 +745,17 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 tool_name: None,
-                tool_calls: Some(vec![ToolCall::new(
-                    "call-1".to_string(),
-                    ToolCallFunction {
-                        name: "search".to_string(),
-                        arguments: "{}".to_string(),
-                    },
-                    false,
-                )]),
-                tool_call_correlations: Some(vec![correlation.clone()]),
+                tool_calls: Some(vec![
+                    ToolCall::new(
+                        "call-1".to_string(),
+                        ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(correlation.clone()),
+                ]),
                 attachments: Vec::new(),
                 externalized_payload: None,
                 pruned_artifact: None,
@@ -774,7 +770,6 @@ mod tests {
                 tool_call_correlation: Some(correlation),
                 tool_name: Some("search".to_string()),
                 tool_calls: None,
-                tool_call_correlations: None,
                 attachments: Vec::new(),
                 externalized_payload: None,
                 pruned_artifact: None,

@@ -687,7 +687,12 @@ mod tests {
     fn parse_empty_arguments_rejected() {
         let result = parse_compress_arguments("");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("at least one"));
+        assert!(
+            result
+                .expect_err("empty arguments are rejected")
+                .to_string()
+                .contains("at least one")
+        );
     }
 
     #[test]
@@ -709,7 +714,12 @@ mod tests {
         }"#;
         let result = parse_compress_arguments(args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("start"));
+        assert!(
+            result
+                .expect_err("invalid start ref is rejected")
+                .to_string()
+                .contains("start")
+        );
     }
 
     #[test]
@@ -727,7 +737,12 @@ mod tests {
         }"#;
         let result = parse_compress_arguments(args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exactly one"));
+        assert!(
+            result
+                .expect_err("ambiguous summary part is rejected")
+                .to_string()
+                .contains("exactly one")
+        );
     }
 
     #[test]
@@ -773,7 +788,12 @@ mod tests {
         }"#;
         let result = parse_compress_arguments(args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty"));
+        assert!(
+            result
+                .expect_err("empty summary text is rejected")
+                .to_string()
+                .contains("empty")
+        );
     }
 
     #[test]

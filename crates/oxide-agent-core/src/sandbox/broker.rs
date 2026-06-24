@@ -1064,6 +1064,19 @@ mod tests {
     #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn utc_ts(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        min: u32,
+        sec: u32,
+    ) -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .expect("valid UTC timestamp")
+    }
+
     #[cfg(oxide_module_sandbox_backend_docker_direct)]
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1098,7 +1111,7 @@ mod tests {
 
     #[test]
     fn stack_logs_broker_payload_roundtrip_preserves_contract_types() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 3, 4).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 3, 4);
         let request = SandboxBrokerRequest::FetchStackLogs {
             request: StackLogsFetchRequest {
                 selector: StackLogsSelector {
@@ -1180,7 +1193,7 @@ mod tests {
 
     #[test]
     fn stack_logs_list_sources_payload_roundtrip_preserves_source_records() {
-        let started_at = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let started_at = utc_ts(2026, 4, 2, 10, 11, 12);
         let response = SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
             stack_selector: ResolvedStackLogsSelector {
                 compose_project: "oxide-agent".to_string(),

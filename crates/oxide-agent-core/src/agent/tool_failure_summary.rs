@@ -477,7 +477,13 @@ mod tests {
         assert_eq!(rewrite.rewritten_count, 1);
         let rewritten = rewrite.messages.first().expect("rewritten message");
 
-        assert_eq!(rewritten.tool_call_id.as_deref(), Some("invoke-web"));
+        assert_eq!(
+            rewritten
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-web")
+        );
         assert_eq!(rewritten.tool_name.as_deref(), Some("web_markdown"));
         assert!(rewritten.is_pruned());
         assert!(

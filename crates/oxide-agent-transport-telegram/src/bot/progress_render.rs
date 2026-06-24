@@ -635,13 +635,13 @@ mod tests {
             max_attempts: 5,
             unbounded: false,
             wait_secs: Some(30),
-            provider: "mistral".to_string(),
+            provider: "openrouter".to_string(),
         });
 
         let output = render_progress_html(&state);
 
         assert!(output.contains("🔄 <b>Rate limited</b>"));
-        assert!(output.contains("mistral"));
+        assert!(output.contains("openrouter"));
         assert!(output.contains("Attempt 2/5"));
         assert!(output.contains("~30s"));
     }

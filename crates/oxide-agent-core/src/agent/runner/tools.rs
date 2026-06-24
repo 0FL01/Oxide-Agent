@@ -845,7 +845,13 @@ mod tests {
             "structured tool-call envelopes must not be replayed as assistant prose"
         );
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-read-1"));
+        assert_eq!(
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-read-1")
+        );
         assert_eq!(memory[1].tool_name.as_deref(), Some("read_file"));
         assert!(memory[1].content.contains("\"status\":\"success\""));
         assert_eq!(
@@ -942,10 +948,22 @@ mod tests {
         assert_eq!(memory.len(), 3);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-search-1"));
+        assert_eq!(
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-search-1")
+        );
         assert!(memory[1].content.contains("\"status\":\"success\""));
         assert_eq!(memory[2].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[2].tool_call_id.as_deref(), Some("invoke-search-2"));
+        assert_eq!(
+            memory[2]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-search-2")
+        );
         assert!(memory[2].content.contains("\"status\":\"failure\""));
         assert!(memory[2].content.contains("Search budget exceeded (2/1)"));
     }
@@ -1298,7 +1316,13 @@ mod tests {
         assert_eq!(memory.len(), 2);
         let tool_result = &memory[1];
         assert_eq!(tool_result.kind, AgentMessageKind::ToolResult);
-        assert_eq!(tool_result.tool_call_id.as_deref(), Some("invoke-web-1"));
+        assert_eq!(
+            tool_result
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-web-1")
+        );
         assert_eq!(
             tool_result
                 .tool_call_correlation
@@ -1639,7 +1663,10 @@ mod tests {
             let expected_invocation_id = format!("invoke-read-{value}");
             assert_eq!(message.kind, AgentMessageKind::ToolResult);
             assert_eq!(
-                message.tool_call_id.as_deref(),
+                message
+                    .tool_call_correlation
+                    .as_ref()
+                    .map(|c| c.invocation_id.as_str()),
                 Some(expected_invocation_id.as_str())
             );
             assert!(
@@ -1807,7 +1834,10 @@ mod tests {
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
         assert_eq!(
-            memory[1].tool_call_id.as_deref(),
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
             Some("invoke-read-openai-base")
         );
         assert!(memory[1].content.contains("runtime-ok"));

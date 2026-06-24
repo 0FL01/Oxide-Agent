@@ -31,13 +31,6 @@ provides = ["llm-provider/openai-chatgpt"]
 profiles = ["full"]
 
 [[modules]]
-id = "llm-provider/mistral"
-cargo_feature = "llm-mistral"
-kind = "LlmProvider"
-provides = ["llm-provider/mistral"]
-profiles = ["full"]
-
-[[modules]]
 id = "llm-provider/anthropic"
 profile_id = "llm-provider/minimax"
 cargo_feature = "llm-minimax"

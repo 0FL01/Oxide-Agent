@@ -76,7 +76,6 @@ profile-full = [
     "transport-web",
     "storage-sqlx",
     "llm-chatgpt",
-    "llm-mistral",
     "llm-minimax",
     "llm-openai-base",
     "llm-opencode-go",
@@ -178,7 +177,6 @@ storage-sqlx = ["dep:sqlx-core", "dep:sqlx-postgres"]
 # LLM providers
 http-client = ["dep:reqwest"]
 llm-chatgpt = ["http-client"]
-llm-mistral = ["http-client", "llm-openai-base"]
 llm-minimax = ["http-client"]
 llm-openai-base = ["http-client"]
 llm-opencode-go = ["http-client"]

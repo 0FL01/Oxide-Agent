@@ -2695,6 +2695,12 @@ mod tests {
         }
     }
 
+    fn utc_ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .expect("valid UTC timestamp")
+    }
+
     // Integration test - requires Docker
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
@@ -2918,10 +2924,7 @@ mod tests {
             "2026-04-02T10:11:12.000000000Z",
         ))
         .expect("parse started_at");
-        assert_eq!(
-            started_at,
-            Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap()
-        );
+        assert_eq!(started_at, utc_ts(2026, 4, 2, 10, 11, 12));
     }
 
     #[test]
@@ -2950,8 +2953,8 @@ mod tests {
 
     #[test]
     fn validate_stack_logs_window_rejects_inverted_range() {
-        let since = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 13).unwrap();
-        let until = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let since = utc_ts(2026, 4, 2, 10, 11, 13);
+        let until = utc_ts(2026, 4, 2, 10, 11, 12);
 
         let error = DockerSandboxManager::validate_stack_logs_window(Some(since), Some(until))
             .expect_err("inverted range should fail");
@@ -2966,7 +2969,7 @@ mod tests {
         )
         .expect("parse timestamped log line");
 
-        assert_eq!(ts, Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap());
+        assert_eq!(ts, utc_ts(2026, 4, 2, 10, 11, 12));
         assert_eq!(message, "provider failover activated");
     }
 
@@ -3014,7 +3017,7 @@ mod tests {
 
     #[test]
     fn assign_stack_log_ordinals_counts_per_service_and_stream() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let mut entries = vec![
             StackLogEntry {
                 ts,
@@ -3051,7 +3054,7 @@ mod tests {
 
     #[test]
     fn apply_stack_log_noise_filter_suppresses_expected_noise_classes() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "useful"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, ""),
@@ -3094,7 +3097,7 @@ mod tests {
 
     #[test]
     fn apply_stack_log_cursor_returns_entries_after_cursor() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stderr", 0, "stderr"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
@@ -3117,7 +3120,7 @@ mod tests {
 
     #[test]
     fn paginate_stack_log_entries_sets_next_cursor_from_last_returned_entry() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),

@@ -1,8 +1,8 @@
 //! Request-body construction for the shared Chat Completions wire path.
 
 use super::profile::{
-    ChatCompletionsProfile, ChatMessageLayoutPolicy, ChatReasoningPolicy, ChatStreamingPolicy,
-    ChatThinkingPolicy, ChatToolChoicePolicy, JsonModePolicy, ModelMatchPolicy,
+    ChatCompletionsProfile, ChatReasoningPolicy, ChatStreamingPolicy, ChatThinkingPolicy,
+    ChatToolChoicePolicy, JsonModePolicy,
 };
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::media;
@@ -18,17 +18,6 @@ impl ChatCompletionsRequestPlan {
     #[must_use]
     pub(crate) const fn new(profile: ChatCompletionsProfile) -> Self {
         Self { profile }
-    }
-}
-
-pub(crate) trait ChatToolCallIdMapper {
-    fn map_tool_call_id(&mut self, id: &str) -> String;
-}
-
-#[cfg(oxide_module_llm_provider_openai_base)]
-impl ChatToolCallIdMapper for crate::llm::providers::openai_base::ToolCallIdMapper {
-    fn map_tool_call_id(&mut self, id: &str) -> String {
-        self.mistral_id_for(id)
     }
 }
 
@@ -103,9 +92,8 @@ pub(crate) fn build_text_body(
     model_id: &str,
     max_tokens: u32,
     options: ChatRequestOptions<'_>,
-    tool_id_mapper: Option<&mut dyn ChatToolCallIdMapper>,
 ) -> Value {
-    let mut messages = prepare_messages(system_prompt, history, options, tool_id_mapper);
+    let mut messages = prepare_messages(system_prompt, history, options);
     messages.push(json!({
         "role": "user",
         "content": user_message,
@@ -137,7 +125,6 @@ pub(crate) fn build_tool_body(
     temperature: Option<f32>,
     json_mode: bool,
     options: ChatRequestOptions<'_>,
-    tool_id_mapper: Option<&mut dyn ChatToolCallIdMapper>,
 ) -> Value {
     let openai_tools = prepare_tools_json(tools);
     let has_tools = !openai_tools.is_empty();
@@ -151,7 +138,7 @@ pub(crate) fn build_tool_body(
 
     let mut body = json!({
         "model": model_id,
-        "messages": prepare_messages(system_prompt, history, options, tool_id_mapper),
+        "messages": prepare_messages(system_prompt, history, options),
         "max_tokens": max_tokens,
         "temperature": effective_temperature,
     });
@@ -292,27 +279,16 @@ pub(crate) fn prepare_messages(
     system_prompt: &str,
     history: &[Message],
     options: ChatRequestOptions<'_>,
-    tool_id_mapper: Option<&mut dyn ChatToolCallIdMapper>,
 ) -> Vec<Value> {
-    match options.profile.message_layout {
-        ChatMessageLayoutPolicy::GenericOpenAI => prepare_generic_messages(
-            system_prompt,
-            history,
-            options.allow_native_image_parts,
-            options.allow_native_image_parts_for_tool_results,
-            options.profile.include_empty_system_message,
-            options.profile.require_reasoning_content_on_tool_calls,
-            options.require_non_empty_tool_result_content,
-        ),
-        ChatMessageLayoutPolicy::MistralStrict => prepare_mistral_messages(
-            system_prompt,
-            history,
-            tool_id_mapper,
-            options.allow_native_image_parts_for_tool_results,
-            options.profile.require_reasoning_content_on_tool_calls,
-            options.require_non_empty_tool_result_content,
-        ),
-    }
+    prepare_generic_messages(
+        system_prompt,
+        history,
+        options.allow_native_image_parts,
+        options.allow_native_image_parts_for_tool_results,
+        options.profile.include_empty_system_message,
+        options.profile.require_reasoning_content_on_tool_calls,
+        options.require_non_empty_tool_result_content,
+    )
 }
 
 #[must_use]
@@ -394,19 +370,11 @@ fn prepare_generic_messages(
                 }
             }
             "assistant" => {
-                let mut mapper = None;
-                messages.push(assistant_message(
-                    msg,
-                    &mut mapper,
-                    require_reasoning_content,
-                ));
+                messages.push(assistant_message(msg, require_reasoning_content));
             }
             "tool" => {
-                let mut mapper = None;
                 if let Some(tool_message) = tool_result_message(
                     msg,
-                    &mut mapper,
-                    false,
                     allow_native_image_parts_for_tool_results,
                     require_non_empty_tool_result_content,
                 ) {
@@ -423,61 +391,7 @@ fn prepare_generic_messages(
     messages
 }
 
-fn prepare_mistral_messages(
-    system_prompt: &str,
-    history: &[Message],
-    mut mapper: Option<&mut dyn ChatToolCallIdMapper>,
-    allow_native_image_parts_for_tool_results: bool,
-    require_reasoning_content: bool,
-    require_non_empty_tool_result_content: bool,
-) -> Vec<Value> {
-    let mut history_systems = Vec::new();
-    let mut other_messages = Vec::new();
-
-    for msg in history {
-        match msg.role.as_str() {
-            "system" => history_systems.push(json!({
-                "role": "system",
-                "content": msg.content,
-            })),
-            "assistant" => other_messages.push(assistant_message(
-                msg,
-                &mut mapper,
-                require_reasoning_content,
-            )),
-            "tool" => {
-                if let Some(tool_message) = tool_result_message(
-                    msg,
-                    &mut mapper,
-                    true,
-                    allow_native_image_parts_for_tool_results,
-                    require_non_empty_tool_result_content,
-                ) {
-                    other_messages.push(tool_message);
-                }
-            }
-            _ => other_messages.push(json!({
-                "role": "user",
-                "content": msg.content,
-            })),
-        }
-    }
-
-    let mut messages = Vec::with_capacity(history_systems.len() + 1 + other_messages.len());
-    messages.extend(history_systems);
-    messages.push(json!({
-        "role": "system",
-        "content": system_prompt,
-    }));
-    messages.extend(other_messages);
-    messages
-}
-
-fn assistant_message(
-    msg: &Message,
-    mapper: &mut Option<&mut dyn ChatToolCallIdMapper>,
-    require_reasoning_content: bool,
-) -> Value {
+fn assistant_message(msg: &Message, require_reasoning_content: bool) -> Value {
     // Per the OpenAI Chat Completions spec, assistant messages that carry
     // tool_calls should have `content: null` when there is no text. Some
     // providers (e.g. Xiaomi MiMo) reject `"content": ""` with a 400
@@ -529,9 +443,8 @@ fn assistant_message(
                     .encode_tool_call(tool_call)
                     .and_then(|call| call.into_chat_like())
                     .map(|call| {
-                        let id = map_id(mapper, &call.id);
                         json!({
-                            "id": id,
+                            "id": call.id,
                             "type": "function",
                             "function": {
                                 "name": call.name,
@@ -551,15 +464,12 @@ fn assistant_message(
 
 fn tool_result_message(
     msg: &Message,
-    mapper: &mut Option<&mut dyn ChatToolCallIdMapper>,
-    include_name: bool,
     allow_native_image_parts: bool,
     require_non_empty_content: bool,
 ) -> Option<Value> {
     let result = CHAT_LIKE_TOOL_PROFILE
         .encode_tool_result(msg)
         .and_then(|result| result.into_chat_like())?;
-    let id = map_id(mapper, &result.tool_call_id);
     let text_content = tool_result_text_content(
         &result.content,
         &msg.content_parts,
@@ -594,14 +504,11 @@ fn tool_result_message(
     } else {
         json!(text_content)
     };
-    let mut message = json!({
+    let message = json!({
         "role": "tool",
-        "tool_call_id": id,
+        "tool_call_id": result.tool_call_id,
         "content": content,
     });
-    if include_name && let Some(name) = result.name {
-        message["name"] = json!(name);
-    }
     Some(message)
 }
 
@@ -620,13 +527,6 @@ fn tool_result_text_content(
         "Tool returned image attachment(s).".to_string()
     } else {
         "Tool returned no textual content.".to_string()
-    }
-}
-
-fn map_id(mapper: &mut Option<&mut dyn ChatToolCallIdMapper>, id: &str) -> String {
-    match mapper.as_deref_mut() {
-        Some(mapper) => mapper.map_tool_call_id(id),
-        None => id.to_string(),
     }
 }
 
@@ -708,9 +608,6 @@ fn apply_reasoning_policy(
 
     match options.profile.reasoning {
         ChatReasoningPolicy::None => {}
-        ChatReasoningPolicy::Mistral { default_effort, .. } => {
-            body["reasoning_effort"] = json!(options.reasoning_effort.unwrap_or(default_effort));
-        }
         ChatReasoningPolicy::OpenCodeGo { default_effort } => {
             let _ = model_id;
             body["reasoning_effort"] = json!(options.reasoning_effort.unwrap_or(default_effort));
@@ -719,18 +616,13 @@ fn apply_reasoning_policy(
 }
 
 fn model_supports_reasoning(options: ChatRequestOptions<'_>, model_id: &str) -> bool {
+    let _ = model_id;
     if let Some(supports) = options.model_supports_reasoning {
         return supports;
     }
     match options.profile.reasoning {
         ChatReasoningPolicy::None => false,
         ChatReasoningPolicy::OpenCodeGo { .. } => false,
-        ChatReasoningPolicy::Mistral { model_match, .. } => match model_match {
-            ModelMatchPolicy::None => false,
-            ModelMatchPolicy::CaseInsensitiveContains(needle) => model_id
-                .to_ascii_lowercase()
-                .contains(needle.to_ascii_lowercase().as_str()),
-        },
     }
 }
 
@@ -745,18 +637,6 @@ fn image_data_url_with_optional_mime(image_bytes: &[u8], mime_type: Option<&str>
 mod tests {
     use super::*;
     use crate::llm::{Message, MessageContentPart, ToolCall, ToolCallFunction, ToolDefinition};
-
-    struct PrefixMapper;
-
-    impl ChatToolCallIdMapper for PrefixMapper {
-        fn map_tool_call_id(&mut self, id: &str) -> String {
-            format!("m{id}")
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric())
-                .take(9)
-                .collect()
-        }
-    }
 
     fn sample_tool() -> ToolDefinition {
         ToolDefinition {
@@ -802,7 +682,6 @@ mod tests {
             None,
             false,
             ChatRequestOptions::new(ChatCompletionsProfile::generic()),
-            None,
         );
 
         assert_eq!(body["model"], json!("gpt-4o"));
@@ -820,39 +699,6 @@ mod tests {
             json!("image_url")
         );
         assert!(body.get("parallel_tool_calls").is_none());
-    }
-
-    #[test]
-    fn chat_completions_mistral_request_uses_strict_layout_and_mapped_ids() {
-        let history = vec![
-            Message::system("History system"),
-            Message::assistant_with_tools("", vec![sample_tool_call("call_abcdefghi")]),
-            Message::tool("call_abcdefghi", "get_weather", "sunny"),
-        ];
-        let mut mapper = PrefixMapper;
-
-        let body = build_tool_body(
-            "Main system",
-            &history,
-            &[sample_tool()],
-            "mistral-small-2603",
-            2048,
-            None,
-            false,
-            ChatRequestOptions::new(ChatCompletionsProfile::mistral()),
-            Some(&mut mapper),
-        );
-
-        assert_eq!(body["messages"][0]["content"], json!("History system"));
-        assert_eq!(body["messages"][1]["content"], json!("Main system"));
-        assert_eq!(
-            body["messages"][2]["tool_calls"][0]["id"],
-            json!("mcallabcd")
-        );
-        assert_eq!(body["messages"][3]["tool_call_id"], json!("mcallabcd"));
-        assert_eq!(body["messages"][3]["name"], json!("get_weather"));
-        assert_eq!(body["parallel_tool_calls"], json!(true));
-        assert_eq!(body["reasoning_effort"], json!("high"));
     }
 
     #[test]
@@ -877,7 +723,6 @@ mod tests {
             None,
             false,
             ChatRequestOptions::new(ChatCompletionsProfile::generic()),
-            None,
         );
 
         assert_eq!(body["messages"][3]["role"], json!("tool"));
@@ -926,7 +771,6 @@ mod tests {
                 .with_native_image_parts(true)
                 .with_native_image_parts_for_tool_results(false)
                 .with_non_empty_tool_result_content(true),
-            None,
         );
 
         assert_eq!(
@@ -958,7 +802,6 @@ mod tests {
             false,
             ChatRequestOptions::new(ChatCompletionsProfile::generic())
                 .with_non_empty_tool_result_content(true),
-            None,
         );
 
         assert_eq!(
@@ -978,7 +821,6 @@ mod tests {
             None,
             true,
             ChatRequestOptions::new(ChatCompletionsProfile::zai()),
-            None,
         );
 
         assert_eq!(body["response_format"], json!({"type": "json_object"}));
@@ -998,7 +840,6 @@ mod tests {
             true,
             ChatRequestOptions::new(ChatCompletionsProfile::openrouter())
                 .with_native_image_parts(false),
-            None,
         );
 
         assert_eq!(body["provider"], json!({"require_parameters": true}));
@@ -1022,7 +863,6 @@ mod tests {
             ChatRequestOptions::new(ChatCompletionsProfile::opencode_go())
                 .with_model_supports_reasoning(true)
                 .with_reasoning_effort(Some("medium")),
-            None,
         );
 
         assert_eq!(body["model"], json!("deepseek-v4-flash"));
@@ -1037,7 +877,7 @@ mod tests {
         // `"content": ""` for tool-only assistant messages with a 400
         // "text is not set". The spec says content should be null.
         let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None, false);
+        let message = assistant_message(&msg, false);
         assert_eq!(message["role"], json!("assistant"));
         assert!(
             message["content"].is_null(),
@@ -1049,7 +889,7 @@ mod tests {
     #[test]
     fn assistant_message_with_text_and_tool_calls_sends_string_content() {
         let msg = Message::assistant_with_tools("thinking...", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None, false);
+        let message = assistant_message(&msg, false);
         assert_eq!(message["content"], json!("thinking..."));
         assert!(message["tool_calls"].is_array());
     }
@@ -1057,7 +897,7 @@ mod tests {
     #[test]
     fn assistant_message_with_empty_content_and_no_tool_calls_keeps_empty_string() {
         let msg = Message::assistant("");
-        let message = assistant_message(&msg, &mut None, false);
+        let message = assistant_message(&msg, false);
         assert_eq!(message["content"], json!(""));
         assert!(message.get("tool_calls").is_none());
     }
@@ -1068,7 +908,7 @@ mod tests {
         // messages even when empty. When require_reasoning_content is true
         // and the message has tool_calls, the field must be present.
         let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None, true);
+        let message = assistant_message(&msg, true);
         assert_eq!(message["reasoning_content"], json!(""));
         assert!(message["tool_calls"].is_array());
     }
@@ -1080,14 +920,14 @@ mod tests {
             Some("step-by-step analysis".to_string()),
             vec![sample_tool_call("call_1")],
         );
-        let message = assistant_message(&msg, &mut None, true);
+        let message = assistant_message(&msg, true);
         assert_eq!(message["reasoning_content"], json!("step-by-step analysis"));
     }
 
     #[test]
     fn assistant_message_without_requirement_omits_empty_reasoning_content() {
         let msg = Message::assistant_with_tools("", vec![sample_tool_call("call_1")]);
-        let message = assistant_message(&msg, &mut None, false);
+        let message = assistant_message(&msg, false);
         assert!(
             message.get("reasoning_content").is_none(),
             "reasoning_content should be absent when not required and empty"
@@ -1098,7 +938,7 @@ mod tests {
     fn assistant_message_without_tool_calls_never_includes_reasoning_content_when_empty() {
         let mut msg = Message::assistant("");
         msg.reasoning_content = Some(String::new());
-        let message = assistant_message(&msg, &mut None, true);
+        let message = assistant_message(&msg, true);
         assert!(
             message.get("reasoning_content").is_none(),
             "reasoning_content should not be force-included without tool_calls"

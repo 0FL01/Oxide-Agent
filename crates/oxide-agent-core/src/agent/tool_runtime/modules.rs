@@ -1550,19 +1550,28 @@ mod web_crawler_tests {
 
     #[test]
     fn parse_render_mode_defaults_to_http() {
-        assert_eq!(parse_render_mode(None).unwrap(), RenderMode::Http);
-        assert_eq!(parse_render_mode(Some("")).unwrap(), RenderMode::Http);
-        assert_eq!(parse_render_mode(Some("http")).unwrap(), RenderMode::Http);
+        assert_eq!(
+            parse_render_mode(None).expect("missing render defaults to http"),
+            RenderMode::Http
+        );
+        assert_eq!(
+            parse_render_mode(Some("")).expect("empty render defaults to http"),
+            RenderMode::Http
+        );
+        assert_eq!(
+            parse_render_mode(Some("http")).expect("http render parses"),
+            RenderMode::Http
+        );
     }
 
     #[test]
     fn parse_render_mode_accepts_lightpanda_and_playwright() {
         assert_eq!(
-            parse_render_mode(Some("lightpanda")).unwrap(),
+            parse_render_mode(Some("lightpanda")).expect("lightpanda render parses"),
             RenderMode::Lightpanda
         );
         assert_eq!(
-            parse_render_mode(Some("playwright")).unwrap(),
+            parse_render_mode(Some("playwright")).expect("playwright render parses"),
             RenderMode::Playwright
         );
     }
@@ -1577,7 +1586,7 @@ mod web_crawler_tests {
     #[test]
     fn parse_render_mode_trims_whitespace() {
         assert_eq!(
-            parse_render_mode(Some("  playwright  ")).unwrap(),
+            parse_render_mode(Some("  playwright  ")).expect("trimmed playwright render parses"),
             RenderMode::Playwright
         );
     }

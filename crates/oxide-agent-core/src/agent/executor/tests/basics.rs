@@ -854,7 +854,10 @@ async fn new_task_admission_manifest_for_oversized_input() {
 
     // Lossless raw content preserved in externalized_payload.
     assert!(user_task_msg.externalized_payload.is_some());
-    let payload = user_task_msg.externalized_payload.as_ref().unwrap();
+    let payload = user_task_msg
+        .externalized_payload
+        .as_ref()
+        .expect("manifest payload should be attached");
     let raw = payload
         .inline_fallback
         .as_ref()

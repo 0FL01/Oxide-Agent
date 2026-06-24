@@ -83,7 +83,7 @@ pub trait LlmProvider: Send + Sync {
     /// Chat completion with tool calling support (optional, not all providers support it)
     ///
     /// Default implementation returns an error indicating tool calling is not supported.
-    /// Providers that support tool calling (e.g., Mistral, ZAI) should override this method.
+    /// Providers that support tool calling (e.g., ZAI) should override this method.
     async fn chat_with_tools<'a>(
         &self,
         _request: ChatWithToolsRequest<'a>,

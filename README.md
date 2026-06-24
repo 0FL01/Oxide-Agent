@@ -9,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 Agent Mode LLM providers**: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, and OpenRouter.
 
 ### Architecture Highlights
 
@@ -64,11 +64,11 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Telegram Authorization:** Access control via `TELEGRAM_ALLOWED_USERS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 7 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, Mistral, and OpenRouter.
+*   **Multi-LLM Support:** 6 Agent Mode providers: ChatGPT/Codex (OAuth), OpenCode Go, OpenCode Zen, Zhipu AI/ZAI, MiniMax, and OpenRouter.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Web Interface:** Browser-based chat with the agent -- Leptos SPA with SSE streaming for real-time responses, dark theme, and markdown rendering.
 *   **Multimedia Processing:**
-    *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
+    *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
 *   **Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
@@ -130,7 +130,6 @@ The Web Interface is a Leptos SPA with a dark theme, SSE streaming, and markdown
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
 | **Zhipu AI (ZAI)** | `OPENAI_BASE_PROVIDERS__1__*` | Configure as OpenAI Base profile `zai` for GLM routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
-| **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
 
@@ -142,7 +141,6 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 *   **ChatGPT/Codex** (`CHATGPT_AUTH_PATH`) - Headless OAuth provider for OpenAI Codex Responses API at `chatgpt.com/backend-api/codex/responses`. SSE streaming. No audio/image support. Use `cargo run -p oxide-agent-telegram-bot --bin chatgpt-login -- login` for initial auth.
 *   **Zhipu AI / ZAI** (`OPENAI_BASE_PROVIDERS__1__PROFILE=zai`) - Alternative OpenAI Base profile for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) - Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
-*   **Mistral** (`MISTRAL_API_KEY`) - Cost-effective agent routes and Voxtral audio transcription (`voxtral-mini-latest`).
 *   **OpenRouter** (`OPENROUTER_API_KEY`) - Multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
 
 > [!NOTE]
@@ -199,7 +197,6 @@ OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 
 # API Keys
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
-MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
 OPENCODE_GO_API_KEY=...
 OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
@@ -281,7 +278,7 @@ MEDIA_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI/OpenAI Base (GLM-4.7) > Mistral
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI/OpenAI Base (GLM-4.7)
 AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
@@ -290,27 +287,11 @@ AGENT_MODEL_ROUTES__1__ID="glm-4.7"
 AGENT_MODEL_ROUTES__1__PROVIDER="openai-base:zai"
 AGENT_MODEL_ROUTES__1__WEIGHT=5
 
-AGENT_MODEL_ROUTES__2__ID="mistral-small-2603"
-AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
-AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
 </details>
-
-<details>
-<summary>Alternate provider example</summary>
-
-```
-AGENT_MODEL_ID="devstral-2512"
-AGENT_MODEL_PROVIDER="mistral"
-
-MEDIA_MODEL_ID="voxtral-mini-latest"
-MEDIA_MODEL_PROVIDER="mistral"
-```
 
 Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUTES__N__*` for sub-agent failover.
-
-</details>
 
 ## Available LLM Providers
 
@@ -321,7 +302,6 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 | **ChatGPT/Codex** | Headless OAuth provider for OpenAI Codex Responses API, SSE streaming, no audio/image |
 | **ZAI (Zhipu AI)** | Alternative agent provider, native tool-aware chat, GLM-4.7 / GLM-4.5-Air |
 | **MiniMax** | Claude SDK-compatible, high context (MiniMax-M2.7) |
-| **Mistral** | Generous free tier, includes Voxtral audio transcription |
 | **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
 
 > **Note:** Gemini-family models are configured through OpenRouter routes, not a direct Google Gemini provider.
@@ -619,7 +599,7 @@ crates/
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # Providers (chatgpt, zai, minimax, mistral, openrouter, opencode_go)
+│       │   ├── providers/      # Providers (chatgpt, zai, minimax, openrouter, opencode_go)
 │       │   └── tool_correlation.rs
 │       ├── sandbox/            # Sandbox facade and backends
 │       │   ├── broker.rs        # Unix-socket sandbox broker protocol
@@ -709,7 +689,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 
 | Category | Features |
 |----------|----------|
-| **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
+| **LLM Providers** | `llm-chatgpt`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
 | **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client` |

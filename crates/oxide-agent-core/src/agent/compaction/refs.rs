@@ -185,7 +185,7 @@ mod tests {
         // Beyond 9999, formatting extends naturally — no data loss.
         let big = MessageRef::from_index(9999);
         assert_eq!(big.to_string(), "m10000");
-        let parsed: MessageRef = big.to_string().parse().unwrap();
+        let parsed: MessageRef = big.to_string().parse().expect("large message ref parses");
         assert_eq!(big, parsed);
     }
 
@@ -200,14 +200,14 @@ mod tests {
     fn message_ref_parse_round_trip() {
         for i in [0usize, 1, 5, 99, 999] {
             let reff = MessageRef::from_index(i);
-            let parsed: MessageRef = reff.to_string().parse().unwrap();
+            let parsed: MessageRef = reff.to_string().parse().expect("message ref parses");
             assert_eq!(reff, parsed);
         }
     }
 
     #[test]
     fn message_ref_parse_case_insensitive_prefix() {
-        let upper: MessageRef = "M0001".parse().unwrap();
+        let upper: MessageRef = "M0001".parse().expect("uppercase message ref parses");
         assert_eq!(upper, MessageRef::from_index(0));
     }
 
@@ -270,14 +270,14 @@ mod tests {
     fn block_ref_parse_round_trip() {
         for n in [1u32, 2, 5, 99, 999] {
             let reff = BlockRef::new(n);
-            let parsed: BlockRef = reff.to_string().parse().unwrap();
+            let parsed: BlockRef = reff.to_string().parse().expect("block ref parses");
             assert_eq!(reff, parsed);
         }
     }
 
     #[test]
     fn block_ref_parse_case_insensitive_prefix() {
-        let upper: BlockRef = "B1".parse().unwrap();
+        let upper: BlockRef = "B1".parse().expect("uppercase block ref parses");
         assert_eq!(upper, BlockRef::new(1));
     }
 

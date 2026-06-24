@@ -1,5 +1,6 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+assertion_line: 121
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -21,10 +22,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "llm-provider/anthropic",
         "module": "llm-provider/anthropic"
-      },
-      {
-        "id": "llm-provider/mistral",
-        "module": "llm-provider/mistral"
       },
       {
         "id": "llm-provider/openai-base",
@@ -302,26 +299,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "llm-mistral",
-        "config_properties": [
-          {
-            "default_value": null,
-            "description": "Mistral API key.",
-            "env": "MISTRAL_API_KEY",
-            "name": "api_key",
-            "secret": true,
-            "value_kind": "string"
-          }
-        ],
-        "conflicts": [],
-        "id": "llm-provider/mistral",
-        "kind": "llm-provider",
-        "provides": [
-          "llm-provider/mistral"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "llm-openai-base",
         "config_properties": [
           {
@@ -366,7 +343,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           },
           {
             "default_value": null,
-            "description": "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+            "description": "Behavioral profile for provider instance N: 'generic' (default) or 'zai'. Controls response parsing, temperatures, streaming, thinking, and structured-output model gating.",
             "env": "OPENAI_BASE_PROVIDERS__N__PROFILE",
             "name": "providers.N.profile",
             "secret": false,
@@ -976,7 +953,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
       "llm-provider/anthropic",
-      "llm-provider/mistral",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
@@ -1038,7 +1014,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
       "llm-provider/anthropic",
-      "llm-provider/mistral",
       "llm-provider/openai-base",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
@@ -1108,7 +1083,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   ],
   "registered_llm_provider_ids_dummy_config": [
     "llm-provider/anthropic",
-    "llm-provider/mistral",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
     "llm-provider/opencode-zen",
@@ -1117,7 +1091,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "registered_llm_provider_aliases_dummy_config": [
     "anthropic",
     "chatgpt",
-    "mistral",
     "openai-chatgpt",
     "opencode-go",
     "opencode-zen",
@@ -1160,15 +1133,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "cargo_feature": "llm-minimax",
       "config_env": [
         "ANTHROPIC_API_KEY"
-      ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "llm-provider/mistral",
-      "kind": "llm-provider",
-      "cargo_feature": "llm-mistral",
-      "config_env": [
-        "MISTRAL_API_KEY"
       ],
       "requires_capabilities": []
     },

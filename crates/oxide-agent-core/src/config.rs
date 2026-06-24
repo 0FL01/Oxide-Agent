@@ -17,14 +17,6 @@ use std::fmt;
 use std::str::FromStr;
 
 // LLM provider defaults
-/// Default temperature used for Mistral text requests.
-pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
-/// Temperature used for Mistral reasoning chat requests.
-pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
-/// Temperature used when Mistral runs tool-enabled chat requests.
-pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
-/// Temperature for Mistral audio transcription requests.
-pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Default temperature used for OpenRouter text requests.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for generic OpenAI-compatible text requests.

@@ -1417,8 +1417,8 @@ mod tests {
                     weight: 1,
                 },
                 ModelInfo {
-                    id: "mistral-large".to_string(),
-                    provider: "mistral".to_string(),
+                    id: "glm-4.7".to_string(),
+                    provider: "openai-base:zai".to_string(),
                     max_output_tokens: 16_000,
                     context_window_tokens: 128_000,
                     weight: 1,
@@ -1466,7 +1466,11 @@ mod tests {
                 .iter()
                 .all(|route| route.id != "opencode-go/deepseek-v4-flash")
         );
-        assert!(routes.iter().all(|route| route.provider != "mistral"));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.provider != "openai-base:zai")
+        );
     }
 
     #[tokio::test]

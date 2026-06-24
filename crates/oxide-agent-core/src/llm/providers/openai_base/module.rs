@@ -191,7 +191,6 @@ fn resolve_profile(profile: &Option<String>) -> OpenAICompatibleProfile {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("mistral") => OpenAICompatibleProfile::mistral(),
         Some("zai") => OpenAICompatibleProfile::zai(),
         _ => OpenAICompatibleProfile::generic(),
     }
@@ -374,60 +373,6 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
     }
 }
 
-/// Backward-compatible Mistral route registration.
-///
-/// Creates an [`OpenAIBaseProvider`] with a Mistral-specific profile when
-/// `MISTRAL_API_KEY` is set. Module ID is `"llm-provider/mistral"`.
-#[cfg(oxide_module_llm_provider_mistral)]
-pub(crate) struct MistralProviderModule;
-
-#[cfg(oxide_module_llm_provider_mistral)]
-const MISTRAL_API_KEY_CONFIG_KEY: &str = "api_key";
-#[cfg(oxide_module_llm_provider_mistral)]
-const MISTRAL_API_KEY_ENV: &str = "MISTRAL_API_KEY";
-#[cfg(oxide_module_llm_provider_mistral)]
-const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
-
-#[cfg(oxide_module_llm_provider_mistral)]
-impl LlmProviderModule for MistralProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/mistral"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["mistral"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings
-            .module_string_value_or_env(
-                self.provider_id(),
-                MISTRAL_API_KEY_CONFIG_KEY,
-                MISTRAL_API_KEY_ENV,
-            )
-            .map(|api_key| {
-                Arc::new(super::OpenAIBaseProvider::new_with_client_and_profile(
-                    Some(api_key),
-                    MISTRAL_API_BASE.to_string(),
-                    ctx.http_client.clone(),
-                    OpenAICompatibleProfile::mistral(),
-                )) as Arc<dyn LlmProvider>
-            })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
-    }
-
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(true, false, false)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,14 +388,6 @@ mod tests {
         assert_eq!(
             resolve_profile(&Some("generic".to_string())),
             OpenAICompatibleProfile::generic()
-        );
-    }
-
-    #[test]
-    fn resolve_profile_mistral_string() {
-        assert_eq!(
-            resolve_profile(&Some("mistral".to_string())),
-            OpenAICompatibleProfile::mistral()
         );
     }
 
@@ -477,11 +414,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "test-profile");
         test_set_env("OPENAI_BASE_PROVIDERS__0__API_BASE", "http://localhost/v1");
-        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
 
         let endpoints = configured_endpoints();
         assert_eq!(endpoints.len(), 1);
-        assert_eq!(endpoints[0].profile, Some("mistral".to_string()));
+        assert_eq!(endpoints[0].profile, Some("zai".to_string()));
 
         test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
         test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");
