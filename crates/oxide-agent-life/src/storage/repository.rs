@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput,
-    LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeSupportProtocol, LifeTaskState,
-    LifeTurn, MemoryGenerationId, MemoryScope, PrincipalUserId, ProviderSubject, TimestampMillis,
+    ActiveMemoryGeneration, LifeContextOverride, LifeFrictionPattern, LifeIdentityLink,
+    LifeIdentityProvider, LifeInput, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal,
+    LifeSupportProtocol, LifeTaskState, LifeTurn, MemoryGenerationId, MemoryScope, PrincipalUserId,
+    ProviderSubject, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -76,6 +77,12 @@ pub trait LifeStorageRepository: Send + Sync {
     /// Upserts the canonical principal envelope and ensures the referenced `users` row exists.
     async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()>;
 
+    /// Loads the canonical principal envelope.
+    async fn principal(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<Option<LifePrincipal>>;
+
     /// Stores a provider-subject link to a canonical principal.
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()>;
 
@@ -118,6 +125,13 @@ pub trait LifeStorageRepository: Send + Sync {
 
     /// Enqueues a canonical user input for future worker processing.
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
+
+    /// Lists non-expired temporary context overrides for a principal.
+    async fn active_context_overrides(
+        &self,
+        principal_user_id: PrincipalUserId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeContextOverride>>;
 
     /// Inserts or updates a canonical memory item.
     async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()>;

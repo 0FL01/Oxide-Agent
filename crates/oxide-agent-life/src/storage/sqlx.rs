@@ -10,13 +10,13 @@ use sqlx_postgres::{PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::domain::{
-    ActiveMemoryGeneration, FrictionPatternId, FrictionPatternKind, LifeFrictionPattern,
-    LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus, LifeMemoryGeneration,
-    LifeMemoryItem, LifePrincipal, LifeSourceTransport, LifeSupportProtocol, LifeTaskState,
-    LifeTurn, LifeTurnRole, MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus,
-    MemoryItemId, MemoryItemKind, MemoryItemStatus, MemoryScope, MemorySensitivity,
-    PrincipalUserId, ProviderSubject, RedactionState, SupportProtocolId, SupportStateStatus,
-    TaskStateId, TaskStateStatus, TimestampMillis, TurnId,
+    ActiveMemoryGeneration, ContextOverrideId, FrictionPatternId, FrictionPatternKind,
+    LifeContextOverride, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput,
+    LifeInputStatus, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeSourceTransport,
+    LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole, MemoryAuthority,
+    MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind, MemoryItemStatus,
+    MemoryScope, MemorySensitivity, PrincipalUserId, ProviderSubject, RedactionState,
+    SupportProtocolId, SupportStateStatus, TaskStateId, TaskStateStatus, TimestampMillis, TurnId,
 };
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
 
@@ -116,6 +116,25 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .map_err(db_error)?;
 
         tx.commit().await.map_err(db_error)
+    }
+
+    async fn principal(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<Option<LifePrincipal>> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_principals
+            WHERE principal_user_id = $1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(principal_from_row).transpose()
     }
 
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()> {
@@ -386,6 +405,29 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .await
         .map_err(db_error)?;
         Ok(())
+    }
+
+    async fn active_context_overrides(
+        &self,
+        principal_user_id: PrincipalUserId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeContextOverride>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_context_overrides
+            WHERE principal_user_id = $1
+              AND (expires_at IS NULL OR expires_at > $2)
+            ORDER BY updated_at DESC, key ASC
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(now.get())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(context_override_from_row).collect()
     }
 
     async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()> {
@@ -854,6 +896,33 @@ fn uuids_to_turn_ids(uuids: Vec<Uuid>) -> Vec<TurnId> {
     uuids.into_iter().map(TurnId::from_uuid).collect()
 }
 
+fn principal_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifePrincipal> {
+    Ok(LifePrincipal {
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        profile_state: row.get("profile_state"),
+        operating_profile: row.get("operating_profile"),
+        settings: row.get("settings"),
+        schema_version: row.get("schema_version"),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn context_override_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeContextOverride> {
+    Ok(LifeContextOverride {
+        override_id: ContextOverrideId::from_uuid(row.get("override_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        key: row.get("key"),
+        value: row.get("value"),
+        reason: row.get("reason"),
+        expires_at: row
+            .get::<Option<i64>, _>("expires_at")
+            .map(TimestampMillis::new),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
 fn memory_item_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeMemoryItem> {
     Ok(LifeMemoryItem {
         memory_id: MemoryItemId::from_uuid(row.get("memory_id")),
@@ -973,6 +1042,64 @@ mod tests {
             storage.upsert_principal(&principal).await,
             "upsert principal",
         );
+        let loaded_principal = must(storage.principal(principal_user_id).await, "load principal");
+        assert_eq!(loaded_principal, Some(principal.clone()));
+
+        let active_override_id = ContextOverrideId::new_v4();
+        must(
+            query::<Postgres>(
+                r#"
+                INSERT INTO life_context_overrides (
+                    override_id, principal_user_id, key, value, reason,
+                    expires_at, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                "#,
+            )
+            .bind(active_override_id.as_uuid())
+            .bind(principal_user_id.get())
+            .bind("answer_verbosity")
+            .bind(json!("detailed"))
+            .bind("today only")
+            .bind(Some(now.get() + 1_000))
+            .bind(now.get())
+            .bind(now.get())
+            .execute(storage.pool())
+            .await
+            .map_err(db_error),
+            "insert active override",
+        );
+        must(
+            query::<Postgres>(
+                r#"
+                INSERT INTO life_context_overrides (
+                    override_id, principal_user_id, key, value, reason,
+                    expires_at, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                "#,
+            )
+            .bind(ContextOverrideId::new_v4().as_uuid())
+            .bind(principal_user_id.get())
+            .bind("expired_override")
+            .bind(json!(true))
+            .bind(Option::<String>::None)
+            .bind(Some(now.get() - 1))
+            .bind(now.get())
+            .bind(now.get())
+            .execute(storage.pool())
+            .await
+            .map_err(db_error),
+            "insert expired override",
+        );
+        let active_overrides = must(
+            storage
+                .active_context_overrides(principal_user_id, now)
+                .await,
+            "load active overrides",
+        );
+        assert_eq!(active_overrides.len(), 1);
+        assert_eq!(active_overrides[0].override_id, active_override_id);
 
         let link = LifeIdentityLink {
             provider: LifeIdentityProvider::Web,
