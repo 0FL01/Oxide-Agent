@@ -16,7 +16,7 @@ use crate::domain::{
     LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun, LifeRunStatus,
     LifeSourceTransport, LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole,
     MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind,
-    MemoryItemStatus, MemoryScope, MemorySensitivity, PrincipalUserId, ProviderSubject,
+    MemoryItemStatus, MemoryScope, MemorySensitivity, OutboxId, PrincipalUserId, ProviderSubject,
     RedactionState, RunId, SupportProtocolId, SupportStateStatus, TaskStateId, TaskStateStatus,
     TimestampMillis, TurnId,
 };
@@ -778,6 +778,112 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
+    async fn claim_due_engram_outbox(
+        &self,
+        limit: i64,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeEngramOutboxRow>> {
+        let rows = query::<Postgres>(
+            r#"
+            UPDATE life_engram_outbox
+            SET status = 'flushing',
+                attempts = attempts + 1,
+                updated_at = $2
+            WHERE outbox_id IN (
+                SELECT outbox_id
+                FROM life_engram_outbox
+                WHERE status = 'pending'
+                  AND next_attempt_at <= $1
+                ORDER BY next_attempt_at ASC, created_at ASC, outbox_id ASC
+                LIMIT $3
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING *
+            "#,
+        )
+        .bind(now.get())
+        .bind(now.get())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(engram_outbox_from_row).collect()
+    }
+
+    async fn mark_engram_outbox_flushed(
+        &self,
+        outbox_id: OutboxId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_engram_outbox
+            SET status = 'flushed',
+                last_error = NULL,
+                updated_at = $2
+            WHERE outbox_id = $1
+            "#,
+        )
+        .bind(outbox_id.as_uuid())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn mark_engram_outbox_retry(
+        &self,
+        outbox_id: OutboxId,
+        last_error: &str,
+        next_attempt_at: TimestampMillis,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_engram_outbox
+            SET status = 'pending',
+                last_error = $2,
+                next_attempt_at = $3,
+                updated_at = $4
+            WHERE outbox_id = $1
+            "#,
+        )
+        .bind(outbox_id.as_uuid())
+        .bind(last_error)
+        .bind(next_attempt_at.get())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn mark_engram_outbox_dead(
+        &self,
+        outbox_id: OutboxId,
+        last_error: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_engram_outbox
+            SET status = 'dead',
+                last_error = $2,
+                updated_at = $3
+            WHERE outbox_id = $1
+            "#,
+        )
+        .bind(outbox_id.as_uuid())
+        .bind(last_error)
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn active_memory_items(
         &self,
         scope: MemoryScope,
@@ -794,6 +900,39 @@ impl LifeStorageRepository for SqlxLifeStorage {
         )
         .bind(scope.principal_user_id.get())
         .bind(scope.memory_generation_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(memory_item_from_row).collect()
+    }
+
+    async fn active_memory_items_by_ids(
+        &self,
+        scope: MemoryScope,
+        memory_ids: &[MemoryItemId],
+    ) -> LifeStorageResult<Vec<LifeMemoryItem>> {
+        if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids = memory_ids
+            .iter()
+            .map(|memory_id| memory_id.as_uuid())
+            .collect::<Vec<_>>();
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_memory_items
+            WHERE principal_user_id = $1
+              AND memory_generation_id = $2
+              AND memory_id = ANY($3)
+              AND status = 'active'
+            ORDER BY updated_at DESC, memory_id ASC
+            "#,
+        )
+        .bind(scope.principal_user_id.get())
+        .bind(scope.memory_generation_id.as_uuid())
+        .bind(&ids)
         .fetch_all(&self.pool)
         .await
         .map_err(db_error)?;
@@ -1204,6 +1343,16 @@ fn engram_outbox_status_as_str(status: LifeEngramOutboxStatus) -> &'static str {
     }
 }
 
+fn engram_outbox_status_from_str(value: &str) -> LifeStorageResult<LifeEngramOutboxStatus> {
+    match value {
+        "pending" => Ok(LifeEngramOutboxStatus::Pending),
+        "flushing" => Ok(LifeEngramOutboxStatus::Flushing),
+        "flushed" => Ok(LifeEngramOutboxStatus::Flushed),
+        "dead" => Ok(LifeEngramOutboxStatus::Dead),
+        other => unknown_enum("life_engram_outbox_status", other),
+    }
+}
+
 fn unknown_enum<T>(type_name: &'static str, value: &str) -> LifeStorageResult<T> {
     Err(LifeStorageError::UnknownEnumValue {
         type_name,
@@ -1295,6 +1444,25 @@ fn memory_item_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeMemo
         supersedes_memory_id: row
             .get::<Option<Uuid>, _>("supersedes_memory_id")
             .map(MemoryItemId::from_uuid),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn engram_outbox_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeEngramOutboxRow> {
+    Ok(LifeEngramOutboxRow {
+        outbox_id: OutboxId::from_uuid(row.get("outbox_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        memory_generation_id: MemoryGenerationId::from_uuid(row.get("memory_generation_id")),
+        source_memory_id: row
+            .get::<Option<Uuid>, _>("source_memory_id")
+            .map(MemoryItemId::from_uuid),
+        idempotency_key: row.get("idempotency_key"),
+        payload: row.get("payload"),
+        status: engram_outbox_status_from_str(row.get::<&str, _>("status"))?,
+        attempts: row.get("attempts"),
+        next_attempt_at: TimestampMillis::new(row.get("next_attempt_at")),
+        last_error: row.get("last_error"),
         created_at: TimestampMillis::new(row.get("created_at")),
         updated_at: TimestampMillis::new(row.get("updated_at")),
     })
@@ -1678,6 +1846,65 @@ mod tests {
             Some(memories[0].memory_id.as_uuid())
         );
         assert_eq!(outbox_row.get::<String, _>("status"), "pending");
+        let dereferenced = must(
+            storage
+                .active_memory_items_by_ids(
+                    active.scope,
+                    &[memories[0].memory_id, MemoryItemId::new_v4()],
+                )
+                .await,
+            "load memory by ids",
+        );
+        assert_eq!(dereferenced.len(), 1);
+        assert_eq!(dereferenced[0].memory_id, memories[0].memory_id);
+        let claimed_outbox = must(
+            storage.claim_due_engram_outbox(10, now).await,
+            "claim due outbox",
+        );
+        assert_eq!(claimed_outbox.len(), 1);
+        assert_eq!(claimed_outbox[0].outbox_id, outbox_id);
+        assert_eq!(claimed_outbox[0].status, LifeEngramOutboxStatus::Flushing);
+        assert_eq!(claimed_outbox[0].attempts, 1);
+        must(
+            storage
+                .mark_engram_outbox_retry(
+                    outbox_id,
+                    "temporary backend failure",
+                    TimestampMillis::new(now.get() + 500),
+                    TimestampMillis::new(now.get() + 10),
+                )
+                .await,
+            "requeue outbox",
+        );
+        let not_due = must(
+            storage
+                .claim_due_engram_outbox(10, TimestampMillis::new(now.get() + 100))
+                .await,
+            "claim not due outbox",
+        );
+        assert!(not_due.is_empty());
+        let claimed_outbox = must(
+            storage
+                .claim_due_engram_outbox(10, TimestampMillis::new(now.get() + 500))
+                .await,
+            "claim due retry outbox",
+        );
+        assert_eq!(claimed_outbox.len(), 1);
+        assert_eq!(claimed_outbox[0].attempts, 2);
+        must(
+            storage
+                .mark_engram_outbox_flushed(outbox_id, TimestampMillis::new(now.get() + 600))
+                .await,
+            "mark outbox flushed",
+        );
+        let flushed_status = must(
+            query::<Postgres>("SELECT status FROM life_engram_outbox WHERE outbox_id = $1")
+                .bind(outbox_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load flushed outbox status",
+        );
+        assert_eq!(flushed_status.get::<String, _>("status"), "flushed");
         let tasks = must(storage.active_task_states(active.scope).await, "load tasks");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].current_goal, "old goal");

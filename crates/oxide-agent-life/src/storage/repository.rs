@@ -8,7 +8,8 @@ use crate::domain::{
     ActiveMemoryGeneration, LifeContextOverride, LifeEngramOutboxRow, LifeEvent,
     LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeMemoryGeneration,
     LifeMemoryItem, LifePrincipal, LifeRun, LifeSupportProtocol, LifeTaskState, LifeTurn,
-    MemoryGenerationId, MemoryScope, PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
+    MemoryGenerationId, MemoryItemId, MemoryScope, OutboxId, PrincipalUserId, ProviderSubject,
+    RunId, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -213,10 +214,48 @@ pub trait LifeStorageRepository: Send + Sync {
     /// Inserts a derived-memory outbox projection.
     async fn insert_engram_outbox(&self, row: &LifeEngramOutboxRow) -> LifeStorageResult<()>;
 
+    /// Claims due Engram outbox rows for exclusive flush attempts.
+    async fn claim_due_engram_outbox(
+        &self,
+        limit: i64,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeEngramOutboxRow>>;
+
+    /// Marks a projected outbox row as flushed.
+    async fn mark_engram_outbox_flushed(
+        &self,
+        outbox_id: OutboxId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Requeues a failed outbox row for retry.
+    async fn mark_engram_outbox_retry(
+        &self,
+        outbox_id: OutboxId,
+        last_error: &str,
+        next_attempt_at: TimestampMillis,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Marks a failed outbox row as permanently dead.
+    async fn mark_engram_outbox_dead(
+        &self,
+        outbox_id: OutboxId,
+        last_error: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
     /// Lists active canonical memory items from the explicit active scope.
     async fn active_memory_items(
         &self,
         scope: MemoryScope,
+    ) -> LifeStorageResult<Vec<LifeMemoryItem>>;
+
+    /// Loads active canonical memory rows by ids from an explicit active generation scope.
+    async fn active_memory_items_by_ids(
+        &self,
+        scope: MemoryScope,
+        memory_ids: &[MemoryItemId],
     ) -> LifeStorageResult<Vec<LifeMemoryItem>>;
 
     /// Inserts or updates a task resume packet.
