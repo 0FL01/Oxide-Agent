@@ -2,6 +2,7 @@
 
 use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
 
+#[allow(dead_code)]
 pub(crate) const OPENROUTER_HEADERS: &[(&str, &str)] = &[
     ("HTTP-Referer", "https://github.com/0FL01/Oxide-Agent"),
     ("X-Title", "Oxide Agent"),
@@ -9,14 +10,9 @@ pub(crate) const OPENROUTER_HEADERS: &[(&str, &str)] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EndpointPolicy {
-    UseConfiguredUrlAsExactEndpoint,
-    AppendChatCompletions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatToolChoicePolicy {
     AutoWhenToolsExist,
+    #[allow(dead_code)]
     Omit,
 }
 
@@ -29,31 +25,37 @@ pub(crate) enum ChatReasoningPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatThinkingPolicy {
     None,
+    #[allow(dead_code)]
     ZaiEnabledUnlessJsonMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatStreamingPolicy {
     NonStreaming,
+    #[allow(dead_code)]
     ZaiUnlessNativeJsonMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StructuredOutputPolicy {
     BaseCapability,
+    #[allow(dead_code)]
     ZaiGlmToolModelsOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RateLimitPolicy {
     RetryAfterHeader,
+    #[allow(dead_code)]
     ZaiFlushTime,
+    #[allow(dead_code)]
     OpenRouterResetMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChatResponseContentPolicy {
     StringOnly,
+    #[allow(dead_code)]
     StringOrChunkArrayWithReasoning,
 }
 
@@ -68,7 +70,6 @@ pub(crate) struct ChatTemperatures {
 pub struct ChatCompletionsProfile {
     pub(crate) label: &'static str,
     pub(crate) default_endpoint: &'static str,
-    pub(crate) endpoint: EndpointPolicy,
     pub(crate) extra_headers: &'static [(&'static str, &'static str)],
     pub(crate) tool_choice: ChatToolChoicePolicy,
     pub(crate) thinking: ChatThinkingPolicy,
@@ -95,26 +96,11 @@ pub struct ChatCompletionsProfile {
 
 impl ChatCompletionsProfile {
     #[must_use]
-    pub(crate) fn endpoint_for(self, configured: &str) -> String {
-        let trimmed = configured.trim().trim_end_matches('/');
-        match self.endpoint {
-            EndpointPolicy::UseConfiguredUrlAsExactEndpoint => trimmed.to_string(),
-            EndpointPolicy::AppendChatCompletions => {
-                if trimmed.ends_with("/chat/completions") {
-                    trimmed.to_string()
-                } else {
-                    format!("{trimmed}/chat/completions")
-                }
-            }
-        }
-    }
-
-    #[must_use]
+    #[allow(dead_code)]
     pub(crate) const fn generic() -> Self {
         Self {
             label: "generic",
             default_endpoint: "",
-            endpoint: EndpointPolicy::AppendChatCompletions,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             thinking: ChatThinkingPolicy::None,
@@ -139,11 +125,11 @@ impl ChatCompletionsProfile {
         }
     }
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) const fn zai() -> Self {
         Self {
             label: "zai",
             default_endpoint: "https://api.z.ai/api/coding/paas/v4",
-            endpoint: EndpointPolicy::AppendChatCompletions,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             thinking: ChatThinkingPolicy::ZaiEnabledUnlessJsonMode,
@@ -169,11 +155,11 @@ impl ChatCompletionsProfile {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) const fn openrouter() -> Self {
         Self {
             label: "openrouter",
             default_endpoint: "https://openrouter.ai/api/v1/chat/completions",
-            endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             extra_headers: OPENROUTER_HEADERS,
             tool_choice: ChatToolChoicePolicy::Omit,
             thinking: ChatThinkingPolicy::None,
@@ -203,7 +189,6 @@ impl ChatCompletionsProfile {
         Self {
             label: "opencode_go",
             default_endpoint: "https://opencode.ai/zen/go/v1/chat/completions",
-            endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             thinking: ChatThinkingPolicy::None,
@@ -235,7 +220,6 @@ impl ChatCompletionsProfile {
         Self {
             label: "opencode_zen",
             default_endpoint: "https://opencode.ai/zen/v1/chat/completions",
-            endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             extra_headers: &[],
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             thinking: ChatThinkingPolicy::None,
@@ -291,7 +275,6 @@ mod tests {
         let p = ChatCompletionsProfile::generic();
 
         assert_eq!(p.label, "generic");
-        assert_eq!(p.endpoint, EndpointPolicy::AppendChatCompletions);
         assert_eq!(p.response_content, ChatResponseContentPolicy::StringOnly);
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);
@@ -319,7 +302,6 @@ mod tests {
         let p = ChatCompletionsProfile::openrouter();
 
         assert_eq!(p.label, "openrouter");
-        assert_eq!(p.endpoint, EndpointPolicy::UseConfiguredUrlAsExactEndpoint);
         assert_eq!(p.extra_headers, OPENROUTER_HEADERS);
         assert_eq!(p.tool_choice, ChatToolChoicePolicy::Omit);
         assert_eq!(p.rate_limit, RateLimitPolicy::OpenRouterResetMetadata);
@@ -330,7 +312,6 @@ mod tests {
         let p = ChatCompletionsProfile::opencode_go();
 
         assert_eq!(p.label, "opencode_go");
-        assert_eq!(p.endpoint, EndpointPolicy::UseConfiguredUrlAsExactEndpoint);
         assert_eq!(
             p.reasoning,
             ChatReasoningPolicy::OpenCodeGo {
