@@ -13,7 +13,7 @@ use crate::domain::{
     ActiveMemoryGeneration, ContextOverrideId, FrictionPatternId, FrictionPatternKind, InputId,
     LifeContextOverride, LifeEngramOutboxRow, LifeEngramOutboxStatus, LifeEvent,
     LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus,
-    LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun, LifeRunStatus,
+    LifeLinkToken, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun, LifeRunStatus,
     LifeSourceTransport, LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole,
     MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind,
     MemoryItemStatus, MemoryScope, MemorySensitivity, OutboxId, PrincipalUserId, ProviderSubject,
@@ -96,6 +96,379 @@ impl SqlxLifeStorage {
             .await
             .map_err(db_error)?;
         Ok(())
+    }
+
+    /// Stores a one-time identity link token hash. Raw tokens must not be passed here.
+    pub async fn insert_link_token(&self, token: &LifeLinkToken) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_link_tokens (
+                token_hash, principal_user_id, target_provider, expires_at, consumed_at, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(&token.token_hash)
+        .bind(token.principal_user_id.get())
+        .bind(token.target_provider.as_str())
+        .bind(token.expires_at.get())
+        .bind(token.consumed_at.map(TimestampMillis::get))
+        .bind(token.created_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    /// Atomically consumes a valid one-time link token and links the target provider subject.
+    pub async fn consume_link_token(
+        &self,
+        token_hash: &str,
+        provider: LifeIdentityProvider,
+        provider_subject: &ProviderSubject,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Option<PrincipalUserId>> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let row = query::<Postgres>(
+            r#"
+            UPDATE life_link_tokens
+            SET consumed_at = $3
+            WHERE token_hash = $1
+              AND target_provider = $2
+              AND consumed_at IS NULL
+              AND expires_at > $3
+            RETURNING principal_user_id
+            "#,
+        )
+        .bind(token_hash)
+        .bind(provider.as_str())
+        .bind(now.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let Some(row) = row else {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(None);
+        };
+        let principal_user_id = PrincipalUserId::new(row.get::<i64, _>("principal_user_id"))?;
+
+        let link_row = query::<Postgres>(
+            r#"
+            INSERT INTO life_identity_links (
+                provider, provider_subject, principal_user_id, verified_at, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $4, $4)
+            ON CONFLICT (provider, provider_subject) DO UPDATE
+            SET verified_at = EXCLUDED.verified_at,
+                updated_at = EXCLUDED.updated_at
+            WHERE life_identity_links.principal_user_id = EXCLUDED.principal_user_id
+            RETURNING principal_user_id
+            "#,
+        )
+        .bind(provider.as_str())
+        .bind(provider_subject.as_str())
+        .bind(principal_user_id.get())
+        .bind(now.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if link_row.is_none() {
+            return Err(LifeStorageError::IdentityLinkConflict {
+                provider,
+                provider_subject: provider_subject.clone(),
+            });
+        }
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(Some(principal_user_id))
+    }
+
+    /// Lists memory generations for an inspector/manage API.
+    pub async fn list_memory_generations(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<Vec<LifeMemoryGeneration>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_memory_generations
+            WHERE principal_user_id = $1
+            ORDER BY generation_number DESC
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(generation_from_row).collect()
+    }
+
+    /// Lists recent canonical transcript turns for a principal.
+    pub async fn list_turns(
+        &self,
+        principal_user_id: PrincipalUserId,
+        limit: i64,
+    ) -> LifeStorageResult<Vec<LifeTurn>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_turns
+            WHERE principal_user_id = $1
+            ORDER BY created_at DESC, turn_id ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(turn_from_row).collect()
+    }
+
+    /// Lists recent run events for a principal.
+    pub async fn list_events(
+        &self,
+        principal_user_id: PrincipalUserId,
+        limit: i64,
+    ) -> LifeStorageResult<Vec<LifeEvent>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT events.*
+            FROM life_events events
+            INNER JOIN life_runs runs ON runs.run_id = events.run_id
+            WHERE runs.principal_user_id = $1
+            ORDER BY events.created_at DESC, events.run_id ASC, events.seq DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(event_from_row).collect()
+    }
+
+    /// Lists canonical memory items for a specific generation scope, including candidates/deleted rows.
+    pub async fn memory_items_for_generation(
+        &self,
+        scope: MemoryScope,
+    ) -> LifeStorageResult<Vec<LifeMemoryItem>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_memory_items
+            WHERE principal_user_id = $1 AND memory_generation_id = $2
+            ORDER BY updated_at DESC, memory_id ASC
+            "#,
+        )
+        .bind(scope.principal_user_id.get())
+        .bind(scope.memory_generation_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter().map(memory_item_from_row).collect()
+    }
+
+    /// Marks one active/candidate memory row deleted for explicit user forget.
+    pub async fn mark_memory_item_deleted(
+        &self,
+        principal_user_id: PrincipalUserId,
+        memory_id: MemoryItemId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<bool> {
+        let result = query::<Postgres>(
+            r#"
+            UPDATE life_memory_items
+            SET status = 'deleted', updated_at = $3
+            WHERE principal_user_id = $1
+              AND memory_id = $2
+              AND status IN ('active', 'candidate')
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(memory_id.as_uuid())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Creates an inactive near-empty generation, copying only explicitly selected seed memories.
+    pub async fn soft_reset_memory_generation(
+        &self,
+        principal_user_id: PrincipalUserId,
+        seed_memory_ids: &[MemoryItemId],
+        now: TimestampMillis,
+        reason: &str,
+    ) -> LifeStorageResult<LifeMemoryGeneration> {
+        let source_generation = self.active_generation(principal_user_id).await?;
+        let generation_number = self
+            .next_memory_generation_number(principal_user_id)
+            .await?;
+        let generation = LifeMemoryGeneration {
+            memory_generation_id: MemoryGenerationId::new_v4(),
+            principal_user_id,
+            generation_number,
+            status: MemoryGenerationStatus::Building,
+            source_generation_id: source_generation.map(|active| active.scope.memory_generation_id),
+            build_reason: reason.to_owned(),
+            build_policy: serde_json::json!({"mode": "soft_reset", "version": 1}),
+            source_scope: serde_json::json!({
+                "seed_memory_ids": seed_memory_ids.iter().map(ToString::to_string).collect::<Vec<_>>()
+            }),
+            comparison_report: serde_json::json!({"status": "pending_activation"}),
+            activated_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.insert_memory_generation(&generation).await?;
+
+        if let Some(active) = source_generation {
+            for seed in self
+                .active_memory_items_by_ids(active.scope, seed_memory_ids)
+                .await?
+            {
+                let mut clone = seed;
+                clone.memory_id = MemoryItemId::new_v4();
+                clone.memory_generation_id = generation.memory_generation_id;
+                clone.created_at = now;
+                clone.updated_at = now;
+                self.upsert_memory_item(&clone).await?;
+            }
+        }
+
+        Ok(generation)
+    }
+
+    /// Deletes derived Engram delivery state for one generation without touching canonical memory.
+    pub async fn wipe_derived_generation(
+        &self,
+        principal_user_id: PrincipalUserId,
+        memory_generation_id: MemoryGenerationId,
+    ) -> LifeStorageResult<u64> {
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM life_engram_outbox
+            WHERE principal_user_id = $1 AND memory_generation_id = $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(memory_generation_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
+    }
+
+    /// Wipes materialized rows for an inactive generation and marks the generation deleted.
+    pub async fn wipe_memory_generation(
+        &self,
+        principal_user_id: PrincipalUserId,
+        memory_generation_id: MemoryGenerationId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let generation = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_memory_generations
+            WHERE principal_user_id = $1 AND memory_generation_id = $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(memory_generation_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let Some(generation) = generation else {
+            return Err(LifeStorageError::GenerationNotOwned {
+                principal_user_id,
+                generation_id: memory_generation_id,
+            });
+        };
+        match generation_status_from_str(generation.get::<&str, _>("status"))? {
+            MemoryGenerationStatus::Active => {
+                return Err(LifeStorageError::GenerationIsActive {
+                    principal_user_id,
+                    generation_id: memory_generation_id,
+                });
+            }
+            MemoryGenerationStatus::Deleted => {
+                return Err(LifeStorageError::GenerationDeleted {
+                    principal_user_id,
+                    generation_id: memory_generation_id,
+                });
+            }
+            MemoryGenerationStatus::Building
+            | MemoryGenerationStatus::Archived
+            | MemoryGenerationStatus::Failed => {}
+        }
+
+        for table in [
+            "life_engram_outbox",
+            "life_memory_items",
+            "life_task_states",
+            "life_friction_patterns",
+            "life_support_protocols",
+        ] {
+            let sql = format!(
+                "DELETE FROM {table} WHERE principal_user_id = $1 AND memory_generation_id = $2"
+            );
+            query::<Postgres>(&sql)
+                .bind(principal_user_id.get())
+                .bind(memory_generation_id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+        }
+
+        query::<Postgres>(
+            r#"
+            UPDATE life_memory_generations
+            SET status = 'deleted', updated_at = $3
+            WHERE principal_user_id = $1 AND memory_generation_id = $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(memory_generation_id.as_uuid())
+        .bind(now.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+
+    /// Irreversibly deletes life-owned state and the stable life checkpoint, preserving `users`.
+    pub async fn privacy_hard_wipe_life_state(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_memory_snapshots
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(crate::worker::LIFE_CONTEXT_KEY)
+        .bind(crate::worker::LIFE_FLOW_ID)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        query::<Postgres>("DELETE FROM life_principals WHERE principal_user_id = $1")
+            .bind(principal_user_id.get())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
     }
 }
 
@@ -268,6 +641,26 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .await?
         {
             return Err(LifeStorageError::GenerationNotOwned {
+                principal_user_id,
+                generation_id: memory_generation_id,
+            });
+        }
+        let status_row = query::<Postgres>(
+            r#"
+            SELECT status
+            FROM life_memory_generations
+            WHERE principal_user_id = $1 AND memory_generation_id = $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(memory_generation_id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if generation_status_from_str(status_row.get::<&str, _>("status"))?
+            == MemoryGenerationStatus::Deleted
+        {
+            return Err(LifeStorageError::GenerationDeleted {
                 principal_user_id,
                 generation_id: memory_generation_id,
             });
@@ -1160,6 +1553,34 @@ fn redaction_state_as_str(redaction_state: RedactionState) -> &'static str {
     }
 }
 
+fn redaction_state_from_str(value: &str) -> LifeStorageResult<RedactionState> {
+    match value {
+        "clean" => Ok(RedactionState::Clean),
+        "redacted" => Ok(RedactionState::Redacted),
+        "secret_blocked" => Ok(RedactionState::SecretBlocked),
+        other => unknown_enum("redaction_state", other),
+    }
+}
+
+fn turn_role_from_str(value: &str) -> LifeStorageResult<LifeTurnRole> {
+    match value {
+        "user" => Ok(LifeTurnRole::User),
+        "assistant" => Ok(LifeTurnRole::Assistant),
+        "system" => Ok(LifeTurnRole::System),
+        "tool" => Ok(LifeTurnRole::Tool),
+        other => unknown_enum("life_turn_role", other),
+    }
+}
+
+fn source_transport_from_str(value: &str) -> LifeStorageResult<LifeSourceTransport> {
+    match value {
+        "web" => Ok(LifeSourceTransport::Web),
+        "telegram" => Ok(LifeSourceTransport::Telegram),
+        "internal" => Ok(LifeSourceTransport::Internal),
+        other => unknown_enum("life_source_transport", other),
+    }
+}
+
 fn input_status_as_str(status: LifeInputStatus) -> &'static str {
     match status {
         LifeInputStatus::Queued => "queued",
@@ -1186,6 +1607,17 @@ fn generation_status_as_str(status: MemoryGenerationStatus) -> &'static str {
         MemoryGenerationStatus::Archived => "archived",
         MemoryGenerationStatus::Failed => "failed",
         MemoryGenerationStatus::Deleted => "deleted",
+    }
+}
+
+fn generation_status_from_str(value: &str) -> LifeStorageResult<MemoryGenerationStatus> {
+    match value {
+        "building" => Ok(MemoryGenerationStatus::Building),
+        "active" => Ok(MemoryGenerationStatus::Active),
+        "archived" => Ok(MemoryGenerationStatus::Archived),
+        "failed" => Ok(MemoryGenerationStatus::Failed),
+        "deleted" => Ok(MemoryGenerationStatus::Deleted),
+        other => unknown_enum("memory_generation_status", other),
     }
 }
 
@@ -1392,6 +1824,27 @@ fn principal_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifePrinci
     })
 }
 
+fn generation_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeMemoryGeneration> {
+    Ok(LifeMemoryGeneration {
+        memory_generation_id: MemoryGenerationId::from_uuid(row.get("memory_generation_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        generation_number: row.get("generation_number"),
+        status: generation_status_from_str(row.get::<&str, _>("status"))?,
+        source_generation_id: row
+            .get::<Option<Uuid>, _>("source_generation_id")
+            .map(MemoryGenerationId::from_uuid),
+        build_reason: row.get("build_reason"),
+        build_policy: row.get("build_policy"),
+        source_scope: row.get("source_scope"),
+        comparison_report: row.get("comparison_report"),
+        activated_at: row
+            .get::<Option<i64>, _>("activated_at")
+            .map(TimestampMillis::new),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
 fn context_override_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeContextOverride> {
     Ok(LifeContextOverride {
         override_id: ContextOverrideId::from_uuid(row.get("override_id")),
@@ -1419,6 +1872,33 @@ fn input_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeInput> {
             .map(TimestampMillis::new),
         created_at: TimestampMillis::new(row.get("created_at")),
         updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn turn_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeTurn> {
+    Ok(LifeTurn {
+        turn_id: TurnId::from_uuid(row.get("turn_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        run_id: row.get::<Option<Uuid>, _>("run_id").map(RunId::from_uuid),
+        role: turn_role_from_str(row.get::<&str, _>("role"))?,
+        source_transport: source_transport_from_str(row.get::<&str, _>("source_transport"))?,
+        source_ref: row.get("source_ref"),
+        content: row.get("content"),
+        attachments: row.get("attachments"),
+        transport_metadata: row.get("transport_metadata"),
+        redaction_state: redaction_state_from_str(row.get::<&str, _>("redaction_state"))?,
+        created_at: TimestampMillis::new(row.get("created_at")),
+    })
+}
+
+fn event_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeEvent> {
+    Ok(LifeEvent {
+        event_id: crate::domain::EventId::from_uuid(row.get("event_id")),
+        run_id: RunId::from_uuid(row.get("run_id")),
+        seq: row.get("seq"),
+        kind: row.get("kind"),
+        payload: row.get("payload"),
+        created_at: TimestampMillis::new(row.get("created_at")),
     })
 }
 
@@ -1536,6 +2016,7 @@ mod tests {
     use crate::gateway::{
         LifeClock, LifeGateway, LifeGatewayResult, LifeInputSubmission, LifePrincipalAllocator,
     };
+    use crate::linking::{RawLifeLinkToken, hash_link_token};
 
     use super::*;
 
@@ -2003,6 +2484,7 @@ mod tests {
             content: "restore context".to_owned(),
             attachments: json!([{"kind": "voice", "ref": "file-1"}]),
             metadata: json!({"chat_id": 42, "message_id": 7}),
+            sensitivity: crate::gateway::LifeInputSensitivity::Normal,
         };
 
         let result = must(
@@ -2064,6 +2546,254 @@ mod tests {
             active.map(|generation| generation.scope),
             Some(result.memory_scope)
         );
+    }
+
+    #[tokio::test]
+    async fn sqlx_life_link_tokens_and_wipe_lifecycle_are_db_backed() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_200_000);
+        let principal = LifePrincipal {
+            principal_user_id,
+            profile_state: json!({}),
+            operating_profile: json!({}),
+            settings: json!({}),
+            schema_version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_principal(&principal).await,
+            "upsert principal",
+        );
+
+        let raw_token = RawLifeLinkToken::new(format!("link-token-{}", principal_user_id.get()));
+        let token_hash = hash_link_token(&raw_token);
+        must(
+            storage
+                .insert_link_token(&LifeLinkToken {
+                    token_hash: token_hash.clone(),
+                    principal_user_id,
+                    target_provider: LifeIdentityProvider::Telegram,
+                    expires_at: TimestampMillis::new(now.get() + 60_000),
+                    consumed_at: None,
+                    created_at: now,
+                })
+                .await,
+            "insert link token",
+        );
+        let telegram_subject = must(ProviderSubject::new("telegram-link-target"), "subject");
+        let linked = must(
+            storage
+                .consume_link_token(
+                    &token_hash,
+                    LifeIdentityProvider::Telegram,
+                    &telegram_subject,
+                    TimestampMillis::new(now.get() + 1),
+                )
+                .await,
+            "consume token",
+        );
+        assert_eq!(linked, Some(principal_user_id));
+        assert_eq!(
+            must(
+                storage
+                    .resolve_identity(LifeIdentityProvider::Telegram, &telegram_subject)
+                    .await,
+                "resolve linked telegram identity",
+            ),
+            Some(principal_user_id)
+        );
+        let reused = must(
+            storage
+                .consume_link_token(
+                    &token_hash,
+                    LifeIdentityProvider::Telegram,
+                    &telegram_subject,
+                    TimestampMillis::new(now.get() + 2),
+                )
+                .await,
+            "reuse token",
+        );
+        assert_eq!(reused, None);
+
+        let gen1 = generation(principal_user_id, 1, MemoryGenerationStatus::Building, now);
+        must(storage.insert_memory_generation(&gen1).await, "insert gen1");
+        let active = must(
+            storage
+                .activate_memory_generation(
+                    principal_user_id,
+                    gen1.memory_generation_id,
+                    now,
+                    "active",
+                )
+                .await,
+            "activate gen1",
+        );
+        let seed = memory_item(
+            principal_user_id,
+            active.scope.memory_generation_id,
+            "seed memory",
+            now,
+        );
+        let seed_id = seed.memory_id;
+        must(storage.upsert_memory_item(&seed).await, "insert seed");
+        let outbox_id = OutboxId::new_v4();
+        must(
+            storage
+                .insert_engram_outbox(&LifeEngramOutboxRow {
+                    outbox_id,
+                    principal_user_id,
+                    memory_generation_id: active.scope.memory_generation_id,
+                    source_memory_id: Some(seed_id),
+                    idempotency_key: format!("wipe-test-{outbox_id}"),
+                    payload: json!({"external_id": seed_id.to_string()}),
+                    status: LifeEngramOutboxStatus::Pending,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    last_error: None,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "insert outbox",
+        );
+        assert_eq!(
+            must(
+                storage
+                    .wipe_derived_generation(principal_user_id, active.scope.memory_generation_id)
+                    .await,
+                "derived wipe",
+            ),
+            1
+        );
+        assert_eq!(
+            must(
+                storage.active_memory_items(active.scope).await,
+                "memory after derived wipe"
+            )
+            .len(),
+            1
+        );
+
+        let reset_generation = must(
+            storage
+                .soft_reset_memory_generation(
+                    principal_user_id,
+                    &[seed_id],
+                    TimestampMillis::new(now.get() + 3),
+                    "soft reset",
+                )
+                .await,
+            "soft reset generation",
+        );
+        assert_eq!(reset_generation.status, MemoryGenerationStatus::Building);
+        assert_ne!(
+            reset_generation.memory_generation_id,
+            active.scope.memory_generation_id
+        );
+        assert_eq!(
+            must(
+                storage.active_generation(principal_user_id).await,
+                "active unchanged"
+            ),
+            Some(active)
+        );
+        let reset_scope =
+            MemoryScope::new(principal_user_id, reset_generation.memory_generation_id);
+        let reset_memories = must(
+            storage.active_memory_items(reset_scope).await,
+            "seed copied into reset generation",
+        );
+        assert_eq!(reset_memories.len(), 1);
+        assert_eq!(reset_memories[0].text, "seed memory");
+        assert_ne!(reset_memories[0].memory_id, seed_id);
+
+        let active_wipe_error = storage
+            .wipe_memory_generation(
+                principal_user_id,
+                active.scope.memory_generation_id,
+                TimestampMillis::new(now.get() + 4),
+            )
+            .await
+            .expect_err("active generation must not be wiped");
+        assert!(matches!(
+            active_wipe_error,
+            LifeStorageError::GenerationIsActive { .. }
+        ));
+        must(
+            storage
+                .wipe_memory_generation(
+                    principal_user_id,
+                    reset_generation.memory_generation_id,
+                    TimestampMillis::new(now.get() + 5),
+                )
+                .await,
+            "wipe inactive reset generation",
+        );
+        let generations = must(
+            storage.list_memory_generations(principal_user_id).await,
+            "list generations",
+        );
+        assert!(generations.iter().any(|generation| {
+            generation.memory_generation_id == reset_generation.memory_generation_id
+                && generation.status == MemoryGenerationStatus::Deleted
+        }));
+
+        must(
+            storage
+                .save_life_memory_checkpoint(
+                    principal_user_id,
+                    crate::worker::LIFE_CONTEXT_KEY,
+                    crate::worker::LIFE_FLOW_ID,
+                    &json!({"checkpoint": true}),
+                    1,
+                    now,
+                )
+                .await,
+            "save checkpoint",
+        );
+        must(
+            storage
+                .privacy_hard_wipe_life_state(principal_user_id)
+                .await,
+            "privacy hard wipe",
+        );
+        assert!(
+            must(
+                storage.principal(principal_user_id).await,
+                "principal after hard wipe"
+            )
+            .is_none()
+        );
+        let user_exists = must(
+            query::<Postgres>("SELECT 1 FROM users WHERE user_id = $1")
+                .bind(principal_user_id.get())
+                .fetch_optional(storage.pool())
+                .await,
+            "load backing user row",
+        )
+        .is_some();
+        assert!(user_exists, "hard wipe must not delete shared users row");
+        let checkpoint_exists = must(
+            query::<Postgres>(
+                r#"
+                SELECT 1
+                FROM agent_memory_snapshots
+                WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(crate::worker::LIFE_CONTEXT_KEY)
+            .bind(crate::worker::LIFE_FLOW_ID)
+            .fetch_optional(storage.pool())
+            .await,
+            "load checkpoint after hard wipe",
+        )
+        .is_some();
+        assert!(!checkpoint_exists);
     }
 
     #[tokio::test]

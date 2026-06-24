@@ -29,6 +29,22 @@ pub struct LifeInputSubmission {
     pub attachments: Value,
     /// Transport metadata.
     pub metadata: Value,
+    /// Caller-declared sensitivity. Private secrets are refused before transcript persistence.
+    #[serde(default)]
+    pub sensitivity: LifeInputSensitivity,
+}
+
+/// Explicit sensitivity contract at the transport -> gateway boundary.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LifeInputSensitivity {
+    /// Normal user input, stored as clean transcript.
+    #[default]
+    Normal,
+    /// Content has already been redacted by the caller and may be stored as redacted transcript.
+    Redacted,
+    /// Raw private secret material; refused by life memory instead of persisted.
+    PrivateSecret,
 }
 
 /// Submit result returned after canonical turn/input creation.
@@ -52,6 +68,9 @@ pub enum LifeGatewayError {
     /// User content is required for a life input.
     #[error("life input content must not be empty")]
     EmptyContent,
+    /// Raw private secrets must not enter transcript/memory/outbox.
+    #[error("private secrets must be stored in the private secret store, not life memory")]
+    PrivateSecretRefused,
     /// System clock is before unix epoch.
     #[error("life gateway clock error: {0}")]
     Clock(String),
@@ -258,6 +277,9 @@ where
         if submission.content.trim().is_empty() {
             return Err(LifeGatewayError::EmptyContent);
         }
+        if submission.sensitivity == LifeInputSensitivity::PrivateSecret {
+            return Err(LifeGatewayError::PrivateSecretRefused);
+        }
 
         let now = self.clock.now()?;
         let principal_user_id = self.resolve_or_create_principal(&submission, now).await?;
@@ -277,7 +299,11 @@ where
             content: submission.content,
             attachments: submission.attachments,
             transport_metadata: submission.metadata,
-            redaction_state: RedactionState::Clean,
+            redaction_state: match submission.sensitivity {
+                LifeInputSensitivity::Normal => RedactionState::Clean,
+                LifeInputSensitivity::Redacted => RedactionState::Redacted,
+                LifeInputSensitivity::PrivateSecret => unreachable!("private secret refused above"),
+            },
             created_at: now,
         };
         self.store.append_turn(&turn).await?;
@@ -492,6 +518,52 @@ mod tests {
             .expect_err("empty content must fail");
 
         assert!(matches!(error, LifeGatewayError::EmptyContent));
+    }
+
+    #[tokio::test]
+    async fn submit_refuses_private_secret_before_principal_or_turn_persistence() {
+        let store = FakeGatewayStore::default();
+        let gateway = LifeGateway::with_clock(
+            store.clone(),
+            PanicAllocator,
+            FixedClock(TimestampMillis::new(45)),
+        );
+        let mut submission = submission(LifeIdentityProvider::Web, "web-user-secret", "token raw");
+        submission.sensitivity = LifeInputSensitivity::PrivateSecret;
+
+        let error = gateway
+            .submit_life_input(submission)
+            .await
+            .expect_err("private secrets must be refused");
+
+        assert!(matches!(error, LifeGatewayError::PrivateSecretRefused));
+        let snapshot = store.snapshot();
+        assert!(snapshot.principals.is_empty());
+        assert!(snapshot.turns.is_empty());
+        assert!(snapshot.inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_preserves_redacted_transcript_state() {
+        let store = FakeGatewayStore::default();
+        let allocated_principal = principal(300700);
+        let gateway = LifeGateway::with_clock(
+            store.clone(),
+            QueueAllocator::new(vec![allocated_principal]),
+            FixedClock(TimestampMillis::new(46)),
+        );
+        let mut submission =
+            submission(LifeIdentityProvider::Web, "web-user-redacted", "[REDACTED]");
+        submission.sensitivity = LifeInputSensitivity::Redacted;
+
+        gateway
+            .submit_life_input(submission)
+            .await
+            .expect("redacted input should persist");
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.turns[0].redaction_state, RedactionState::Redacted);
+        assert_eq!(snapshot.turns[0].content, "[REDACTED]");
     }
 
     #[derive(Clone, Default)]
@@ -710,6 +782,7 @@ mod tests {
             content: content.to_owned(),
             attachments: json!([{"kind": "document"}]),
             metadata: json!({"source": "test"}),
+            sensitivity: LifeInputSensitivity::Normal,
         }
     }
 }

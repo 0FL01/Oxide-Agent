@@ -40,6 +40,22 @@ pub enum LifeStorageError {
         /// Target generation.
         generation_id: MemoryGenerationId,
     },
+    /// A generation operation tried to use an active generation where only inactive generations are valid.
+    #[error("life memory generation {generation_id} for principal {principal_user_id} is active")]
+    GenerationIsActive {
+        /// Principal owner.
+        principal_user_id: PrincipalUserId,
+        /// Target generation.
+        generation_id: MemoryGenerationId,
+    },
+    /// A generation operation targeted a deleted generation.
+    #[error("life memory generation {generation_id} for principal {principal_user_id} is deleted")]
+    GenerationDeleted {
+        /// Principal owner.
+        principal_user_id: PrincipalUserId,
+        /// Target generation.
+        generation_id: MemoryGenerationId,
+    },
     /// A provider subject is already linked to another principal.
     #[error("life identity link conflict for {provider}:{provider_subject}")]
     IdentityLinkConflict {

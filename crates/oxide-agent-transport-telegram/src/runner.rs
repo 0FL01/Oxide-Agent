@@ -15,13 +15,19 @@ use crate::config::{
 use oxide_agent_core::{llm, storage};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
-    domain::{LifeIdentityProvider, PrincipalUserId, ProviderSubject},
-    gateway::{LifeGateway, LifeGatewayError, LifeInputSubmission, LifePrincipalAllocator},
+    domain::{LifeIdentityProvider, PrincipalUserId, ProviderSubject, TimestampMillis},
+    gateway::{
+        LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
+        LifePrincipalAllocator,
+    },
+    linking::{RawLifeLinkToken, hash_link_token},
     storage::SqlxLifeStorage,
 };
 use std::sync::Arc;
 #[cfg(feature = "storage-sqlx")]
 use std::sync::atomic::{AtomicI64, Ordering};
+#[cfg(feature = "storage-sqlx")]
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "storage-sqlx")]
 use teloxide::dispatching::UpdateHandler;
 #[cfg(feature = "storage-sqlx")]
@@ -156,6 +162,11 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .enter_dialogue::<Message, InMemStorage<State>, State>()
                 .branch(
                     Update::filter_message()
+                        .filter(|msg: Message| link_command_payload(msg.text()).is_some())
+                        .endpoint(handle_link_command),
+                )
+                .branch(
+                    Update::filter_message()
                         .filter(|msg: Message| life_command_payload(msg.text()).is_some())
                         .endpoint(handle_life_command),
                 )
@@ -207,6 +218,86 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
 }
 
 #[cfg(feature = "storage-sqlx")]
+async fn handle_link_command(
+    bot: Bot,
+    msg: Message,
+    life_storage: Arc<SqlxLifeStorage>,
+) -> Result<(), teloxide::RequestError> {
+    let Some(user) = access_control_user(&msg) else {
+        return respond(());
+    };
+    let Some(raw_token) = link_command_payload(msg.text()) else {
+        return respond(());
+    };
+
+    if !matches!(msg.chat.kind, teloxide::types::ChatKind::Private(_)) {
+        bot.send_message(msg.chat.id, "Life linking only works in private chat.")
+            .await?;
+        return respond(());
+    }
+    if raw_token.trim().is_empty() {
+        bot.send_message(msg.chat.id, "Usage: /link <token>")
+            .await?;
+        return respond(());
+    }
+
+    let provider_subject = match ProviderSubject::new(user.id.0.to_string()) {
+        Ok(subject) => subject,
+        Err(error) => {
+            error!("Telegram life provider subject invalid: {error}");
+            bot.send_message(msg.chat.id, "Life mode rejected this identity.")
+                .await?;
+            return respond(());
+        }
+    };
+    let token = RawLifeLinkToken::new(raw_token.trim());
+    let now = match life_now() {
+        Ok(now) => now,
+        Err(error) => {
+            error!("Telegram life link clock failed: {error}");
+            bot.send_message(
+                msg.chat.id,
+                "Life mode backend is unavailable. Try again later.",
+            )
+            .await?;
+            return respond(());
+        }
+    };
+
+    match life_storage
+        .consume_link_token(
+            &hash_link_token(&token),
+            LifeIdentityProvider::Telegram,
+            &provider_subject,
+            now,
+        )
+        .await
+    {
+        Ok(Some(_principal)) => {
+            bot.send_message(msg.chat.id, "Telegram is linked to your life memory.")
+                .await?;
+        }
+        Ok(None) => {
+            bot.send_message(
+                msg.chat.id,
+                "Link token is invalid, expired, or already used.",
+            )
+            .await?;
+        }
+        Err(error) => {
+            error!("Telegram life link failed: {error}");
+            bot.send_message(
+                msg.chat.id,
+                "Life mode backend is unavailable. Try again later.",
+            )
+            .await?;
+        }
+    }
+
+    respond(())
+}
+
+#[cfg(feature = "storage-sqlx")]
 async fn handle_life_command(
     bot: Bot,
     msg: Message,
@@ -255,6 +346,7 @@ async fn handle_life_command(
                 "message_id": msg.id.0,
                 "transport": "telegram_private_dm"
             }),
+            sensitivity: LifeInputSensitivity::Normal,
         })
         .await;
 
@@ -273,6 +365,10 @@ async fn handle_life_command(
             error!("Telegram life submit failed: {error}");
             let message = match error {
                 LifeGatewayError::EmptyContent => "Usage: /life <message>".to_string(),
+                LifeGatewayError::PrivateSecretRefused => {
+                    "Private secrets must be stored in the private secret store, not life memory."
+                        .to_string()
+                }
                 _ => "Life mode backend is unavailable. Try again later.".to_string(),
             };
             bot.send_message(msg.chat.id, message).await?;
@@ -280,6 +376,29 @@ async fn handle_life_command(
     }
 
     respond(())
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn link_command_payload(text: Option<&str>) -> Option<&str> {
+    let text = text?.trim();
+    let (command, payload) = text
+        .split_once(char::is_whitespace)
+        .map_or((text, ""), |(command, payload)| (command, payload));
+    if command == "/link" || command.starts_with("/link@") {
+        Some(payload)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn life_now() -> Result<TimestampMillis, String> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    Ok(TimestampMillis::new(
+        i64::try_from(duration.as_millis()).map_err(|error| error.to_string())?,
+    ))
 }
 
 #[cfg(feature = "storage-sqlx")]
@@ -547,7 +666,7 @@ async fn handle_agent_confirmation(
 
 #[cfg(all(test, feature = "storage-sqlx"))]
 mod tests {
-    use super::{access_control_user_id, life_command_payload};
+    use super::{access_control_user_id, life_command_payload, link_command_payload};
     use crate::bot::handlers::get_user_id_safe;
     use teloxide::types::{
         Chat, ChatId, ChatKind, ChatPrivate, MediaKind, MediaText, Message, MessageCommon,
@@ -651,5 +770,16 @@ mod tests {
         );
         assert_eq!(life_command_payload(Some("remember this")), None);
         assert_eq!(life_command_payload(Some("/start")), None);
+    }
+
+    #[test]
+    fn link_command_payload_requires_explicit_link_command() {
+        assert_eq!(link_command_payload(Some("/link abc123")), Some("abc123"));
+        assert_eq!(
+            link_command_payload(Some("/link@oxide_bot abc123")),
+            Some("abc123")
+        );
+        assert_eq!(link_command_payload(Some("abc123")), None);
+        assert_eq!(link_command_payload(Some("/life abc123")), None);
     }
 }
