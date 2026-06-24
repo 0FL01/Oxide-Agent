@@ -2270,6 +2270,7 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 ### Phase 2. Life gateway + DB-backed runtime
 
 1. Новый crate `crates/oxide-agent-life`
+   - внутренняя структура crate зафиксирована в §21.1
 2. `LifeGateway`
 3. `LifeWorker/Orchestrator`
 4. Per-principal advisory lock
@@ -2391,16 +2392,61 @@ WHERE user_id = $1 AND context_key = 'life' AND flow_id = 'main';
 Лучший вариант для минимального мусора в текущем проекте:
 
 ```text
-oxide-agent-core        // execution engine, generic prompt context seam
-oxide-agent-runtime     // existing runtime primitives
-oxide-agent-life        // principal model, DB queue, worker, Engram adapter
-transport-web           // /life UI + API integration
-transport-telegram      // life DM router + linking
+crates/
+  oxide-agent-core/
+  oxide-agent-runtime/
+  oxide-agent-life/              # new bounded context
+  oxide-agent-transport-web/
+  oxide-agent-transport-telegram/
+  oxide-agent-web-contracts/
+  oxide-agent-web-ui/
+
+migrations/
+  0010_life_mode.sql             # life_* tables
+
+docs/
+  prd/
+    PRD-perm.md
 ```
 
 Именно так life mode остается отдельным bounded context, а не тонет в текущей логике `web-session-*` и Telegram topic routing.
 
-### 21.1. Компоненты и их runtime
+### 21.1. Внутренняя структура `oxide-agent-life`
+
+```text
+crates/oxide-agent-life/
+  Cargo.toml
+  src/
+    lib.rs
+
+    domain/                      # что такое life memory
+    storage/                     # как это хранится в Postgres
+    gateway/                     # входы из transports
+    worker/                      # выполнение очереди
+    context/                     # вставка памяти в prompt
+    curator/                     # запись памяти после run
+    engram/                      # derived recall index
+    api/                         # inspector/admin contracts
+```
+
+Ownership по директориям:
+
+- `domain/` — чистые типы life-mode: principal, identity link, turn, input, run, memory item, task state, friction pattern, support protocol, context override.
+- `storage/` — Postgres repositories и SQLx модели для `life_*` таблиц; это canonical source-of-truth слой.
+- `gateway/` — transport-neutral вход: `(provider, provider_subject, content, attachments, metadata)` → `principal_user_id` → `life_turns` + `life_inputs`.
+- `worker/` — DB-backed execution lifecycle: per-principal lock, drain queue, hydrate stable `AgentMemoryScope`, run executor, stream/write events.
+- `context/` — `DynamicPromptContextProvider` implementation: operating profile, resume/open loops, protocols, hot handoff, canonical memory, Engram-derived candidates.
+- `curator/` — post-run LLM classification, sensitivity gate, canonical candidate writes; не владеет source-of-truth без confirmation policy.
+- `engram/` — outbox projector, idempotent ingest, recall adapter, dereference back to Postgres; Engram не становится authoritative memory.
+- `api/` — contracts for `/api/life/*`, inspector/editor, conflict review, task/protocol/profile inspection.
+
+Запрещенные альтернативы:
+
+- не класть life-mode внутрь `oxide-agent-core/src/life`, чтобы не размыть execution engine и product bounded context;
+- не класть life-mode внутрь web/telegram transports, чтобы не получить разные memories на разных входах;
+- не дробить сразу на `oxide-agent-life-*` crates, пока нет доказанного размера/дублирования.
+
+### 21.2. Компоненты и их runtime
 
 ```text
 ┌──────────────┬───────────────────────────────────────────────┐
