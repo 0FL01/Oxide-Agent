@@ -12,7 +12,7 @@ use crate::agent::compaction::{
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
-use crate::agent::prompt::create_agent_system_prompt;
+use crate::agent::prompt::{PromptContextBlock, PromptContextRequest, create_agent_system_prompt};
 use crate::agent::providers::TopicInfraPreflightReport;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
@@ -20,9 +20,8 @@ use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
 use crate::agent::wiki_memory::{
-    WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation, WikiPatchPlanner,
-    WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
-    wiki_context_id,
+    WikiPatchOperation, WikiPatchPlanner, WikiPatchSet, WikiPatchValidator,
+    WikiPatchValidatorConfig, WikiSessionCache, WikiStore, wiki_context_id,
 };
 use crate::config::{
     ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit,
@@ -506,13 +505,13 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let wiki_context = self.render_wiki_context_for_task(task).await;
+        let dynamic_context_blocks = self.build_dynamic_prompt_context_blocks(task).await;
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
-            wiki_context_available = wiki_context.is_some(),
-            wiki_context_chars = wiki_context.as_ref().map_or(0, String::len),
-            phase = "wiki_context_rendered",
+            dynamic_context_block_count = dynamic_context_blocks.len(),
+            dynamic_context_chars = dynamic_context_blocks.iter().map(|block| block.body.len()).sum::<usize>(),
+            phase = "dynamic_prompt_context_rendered",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -538,7 +537,7 @@ impl AgentExecutor {
             structured_output,
             &mut self.session,
             prompt_instructions.as_deref(),
-            wiki_context.as_deref(),
+            &dynamic_context_blocks,
         )
         .await;
         debug!(
@@ -610,7 +609,7 @@ impl AgentExecutor {
             provider = ?model.provider,
             tool_count = tools.len(),
             message_count = messages.len(),
-            wiki_context_available = wiki_context.is_some(),
+            dynamic_context_block_count = dynamic_context_blocks.len(),
             phase = "prepare_assembled",
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -639,34 +638,25 @@ impl AgentExecutor {
         }
     }
 
-    async fn render_wiki_context_for_task(&self, task: &str) -> Option<String> {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            debug!("wiki memory store is not configured; skipping durable wiki context");
-            return None;
+    async fn build_dynamic_prompt_context_blocks(&self, task: &str) -> Vec<PromptContextBlock> {
+        let Some(provider) = self.dynamic_prompt_context_provider.as_ref() else {
+            debug!("dynamic prompt context provider is not configured; skipping dynamic context");
+            return Vec::new();
         };
         let scope = self.session.memory_scope();
-        let cache = Arc::new(WikiSessionCache::new(store));
         let memory_message_count = self.session.memory.get_messages().len();
-        let assembler = WikiContextAssembler::new(
-            cache,
-            WikiContextAssemblerConfig {
-                fast_skip_fresh_web_session: should_fast_skip_fresh_web_session_wiki_context(
-                    &scope.context_key,
-                    memory_message_count,
-                ),
-                ..WikiContextAssemblerConfig::default()
-            },
-        );
+        let request = PromptContextRequest {
+            user_id: scope.user_id,
+            context_key: &scope.context_key,
+            task,
+            memory_message_count,
+        };
 
-        match assembler
-            .assemble_for_context(scope.user_id, &scope.context_key, task)
-            .await
-        {
-            Ok(rendered) if !rendered.is_empty => Some(rendered.text),
-            Ok(_) => None,
+        match provider.build_blocks(request).await {
+            Ok(blocks) => blocks,
             Err(error) => {
-                warn!(%error, "wiki memory context assembly failed; continuing without durable wiki context");
-                None
+                warn!(%error, "dynamic prompt context assembly failed; continuing without dynamic context");
+                Vec::new()
             }
         }
     }
@@ -1344,18 +1334,9 @@ fn contains_secret_like_text(value: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-fn should_fast_skip_fresh_web_session_wiki_context(
-    context_key: &str,
-    memory_message_count: usize,
-) -> bool {
-    context_key.starts_with("web-session-") && memory_message_count <= 1
-}
-
 #[cfg(test)]
 mod wiki_memory_merge_tests {
-    use super::{
-        merge_existing_canonical_wiki_page, should_fast_skip_fresh_web_session_wiki_context,
-    };
+    use super::merge_existing_canonical_wiki_page;
 
     fn page(title: &str, body: &str) -> String {
         format!(
@@ -1385,21 +1366,5 @@ mod wiki_memory_merge_tests {
         let candidate = page("Deploy workflow", "Run smoke tests before deploy.");
 
         assert!(merge_existing_canonical_wiki_page(&existing, &candidate).is_none());
-    }
-
-    #[test]
-    fn fresh_web_session_wiki_context_skip_is_limited_to_first_message() {
-        assert!(should_fast_skip_fresh_web_session_wiki_context(
-            "web-session-abc123",
-            1
-        ));
-        assert!(!should_fast_skip_fresh_web_session_wiki_context(
-            "web-session-abc123",
-            2
-        ));
-        assert!(!should_fast_skip_fresh_web_session_wiki_context(
-            "telegram-topic",
-            1
-        ));
     }
 }

@@ -24,7 +24,10 @@ pub mod store;
 
 pub use cache::{CachedWikiPage, WikiCacheMetrics, WikiFlushResult, WikiSessionCache};
 pub use config::WikiMemoryConfig;
-pub use context::{WikiContextAssembler, WikiContextAssemblerConfig, WikiRenderedContext};
+pub use context::{
+    WikiContextAssembler, WikiContextAssemblerConfig, WikiPromptContextProvider,
+    WikiRenderedContext,
+};
 pub use patch::{
     ValidatedWikiPatch, ValidatedWikiPatchOperation, WikiPatchOperation, WikiPatchSet,
     WikiPatchValidator, WikiPatchValidatorConfig,

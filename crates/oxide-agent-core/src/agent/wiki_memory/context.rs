@@ -1,7 +1,13 @@
 use super::CachedWikiPage;
 use super::cache::WikiSessionCache;
 use super::scope::wiki_context_id;
+use super::store::WikiStore;
+use crate::agent::prompt::{
+    DynamicPromptContextProvider, PromptContextBlock, PromptContextRequest, PromptContextResult,
+    PromptContextSemantics,
+};
 use crate::storage::StorageError;
+use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,6 +55,52 @@ pub struct WikiRenderedContext {
     pub loaded_keys: Vec<String>,
     /// Whether no durable wiki page content was available.
     pub is_empty: bool,
+}
+
+/// Dynamic prompt context provider that preserves ordinary chat-mode wiki memory behavior.
+pub struct WikiPromptContextProvider {
+    store: WikiStore,
+}
+
+impl WikiPromptContextProvider {
+    /// Create a dynamic context provider backed by the durable wiki store.
+    #[must_use]
+    pub const fn new(store: WikiStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl DynamicPromptContextProvider for WikiPromptContextProvider {
+    async fn build_blocks(
+        &self,
+        request: PromptContextRequest<'_>,
+    ) -> PromptContextResult<Vec<PromptContextBlock>> {
+        let cache = Arc::new(WikiSessionCache::new(self.store.clone()));
+        let assembler = WikiContextAssembler::new(
+            cache,
+            WikiContextAssemblerConfig {
+                fast_skip_fresh_web_session: should_fast_skip_fresh_web_session_wiki_context(
+                    request.context_key,
+                    request.memory_message_count,
+                ),
+                ..WikiContextAssemblerConfig::default()
+            },
+        );
+        let rendered = assembler
+            .assemble_for_context(request.user_id, request.context_key, request.task)
+            .await?;
+
+        if rendered.is_empty {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![PromptContextBlock::new(
+                "wiki_memory",
+                rendered.text,
+                PromptContextSemantics::EvidenceOnly,
+            )])
+        }
+    }
 }
 
 /// Builds bounded prompt context from deterministic wiki indexes and selected pages.
@@ -545,6 +597,13 @@ fn is_web_session_context(context_key: &str) -> bool {
     context_key.starts_with("web-session-")
 }
 
+pub(crate) fn should_fast_skip_fresh_web_session_wiki_context(
+    context_key: &str,
+    memory_message_count: usize,
+) -> bool {
+    is_web_session_context(context_key) && memory_message_count <= 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,5 +821,61 @@ mod tests {
 
         assert!(rendered.is_empty);
         assert!(backend.get_keys.lock().await.is_empty());
+    }
+
+    #[test]
+    fn fresh_web_session_wiki_context_skip_is_limited_to_first_message() {
+        assert!(should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            1
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            2
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "telegram-topic",
+            1
+        ));
+    }
+
+    #[tokio::test]
+    async fn wiki_prompt_context_provider_returns_evidence_block() {
+        crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = test_prefix("provider");
+        let context_key = "project-alpha".to_string();
+        let context_id = wiki_context_id(42, &context_key);
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/global/index.md"),
+            "# Wiki Index\n".to_string(),
+        );
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
+            "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
+                .to_string(),
+        );
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
+            "# Project Overview\n\nPostgres remains source of truth.".to_string(),
+        );
+
+        let store_backend: Arc<dyn WikiObjectBackend> = backend;
+        let provider = WikiPromptContextProvider::new(WikiStore::new(store_backend, prefix));
+        let blocks = provider
+            .build_blocks(PromptContextRequest {
+                user_id: 42,
+                context_key: &context_key,
+                task: "source of truth",
+                memory_message_count: 2,
+            })
+            .await
+            .expect("wiki prompt context provider should build one evidence block");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].name, "wiki_memory");
+        assert_eq!(blocks[0].semantics, PromptContextSemantics::EvidenceOnly);
+        assert!(blocks[0].body.contains("Durable Wiki Memory"));
+        assert!(blocks[0].body.contains("Postgres remains source of truth"));
     }
 }

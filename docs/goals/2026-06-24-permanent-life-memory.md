@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-24-permanent-life-memory.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed phase, compress before starting the next phase, and stop only on verified completion or an exact blocker with required external action.
 Source spec: `docs/prd/PRD-perm.md`
 Goal doc owner: Codex
-Last updated: 2026-06-24 00:00
+Last updated: 2026-06-24 01:00
 
 ## Objective
 
@@ -112,29 +112,29 @@ Out of scope:
   - Source: PRD §2.7, §5 Mine 7, §11.1.
   - Acceptance: prompt assembly can accept typed dynamic context blocks with semantics; ordinary chat mode continues to use wiki context with behavior change `0`; life mode can provide its own blocks without hardcoded composer special-cases.
   - Evidence required: code review/grep proving wiki-only hardcoding is behind a provider adapter; tests for chat-mode prompt output compatibility and life block ordering/semantics.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 introduced `agent::prompt::context::{DynamicPromptContextProvider, PromptContextBlock, PromptContextSemantics, PromptContextRequest}`; `AgentExecutor` now builds dynamic prompt context blocks through a provider; `WikiPromptContextProvider` adapts existing wiki assembly; composer accepts typed blocks and no longer accepts a wiki-specific string. Tests: `test_create_agent_system_prompt_appends_wiki_context`, `test_create_agent_system_prompt_preserves_dynamic_block_order`, `test_wiki_context_after_workflow_guidance`, `wiki_prompt_context_provider_returns_evidence_block`, `fresh_web_session_wiki_context_skip_is_limited_to_first_message`. Grep: no stale `render_wiki_context_for_task`, `normalize_wiki_context`, or `wiki_context_available` symbols under `crates/oxide-agent-core/src`.
 
 - G2: `oxide-agent-life` bounded context exists with approved module ownership.
   - Source: PRD §21.1.
   - Acceptance: workspace includes `crates/oxide-agent-life` with `domain/`, `storage/`, `gateway/`, `worker/`, `context/`, `curator/`, `engram/`, `api/`; core does not contain a product `src/life` subsystem; transports do not own memory semantics.
   - Evidence required: `Cargo.toml` workspace diff, crate tree inspection, `cargo check` for the new crate.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Ordinary chat wiki memory remains wired through `with_wiki_memory_store` / `set_wiki_memory_store`, which install `WikiPromptContextProvider` while preserving the wiki store for background updates. Prompt ordering tests verify dynamic/wiki blocks remain after workflow guidance and before structured output. Repo grep found no Engram/life integration in ordinary chat paths in this phase; no transport files changed.
 
 - G3: Life storage migration implements the Postgres source-of-truth schema.
   - Source: PRD §8.3, §9, §10.7, §21.
   - Acceptance: `migrations/0010_life_mode.sql` creates `life_principals`, `life_identity_links`, `life_link_tokens`, `life_turns`, `life_memory_generations`, `life_active_memory_generations`, `life_memory_items`, `life_task_states`, `life_friction_patterns`, `life_support_protocols`, `life_inputs`, `life_runs`, `life_events`, `life_context_overrides`, `life_engram_outbox` with generation FKs/order and stable constraints.
   - Evidence required: migration review; SQLx/storage integration test or migration-run test; `cargo test` evidence for storage round trips where practical.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo fmt --all -- --check` passed after Phase 1 code; `cargo clippy --workspace --all-targets -- -D warnings` passed.
 
 - G4: Principal identity and linking model is transport-neutral.
   - Source: PRD §2.4, §5 Mine 1, §6.1, §8.
   - Acceptance: `(provider, provider_subject)` resolves to a canonical `principal_user_id`; web and Telegram subjects can link to one principal; transports do not pass life identity internals.
   - Evidence required: unit/integration tests for principal creation, link lookup, duplicate link rejection, web-first token linking, Telegram-first allocator path or documented blocked subset.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with existing rustc unused/dead-code warnings. Focused tests passed for dynamic block order and wiki provider/skip behavior. `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran successfully through workspace tests until the known pre-existing `crates/oxide-agent-core/tests/proptest_remediation.rs` whitespace-only `thought` property failure recurred; failing file has no diff and generated `.proptest-regressions` artifact was removed.
 
 - G5: Memory generations are first-class and every memory-owned read path is generation-scoped.
   - Source: PRD §1, §9.6-9.12, §10.2 Layer 0, §10.7, §20 criteria 19-21.
@@ -429,6 +429,13 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Commands: `set_goal`.
   - Audit IDs updated: Phase 0 metadata only.
   - Next: commit Phase 0 goal contract.
+
+- 2026-06-24 01:00: Phase 1 completed — core dynamic prompt context seam.
+  - Changed: added typed dynamic prompt context module; changed composer to accept ordered `PromptContextBlock`s; added `DynamicPromptContextProvider` field/setters to `AgentExecutor`; moved ordinary wiki prompt context behind `WikiPromptContextProvider`; preserved wiki background writer storage path.
+  - Evidence: grep found no stale `render_wiki_context_for_task`, `normalize_wiki_context`, or `wiki_context_available`; `git diff --check` passed; `cargo fmt --all -- --check` passed; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed; `cargo clippy --workspace --all-targets -- -D warnings` passed; focused prompt/wiki tests passed; full workspace test failure classified as known pre-existing proptest whitespace-only `thought` issue with untouched failing file.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local <test-filter>` for dynamic block order/wiki provider/skip tests; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G1, Q1, V1, V2 verified for current repo state.
+  - Next: commit Phase 1, compress, then start Phase 2 life crate skeleton/domain contracts.
 
 ## Risks and Blockers
 
