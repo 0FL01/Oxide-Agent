@@ -1,24 +1,10 @@
 //! Response parsing for the shared Chat Completions wire path.
 
-use super::profile::{
-    ChatCompletionsProfile, ChatResponseContentPolicy, EmptyToolCallIdPolicy, RateLimitPolicy,
-};
+use super::profile::{ChatCompletionsProfile, ChatResponseContentPolicy, RateLimitPolicy};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use serde_json::Value;
 use tracing::debug;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ChatCompletionsResponsePlan {
-    pub(crate) profile: ChatCompletionsProfile,
-}
-
-impl ChatCompletionsResponsePlan {
-    #[must_use]
-    pub(crate) const fn new(profile: ChatCompletionsProfile) -> Self {
-        Self { profile }
-    }
-}
 
 pub(crate) fn parse_chat_response(
     response: Value,
@@ -156,17 +142,13 @@ fn empty_id_tool_call(
     name: &str,
     arguments: String,
 ) -> ToolCall {
-    match profile.empty_tool_call_id {
-        EmptyToolCallIdPolicy::Uncorrelated => {
-            debug!(
-                provider = profile.label,
-                tool_name = name,
-                tool_index = index,
-                "Chat Completions provider returned empty tool call ID"
-            );
-            CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
-        }
-    }
+    debug!(
+        provider = profile.label,
+        tool_name = name,
+        tool_index = index,
+        "Chat Completions provider returned empty tool call ID"
+    );
+    CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
 }
 
 pub(crate) fn normalize_tool_arguments(value: &Value) -> String {

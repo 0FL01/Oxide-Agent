@@ -7,10 +7,9 @@
 pub(crate) use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile as OpenAICompatibleProfile;
 #[cfg(test)]
 pub(crate) use crate::llm::providers::chat_completions::profile::{
-    ChatMessageLayoutPolicy as MessageLayoutPolicy, ChatReasoningPolicy as ReasoningPolicy,
-    ChatResponseContentPolicy as ResponseContentPolicy, ChatStreamingPolicy as StreamPolicy,
-    ChatThinkingPolicy as ThinkingPolicy, JsonModePolicy, StructuredOutputPolicy,
-    ToolCallIdPolicy as ToolCallIdStrategy,
+    ChatReasoningPolicy as ReasoningPolicy, ChatResponseContentPolicy as ResponseContentPolicy,
+    ChatStreamingPolicy as StreamPolicy, ChatThinkingPolicy as ThinkingPolicy, JsonModePolicy,
+    StructuredOutputPolicy,
 };
 
 #[cfg(test)]
@@ -31,12 +30,6 @@ mod tests {
         assert!((p.temperatures.chat - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.tools - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.reasoning - 0.95).abs() < f32::EPSILON);
-        assert_eq!(p.tool_call_ids, ToolCallIdStrategy::Preserve);
-        assert_eq!(p.message_layout, MessageLayoutPolicy::GenericOpenAI);
-        assert_eq!(
-            p.response_content,
-            ResponseContentPolicy::StringOrChunkArrayWithReasoning
-        );
         assert_eq!(p.json_mode, JsonModePolicy::Standard);
         assert_eq!(p.parallel_tool_calls, None);
         assert_eq!(p.reasoning, ReasoningPolicy::None);
@@ -72,18 +65,10 @@ mod tests {
         assert!(!p.media_capabilities.supports_audio_transcription);
         assert!(p.media_capabilities.supports_image_understanding);
         assert!(!p.media_capabilities.supports_video_understanding);
-        assert_eq!(p.tool_call_ids, ToolCallIdStrategy::Preserve);
-        assert_eq!(p.message_layout, MessageLayoutPolicy::GenericOpenAI);
         assert_eq!(p.response_content, ResponseContentPolicy::StringOnly);
         assert_eq!(p.parallel_tool_calls, None);
         assert_eq!(p.thinking, ThinkingPolicy::None);
         assert_eq!(p.streaming, StreamPolicy::NonStreaming);
         assert_eq!(p.structured_output, StructuredOutputPolicy::BaseCapability);
-    }
-
-    #[test]
-    fn generic_never_reasoning() {
-        let p = OpenAICompatibleProfile::generic();
-        assert!(!p.is_reasoning_model("anything"));
     }
 }

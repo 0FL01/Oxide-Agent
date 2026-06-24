@@ -9,18 +9,6 @@ use crate::llm::support::media;
 use crate::llm::{Message, MessageContentPart, ToolDefinition};
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ChatCompletionsRequestPlan {
-    pub(crate) profile: ChatCompletionsProfile,
-}
-
-impl ChatCompletionsRequestPlan {
-    #[must_use]
-    pub(crate) const fn new(profile: ChatCompletionsProfile) -> Self {
-        Self { profile }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChatRequestOptions<'a> {
     pub(crate) profile: ChatCompletionsProfile,
@@ -318,12 +306,7 @@ pub(crate) fn image_data_url_with_mime(image_bytes: &[u8], mime_type: &str) -> S
     media::image_data_url_with_mime(image_bytes, mime_type)
 }
 
-#[must_use]
-pub(crate) fn normalized_image_mime_type(mime_type: &str, image_bytes: &[u8]) -> String {
-    media::normalized_image_mime_type(mime_type, image_bytes)
-}
-
-#[must_use]
+#[cfg(test)]
 pub(crate) fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
     media::infer_image_mime_type(image_bytes)
 }

@@ -17,27 +17,9 @@ pub(crate) enum EndpointPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthPolicy {
     Bearer,
+    /// Available for providers that require no authentication header.
+    #[allow(dead_code)]
     NoAuth,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolCallIdPolicy {
-    Preserve,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EmptyToolCallIdPolicy {
-    Uncorrelated,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChatMessageLayoutPolicy {
-    GenericOpenAI,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChatToolSchemaPolicy {
-    OpenAIChatCompletions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +30,8 @@ pub(crate) enum ChatToolChoicePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JsonModePolicy {
+    /// Available for providers that do not support `response_format`.
+    #[allow(dead_code)]
     None,
     Standard,
 }
@@ -89,36 +73,6 @@ pub(crate) enum ChatResponseContentPolicy {
     StringOrChunkArrayWithReasoning,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UsagePolicy {
-    PromptTokensDetailsCached,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImageInputPolicy {
-    None,
-    ImageUrlDataUrl,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioInputPolicy {
-    None,
-    OpenRouterInputAudio,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VideoInputPolicy {
-    None,
-    OpenRouterVideoUrl,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ChatMediaPolicy {
-    pub(crate) image: ImageInputPolicy,
-    pub(crate) audio: AudioInputPolicy,
-    pub(crate) video: VideoInputPolicy,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChatTemperatures {
     pub(crate) chat: f32,
@@ -133,10 +87,6 @@ pub struct ChatCompletionsProfile {
     pub(crate) endpoint: EndpointPolicy,
     pub(crate) auth: AuthPolicy,
     pub(crate) extra_headers: &'static [(&'static str, &'static str)],
-    pub(crate) tool_call_ids: ToolCallIdPolicy,
-    pub(crate) empty_tool_call_id: EmptyToolCallIdPolicy,
-    pub(crate) message_layout: ChatMessageLayoutPolicy,
-    pub(crate) tool_schema: ChatToolSchemaPolicy,
     pub(crate) tool_choice: ChatToolChoicePolicy,
     pub(crate) json_mode: JsonModePolicy,
     pub(crate) thinking: ChatThinkingPolicy,
@@ -145,8 +95,6 @@ pub struct ChatCompletionsProfile {
     pub(crate) include_stream_field: bool,
     pub(crate) rate_limit: RateLimitPolicy,
     pub(crate) response_content: ChatResponseContentPolicy,
-    pub(crate) usage: UsagePolicy,
-    pub(crate) media: ChatMediaPolicy,
     pub(crate) capabilities: ProviderCapabilities,
     pub(crate) media_capabilities: MediaCapabilities,
     pub(crate) temperatures: ChatTemperatures,
@@ -187,10 +135,6 @@ impl ChatCompletionsProfile {
             endpoint: EndpointPolicy::AppendChatCompletions,
             auth: AuthPolicy::Bearer,
             extra_headers: &[],
-            tool_call_ids: ToolCallIdPolicy::Preserve,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
@@ -199,12 +143,6 @@ impl ChatCompletionsProfile {
             include_stream_field: true,
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::ImageUrlDataUrl,
-                audio: AudioInputPolicy::None,
-                video: VideoInputPolicy::None,
-            },
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
             media_capabilities: MediaCapabilities::new(false, true, false),
             temperatures: ChatTemperatures {
@@ -228,10 +166,6 @@ impl ChatCompletionsProfile {
             endpoint: EndpointPolicy::AppendChatCompletions,
             auth: AuthPolicy::Bearer,
             extra_headers: &[],
-            tool_call_ids: ToolCallIdPolicy::Preserve,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::ZaiEnabledUnlessJsonMode,
@@ -240,12 +174,6 @@ impl ChatCompletionsProfile {
             include_stream_field: true,
             rate_limit: RateLimitPolicy::ZaiFlushTime,
             response_content: ChatResponseContentPolicy::StringOrChunkArrayWithReasoning,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::ImageUrlDataUrl,
-                audio: AudioInputPolicy::None,
-                video: VideoInputPolicy::None,
-            },
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
             media_capabilities: MediaCapabilities::new(false, true, false),
             temperatures: ChatTemperatures {
@@ -270,10 +198,6 @@ impl ChatCompletionsProfile {
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             auth: AuthPolicy::Bearer,
             extra_headers: OPENROUTER_HEADERS,
-            tool_call_ids: ToolCallIdPolicy::Preserve,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::Omit,
             json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
@@ -282,12 +206,6 @@ impl ChatCompletionsProfile {
             include_stream_field: false,
             rate_limit: RateLimitPolicy::OpenRouterResetMetadata,
             response_content: ChatResponseContentPolicy::StringOnly,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::ImageUrlDataUrl,
-                audio: AudioInputPolicy::OpenRouterInputAudio,
-                video: VideoInputPolicy::OpenRouterVideoUrl,
-            },
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false),
             media_capabilities: MediaCapabilities::new(false, false, false),
             temperatures: ChatTemperatures {
@@ -312,10 +230,6 @@ impl ChatCompletionsProfile {
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             auth: AuthPolicy::Bearer,
             extra_headers: &[],
-            tool_call_ids: ToolCallIdPolicy::Preserve,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
@@ -326,12 +240,6 @@ impl ChatCompletionsProfile {
             include_stream_field: true,
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::ImageUrlDataUrl,
-                audio: AudioInputPolicy::None,
-                video: VideoInputPolicy::None,
-            },
             capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
             media_capabilities: MediaCapabilities::new(false, true, false),
             temperatures: ChatTemperatures {
@@ -356,10 +264,6 @@ impl ChatCompletionsProfile {
             endpoint: EndpointPolicy::UseConfiguredUrlAsExactEndpoint,
             auth: AuthPolicy::Bearer,
             extra_headers: &[],
-            tool_call_ids: ToolCallIdPolicy::Preserve,
-            empty_tool_call_id: EmptyToolCallIdPolicy::Uncorrelated,
-            message_layout: ChatMessageLayoutPolicy::GenericOpenAI,
-            tool_schema: ChatToolSchemaPolicy::OpenAIChatCompletions,
             tool_choice: ChatToolChoicePolicy::AutoWhenToolsExist,
             json_mode: JsonModePolicy::Standard,
             thinking: ChatThinkingPolicy::None,
@@ -370,12 +274,6 @@ impl ChatCompletionsProfile {
             include_stream_field: true,
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
-            usage: UsagePolicy::PromptTokensDetailsCached,
-            media: ChatMediaPolicy {
-                image: ImageInputPolicy::ImageUrlDataUrl,
-                audio: AudioInputPolicy::None,
-                video: VideoInputPolicy::None,
-            },
             capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
             media_capabilities: MediaCapabilities::new(false, true, false),
             temperatures: ChatTemperatures {
@@ -389,14 +287,6 @@ impl ChatCompletionsProfile {
             include_empty_system_message: false,
             require_reasoning_content_on_tool_calls: true,
             structured_output: StructuredOutputPolicy::BaseCapability,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn is_reasoning_model(&self, model_id: &str) -> bool {
-        let _ = model_id;
-        match self.reasoning {
-            ChatReasoningPolicy::None | ChatReasoningPolicy::OpenCodeGo { .. } => false,
         }
     }
 
@@ -431,8 +321,6 @@ mod tests {
         assert_eq!(p.label, "generic");
         assert_eq!(p.endpoint, EndpointPolicy::AppendChatCompletions);
         assert_eq!(p.auth, AuthPolicy::Bearer);
-        assert_eq!(p.tool_call_ids, ToolCallIdPolicy::Preserve);
-        assert_eq!(p.message_layout, ChatMessageLayoutPolicy::GenericOpenAI);
         assert_eq!(p.json_mode, JsonModePolicy::Standard);
         assert_eq!(p.response_content, ChatResponseContentPolicy::StringOnly);
         assert!(p.capabilities.supports_tool_calling);
@@ -465,8 +353,6 @@ mod tests {
         assert_eq!(p.extra_headers, OPENROUTER_HEADERS);
         assert_eq!(p.tool_choice, ChatToolChoicePolicy::Omit);
         assert_eq!(p.rate_limit, RateLimitPolicy::OpenRouterResetMetadata);
-        assert_eq!(p.media.audio, AudioInputPolicy::OpenRouterInputAudio);
-        assert_eq!(p.media.video, VideoInputPolicy::OpenRouterVideoUrl);
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub(crate) struct ChatCompletionsClient {
     http_client: HttpClient,
     endpoint: String,
     api_key: Option<String>,
+    /// Stored for diagnostic/test inspection; production code passes the model
+    /// in the request body rather than reading it back from the client.
+    #[allow(dead_code)]
     model: String,
     profile: ChatCompletionsProfile,
 }
@@ -60,6 +63,7 @@ impl ChatCompletionsClient {
         &self.endpoint
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn model(&self) -> &str {
         &self.model
@@ -83,6 +87,7 @@ impl ChatCompletionsClient {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn extra_headers(&self) -> &'static [(&'static str, &'static str)] {
         self.profile.extra_headers
@@ -99,11 +104,6 @@ impl ChatCompletionsClient {
         )
         .await
         .map_err(|error| apply_profile_rate_limit_wait(error, self.profile))
-    }
-
-    #[must_use]
-    pub(crate) fn api_key(&self) -> Option<&str> {
-        self.api_key.as_deref()
     }
 
     #[must_use]
