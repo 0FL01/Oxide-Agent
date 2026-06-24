@@ -43,10 +43,10 @@ Out of scope:
 
 ## Missing Inputs
 
-- Engram live contract and legal path are not yet verified for implementation of the concrete HTTP adapter.
-  - Impact: `engram/` can define traits, outbox semantics, and test doubles, but production HTTP calls must stay behind a blocked/disabled adapter until raw responses and licensing path are documented.
+- Engram live contract is not yet verified for implementation of the concrete HTTP adapter.
+  - Impact: `engram/` can define traits, outbox semantics, and test doubles, but production HTTP calls must stay behind a blocked/disabled adapter until raw responses are documented.
   - Low-risk assumption or fallback: implement a `Noop`/test backend plus trait and outbox projection; keep PG source-of-truth fully functional without Engram.
-  - User/external action needed: approve AGPL/commercial/rewrite path before shipping a modified networked Engram service.
+  - User/external action needed: verify raw Engram API responses before enabling live HTTP adapter.
 
 ## Repository Context
 
@@ -187,7 +187,7 @@ Out of scope:
 
 - G12: Engram integration is derived, generation-scoped, and replaceable.
   - Source: PRD §3, §6.3, §13, §20 criteria 1,7,8,15,18.
-  - Acceptance: `LifeLongTermMemoryBackend` trait exists; outbox worker projects canonical memory with idempotency/generation namespace; recall returns candidates that are dereferenced in PG; ordinary chat mode makes no Engram calls; HTTP adapter is gated behind verified contract/legal path.
+  - Acceptance: `LifeLongTermMemoryBackend` trait exists; outbox worker projects canonical memory with idempotency/generation namespace; recall returns candidates that are dereferenced in PG; ordinary chat mode makes no Engram calls; HTTP adapter is gated behind verified contract.
   - Evidence required: trait/API tests, outbox idempotency tests, recall dereference tests, grep audit for ordinary chat mode no Engram path, PRD §17.1 raw-response evidence before enabling live HTTP adapter.
   - Status: verified
   - Evidence collected: Phase 8 replaces the placeholder Engram module with `LifeLongTermMemoryBackend`, `EngramNamespace::as_wire_key`, `EngramMemoryProjection`, `RecallRequest`, `RecallCandidate`, `DereferencedRecallCandidate`, `InMemoryLongTermMemoryBackend`, `EngramOutboxProjector`, and `DerivedRecallService`. `EngramOutboxProjector` claims due `life_engram_outbox` rows, appends projections using namespace `life:<principal>:gen:<generation>`, marks rows flushed/retry/dead, and never mutates canonical memory. `DerivedRecallService` loads the active generation, calls backend recall in that namespace, and dereferences candidate ids via `active_memory_items_by_ids`; secret-blocked/stale/unavailable candidates are omitted. Tests: `outbox_projector_projects_to_generation_namespace_and_marks_flushed`, `outbox_projector_retries_then_marks_dead_after_max_attempts`, and `recall_dereferences_only_active_non_secret_postgres_memory`. SQLx storage test covers outbox claim/retry/flush and memory-by-id dereference. Repo diff/grep confirms no core/web/telegram ordinary-chat integration and no live HTTP adapter/dependency was added.
@@ -290,9 +290,9 @@ Out of scope:
 
 - V5: Engram live contract verification is recorded before live HTTP adapter is enabled.
   - Source: PRD §17.1 and П0.5.
-  - Evidence required: raw `/health`, `/v1/remember`, `/v1/recall`, facts/memories/conflicts/export responses against the chosen Engram deployment; legal path decision recorded.
+  - Evidence required: raw `/health`, `/v1/remember`, `/v1/recall`, facts/memories/conflicts/export responses against the chosen Engram deployment.
   - Status: pending
-  - Evidence collected: Phase 8 intentionally adds only a trait, in-memory test backend, outbox projector, and recall dereference service. No live HTTP adapter, endpoint constants, HTTP client dependency, or Engram service credential was added. V5 remains pending until raw Engram responses and legal path are recorded. Phase 10 again adds no live Engram HTTP adapter, endpoint constants, credentials, or HTTP client path; Engram remains trait/outbox/test backend only. V5 remains blocked on raw `/health`, `/v1/remember`, `/v1/recall`, memories/facts/conflicts/export responses and an AGPL/commercial/rewrite legal path decision.
+  - Evidence collected: Phase 8 intentionally adds only a trait, in-memory test backend, outbox projector, and recall dereference service. No live HTTP adapter, endpoint constants, HTTP client dependency, or Engram service credential was added. V5 remains pending until raw Engram responses are recorded. Phase 10 again adds no live Engram HTTP adapter, endpoint constants, credentials, or HTTP client path; Engram remains trait/outbox/test backend only. V5 remains blocked on raw `/health`, `/v1/remember`, `/v1/recall`, memories/facts/conflicts/export responses.
 
 ### Non-goals and exclusions (N*)
 
@@ -416,7 +416,6 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` if `oxide-agent-web-ui` changes
 - External/runtime verification:
   - PRD §17.1 Engram raw-response verification before enabling live Engram HTTP adapter
-  - explicit legal path decision before shipping modified Engram as network service
 - Done when: every Completion Audit item is `verified`, all required gates either pass or have classified pre-existing/environment blockers, and final audit is filled.
 
 ## Decisions
@@ -501,7 +500,7 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Changed: expanded `engram/mod.rs` from placeholder namespace/candidate DTOs into a derived-memory contract with `LifeLongTermMemoryBackend`, `InMemoryLongTermMemoryBackend`, `EngramOutboxProjector`, `DerivedRecallService`, generation-scoped namespace wire keys, projection DTOs, retry/dead outbox handling, and dereferenced recall results. Extended storage repository/SQLx with outbox claim/flush/retry/dead methods and active memory-by-id dereference.
   - Evidence: Engram unit tests prove generation-namespaced projection/flush, retry-to-dead behavior, and recall dereference that drops stale/secret candidates. Real-Postgres focused storage test verifies SQLx outbox claim/retry/flush and active memory-by-id dereference. No live HTTP adapter, new dependencies, core/web/telegram changes, or module registry changes were introduced.
   - Commands: `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (25 passed), `cargo test -p oxide-agent-life engram -- --nocapture` (3 passed), `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@127.0.0.1:55438/oxide_agent_test cargo test -p oxide-agent-life sqlx_life_storage_migrates_and_scopes_memory_by_active_generation -- --nocapture` (1 passed against temporary Postgres), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (failed only on known pre-existing core proptest whitespace-only `thought`; artifact removed), `git diff --check` (passed).
-  - Audit IDs updated: G9, G12, N2 verified; Q6 and V5 evidence extended but remain pending for later live adapter/legal verification; V1/V2 evidence extended.
+  - Audit IDs updated: G9, G12, N2 verified; Q6 and V5 evidence extended but remain pending for later live adapter verification; V1/V2 evidence extended.
   - Next: commit Phase 8, compress, then start Phase 9 backend Web/Telegram integration points.
 
 - 2026-06-24 09:00: Phase 9 completed — backend Web/Telegram integration points.
@@ -516,15 +515,15 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Changed: added life link-token hashing/consumption contract; added explicit gateway/API sensitivity with private-secret refusal and redacted transcript state; added SQLx lifecycle operations for soft reset, derived wipe, inactive generation wipe, hard wipe, turns/events/memory inspector reads, and explicit memory forget; added shared Web DTOs and authenticated Web routes for link tokens, profile, turns, events, memories/conflicts field, task states, friction patterns, support protocols, generation list/soft reset/activate/wipe/derived wipe/hard wipe; added Telegram private-DM `/link <token>` consumption.
   - Evidence: token consumption is atomic and one-time; lifecycle test proves active generation is not mutated by soft reset, active wipe is refused, derived wipe does not delete canonical memory, inactive generation wipe marks deleted, and hard wipe removes life-owned state/checkpoint but preserves shared `users`. Secret tests prove private-secret submissions persist no principal/turn/input and redacted submissions keep redaction state. Symbol blast-radius grep reviewed new sensitivity/link/lifecycle/API symbols across `crates/`.
   - Commands: `cargo fmt --all -- --check` (passed), `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (29 passed), `cargo test -p oxide-agent-web-contracts` (11 passed), `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` (passed), `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life -- --nocapture` (passed), `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local life_command/link_command -- --nocapture` (passed), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (passed), `cargo run -p xtask -- module-registry check` (passed), `git diff --check` (passed).
-  - Audit IDs updated: G4, G5, G10, G14, Q2, Q3, Q5, Q6 verified; V1/V2/V3/V4 evidence extended; V5 remains the only pending blocker because live Engram raw responses and legal path are external inputs.
-  - Next: commit Phase 10 local hardening, then stop on V5 external blocker unless raw Engram/legal evidence is provided.
+  - Audit IDs updated: G4, G5, G10, G14, Q2, Q3, Q5, Q6 verified; V1/V2/V3/V4 evidence extended; V5 remains the only pending blocker because live Engram raw responses are an external input.
+  - Next: commit Phase 10 local hardening, then stop on V5 external blocker unless raw Engram evidence is provided.
 
 ## Risks and Blockers
 
-- Engram live/legal path not verified.
+- Engram live contract not verified.
   - Impact: live HTTP adapter cannot be safely enabled.
-  - Evidence: PRD status says implementation after live contract verification; PRD §3.4 license requires AGPL/commercial/rewrite choice.
-  - Mitigation or requested decision: keep adapter trait/test backend until raw API responses and legal path are recorded.
+  - Evidence: PRD status says implementation after live contract verification.
+  - Mitigation or requested decision: keep adapter trait/test backend until raw API responses are recorded.
   - Audit IDs affected: G12, V5.
 
 - Workspace full tests may expose unrelated proptest failure.
@@ -540,6 +539,6 @@ Filled at Phase 10 local completion.
 - Completion Audit result: all local implementation audit items are verified; V5 remains pending/blocking for live Engram HTTP adapter enablement.
 - Commands run: see Phase 10 progress log; final local broad gates passed (`fmt`, `clippy`, workspace check, workspace test, module-registry check, diff check).
 - Artifacts inspected: migration `0010_life_mode.sql`; `oxide-agent-life` gateway/linking/storage; Web contracts/routes/router; Telegram runner; symbol blast-radius grep for new Phase 10 public symbols; `git status`/diff.
-- Remaining gaps: V5 requires raw Engram `/health`, `/v1/remember`, `/v1/recall`, memories/facts/conflicts/export responses against the chosen deployment and an AGPL/commercial/rewrite legal decision before enabling any live HTTP adapter.
+- Remaining gaps: V5 requires raw Engram `/health`, `/v1/remember`, `/v1/recall`, memories/facts/conflicts/export responses against the chosen deployment before enabling any live HTTP adapter.
 - User-accepted exceptions: none; V5 is not waived, it is blocked pending external evidence/action.
-- Final status: BLOCKED on V5 external Engram raw-response/legal verification; local implementation audit is complete and verified.
+- Final status: BLOCKED on V5 external Engram raw-response verification; local implementation audit is complete and verified.

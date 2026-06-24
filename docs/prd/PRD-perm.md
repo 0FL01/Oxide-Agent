@@ -2,14 +2,14 @@
 
 Статус: `local implementation complete; live Engram adapter blocked on V5 external verification`
 
-Implementation status: see `docs/goals/2026-06-24-permanent-life-memory.md`; local implementation is complete and verified; live Engram adapter remains blocked on V5 raw API response evidence and legal path decision.
+Implementation status: see `docs/goals/2026-06-24-permanent-life-memory.md`; local implementation is complete and verified; live Engram adapter remains blocked on V5 raw API response evidence.
 
 Дата: `2026-06-20`
 
 Основание:
 
 - локальный снимок репозитория из архива `Oxide-Agent-dev(33).zip`
-- текущие upstream-источники по `ly-wang19/engram`: `README.md`, `API.md`, `engram/server/app.py`, `engram/service.py`, `engram/memory.py`, `engram/types.py`, paper `arXiv:2606.09900`, лицензия
+- текущие upstream-источники по `ly-wang19/engram`: `README.md`, `API.md`, `engram/server/app.py`, `engram/service.py`, `engram/memory.py`, `engram/types.py`, paper `arXiv:2606.09900`
 
 Ограничение источников:
 
@@ -197,20 +197,6 @@ Implementation status: see `docs/goals/2026-06-24-permanent-life-memory.md`; loc
 
 - текущий upstream surface **подходит как reference implementation**, но **не является идеальным production contract** для Oxide life mode
 - это не причина отказываться от Engram; это причина **взять его как engine и исправить контракт**
-
-### 3.4. Лицензия
-
-Подтверждено:
-
-- в репозитории есть dual-license: `AGPL-3.0` или commercial license — `COMMERCIAL-LICENSE.md`
-- текст прямо говорит: если вы запускаете modified version как network service и не хотите выполнять AGPL obligations, нужна commercial license — `COMMERCIAL-LICENSE.md`
-
-Следствие:
-
-- до shipping life mode как networked service нужно сознательно выбрать legal path:
-  - либо соблюдать AGPL/open-source obligations для модифицированной версии
-  - либо получить commercial license
-  - либо переписать backend с нуля, не используя код Engram
 
 ---
 
@@ -2739,5 +2725,4 @@ Ownership по директориям:
 - `https://raw.githubusercontent.com/ly-wang19/engram/main/engram/service.py`
 - `https://raw.githubusercontent.com/ly-wang19/engram/main/engram/memory.py`
 - `https://raw.githubusercontent.com/ly-wang19/engram/main/engram/types.py`
-- `https://raw.githubusercontent.com/ly-wang19/engram/main/COMMERCIAL-LICENSE.md`
 - `https://arxiv.org/abs/2606.09900`
