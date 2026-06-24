@@ -2785,9 +2785,13 @@ dependencies = [
 name = "oxide-agent-life"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
+ "sqlx-core",
+ "sqlx-postgres",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 

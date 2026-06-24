@@ -4,3 +4,8 @@
 pub mod models;
 /// Repository traits will live here once the SQL schema is introduced.
 pub mod repository;
+/// SQLx/Postgres repository implementation.
+pub mod sqlx;
+
+pub use repository::*;
+pub use sqlx::*;
