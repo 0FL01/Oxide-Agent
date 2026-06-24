@@ -106,6 +106,10 @@ CREATE TABLE life_runs (
 CREATE INDEX life_runs_principal_status_idx
     ON life_runs (principal_user_id, status, updated_at DESC);
 
+CREATE UNIQUE INDEX life_runs_one_running_per_principal_idx
+    ON life_runs (principal_user_id)
+    WHERE status = 'running';
+
 CREATE TABLE life_inputs (
     input_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,

@@ -10,15 +10,18 @@ use sqlx_postgres::{PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::domain::{
-    ActiveMemoryGeneration, ContextOverrideId, FrictionPatternId, FrictionPatternKind,
-    LifeContextOverride, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput,
-    LifeInputStatus, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeSourceTransport,
-    LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole, MemoryAuthority,
-    MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind, MemoryItemStatus,
-    MemoryScope, MemorySensitivity, PrincipalUserId, ProviderSubject, RedactionState,
-    SupportProtocolId, SupportStateStatus, TaskStateId, TaskStateStatus, TimestampMillis, TurnId,
+    ActiveMemoryGeneration, ContextOverrideId, FrictionPatternId, FrictionPatternKind, InputId,
+    LifeContextOverride, LifeEvent, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider,
+    LifeInput, LifeInputStatus, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun,
+    LifeRunStatus, LifeSourceTransport, LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole,
+    MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind,
+    MemoryItemStatus, MemoryScope, MemorySensitivity, PrincipalUserId, ProviderSubject,
+    RedactionState, RunId, SupportProtocolId, SupportStateStatus, TaskStateId, TaskStateStatus,
+    TimestampMillis, TurnId,
 };
-use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
+use crate::storage::{
+    ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository, LifeStorageResult,
+};
 
 /// SQLx-backed life storage repository.
 #[derive(Clone)]
@@ -80,6 +83,18 @@ impl SqlxLifeStorage {
         .await
         .map_err(db_error)?;
         Ok(row.is_some())
+    }
+
+    async fn advisory_xact_lock_in_tx(
+        tx: &mut sqlx_core::transaction::Transaction<'_, Postgres>,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>("SELECT pg_advisory_xact_lock($1)")
+            .bind(life_principal_lock_key(principal_user_id))
+            .execute(&mut **tx)
+            .await
+            .map_err(db_error)?;
+        Ok(())
     }
 }
 
@@ -407,6 +422,264 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
+    async fn save_life_memory_checkpoint(
+        &self,
+        principal_user_id: PrincipalUserId,
+        context_key: &str,
+        flow_id: &str,
+        memory: &serde_json::Value,
+        schema_version: i32,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO agent_memory_snapshots (
+                user_id, context_key, flow_id, memory, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $6)
+            ON CONFLICT (user_id, context_key, flow_id) DO UPDATE
+            SET memory = EXCLUDED.memory,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(context_key)
+        .bind(flow_id)
+        .bind(memory)
+        .bind(schema_version)
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn claim_input_and_start_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        input_id: InputId,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Option<ClaimedLifeInputRun>> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
+
+        let running_row = query::<Postgres>(
+            r#"
+            SELECT run_id
+            FROM life_runs
+            WHERE principal_user_id = $1 AND status = 'running'
+            LIMIT 1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if running_row.is_some() {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(None);
+        }
+
+        let input_row = query::<Postgres>(
+            r#"
+            UPDATE life_inputs
+            SET status = 'claimed', claimed_by = $3, claimed_at = $4, updated_at = $4
+            WHERE input_id = $1 AND principal_user_id = $2 AND status = 'queued'
+            RETURNING *
+            "#,
+        )
+        .bind(input_id.as_uuid())
+        .bind(principal_user_id.get())
+        .bind(worker_id)
+        .bind(now.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let Some(input_row) = input_row else {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(None);
+        };
+
+        let active_row = query::<Postgres>(
+            r#"
+            SELECT memory_generation_id
+            FROM life_active_memory_generations
+            WHERE principal_user_id = $1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let Some(active_row) = active_row else {
+            return Err(LifeStorageError::MissingActiveGeneration { principal_user_id });
+        };
+        let memory_generation_id =
+            MemoryGenerationId::from_uuid(active_row.get::<Uuid, _>("memory_generation_id"));
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_runs (
+                run_id, principal_user_id, memory_generation_id, status,
+                started_at, finished_at, last_checkpoint_at, error_text, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, 'running', $4, NULL, NULL, NULL, $4, $4)
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .bind(memory_generation_id.as_uuid())
+        .bind(now.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+
+        Ok(Some(ClaimedLifeInputRun {
+            input: input_from_row(input_row)?,
+            run: LifeRun {
+                run_id,
+                principal_user_id,
+                memory_generation_id,
+                status: LifeRunStatus::Running,
+                started_at: Some(now),
+                finished_at: None,
+                last_checkpoint_at: None,
+                error_text: None,
+                created_at: now,
+                updated_at: now,
+            },
+        }))
+    }
+
+    async fn mark_input_consumed(
+        &self,
+        input_id: InputId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_inputs
+            SET status = 'consumed', updated_at = $2
+            WHERE input_id = $1 AND status IN ('claimed', 'queued')
+            "#,
+        )
+        .bind(input_id.as_uuid())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn drain_queued_inputs_for_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeInput>> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
+        let rows = query::<Postgres>(
+            r#"
+            UPDATE life_inputs
+            SET status = 'consumed', claimed_by = $2, claimed_at = $3, updated_at = $3
+            WHERE principal_user_id = $1 AND status = 'queued'
+            RETURNING *
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(worker_id)
+        .bind(now.get())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        rows.into_iter().map(input_from_row).collect()
+    }
+
+    async fn append_event(&self, event: &LifeEvent) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_events (event_id, run_id, seq, kind, payload, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(event.event_id.as_uuid())
+        .bind(event.run_id.as_uuid())
+        .bind(event.seq)
+        .bind(&event.kind)
+        .bind(&event.payload)
+        .bind(event.created_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn next_event_seq(&self, run_id: RunId) -> LifeStorageResult<i64> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq
+            FROM life_events
+            WHERE run_id = $1
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(row.get("next_seq"))
+    }
+
+    async fn complete_run(
+        &self,
+        run_id: RunId,
+        finished_at: TimestampMillis,
+        last_checkpoint_at: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_runs
+            SET status = 'completed', finished_at = $2, last_checkpoint_at = $3, updated_at = $2
+            WHERE run_id = $1 AND status = 'running'
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(finished_at.get())
+        .bind(last_checkpoint_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn fail_run(
+        &self,
+        run_id: RunId,
+        finished_at: TimestampMillis,
+        error_text: &str,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_runs
+            SET status = 'failed', finished_at = $2, error_text = $3, updated_at = $2
+            WHERE run_id = $1 AND status = 'running'
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(finished_at.get())
+        .bind(error_text)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn active_context_overrides(
         &self,
         principal_user_id: PrincipalUserId,
@@ -726,6 +999,16 @@ fn input_status_as_str(status: LifeInputStatus) -> &'static str {
     }
 }
 
+fn input_status_from_str(value: &str) -> LifeStorageResult<LifeInputStatus> {
+    match value {
+        "queued" => Ok(LifeInputStatus::Queued),
+        "claimed" => Ok(LifeInputStatus::Claimed),
+        "consumed" => Ok(LifeInputStatus::Consumed),
+        "dead" => Ok(LifeInputStatus::Dead),
+        other => unknown_enum("life_input_status", other),
+    }
+}
+
 fn generation_status_as_str(status: MemoryGenerationStatus) -> &'static str {
     match status {
         MemoryGenerationStatus::Building => "building",
@@ -896,6 +1179,18 @@ fn uuids_to_turn_ids(uuids: Vec<Uuid>) -> Vec<TurnId> {
     uuids.into_iter().map(TurnId::from_uuid).collect()
 }
 
+fn life_principal_lock_key(principal_user_id: PrincipalUserId) -> i64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in format!("life:{}", principal_user_id.get()).as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    i64::from_be_bytes(hash.to_be_bytes())
+}
+
 fn principal_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifePrincipal> {
     Ok(LifePrincipal {
         principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
@@ -917,6 +1212,21 @@ fn context_override_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<Lif
         reason: row.get("reason"),
         expires_at: row
             .get::<Option<i64>, _>("expires_at")
+            .map(TimestampMillis::new),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn input_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeInput> {
+    Ok(LifeInput {
+        input_id: InputId::from_uuid(row.get("input_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        turn_id: TurnId::from_uuid(row.get("turn_id")),
+        status: input_status_from_str(row.get::<&str, _>("status"))?,
+        claimed_by: row.get("claimed_by"),
+        claimed_at: row
+            .get::<Option<i64>, _>("claimed_at")
             .map(TimestampMillis::new),
         created_at: TimestampMillis::new(row.get("created_at")),
         updated_at: TimestampMillis::new(row.get("updated_at")),
@@ -1014,6 +1324,7 @@ mod tests {
     use serde_json::json;
     use sqlx_postgres::PgPoolOptions;
 
+    use crate::domain::EventId;
     use crate::gateway::{
         LifeClock, LifeGateway, LifeGatewayResult, LifeInputSubmission, LifePrincipalAllocator,
     };
@@ -1446,6 +1757,198 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn sqlx_life_worker_claim_start_complete_and_drain_are_db_backed() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_010_000);
+        let principal = LifePrincipal {
+            principal_user_id,
+            profile_state: json!({}),
+            operating_profile: json!({}),
+            settings: json!({}),
+            schema_version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_principal(&principal).await,
+            "upsert principal",
+        );
+        let generation = generation(principal_user_id, 1, MemoryGenerationStatus::Building, now);
+        must(
+            storage.insert_memory_generation(&generation).await,
+            "insert generation",
+        );
+        let active = must(
+            storage
+                .activate_memory_generation(
+                    principal_user_id,
+                    generation.memory_generation_id,
+                    now,
+                    "worker test",
+                )
+                .await,
+            "activate generation",
+        );
+
+        let first_turn = user_turn(principal_user_id, "first", now);
+        must(storage.append_turn(&first_turn).await, "append first turn");
+        let first_input = queued_input(principal_user_id, first_turn.turn_id, now);
+        must(storage.enqueue_input(&first_input).await, "enqueue first");
+
+        let run_id = RunId::new_v4();
+        let claimed = must(
+            storage
+                .claim_input_and_start_run(
+                    principal_user_id,
+                    first_input.input_id,
+                    run_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 1),
+                )
+                .await,
+            "claim input and start run",
+        )
+        .expect("queued input should be claimed");
+        assert_eq!(claimed.input.status, LifeInputStatus::Claimed);
+        assert_eq!(claimed.run.run_id, run_id);
+        assert_eq!(
+            claimed.run.memory_generation_id,
+            active.scope.memory_generation_id
+        );
+
+        let second_claim = must(
+            storage
+                .claim_input_and_start_run(
+                    principal_user_id,
+                    first_input.input_id,
+                    RunId::new_v4(),
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 2),
+                )
+                .await,
+            "claim while running",
+        );
+        assert!(second_claim.is_none(), "running run blocks duplicate start");
+
+        let seq0 = must(storage.next_event_seq(run_id).await, "next event seq 0");
+        assert_eq!(seq0, 0);
+        must(
+            storage
+                .append_event(&LifeEvent {
+                    event_id: EventId::new_v4(),
+                    run_id,
+                    seq: seq0,
+                    kind: "run_started".to_owned(),
+                    payload: json!({}),
+                    created_at: now,
+                })
+                .await,
+            "append event",
+        );
+        assert_eq!(
+            must(storage.next_event_seq(run_id).await, "next event seq 1"),
+            1
+        );
+
+        let follow_up_turn = user_turn(
+            principal_user_id,
+            "follow-up",
+            TimestampMillis::new(now.get() + 3),
+        );
+        must(
+            storage.append_turn(&follow_up_turn).await,
+            "append follow-up turn",
+        );
+        let follow_up = queued_input(
+            principal_user_id,
+            follow_up_turn.turn_id,
+            TimestampMillis::new(now.get() + 3),
+        );
+        must(storage.enqueue_input(&follow_up).await, "enqueue follow-up");
+        let drained = must(
+            storage
+                .drain_queued_inputs_for_run(
+                    principal_user_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 4),
+                )
+                .await,
+            "drain queued inputs",
+        );
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].input_id, follow_up.input_id);
+        assert_eq!(drained[0].status, LifeInputStatus::Consumed);
+
+        must(
+            storage
+                .mark_input_consumed(first_input.input_id, TimestampMillis::new(now.get() + 5))
+                .await,
+            "mark first input consumed",
+        );
+        must(
+            storage
+                .complete_run(
+                    run_id,
+                    TimestampMillis::new(now.get() + 6),
+                    TimestampMillis::new(now.get() + 5),
+                )
+                .await,
+            "complete run",
+        );
+
+        let run_status = must(
+            query::<Postgres>("SELECT status, last_checkpoint_at FROM life_runs WHERE run_id = $1")
+                .bind(run_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load completed run",
+        );
+        assert_eq!(run_status.get::<String, _>("status"), "completed");
+        assert_eq!(
+            run_status.get::<i64, _>("last_checkpoint_at"),
+            now.get() + 5
+        );
+
+        must(
+            storage
+                .save_life_memory_checkpoint(
+                    principal_user_id,
+                    crate::worker::LIFE_CONTEXT_KEY,
+                    crate::worker::LIFE_FLOW_ID,
+                    &json!({"checkpoint": "final"}),
+                    1,
+                    TimestampMillis::new(now.get() + 5),
+                )
+                .await,
+            "save final checkpoint",
+        );
+        let checkpoint = must(
+            query::<Postgres>(
+                r#"
+                SELECT memory, schema_version, updated_at
+                FROM agent_memory_snapshots
+                WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(crate::worker::LIFE_CONTEXT_KEY)
+            .bind(crate::worker::LIFE_FLOW_ID)
+            .fetch_one(storage.pool())
+            .await,
+            "load final checkpoint",
+        );
+        assert_eq!(
+            checkpoint.get::<serde_json::Value, _>("memory"),
+            json!({"checkpoint": "final"})
+        );
+        assert_eq!(checkpoint.get::<i32, _>("schema_version"), 1);
+        assert_eq!(checkpoint.get::<i64, _>("updated_at"), now.get() + 5);
+    }
+
     async fn sqlx_test_storage() -> Option<SqlxLifeStorage> {
         let Ok(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL") else {
             eprintln!("OXIDE_DATABASE_TEST_URL not set; skipping SQLx/Postgres life storage test");
@@ -1517,6 +2020,43 @@ mod tests {
             source_scope: json!({}),
             comparison_report: json!({}),
             activated_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn user_turn(
+        principal_user_id: PrincipalUserId,
+        content: &str,
+        now: TimestampMillis,
+    ) -> LifeTurn {
+        LifeTurn {
+            turn_id: TurnId::new_v4(),
+            principal_user_id,
+            run_id: None,
+            role: LifeTurnRole::User,
+            source_transport: LifeSourceTransport::Internal,
+            source_ref: None,
+            content: content.to_owned(),
+            attachments: json!([]),
+            transport_metadata: json!({}),
+            redaction_state: RedactionState::Clean,
+            created_at: now,
+        }
+    }
+
+    fn queued_input(
+        principal_user_id: PrincipalUserId,
+        turn_id: TurnId,
+        now: TimestampMillis,
+    ) -> LifeInput {
+        LifeInput {
+            input_id: InputId::new_v4(),
+            principal_user_id,
+            turn_id,
+            status: LifeInputStatus::Queued,
+            claimed_by: None,
+            claimed_at: None,
             created_at: now,
             updated_at: now,
         }

@@ -1,13 +1,14 @@
 //! Storage repository contracts.
 
 use async_trait::async_trait;
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, LifeContextOverride, LifeFrictionPattern, LifeIdentityLink,
-    LifeIdentityProvider, LifeInput, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal,
+    ActiveMemoryGeneration, LifeContextOverride, LifeEvent, LifeFrictionPattern, LifeIdentityLink,
+    LifeIdentityProvider, LifeInput, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun,
     LifeSupportProtocol, LifeTaskState, LifeTurn, MemoryGenerationId, MemoryScope, PrincipalUserId,
-    ProviderSubject, TimestampMillis,
+    ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -54,6 +55,21 @@ pub enum LifeStorageError {
         /// Stored value.
         value: String,
     },
+    /// A worker tried to start a run for a principal without an active generation.
+    #[error("life principal {principal_user_id} has no active memory generation")]
+    MissingActiveGeneration {
+        /// Principal without active generation.
+        principal_user_id: PrincipalUserId,
+    },
+}
+
+/// Claimed input plus the persisted run created for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedLifeInputRun {
+    /// Claimed queue input.
+    pub input: LifeInput,
+    /// Persisted running run.
+    pub run: LifeRun,
 }
 
 /// Minimal repository boundary shared by future storage services.
@@ -125,6 +141,64 @@ pub trait LifeStorageRepository: Send + Sync {
 
     /// Enqueues a canonical user input for future worker processing.
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
+
+    /// Synchronously persists the stable life hot-memory checkpoint.
+    async fn save_life_memory_checkpoint(
+        &self,
+        principal_user_id: PrincipalUserId,
+        context_key: &str,
+        flow_id: &str,
+        memory: &Value,
+        schema_version: i32,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Atomically claims a queued input and starts a running life run under the active generation.
+    async fn claim_input_and_start_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        input_id: crate::domain::InputId,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Option<ClaimedLifeInputRun>>;
+
+    /// Marks a claimed input as consumed after it has been incorporated into a run.
+    async fn mark_input_consumed(
+        &self,
+        input_id: crate::domain::InputId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Drains queued inputs for a principal at a runtime safe boundary.
+    async fn drain_queued_inputs_for_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeInput>>;
+
+    /// Appends a transport-neutral run event.
+    async fn append_event(&self, event: &LifeEvent) -> LifeStorageResult<()>;
+
+    /// Returns the next event sequence number for a run.
+    async fn next_event_seq(&self, run_id: RunId) -> LifeStorageResult<i64>;
+
+    /// Marks a running run as completed.
+    async fn complete_run(
+        &self,
+        run_id: RunId,
+        finished_at: TimestampMillis,
+        last_checkpoint_at: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Marks a running run as failed.
+    async fn fail_run(
+        &self,
+        run_id: RunId,
+        finished_at: TimestampMillis,
+        error_text: &str,
+    ) -> LifeStorageResult<()>;
 
     /// Lists non-expired temporary context overrides for a principal.
     async fn active_context_overrides(
