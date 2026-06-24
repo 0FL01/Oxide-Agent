@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-24-permanent-life-memory.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed phase, compress before starting the next phase, and stop only on verified completion or an exact blocker with required external action.
 Source spec: `docs/prd/PRD-perm.md`
 Goal doc owner: Codex
-Last updated: 2026-06-24 01:00
+Last updated: 2026-06-24 02:00
 
 ## Objective
 
@@ -120,28 +120,28 @@ Out of scope:
   - Acceptance: workspace includes `crates/oxide-agent-life` with `domain/`, `storage/`, `gateway/`, `worker/`, `context/`, `curator/`, `engram/`, `api/`; core does not contain a product `src/life` subsystem; transports do not own memory semantics.
   - Evidence required: `Cargo.toml` workspace diff, crate tree inspection, `cargo check` for the new crate.
   - Status: verified
-  - Evidence collected: Ordinary chat wiki memory remains wired through `with_wiki_memory_store` / `set_wiki_memory_store`, which install `WikiPromptContextProvider` while preserving the wiki store for background updates. Prompt ordering tests verify dynamic/wiki blocks remain after workflow guidance and before structured output. Repo grep found no Engram/life integration in ordinary chat paths in this phase; no transport files changed.
+  - Evidence collected: Phase 2 added workspace member `crates/oxide-agent-life` in root `Cargo.toml` plus `Cargo.lock` package entry. Crate tree contains PRD-approved modules: `api/`, `context/`, `curator/`, `domain/`, `engram/`, `gateway/`, `storage/`, `worker/`. `domain/` contains typed contracts for principal/identity, generations, scoped memory, memory items, task state, friction patterns, support protocols, turns, inputs, runs, events, context overrides, ids, and timestamps. `glob crates/oxide-agent-core/src/life/**` found no core product subsystem; `git diff --name-only -- crates/oxide-agent-core crates/oxide-agent-transport-web crates/oxide-agent-transport-telegram` returned no touched core/transport files. `cargo check -p oxide-agent-life` and `cargo test -p oxide-agent-life` passed.
 
 - G3: Life storage migration implements the Postgres source-of-truth schema.
   - Source: PRD §8.3, §9, §10.7, §21.
   - Acceptance: `migrations/0010_life_mode.sql` creates `life_principals`, `life_identity_links`, `life_link_tokens`, `life_turns`, `life_memory_generations`, `life_active_memory_generations`, `life_memory_items`, `life_task_states`, `life_friction_patterns`, `life_support_protocols`, `life_inputs`, `life_runs`, `life_events`, `life_context_overrides`, `life_engram_outbox` with generation FKs/order and stable constraints.
   - Evidence required: migration review; SQLx/storage integration test or migration-run test; `cargo test` evidence for storage round trips where practical.
-  - Status: verified
-  - Evidence collected: `cargo fmt --all -- --check` passed after Phase 1 code; `cargo clippy --workspace --all-targets -- -D warnings` passed.
+  - Status: pending
+  - Evidence collected:
 
 - G4: Principal identity and linking model is transport-neutral.
   - Source: PRD §2.4, §5 Mine 1, §6.1, §8.
   - Acceptance: `(provider, provider_subject)` resolves to a canonical `principal_user_id`; web and Telegram subjects can link to one principal; transports do not pass life identity internals.
   - Evidence required: unit/integration tests for principal creation, link lookup, duplicate link rejection, web-first token linking, Telegram-first allocator path or documented blocked subset.
-  - Status: verified
-  - Evidence collected: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with existing rustc unused/dead-code warnings. Focused tests passed for dynamic block order and wiki provider/skip behavior. `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran successfully through workspace tests until the known pre-existing `crates/oxide-agent-core/tests/proptest_remediation.rs` whitespace-only `thought` property failure recurred; failing file has no diff and generated `.proptest-regressions` artifact was removed.
+  - Status: pending
+  - Evidence collected:
 
 - G5: Memory generations are first-class and every memory-owned read path is generation-scoped.
   - Source: PRD §1, §9.6-9.12, §10.2 Layer 0, §10.7, §20 criteria 19-21.
   - Acceptance: active pointer is loaded before memory reads; `life_memory_items`, `life_task_states`, `life_friction_patterns`, `life_support_protocols`, `life_engram_outbox`, and `life_runs` use `memory_generation_id`; old/archived/deleted generations cannot enter prompt or Engram recall.
   - Evidence required: repository grep/call-site audit; unit tests for build N+1 without mutating active N, activation/rollback pointer switch, derived wipe/generation wipe/soft reset semantics.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 2 added domain-level generation contracts: `MemoryGenerationId`, `MemoryScope`, `ActiveMemoryGeneration`, `GenerationScoped`, `LifeMemoryGeneration`, generation-scoped `LifeRun`, `LifeMemoryItem`, `LifeTaskState`, `LifeFrictionPattern`, `LifeSupportProtocol`, `CuratorCandidate`, `EngramNamespace`, and `SubmitLifeInputResult`. Unit test `generation_scoped_records_require_active_scope` proves stale generation rows are rejected by the domain guard. Full storage read-path/call-site proof remains pending until Phase 3+ repository/query implementation.
 
 - G6: LifeGateway submit path writes canonical turns and queued inputs.
   - Source: PRD §6.1, §12.1, §16 examples.
@@ -212,8 +212,8 @@ Out of scope:
   - Source: PRD §1, §4.3, §11.2, §19, §20 criterion 1.
   - Acceptance: no Engram calls or life memory injection in ordinary modes; wiki memory chat behavior remains intact.
   - Evidence required: tests/grep for chat-mode prompt assembly and Engram call absence; existing web/telegram checks pass.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 kept ordinary chat wiki memory behind `with_wiki_memory_store` / `set_wiki_memory_store`, which install `WikiPromptContextProvider` while preserving the wiki store for background updates. Prompt ordering tests verify dynamic/wiki blocks remain after workflow guidance and before structured output. Repo grep found no Engram/life integration in ordinary chat paths in Phase 1; no transport files changed.
 
 - Q2: Postgres remains source of truth; process memory is never canonical life state.
   - Source: PRD §5 Mines 2-3, §7.1, §13.5.
@@ -248,27 +248,27 @@ Out of scope:
   - Acceptance: curator uses existing `llm/client.rs`; storage remains SQLx/Postgres; new crate is justified by PRD bounded context; no extra queues/services beyond Engram derived engine already in PRD.
   - Evidence required: dependency/Cargo diff review, grep for new clients/providers, Cargo metadata/check.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 2 introduced no provider/client implementations and no new external service. `oxide-agent-life` depends only on already-used workspace ecosystem crates (`serde`, `serde_json`, `thiserror`, `uuid`). `cargo run -p xtask -- module-registry check` passed; no `module_registry.toml` diff. Full Q6 remains pending because later curator/Engram phases must continue preserving the constraint.
 
 ### Validation requirements (V*)
 
 - V1: Formatting and lint gates pass or failures are classified with evidence.
   - Source: `AGENTS.md` format/lint.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` or documented scoped alternative with exact blocker.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed). Phase 2 ran `cargo fmt --all -- --check` (passed) and `cargo clippy --workspace --all-targets -- -D warnings` (passed).
 
 - V2: Workspace compile/test gates pass or failures are classified with evidence.
   - Source: `AGENTS.md` build/testing.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local`; additional scoped tests for touched crates.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 ran `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing rustc unused/dead-code warnings). Focused tests passed for dynamic block order and wiki provider/skip behavior. `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` ran broadly and failed only on the known pre-existing `crates/oxide-agent-core/tests/proptest_remediation.rs` whitespace-only `thought` property; failing file had no diff and generated `.proptest-regressions` artifact was removed. Phase 2 ran `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (3 passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with the same existing core warnings), and workspace `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` again failed only on the same known pre-existing core proptest with untouched failing file; generated `.proptest-regressions` artifact was removed.
 
 - V3: Module registry/profile checks pass if profile/module wiring changes.
   - Source: `AGENTS.md` module registry.
   - Evidence required: `cargo run -p xtask -- module-registry check` after any module registry/profile change, or note that no module registry change occurred.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 2 added a workspace crate but did not change capability module/profile wiring; `git diff --name-only -- crates/oxide-agent-core/module_registry.toml` returned no changes. Additional guard `cargo run -p xtask -- module-registry check` passed: 39 modules, 44 Cargo features, 39 compiled declarations.
 
 - V4: Web UI wasm check passes if `oxide-agent-web-ui` is touched.
   - Source: `AGENTS.md` format/lint.
@@ -436,6 +436,13 @@ Each phase ends with: update this goal doc, run relevant validation, inspect `gi
   - Commands: `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local <test-filter>` for dynamic block order/wiki provider/skip tests; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local`.
   - Audit IDs updated: G1, Q1, V1, V2 verified for current repo state.
   - Next: commit Phase 1, compress, then start Phase 2 life crate skeleton/domain contracts.
+
+- 2026-06-24 02:00: Phase 2 completed — life crate skeleton and domain contracts.
+  - Changed: added `crates/oxide-agent-life/` workspace member with PRD-approved module tree; added pure domain contracts for principals, identity links, generations, memory scope guards, canonical memory items, task states, friction patterns, support protocols, turns, inputs, runs, events, context overrides, gateway submit DTOs, worker/context/curator/Engram/API skeleton contracts; updated `Cargo.lock`; corrected stale audit statuses that had incorrectly marked G2/G3/G4 verified with Phase 1 evidence.
+  - Evidence: crate tree inspection found `api/`, `context/`, `curator/`, `domain/`, `engram/`, `gateway/`, `storage/`, `worker/`; no `crates/oxide-agent-core/src/life/**`; no core/web/telegram transport diffs; no module registry diff; `cargo run -p xtask -- module-registry check` passed.
+  - Commands: `cargo check -p oxide-agent-life` (passed), `cargo test -p oxide-agent-life` (3 passed), `cargo fmt --all -- --check` (passed), `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with existing core warnings), `cargo clippy --workspace --all-targets -- -D warnings` (passed), `cargo test --workspace --no-default-features --features profile-embedded-opencode-local` (failed only on known pre-existing core proptest whitespace-only `thought`; artifact removed), `cargo run -p xtask -- module-registry check` (passed).
+  - Audit IDs updated: G2 verified; G5 partial evidence added but remains pending for storage/read-path implementation; Q6 partial evidence added but remains pending for future provider/client phases; V1/V2 evidence extended; V3 verified.
+  - Next: commit Phase 2, compress, then start Phase 3 Postgres migration and storage repositories.
 
 ## Risks and Blockers
 
