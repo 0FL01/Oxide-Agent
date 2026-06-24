@@ -5,10 +5,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, LifeContextOverride, LifeEvent, LifeFrictionPattern, LifeIdentityLink,
-    LifeIdentityProvider, LifeInput, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun,
-    LifeSupportProtocol, LifeTaskState, LifeTurn, MemoryGenerationId, MemoryScope, PrincipalUserId,
-    ProviderSubject, RunId, TimestampMillis,
+    ActiveMemoryGeneration, LifeContextOverride, LifeEngramOutboxRow, LifeEvent,
+    LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeMemoryGeneration,
+    LifeMemoryItem, LifePrincipal, LifeRun, LifeSupportProtocol, LifeTaskState, LifeTurn,
+    MemoryGenerationId, MemoryScope, PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -209,6 +209,9 @@ pub trait LifeStorageRepository: Send + Sync {
 
     /// Inserts or updates a canonical memory item.
     async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()>;
+
+    /// Inserts a derived-memory outbox projection.
+    async fn insert_engram_outbox(&self, row: &LifeEngramOutboxRow) -> LifeStorageResult<()>;
 
     /// Lists active canonical memory items from the explicit active scope.
     async fn active_memory_items(

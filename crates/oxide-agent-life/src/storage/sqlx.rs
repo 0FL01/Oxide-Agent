@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::domain::{
     ActiveMemoryGeneration, ContextOverrideId, FrictionPatternId, FrictionPatternKind, InputId,
-    LifeContextOverride, LifeEvent, LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider,
-    LifeInput, LifeInputStatus, LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun,
-    LifeRunStatus, LifeSourceTransport, LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole,
+    LifeContextOverride, LifeEngramOutboxRow, LifeEngramOutboxStatus, LifeEvent,
+    LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus,
+    LifeMemoryGeneration, LifeMemoryItem, LifePrincipal, LifeRun, LifeRunStatus,
+    LifeSourceTransport, LifeSupportProtocol, LifeTaskState, LifeTurn, LifeTurnRole,
     MemoryAuthority, MemoryGenerationId, MemoryGenerationStatus, MemoryItemId, MemoryItemKind,
     MemoryItemStatus, MemoryScope, MemorySensitivity, PrincipalUserId, ProviderSubject,
     RedactionState, RunId, SupportProtocolId, SupportStateStatus, TaskStateId, TaskStateStatus,
@@ -747,6 +748,36 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
+    async fn insert_engram_outbox(&self, row: &LifeEngramOutboxRow) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_engram_outbox (
+                outbox_id, principal_user_id, memory_generation_id, source_memory_id,
+                idempotency_key, payload, status, attempts, next_attempt_at, last_error,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            "#,
+        )
+        .bind(row.outbox_id.as_uuid())
+        .bind(row.principal_user_id.get())
+        .bind(row.memory_generation_id.as_uuid())
+        .bind(row.source_memory_id.map(MemoryItemId::as_uuid))
+        .bind(&row.idempotency_key)
+        .bind(&row.payload)
+        .bind(engram_outbox_status_as_str(row.status))
+        .bind(row.attempts)
+        .bind(row.next_attempt_at.get())
+        .bind(&row.last_error)
+        .bind(row.created_at.get())
+        .bind(row.updated_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn active_memory_items(
         &self,
         scope: MemoryScope,
@@ -1161,6 +1192,15 @@ fn support_state_status_from_str(value: &str) -> LifeStorageResult<SupportStateS
         "deleted" => Ok(SupportStateStatus::Deleted),
         "candidate" => Ok(SupportStateStatus::Candidate),
         other => unknown_enum("support_state_status", other),
+    }
+}
+
+fn engram_outbox_status_as_str(status: LifeEngramOutboxStatus) -> &'static str {
+    match status {
+        LifeEngramOutboxStatus::Pending => "pending",
+        LifeEngramOutboxStatus::Flushing => "flushing",
+        LifeEngramOutboxStatus::Flushed => "flushed",
+        LifeEngramOutboxStatus::Dead => "dead",
     }
 }
 
@@ -1596,6 +1636,48 @@ mod tests {
         );
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].text, "old active memory");
+        let outbox_id = crate::domain::OutboxId::new_v4();
+        must(
+            storage
+                .insert_engram_outbox(&LifeEngramOutboxRow {
+                    outbox_id,
+                    principal_user_id,
+                    memory_generation_id: active.scope.memory_generation_id,
+                    source_memory_id: Some(memories[0].memory_id),
+                    idempotency_key: format!("test-outbox-{}", outbox_id),
+                    payload: json!({"external_id": memories[0].memory_id.to_string()}),
+                    status: LifeEngramOutboxStatus::Pending,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    last_error: None,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "insert outbox projection",
+        );
+        let outbox_row = must(
+            query::<Postgres>(
+                r#"
+                SELECT source_memory_id, status
+                FROM life_engram_outbox
+                WHERE outbox_id = $1
+                  AND principal_user_id = $2
+                  AND memory_generation_id = $3
+                "#,
+            )
+            .bind(outbox_id.as_uuid())
+            .bind(principal_user_id.get())
+            .bind(active.scope.memory_generation_id.as_uuid())
+            .fetch_one(storage.pool())
+            .await,
+            "load outbox projection",
+        );
+        assert_eq!(
+            outbox_row.get::<Option<Uuid>, _>("source_memory_id"),
+            Some(memories[0].memory_id.as_uuid())
+        );
+        assert_eq!(outbox_row.get::<String, _>("status"), "pending");
         let tasks = must(storage.active_task_states(active.scope).await, "load tasks");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].current_goal, "old goal");
