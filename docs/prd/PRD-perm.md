@@ -1,6 +1,8 @@
 # PRD: `Permanent Life Mode` для Oxide Agent
 
-Статус: `design / ready for implementation after live contract verification`
+Статус: `local implementation complete; live Engram adapter blocked on V5 external verification`
+
+Implementation status: see `docs/goals/2026-06-24-permanent-life-memory.md`; local implementation is complete and verified; live Engram adapter remains blocked on V5 raw API response evidence and legal path decision.
 
 Дата: `2026-06-20`
 
