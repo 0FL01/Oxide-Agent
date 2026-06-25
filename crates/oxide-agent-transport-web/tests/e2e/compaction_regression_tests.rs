@@ -221,7 +221,11 @@ fn compress_and_write_todos_response() -> ChatResponse {
                 "call-compress".to_string(),
                 ToolCallFunction {
                     name: "compress".to_string(),
-                    arguments: serde_json::json!({}).to_string(),
+                    arguments: serde_json::json!({
+                        "reason": "free_context",
+                        "preserve": "Compression e2e checkpoint: preserve old tool-heavy work and continue with todo verification."
+                    })
+                    .to_string(),
                 },
                 false,
             ),
@@ -1535,7 +1539,13 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     init_test_tracing();
 
     let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
-        tool_call_response("compress", serde_json::json!({})),
+        tool_call_response(
+            "compress",
+            serde_json::json!({
+                "reason": "free_context",
+                "preserve": "Compression e2e checkpoint: preserve seeded old context before final answer."
+            }),
+        ),
         super::helpers::structured_final_answer_response("done"),
     ]));
     let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());

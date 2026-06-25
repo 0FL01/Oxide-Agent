@@ -33,7 +33,7 @@ pub use block::{CompressionBlock, CompressionSelection, SummaryPart};
 pub use budget::{count_tokens_cached, estimate_request_budget};
 pub use controller::{
     CompactionController, CompactionControllerError, EngineCompactionOutcome,
-    EngineCompactionResult, EngineCompactionSkipped,
+    EngineCompactionRequest, EngineCompactionResult, EngineCompactionSkipped,
 };
 pub use engine::{CompactionEngine, CompactionError};
 pub use local_llm_summary::LocalLlmSummary;

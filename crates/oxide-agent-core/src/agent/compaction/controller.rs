@@ -74,6 +74,28 @@ pub enum EngineCompactionResult {
     Skipped(EngineCompactionSkipped),
 }
 
+/// Input for guided engine compaction.
+pub struct EngineCompactionRequest<'a> {
+    /// Mutable hot memory to compact.
+    pub memory: &'a mut AgentMemory,
+    /// Active model route.
+    pub route: &'a ModelInfo,
+    /// User-visible task/current objective.
+    pub task: &'a str,
+    /// Active tool definitions, used for budget accounting.
+    pub tools: &'a [ToolDefinition],
+    /// Active system prompt, used for budget accounting.
+    pub system_prompt: &'a str,
+    /// Why compaction was requested.
+    pub reason: CompactionReason,
+    /// Runtime phase where compaction is running.
+    pub phase: CompactionPhase,
+    /// Whether to bypass normal hot-context threshold checks.
+    pub force: bool,
+    /// Optional checkpoint note to preserve in the committed summary.
+    pub preserve_note: Option<&'a str>,
+}
+
 /// Single entrypoint for runtime/session-level compaction.
 pub struct CompactionController {
     summary_backend: Arc<dyn CompactSummaryBackend>,
@@ -115,6 +137,42 @@ impl CompactionController {
         phase: CompactionPhase,
         force: bool,
     ) -> Result<EngineCompactionResult, CompactionControllerError> {
+        self.compact_via_engine_with_guidance(EngineCompactionRequest {
+            memory,
+            route,
+            task,
+            tools,
+            system_prompt,
+            reason,
+            phase,
+            force,
+            preserve_note: None,
+        })
+        .await
+    }
+
+    /// Run engine-based compaction with optional agent checkpoint guidance.
+    ///
+    /// The guidance is used by the v2 `compress` tool. It does not affect range
+    /// selection: the controller still owns safe old-middle selection and the
+    /// engine still validates tool-batch/block invariants. Guidance only affects
+    /// summary content and is appended deterministically to the committed block
+    /// so the checkpoint note cannot be dropped by summary-model behavior.
+    pub async fn compact_via_engine_with_guidance(
+        &self,
+        request: EngineCompactionRequest<'_>,
+    ) -> Result<EngineCompactionResult, CompactionControllerError> {
+        let EngineCompactionRequest {
+            memory,
+            route,
+            task,
+            tools,
+            system_prompt,
+            reason,
+            phase,
+            force,
+            preserve_note,
+        } = request;
         let policy = CompactionPolicy::default();
         let context_window = if route.context_window_tokens == 0 {
             memory.max_tokens()
@@ -200,13 +258,16 @@ impl CompactionController {
                 route,
                 messages: &summary_source_messages,
                 previous_summary: None,
+                preserve_note,
             })
             .await?;
+        let committed_summary_text =
+            append_preserve_note(&summary_result.summary_text, preserve_note);
 
         // Apply through a cloned state first. A compaction block is committed
         // only if it actually reduces the rendered model-facing context.
         let source_messages_for_engine = memory.get_messages().to_vec();
-        let mut summary_parts = vec![SummaryPart::Text(summary_result.summary_text.clone())];
+        let mut summary_parts = vec![SummaryPart::Text(committed_summary_text.clone())];
         summary_parts.extend(
             consumed_block_refs
                 .iter()
@@ -248,7 +309,7 @@ impl CompactionController {
 
         Ok(EngineCompactionResult::Applied(EngineCompactionOutcome {
             block_ref,
-            summary_text: summary_result.summary_text,
+            summary_text: committed_summary_text,
             provider: summary_result.provider,
             route: summary_result.route,
             reason,
@@ -282,6 +343,15 @@ fn rendered_item_count_for_state(
     state: &super::CompactionState,
 ) -> usize {
     super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default()).len()
+}
+
+fn append_preserve_note(summary_text: &str, preserve_note: Option<&str>) -> String {
+    let summary_text = summary_text.trim();
+    let Some(note) = preserve_note.map(str::trim).filter(|note| !note.is_empty()) else {
+        return summary_text.to_string();
+    };
+
+    format!("{summary_text}\n\nCHECKPOINT_PRESERVE_NOTE:\n{note}")
 }
 
 fn resolve_selection_indices(
@@ -441,6 +511,7 @@ mod tests {
     struct CapturedSummaryRequest {
         contents: Vec<String>,
         previous_summary: Option<String>,
+        preserve_note: Option<String>,
     }
 
     struct CapturingSummaryBackend {
@@ -461,6 +532,7 @@ mod tests {
                     .map(|message| message.content.clone())
                     .collect(),
                 previous_summary: request.previous_summary.map(str::to_string),
+                preserve_note: request.preserve_note.map(str::to_string),
             });
             Ok(CompactSummaryResult {
                 summary_text: self.summary_text.clone(),
@@ -549,6 +621,64 @@ mod tests {
         assert!(joined.contains("OLD SHOULD BE SUMMARIZED"));
         assert!(!joined.contains("RECENT MUST STAY RAW"));
         assert_eq!(captured.previous_summary, None);
+        assert_eq!(captured.preserve_note, None);
+    }
+
+    #[tokio::test]
+    async fn compact_via_engine_with_guidance_commits_checkpoint_note() {
+        let captured = Arc::new(Mutex::new(None));
+        let controller = CompactionController::new(Arc::new(CapturingSummaryBackend {
+            summary_text: "selected old range summarized".to_string(),
+            captured: Arc::clone(&captured),
+        }));
+        let mut memory = AgentMemory::new(20_000);
+        memory.add_message(AgentMessage::user_task("Find laptops"));
+        memory.add_message(AgentMessage::user(format!(
+            "OLD SHOULD BE SUMMARIZED {}",
+            "large ".repeat(6_000)
+        )));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 1"));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 2"));
+        memory.add_message(AgentMessage::user("RECENT MUST STAY RAW 3"));
+        let route = route(20_000);
+
+        let result = controller
+            .compact_via_engine_with_guidance(EngineCompactionRequest {
+                memory: &mut memory,
+                route: &route,
+                task: "Find laptops",
+                tools: &[],
+                system_prompt: "system prompt",
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                force: true,
+                preserve_note: Some("Keep decision: receiver owns range selection."),
+            })
+            .await
+            .expect("compaction succeeds");
+
+        let EngineCompactionResult::Applied(outcome) = result else {
+            panic!("guided compaction should apply")
+        };
+        assert!(
+            outcome
+                .summary_text
+                .contains("CHECKPOINT_PRESERVE_NOTE:\nKeep decision")
+        );
+        let active_summary = memory
+            .compaction_state()
+            .previous_block_summary_text()
+            .expect("active block summary");
+        assert!(active_summary.contains("receiver owns range selection"));
+        let captured = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("summary request captured");
+        assert_eq!(
+            captured.preserve_note.as_deref(),
+            Some("Keep decision: receiver owns range selection.")
+        );
     }
 
     #[tokio::test]

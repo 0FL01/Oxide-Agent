@@ -325,7 +325,7 @@ async fn handle_life_command(
         return respond(());
     }
 
-    let allocator = TelegramLifePrincipalAllocator::default();
+    let allocator = TelegramLifePrincipalAllocator;
     let gateway = LifeGateway::new(life_storage.as_ref().clone(), allocator);
     let submit_result = gateway
         .submit_life_input(LifeInputSubmission {
