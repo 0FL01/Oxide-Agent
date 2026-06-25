@@ -1097,6 +1097,7 @@ fn SessionWorkspace(
                                                         set_sessions,
                                                     },
                                                     set_error,
+                                                    selected_effort,
                                                 }
                                             />
                                         }
