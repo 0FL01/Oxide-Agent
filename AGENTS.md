@@ -128,7 +128,7 @@ Default branch: `dev`.
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
 - Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`), Jira MCP, wiki memory writer.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Build assets and service config in `docker/` (`Dockerfile.*`, `searxng/`, `consent-rules*`) are referenced by the root compose files.
 
 ## Development Practices
 

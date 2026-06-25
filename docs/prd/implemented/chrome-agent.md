@@ -27,9 +27,9 @@
 | Telegram transport | `crates/oxide-agent-transport-telegram/`                                                                                                                                                    | Telegram bot transport, progress rendering, file delivery.                                             |
 | Telegram binary    | `crates/oxide-agent-telegram-bot/`                                                                                                                                                          | Bot entrypoint.                                                                                        |
 | sandboxd           | `crates/oxide-agent-sandboxd/`                                                                                                                                                              | Docker/broker sandbox service.                                                                         |
-| Profiles           | `profiles/full.toml`, `profiles/web-embedded-opencode-local.toml`, `profiles/embedded-opencode-local.toml`, `profiles/search-only.toml`                                                     | Новая browser feature должна быть profile-gated.                                                       |
+| Profiles           | `profiles/full.toml`, `profiles/web-embedded-opencode-local.toml`, `profiles/embedded-opencode-local.toml`                                                                                   | Новая browser feature должна быть profile-gated.                                                       |
 | Env sample         | `.env.example`                                                                                                                                                                              | Добавить browser/OpenCode/MiMo/env defaults сюда.                                                      |
-| Compose            | `docker-compose.yml`, `docker-compose.web.yml`, `docker-compose.telegram.yml`, `docker/compose.full.yml`, `docker/compose.dev.yml`, `docker/compose.media.yml`, `docker/compose.search.yml` | Добавить `chrome-agent-sidecar` service и volume/artifact/security настройки.                          |
+| Compose            | `docker-compose.yml`, `docker-compose.web.yml`, `docker-compose.telegram.yml`                                                                                                                | Добавить `chrome-agent-sidecar` service и volume/artifact/security настройки.                          |
 
 ### 2.2 Feature flags and capability manifest
 
@@ -130,7 +130,6 @@
 | `crates/oxide-agent-sandboxd/src/main.rs`                                     | sandboxd entrypoint. Browser sidecar is separate from sandboxd and should not depend on per-tool sandbox startup.                           |
 | `crates/oxide-agent-core/src/sandbox/`                                        | Existing sandbox manager/backend abstractions. Browser sidecar should be a service dependency, not a sandbox command per action.            |
 | `docker-compose.yml`, `docker-compose.web.yml`, `docker-compose.telegram.yml` | Existing compose deployments use app + sandboxd. Browser sidecar must be added without exposing unauthenticated CDP/REST to public network. |
-| `docker/compose.full.yml`, `docker/compose.dev.yml`                           | Full/dev compose templates. Add sidecar here first for smoke/staging.                                                                       |
 | `sandbox/Dockerfile.*`                                                        | Sandbox images are not the right place to run a persistent browser service.                                                                 |
 
 ---
@@ -421,8 +420,6 @@ profiles/web-embedded-opencode-local.toml
 docker-compose.yml
 docker-compose.web.yml
 docker-compose.telegram.yml
-docker/compose.full.yml
-docker/compose.dev.yml
 ```
 
 ### 7.7 Native tool surface
@@ -3300,8 +3297,6 @@ Make the browser sidecar runnable in Docker Compose with safe defaults.
 * `docker-compose.yml`
 * `docker-compose.web.yml`
 * `docker-compose.telegram.yml`
-* `docker/compose.full.yml`
-* `docker/compose.dev.yml`
 * `.env.example`
 * `README.md` or `docs/browser-live-agent.md`
 
@@ -3557,7 +3552,6 @@ Prove MVP works against realistic pages.
 * `crates/oxide-agent-core/tests/`
 * `crates/oxide-agent-transport-web/src/server/tests.rs`
 * `crates/oxide-agent-web-ui/`
-* `docker/compose.dev.yml`
 * `docs/browser-live-agent.md`
 
 **Implementation tasks**
@@ -3610,8 +3604,6 @@ Make the feature usable without reading code.
 * `docs/tips/cache-hit.md`
 * `profiles/full.toml`
 * `profiles/web-embedded-opencode-local.toml`
-* `docker/compose.dev.yml`
-* `docker/compose.full.yml`
 
 **Implementation tasks**
 
