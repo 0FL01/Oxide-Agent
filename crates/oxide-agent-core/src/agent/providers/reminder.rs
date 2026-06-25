@@ -23,10 +23,7 @@ use tracing::warn;
 
 const TOOL_REMINDER_SCHEDULE: &str = "reminder_schedule";
 const TOOL_REMINDER_LIST: &str = "reminder_list";
-const TOOL_REMINDER_CANCEL: &str = "reminder_cancel";
-const TOOL_REMINDER_PAUSE: &str = "reminder_pause";
-const TOOL_REMINDER_RESUME: &str = "reminder_resume";
-const TOOL_REMINDER_RETRY: &str = "reminder_retry";
+const TOOL_REMINDER_MANAGE: &str = "reminder_manage";
 
 /// Returns the built-in reminder tool names.
 #[must_use]
@@ -34,10 +31,7 @@ pub fn reminder_tool_names() -> Vec<String> {
     vec![
         TOOL_REMINDER_SCHEDULE.to_string(),
         TOOL_REMINDER_LIST.to_string(),
-        TOOL_REMINDER_CANCEL.to_string(),
-        TOOL_REMINDER_PAUSE.to_string(),
-        TOOL_REMINDER_RESUME.to_string(),
-        TOOL_REMINDER_RETRY.to_string(),
+        TOOL_REMINDER_MANAGE.to_string(),
     ]
 }
 
@@ -173,6 +167,12 @@ struct ReminderRetryArgs {
     delay_secs: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ReminderManageArgs {
+    action: String,
+}
+
 impl ReminderProvider {
     /// Create a new reminder provider.
     #[must_use]
@@ -201,10 +201,7 @@ impl ReminderProvider {
         vec![
             reminder_schedule_definition(),
             reminder_list_definition(),
-            reminder_cancel_definition(),
-            reminder_pause_definition(),
-            reminder_resume_definition(),
-            reminder_retry_definition(),
+            reminder_manage_definition(),
         ]
     }
 
@@ -486,6 +483,17 @@ impl ReminderProvider {
         ))
     }
 
+    async fn execute_manage(&self, arguments: &str) -> Result<String> {
+        let args: ReminderManageArgs = serde_json::from_str(arguments)?;
+        match args.action.as_str() {
+            "cancel" => self.execute_cancel(arguments).await,
+            "pause" => self.execute_pause(arguments).await,
+            "resume" => self.execute_resume(arguments).await,
+            "retry" => self.execute_retry(arguments).await,
+            other => bail!("unknown reminder action: {other}"),
+        }
+    }
+
     async fn load_current_topic_reminder(
         &self,
         reminder_id: &str,
@@ -519,10 +527,7 @@ impl ReminderProvider {
         match tool_name {
             TOOL_REMINDER_SCHEDULE => self.execute_schedule(arguments).await,
             TOOL_REMINDER_LIST => self.execute_list(arguments).await,
-            TOOL_REMINDER_CANCEL => self.execute_cancel(arguments).await,
-            TOOL_REMINDER_PAUSE => self.execute_pause(arguments).await,
-            TOOL_REMINDER_RESUME => self.execute_resume(arguments).await,
-            TOOL_REMINDER_RETRY => self.execute_retry(arguments).await,
+            TOOL_REMINDER_MANAGE => self.execute_manage(arguments).await,
             _ => bail!("Unknown reminder tool: {tool_name}"),
         }
     }
@@ -870,79 +875,37 @@ fn reminder_list_definition() -> ToolDefinition {
     }
 }
 
-fn reminder_cancel_definition() -> ToolDefinition {
-    simple_reminder_id_tool_definition(
-        TOOL_REMINDER_CANCEL,
-        "Cancel an existing reminder in the current topic by id.",
-        "Reminder identifier returned by reminder_schedule or reminder_list",
-    )
-}
-
-fn reminder_pause_definition() -> ToolDefinition {
-    simple_reminder_id_tool_definition(
-        TOOL_REMINDER_PAUSE,
-        "Pause a scheduled reminder in the current topic without deleting it.",
-        "Reminder identifier returned by reminder_schedule or reminder_list",
-    )
-}
-
-fn reminder_resume_definition() -> ToolDefinition {
+fn reminder_manage_definition() -> ToolDefinition {
     ToolDefinition {
-        name: TOOL_REMINDER_RESUME.to_string(),
-        description: "Resume a paused reminder. You may optionally override its next run time."
+        name: TOOL_REMINDER_MANAGE.to_string(),
+        description: "Manage an existing reminder: cancel (delete), pause (keep but suspend), \
+         resume a paused one, or retry a failed one. Resume and retry accept optional timing \
+         overrides (run_at_unix, delay_secs)."
             .to_string(),
-        parameters: reminder_override_parameters("Paused reminder identifier"),
-    }
-}
-
-fn reminder_retry_definition() -> ToolDefinition {
-    ToolDefinition {
-        name: TOOL_REMINDER_RETRY.to_string(),
-        description: "Retry a failed reminder by scheduling it again.".to_string(),
-        parameters: reminder_override_parameters("Failed reminder identifier"),
-    }
-}
-
-fn simple_reminder_id_tool_definition(
-    name: &str,
-    description: &str,
-    id_description: &str,
-) -> ToolDefinition {
-    ToolDefinition {
-        name: name.to_string(),
-        description: description.to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["cancel", "pause", "resume", "retry"],
+                    "description": "Lifecycle action: cancel (delete), pause (keep but suspend), resume (unpause), retry (reschedule after failure)"
+                },
                 "reminder_id": {
                     "type": "string",
-                    "description": id_description
+                    "description": "Reminder identifier returned by reminder_schedule or reminder_list"
+                },
+                "run_at_unix": {
+                    "type": "integer",
+                    "description": "Optional explicit next execution timestamp (resume/retry only)"
+                },
+                "delay_secs": {
+                    "type": "integer",
+                    "description": "Optional delay before next execution (resume/retry only)"
                 }
             },
-            "required": ["reminder_id"]
+            "required": ["action", "reminder_id"]
         }),
     }
-}
-
-fn reminder_override_parameters(id_description: &str) -> serde_json::Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "reminder_id": {
-                "type": "string",
-                "description": id_description
-            },
-            "run_at_unix": {
-                "type": "integer",
-                "description": "Optional explicit next execution timestamp"
-            },
-            "delay_secs": {
-                "type": "integer",
-                "description": "Optional delay before the next execution"
-            }
-        },
-        "required": ["reminder_id"]
-    })
 }
 
 fn resolve_resume_next_run_at(

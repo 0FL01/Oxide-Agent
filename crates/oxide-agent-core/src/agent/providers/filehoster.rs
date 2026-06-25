@@ -493,7 +493,7 @@ fn file_delivery_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "send_file_to_user".to_string(),
-            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message; some transports also return file_id and download_url. When download_url is present, reuse that exact link in your final answer so the user can open the delivered file directly. Supports absolute paths (/workspace/file.txt) and relative paths resolved under /workspace; use list_files to discover exact paths.".to_string(),
+            description: "Send a file from the sandbox to the user via the chat transport. For files too large for chat delivery, use upload_file instead.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

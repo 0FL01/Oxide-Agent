@@ -186,22 +186,11 @@ impl Default for CompressionProvider {
 
 /// Human-readable description for the compress tool.
 fn compress_tool_description() -> &'static str {
-    "Compress conversation history into a structured summary. Each message in the conversation \
-     is labeled with a stable ref like <m0001>. Use these refs to select which messages to \
-     compress.\n\n\
-     Provide one or more compression entries:\n\
-     - Ranges: compress a contiguous span (start..end) into one summary.\n\
-     - Messages: compress specific non-contiguous messages into one summary.\n\n\
-     Each summary is a list of parts: text segments and/or block refs (bN) that reference \
-     prior compressed blocks whose summaries should be nested inside the new summary. Only \
-     reference block refs for blocks that fall within your selected range — these are \
-     consumed by the new block.\n\n\
-     The tool rejects ranges that split a tool-call/result pair (always include the full \
-     pair), ranges that overlap with existing active blocks (consume them instead by \
-     including their range), and block refs that don't match consumed blocks.\n\n\
-     After compression, the covered messages are replaced by the summary in future model \
-     context. The raw transcript is preserved internally. Compression is irreversible for \
-     the current session — do not compress preemptively."
+    "Compress conversation history into a structured summary. Messages are labeled with refs \
+     like m0001. Select ranges (start..end) or individual messages (refs array). Each summary \
+     part is text or a block_ref (bN) to nest a prior block within the range. The tool rejects \
+     ranges that split a tool-call/result pair, overlap with active blocks, or reference \
+     non-consumed blocks. Compression is irreversible — do not compress preemptively."
 }
 
 /// JSON schema for the compress tool arguments.

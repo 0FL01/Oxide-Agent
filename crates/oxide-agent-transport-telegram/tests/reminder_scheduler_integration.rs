@@ -157,8 +157,9 @@ async fn provider_schedule_and_cancel_update_in_memory_queue() -> Result<()> {
 
     execute_reminder(
         &provider,
-        "reminder_cancel",
+        "reminder_manage",
         json!({
+            "action": "cancel",
             "reminder_id": scheduled[0].reminder_id
         })
         .to_string(),
@@ -200,8 +201,8 @@ async fn provider_pause_and_resume_refresh_in_memory_queue() -> Result<()> {
 
     execute_reminder(
         &provider,
-        "reminder_pause",
-        json!({ "reminder_id": reminder_id }).to_string(),
+        "reminder_manage",
+        json!({ "action": "pause", "reminder_id": reminder_id }).to_string(),
     )
     .await?;
 
@@ -209,8 +210,9 @@ async fn provider_pause_and_resume_refresh_in_memory_queue() -> Result<()> {
 
     execute_reminder(
         &provider,
-        "reminder_resume",
+        "reminder_manage",
         json!({
+            "action": "resume",
             "reminder_id": reminder_id,
             "delay_secs": 900
         })

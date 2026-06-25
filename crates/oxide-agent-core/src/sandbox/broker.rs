@@ -1057,7 +1057,6 @@ mod tests {
     use crate::config::get_sandbox_image;
     #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use crate::sandbox::scope::SandboxScope;
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use chrono::{TimeZone, Utc};
     #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use std::path::PathBuf;

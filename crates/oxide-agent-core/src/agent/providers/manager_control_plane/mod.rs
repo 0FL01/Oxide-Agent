@@ -192,14 +192,8 @@ const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
 ];
 const TOPIC_AGENT_DELEGATION_TOOLS: &[&str] =
     &["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents"];
-const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
-    "reminder_schedule",
-    "reminder_list",
-    "reminder_cancel",
-    "reminder_pause",
-    "reminder_resume",
-    "reminder_retry",
-];
+const TOPIC_AGENT_REMINDER_TOOLS: &[&str] =
+    &["reminder_schedule", "reminder_list", "reminder_manage"];
 #[cfg(oxide_module_tool_tavily)]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search"];
 #[cfg(oxide_module_tool_crw)]

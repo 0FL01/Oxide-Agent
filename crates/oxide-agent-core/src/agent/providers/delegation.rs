@@ -157,10 +157,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "forum_topic_list",
     "reminder_schedule",
     "reminder_list",
-    "reminder_cancel",
-    "reminder_pause",
-    "reminder_resume",
-    "reminder_retry",
+    "reminder_manage",
     "wiki_memory_delete",
     // Jira write operations blocked for sub-agents (read-only access allowed)
     "jira_write",
