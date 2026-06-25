@@ -50,6 +50,20 @@ fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
     )
 }
 
+fn old_seeded_range_compress_payload(summary: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ranges": [
+            {
+                "start": "m0001",
+                "end": "m0002",
+                "summary": [
+                    { "text": summary }
+                ]
+            }
+        ]
+    })
+}
+
 async fn seed_history(
     session_manager: &oxide_agent_transport_web::session::WebSessionManager,
     session_id: &str,
@@ -221,10 +235,9 @@ fn compress_and_write_todos_response() -> ChatResponse {
                 "call-compress".to_string(),
                 ToolCallFunction {
                     name: "compress".to_string(),
-                    arguments: serde_json::json!({
-                        "reason": "free_context",
-                        "preserve": "Compression e2e checkpoint: preserve old tool-heavy work and continue with todo verification."
-                    })
+                    arguments: old_seeded_range_compress_payload(
+                        "Old tool-heavy work summarized for todo verification.",
+                    )
                     .to_string(),
                 },
                 false,
@@ -297,17 +310,17 @@ fn assert_tool_payload_compacted_or_removed(
 }
 
 fn assert_compress_tool_result_applied(content: &str) {
-    let tool_output: serde_json::Value =
-        serde_json::from_str(content).expect("compress tool result should be valid json");
-    assert_eq!(tool_output["success"], true);
-    assert_eq!(tool_output["status"], "success");
-
-    let stdout = tool_output["stdout"]["text"]
-        .as_str()
-        .expect("compress tool output should include stdout text");
     let stdout_json: serde_json::Value =
-        serde_json::from_str(stdout).expect("compress stdout should be valid json");
+        serde_json::from_str(content).expect("compress tool result should be valid json");
     assert_eq!(stdout_json["compressed"], true);
+    assert!(
+        stdout_json["entries"]
+            .as_array()
+            .and_then(|entries| entries.first())
+            .and_then(|entry| entry["block_id"].as_str())
+            .is_some(),
+        "compress result should include the created block id"
+    );
 }
 
 fn token_rich_payload(label: &str, words: usize) -> String {
@@ -1541,10 +1554,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
         tool_call_response(
             "compress",
-            serde_json::json!({
-                "reason": "free_context",
-                "preserve": "Compression e2e checkpoint: preserve seeded old context before final answer."
-            }),
+            old_seeded_range_compress_payload("Seeded old context summarized before final answer."),
         ),
         super::helpers::structured_final_answer_response("done"),
     ]));
@@ -1589,35 +1599,6 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     .await;
     wait_for_llm_calls(&llm_provider, 2, Duration::from_secs(2)).await;
 
-    let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
-    assert!(progress_resp.status().is_success());
-    let progress: serde_json::Value = progress_resp
-        .json()
-        .await
-        .expect("failed to decode task progress");
-    assert!(progress["last_compaction_status"].as_str().is_some());
-
-    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
-    let event_names: Vec<String> = events
-        .iter()
-        .filter_map(|event| event["event_name"].as_str())
-        .map(str::to_string)
-        .collect();
-    assert!(
-        event_names
-            .iter()
-            .any(|event| event == "compaction_started")
-    );
-    assert!(
-        event_names
-            .iter()
-            .any(|event| event == "compaction_completed")
-    );
-    assert!(
-        !event_names.iter().any(|event| event == "pruning_applied"),
-        "runtime manual compaction must not emit removed prune/archive cleanup events"
-    );
-
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
         .session_registry()
@@ -1634,15 +1615,17 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
             .has_active_blocks(),
         "runtime manual compaction should create an active block in compaction state"
     );
-    if let Some(tool_result) = messages.iter().find(|message| {
-        message
-            .tool_call_correlation
-            .as_ref()
-            .map(|c| c.invocation_id.as_str())
-            == Some("call-compress")
-    }) {
-        assert_compress_tool_result_applied(&tool_result.content);
-    }
+    let tool_result = messages
+        .iter()
+        .find(|message| {
+            message
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str())
+                == Some("call-compress")
+        })
+        .expect("compress tool result should be recorded in memory");
+    assert_compress_tool_result_applied(&tool_result.content);
 
     server.abort();
 }
@@ -1707,16 +1690,6 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
     assert!(
         event_names
             .iter()
-            .any(|event| event == "compaction_started")
-    );
-    assert!(
-        event_names
-            .iter()
-            .any(|event| event == "compaction_completed")
-    );
-    assert!(
-        event_names
-            .iter()
             .any(|event| event == "tool_call:compress")
     );
     assert!(
@@ -1736,7 +1709,7 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
     );
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
-        "runtime compaction must not emit removed prune/archive cleanup events"
+        "manual compress must not emit removed prune/archive cleanup events"
     );
 
     let sid = derive_session_id(&session_id, user_id);
@@ -1754,14 +1727,13 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
             .memory
             .compaction_state()
             .has_active_blocks(),
-        "runtime compaction should create an active block in compaction state"
+        "manual compress should create an active block in compaction state"
     );
-    if let Some(compress_result) = messages
+    let compress_result = messages
         .iter()
         .find(|message| message.tool_name.as_deref() == Some("compress"))
-    {
-        assert_compress_tool_result_applied(&compress_result.content);
-    }
+        .expect("compress tool result should be recorded in memory");
+    assert_compress_tool_result_applied(&compress_result.content);
     if let Some(write_todos_result) = messages
         .iter()
         .find(|message| message.tool_name.as_deref() == Some("write_todos"))

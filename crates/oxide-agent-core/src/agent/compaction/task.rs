@@ -16,13 +16,6 @@ pub struct CompactSummaryRequest<'a> {
     pub messages: &'a [AgentMessage],
     /// Previous compaction summary text, if one exists in the block graph.
     pub previous_summary: Option<&'a str>,
-    /// Optional caller-supplied preservation guidance for this compaction pass.
-    ///
-    /// This is used by agent-requested checkpoint compression: the model does
-    /// not choose message refs/ranges, but it may state the facts that must be
-    /// preserved in the handoff summary. Automatic compaction passes leave this
-    /// empty.
-    pub preserve_note: Option<&'a str>,
 }
 
 /// Plain text summary returned by a compact backend.

@@ -59,7 +59,7 @@ pub mod mattermost_mcp;
 
 pub use agents_md::{AgentsMdProvider, agents_md_tool_names};
 pub use compression::{
-    CompressReason, CompressRequest, CompressResult, CompressionProvider, TOOL_COMPRESS,
+    CompressEntry, CompressRequest, CompressResult, CompressionProvider, TOOL_COMPRESS,
     compress_tool_names,
 };
 pub use delegation::DelegationProvider;

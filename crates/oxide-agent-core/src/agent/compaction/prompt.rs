@@ -37,23 +37,15 @@ NEXT_STEPS: <pending actions and remaining work>"#
 pub fn build_local_compaction_user_message(
     task: &str,
     previous_summary: Option<&str>,
-    preserve_note: Option<&str>,
     messages: &[AgentMessage],
 ) -> String {
     let previous_summary_section = previous_summary
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or("none");
-    let preserve_note_section = preserve_note
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("none");
     let mut sections = vec![
         format!("## Current Task\n{}", task.trim()),
         format!("## Previous Compacted Summary\n{previous_summary_section}"),
-        format!(
-            "## Checkpoint Preservation Note\n{preserve_note_section}\n\nIf this note is not `none`, treat it as high-priority handoff guidance from the running agent. Preserve it explicitly when it is relevant to continuing the session."
-        ),
     ];
 
     let message_sections = messages
