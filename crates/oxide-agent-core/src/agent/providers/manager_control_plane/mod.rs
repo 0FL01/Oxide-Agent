@@ -201,7 +201,7 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
     "reminder_retry",
 ];
 #[cfg(oxide_module_tool_tavily)]
-const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
+const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search"];
 #[cfg(oxide_module_tool_crw)]
 const TOPIC_AGENT_CRW_TOOLS: &[&str] = &["web_search"];
 #[cfg(oxide_module_tool_webfetch_md)]

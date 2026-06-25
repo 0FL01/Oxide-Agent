@@ -12,7 +12,6 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("list_files", "Viewing directory contents {directory}"),
     ("recreate_sandbox", "Resetting sandbox workspace"),
     ("tavily_search", "Searching for information: {query}"),
-    ("tavily_extract", "Extracting content from {url}"),
     ("tavily_crawl", "Analyzing website structure {url}"),
     ("web_search", "Searching the web: {query}"),
     ("web_crawler", "Fetching web page as markdown: {url}"),

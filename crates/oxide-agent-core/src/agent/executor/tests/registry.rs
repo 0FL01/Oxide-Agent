@@ -796,7 +796,6 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(!tool_names.contains("web_search"));
-    assert!(!tool_names.contains("web_extract"));
     assert!(tool_names.contains("write_todos"));
 
     test_remove_env("TAVILY_ENABLED");
@@ -880,13 +879,6 @@ fn typed_runtime_registry_registers_search_modules_once() {
             .count(),
         1
     );
-    assert_eq!(
-        tool_names
-            .iter()
-            .filter(|name| *name == "web_extract")
-            .count(),
-        1
-    );
 
     test_remove_env("TAVILY_ENABLED");
     test_remove_env("TAVILY_API_KEY");
@@ -894,7 +886,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
 
 #[cfg(all(oxide_module_tool_tavily, oxide_module_tool_crw))]
 #[test]
-fn typed_runtime_registry_crw_owns_web_search_tavily_keeps_web_extract() {
+fn typed_runtime_registry_crw_owns_web_search_tavily_contributes_nothing() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -907,19 +899,12 @@ fn typed_runtime_registry_crw_owns_web_search_tavily_keeps_web_extract() {
         executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry.tool_names();
 
-    // CRW owns `web_search`; Tavily's duplicate is filtered at module level.
+    // CRW owns `web_search`; Tavily's only tool is `web_search`, so it is
+    // filtered out entirely at module level.
     assert_eq!(
         tool_names
             .iter()
             .filter(|name| *name == "web_search")
-            .count(),
-        1
-    );
-    // Tavily keeps `web_extract` (not provided by CRW).
-    assert_eq!(
-        tool_names
-            .iter()
-            .filter(|name| *name == "web_extract")
             .count(),
         1
     );

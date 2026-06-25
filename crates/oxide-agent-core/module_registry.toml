@@ -126,7 +126,7 @@ profiles = ["web-embedded-opencode-local"]
 id = "tool/tavily"
 cargo_feature = "tool-tavily"
 kind = "Search"
-provides = ["tool/tavily-search", "tool/tavily-extract"]
+provides = ["tool/tavily-search"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]

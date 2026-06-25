@@ -423,7 +423,7 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         "tool-tavily",
         "tool/tavily",
         Search,
-        ["tool/tavily-search", "tool/tavily-extract"]
+        ["tool/tavily-search"]
     );
     push_module!(
         modules,

@@ -1,6 +1,8 @@
-//! Tavily Provider - web search and content extraction
+//! Tavily Provider - web search index
 //!
-//! Provides `web_search` and `web_extract` tools using Tavily's HTTP API.
+//! Provides the `web_search` tool using Tavily's HTTP API. Page content
+//! fetching is delegated to the free `web_markdown` tool, so Tavily quota is
+//! spent only on search indexing.
 
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -16,7 +18,6 @@ use std::time::Duration;
 use tracing::debug;
 
 const TOOL_WEB_SEARCH: &str = "web_search";
-const TOOL_WEB_EXTRACT: &str = "web_extract";
 const TAVILY_API_BASE: &str = "https://api.tavily.com";
 
 /// Provider for Tavily web search tools
@@ -59,41 +60,24 @@ impl TavilyProvider {
     }
 
     fn tool_definitions() -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: TOOL_WEB_SEARCH.to_string(),
-                description: "Search the web for current information. Use for news, facts, documentation, real-time data. Returns relevant search results with titles, URLs, and content snippets.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of results (1-10, default: 5)"
-                        }
+        vec![ToolDefinition {
+            name: TOOL_WEB_SEARCH.to_string(),
+            description: "Search the web for current information. Use for news, facts, documentation, real-time data. Returns relevant search results with titles, URLs, and content snippets.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
                     },
-                    "required": ["query"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_WEB_EXTRACT.to_string(),
-                description: "Extract and read content from web pages. Use to read articles, documentation, blog posts. Returns the full text content of the pages.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "urls": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "List of URLs to extract content from (max 5)"
-                        }
-                    },
-                    "required": ["urls"]
-                }),
-            },
-        ]
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results (1-10, default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }]
     }
 
     async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
@@ -131,36 +115,6 @@ impl TavilyProvider {
                     Err(e) => Ok(format!("Search error: {e}")),
                 }
             }
-            TOOL_WEB_EXTRACT => {
-                let args: WebExtractArgs = serde_json::from_str(arguments)?;
-
-                // Limit to 5 URLs.
-                let urls: Vec<&str> = args.urls.iter().take(5).map(String::as_str).collect();
-
-                debug!(urls = ?urls, "Tavily extract");
-
-                match self.extract(&urls).await {
-                    Ok(response) => {
-                        let mut output = String::new();
-
-                        if response.results.is_empty() {
-                            output.push_str("Failed to extract content from the specified URLs.\n");
-                        } else {
-                            for result in response.results {
-                                let _ = write!(
-                                    output,
-                                    "## {}\n\n{}\n\n---\n\n",
-                                    result.url,
-                                    crate::utils::clean_html(&result.raw_content)
-                                );
-                            }
-                        }
-
-                        Ok(output)
-                    }
-                    Err(e) => Ok(format!("Content extraction error: {e}")),
-                }
-            }
             _ => anyhow::bail!("Unknown Tavily tool: {tool_name}"),
         }
     }
@@ -173,14 +127,6 @@ impl TavilyProvider {
             max_results,
         };
         self.post_json("search", &request).await
-    }
-
-    async fn extract(&self, urls: &[&str]) -> Result<TavilyExtractResponse> {
-        let request = TavilyExtractRequest {
-            api_key: &self.api_key,
-            urls,
-        };
-        self.post_json("extract", &request).await
     }
 
     async fn post_json<T, R>(&self, path: &str, body: &T) -> Result<R>
@@ -215,12 +161,6 @@ const fn default_max_results() -> u8 {
     5
 }
 
-/// Arguments for `web_extract` tool
-#[derive(Debug, Deserialize)]
-struct WebExtractArgs {
-    urls: Vec<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct TavilySearchRequest<'a> {
     api_key: &'a str,
@@ -242,25 +182,6 @@ struct TavilySearchResult {
     url: String,
     #[serde(default)]
     content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct TavilyExtractRequest<'a> {
-    api_key: &'a str,
-    urls: &'a [&'a str],
-}
-
-#[derive(Debug, Deserialize)]
-struct TavilyExtractResponse {
-    #[serde(default)]
-    results: Vec<TavilyExtractResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TavilyExtractResult {
-    url: String,
-    #[serde(default)]
-    raw_content: String,
 }
 
 fn truncate_for_error(body: String) -> String {
@@ -357,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_runtime_executors_register_search_and_extract() {
+    fn typed_runtime_executors_register_search_only() {
         let provider = Arc::new(TavilyProvider::new("dummy-key").expect("provider constructs"));
         let names = provider
             .tool_runtime_executors()
@@ -365,7 +286,7 @@ mod tests {
             .map(|executor| executor.name().as_str().to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec![TOOL_WEB_SEARCH, TOOL_WEB_EXTRACT]);
+        assert_eq!(names, vec![TOOL_WEB_SEARCH]);
     }
 
     #[tokio::test]

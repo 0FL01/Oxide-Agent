@@ -1655,21 +1655,17 @@ impl ToolModule for TavilyToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        let executors = self
-            .provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default();
-
-        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
+        // Tavily provides only `web_search` (page fetching uses the free
+        // `web_markdown` tool). When CRW is enabled, CRW owns `web_search`, so
+        // Tavily contributes no tools.
         #[cfg(oxide_module_tool_crw)]
         if crate::config::is_crw_enabled() {
-            return executors
-                .into_iter()
-                .filter(|executor| executor.name().as_str() != "web_search")
-                .collect();
+            return Vec::new();
         }
 
-        executors
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 

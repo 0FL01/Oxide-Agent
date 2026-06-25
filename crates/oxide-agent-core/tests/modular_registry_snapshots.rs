@@ -261,7 +261,7 @@ fn assert_tool_availability_contract(
         &enabled_module_ids,
         &tool_names,
         "tool/tavily",
-        &["web_search", "web_extract"],
+        &["web_search"],
     );
     assert_tools_absent_when_module_unavailable(
         &compiled_module_ids,
@@ -351,7 +351,6 @@ fn assert_tool_availability_contract(
                     "tool/sandbox-list-files",
                     "tool/sandbox-recreate",
                     "tool/tavily-search",
-                    "tool/tavily-extract",
                 ],
                 profile,
             );

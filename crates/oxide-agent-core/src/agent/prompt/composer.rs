@@ -205,18 +205,10 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         );
     }
 
-    if has_any_tool(
-        &tool_names,
-        &["web_search", "web_extract", "web_crawler", "web_markdown"],
-    ) {
+    if has_any_tool(&tool_names, &["web_search", "web_crawler", "web_markdown"]) {
         let mut lines = Vec::new();
         if has_tool(&tool_names, "web_search") {
             lines.push("Use `web_search` for current web search, news, facts, documentation, or real-time data you cannot know locally.".to_string());
-        }
-        if has_tool(&tool_names, "web_extract") {
-            lines.push(
-                "Use `web_extract` to read result URLs when snippets are insufficient.".to_string(),
-            );
         }
         if has_tool(&tool_names, "web_crawler") {
             lines.push(
@@ -879,11 +871,6 @@ mod tests {
         let tools = [
             ToolDefinition {
                 name: "web_search".to_string(),
-                description: "demo".to_string(),
-                parameters: serde_json::json!({ "type": "object" }),
-            },
-            ToolDefinition {
-                name: "web_extract".to_string(),
                 description: "demo".to_string(),
                 parameters: serde_json::json!({ "type": "object" }),
             },

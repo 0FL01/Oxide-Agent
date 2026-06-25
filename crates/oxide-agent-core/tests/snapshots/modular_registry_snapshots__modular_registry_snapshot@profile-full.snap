@@ -1,6 +1,6 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
-assertion_line: 121
+assertion_line: 120
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -190,10 +190,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/stack-logs",
         "module": "tool/stack-logs"
-      },
-      {
-        "id": "tool/tavily-extract",
-        "module": "tool/tavily"
       },
       {
         "id": "tool/tavily-search",
@@ -824,7 +820,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "id": "tool/tavily",
         "kind": "search",
         "provides": [
-          "tool/tavily-extract",
           "tool/tavily-search"
         ],
         "requires": []
@@ -995,7 +990,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
       "tool/stack-logs",
-      "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
       "tool/tts-kokoro",

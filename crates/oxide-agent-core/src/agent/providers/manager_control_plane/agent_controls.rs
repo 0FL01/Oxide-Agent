@@ -1495,7 +1495,7 @@ mod tests {
                 TopicAgentToolGroup {
                     provider: "tavily",
                     aliases: &["search", "tavily"],
-                    tools: &["web_search", "web_extract"],
+                    tools: &["web_search"],
                 },
                 TopicAgentToolGroup {
                     provider: "crw",
@@ -1508,7 +1508,7 @@ mod tests {
                     tools: &["web_markdown"],
                 },
             ],
-            tool_names: ["web_extract", "web_markdown", "web_search"]
+            tool_names: ["web_markdown", "web_search"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -1522,11 +1522,7 @@ mod tests {
 
         assert_eq!(
             expanded,
-            vec![
-                "web_extract".to_string(),
-                "web_markdown".to_string(),
-                "web_search".to_string(),
-            ]
+            vec!["web_markdown".to_string(), "web_search".to_string(),]
         );
     }
 
