@@ -1,0 +1,72 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate env file from .env.example
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USERS }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_BASE_PROVIDERS__1__API_KEY: ${{ secrets.OPENAI_BASE_PROVIDERS__1__API_KEY }}
+          OXIDE_DATABASE_URL: ${{ secrets.OXIDE_DATABASE_URL }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          cp .env.example deploy.env
+          sed -i "s|^TELEGRAM_TOKEN=.*|TELEGRAM_TOKEN=${TELEGRAM_TOKEN}|" deploy.env
+          sed -i "s|^TELEGRAM_ALLOWED_USERS=.*|TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}|" deploy.env
+          sed -i "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=${OPENROUTER_API_KEY}|" deploy.env
+          sed -i "s|^OPENAI_BASE_PROVIDERS__1__API_KEY=.*|OPENAI_BASE_PROVIDERS__1__API_KEY=${OPENAI_BASE_PROVIDERS__1__API_KEY}|" deploy.env
+          sed -i "s|^OXIDE_DATABASE_URL=.*|OXIDE_DATABASE_URL=${OXIDE_DATABASE_URL}|" deploy.env
+          sed -i "s|^TAVILY_API_KEY=.*|TAVILY_API_KEY=${TAVILY_API_KEY}|" deploy.env
+
+      - name: Create source archive
+        run: |
+          tar -czf app-source.tar.gz \
+            --exclude='.github' --exclude='.git' --exclude='tests' \
+            --exclude='backlog' --exclude='target' --exclude='deploy.env' \
+            .
+
+      - name: Copy source and env to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "app-source.tar.gz,deploy.env"
+          target: "${{ secrets.SERVICE_DIR }}/tmp/"
+
+      - name: Build and start services on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 60s
+          command_timeout: 30m
+          script: |
+            sh -c '
+              set -e
+              SRCDIR="${{ secrets.SERVICE_DIR }}"
+              mkdir -p "$SRCDIR/build_context"
+              tar -xzf "$SRCDIR/tmp/app-source.tar.gz" -C "$SRCDIR/build_context"
+              cp "$SRCDIR/tmp/deploy.env" "$SRCDIR/build_context/.env"
+              rm "$SRCDIR/tmp/app-source.tar.gz" "$SRCDIR/tmp/deploy.env"
+              cd "$SRCDIR/build_context"
+              docker compose -f docker-compose.telegram.yml up -d --build --remove-orphans --force-recreate
+              docker compose -f docker-compose.telegram.yml ps
+            '
