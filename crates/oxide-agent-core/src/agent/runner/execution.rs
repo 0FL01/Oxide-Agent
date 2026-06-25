@@ -2,7 +2,9 @@
 
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{
+    AdmissionDecision, CompactionTrigger, ContextAdmission, PayloadDescriptor, PayloadKind,
+};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
@@ -82,22 +84,22 @@ impl AgentRunner {
             }
 
             let cancellation_token = ctx.agent.cancellation_token().clone();
-            let Some(loop_detected) = Self::await_until_cancelled(
-                cancellation_token,
-                self.llm_loop_detected(ctx, &state),
-            )
-            .await
+            let Some(loop_outcome) =
+                Self::await_until_cancelled(cancellation_token, self.llm_loop_outcome(ctx, &state))
+                    .await
             else {
                 return Err(self.cancelled_error(ctx).await);
             };
-            if loop_detected {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        &state,
-                        crate::agent::loop_detection::LoopType::CognitiveLoop,
-                    )
-                    .await);
+            if !matches!(
+                loop_outcome,
+                crate::agent::loop_detection::LoopDetectionOutcome::NoLoop
+            ) {
+                if let Some(result) = self.handle_loop_outcome(ctx, &state, loop_outcome).await? {
+                    return Ok(result);
+                }
+                // RePrompt: skip LLM call, go to next iteration.
+                // The re-prompt context was injected into memory by handle_loop_outcome.
+                continue;
             }
 
             let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -133,18 +135,8 @@ impl AgentRunner {
         let cancellation_token = ctx.agent.cancellation_token().clone();
         if state.take_manual_compaction_request() {
             let Some(compaction_result) = Self::await_until_cancelled(
-                cancellation_token.clone(),
-                self.run_manual_compaction_checkpoint(ctx, state),
-            )
-            .await
-            else {
-                return Err(self.cancelled_error(ctx).await);
-            };
-            compaction_result?;
-        } else {
-            let Some(compaction_result) = Self::await_until_cancelled(
                 cancellation_token,
-                self.run_iteration_compaction(ctx, state, iteration),
+                self.run_manual_compaction_checkpoint(ctx, state),
             )
             .await
             else {
@@ -226,11 +218,39 @@ impl AgentRunner {
         }
 
         for injection in pending_context {
-            ctx.messages
-                .push(crate::llm::Message::user(&injection.content));
-            let message = AgentMessage::runtime_context(injection.content)
-                .with_user_attachments(injection.attachments);
-            ctx.agent.memory_mut().add_message(message);
+            let budget = Self::compute_admission_budget(ctx);
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::RuntimeContext,
+                content: injection.content.clone(),
+                source: None,
+                size_bytes: injection.content.len(),
+            };
+            match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => {
+                    ctx.messages
+                        .push(crate::llm::Message::user(&injection.content));
+                    let message = AgentMessage::runtime_context(injection.content)
+                        .with_user_attachments(injection.attachments);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+                AdmissionDecision::Manifest(spec) => {
+                    ctx.messages
+                        .push(crate::llm::Message::user(&spec.manifest_content));
+                    let mut message = AgentMessage::runtime_context(spec.manifest_content.clone())
+                        .with_user_attachments(injection.attachments);
+                    message.externalized_payload = Some(spec.externalized_payload);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[Runtime context withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    ctx.messages.push(crate::llm::Message::user(&placeholder));
+                    let message = AgentMessage::runtime_context(placeholder);
+                    ctx.agent.memory_mut().add_message(message);
+                }
+            }
         }
     }
 

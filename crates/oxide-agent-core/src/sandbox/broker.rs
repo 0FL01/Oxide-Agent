@@ -1,27 +1,27 @@
 #![allow(missing_docs)]
 
-use anyhow::{Context, Result, anyhow};
+use super::error::SandboxError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tracing::{info, warn};
 
 use crate::config::get_sandboxd_socket;
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use super::manager::DockerSandboxManager;
 use super::manager::{ExecResult, SandboxContainerRecord};
 use super::scope::SandboxScope;
@@ -266,15 +266,11 @@ impl SandboxBrokerClient {
         Self::new(get_sandboxd_socket())
     }
 
-    async fn send_request(&self, request: &SandboxBrokerRequest) -> Result<SandboxBrokerResponse> {
-        let mut stream = UnixStream::connect(&self.socket_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to sandbox broker socket {}",
-                    self.socket_path.display()
-                )
-            })?;
+    async fn send_request(
+        &self,
+        request: &SandboxBrokerRequest,
+    ) -> Result<SandboxBrokerResponse, SandboxError> {
+        let mut stream = UnixStream::connect(&self.socket_path).await?;
         write_frame(&mut stream, request).await?;
         read_frame(&mut stream).await
     }
@@ -283,35 +279,33 @@ impl SandboxBrokerClient {
         &self,
         request: &SandboxBrokerRequest,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<SandboxBrokerResponse> {
-        let mut stream = UnixStream::connect(&self.socket_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to sandbox broker socket {}",
-                    self.socket_path.display()
-                )
-            })?;
+    ) -> Result<SandboxBrokerResponse, SandboxError> {
+        let mut stream = UnixStream::connect(&self.socket_path).await?;
         write_frame(&mut stream, request).await?;
 
         if let Some(token) = cancellation_token {
             tokio::select! {
                 response = read_frame(&mut stream) => response,
-                _ = token.cancelled() => Err(anyhow!("Command execution cancelled by user")),
+                _ = token.cancelled() => Err(SandboxError::Cancelled),
             }
         } else {
             read_frame(&mut stream).await
         }
     }
 
-    pub async fn list_user_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+    pub async fn list_user_sandboxes(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::ListUserSandboxes { user_id })
             .await?
         {
             SandboxBrokerResponse::Sandboxes(records) => Ok(records),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -319,7 +313,7 @@ impl SandboxBrokerClient {
         &self,
         user_id: i64,
         container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>> {
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::InspectSandboxByName {
                 user_id,
@@ -328,8 +322,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Sandbox(record) => Ok(record),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -337,14 +333,16 @@ impl SandboxBrokerClient {
         &self,
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<SandboxContainerRecord> {
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::EnsureScopeSandbox { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::SandboxRecord(record) => Ok(record),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -352,18 +350,24 @@ impl SandboxBrokerClient {
         &self,
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<SandboxContainerRecord> {
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::RecreateScopeSandbox { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::SandboxRecord(record) => Ok(record),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
-    pub async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> Result<bool> {
+    pub async fn delete_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::DeleteSandboxByName {
                 user_id,
@@ -372,8 +376,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Deleted(deleted) => Ok(deleted),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -381,14 +387,16 @@ impl SandboxBrokerClient {
         &self,
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<String>, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::CreateSandbox { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::ContainerCreated { container_id } => Ok(container_id),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -398,7 +406,7 @@ impl SandboxBrokerClient {
         image_name: String,
         command: &str,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         match self
             .send_exec_request(
                 &SandboxBrokerRequest::ExecCommand {
@@ -411,8 +419,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::ExecResult(result) => Ok(result),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -422,7 +432,7 @@ impl SandboxBrokerClient {
         image_name: String,
         path: &str,
         content: &[u8],
-    ) -> Result<()> {
+    ) -> Result<(), SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::WriteFile {
                 scope,
@@ -433,8 +443,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Unit => Ok(()),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -443,7 +455,7 @@ impl SandboxBrokerClient {
         scope: SandboxScope,
         image_name: String,
         path: &str,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::ReadFile {
                 scope,
@@ -453,8 +465,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Bytes(content) => Ok(content),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -464,7 +478,7 @@ impl SandboxBrokerClient {
         image_name: String,
         container_path: &str,
         content: &[u8],
-    ) -> Result<()> {
+    ) -> Result<(), SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::UploadFile {
                 scope,
@@ -475,8 +489,10 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Unit => Ok(()),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -485,7 +501,7 @@ impl SandboxBrokerClient {
         scope: SandboxScope,
         image_name: String,
         container_path: &str,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::DownloadFile {
                 scope,
@@ -495,19 +511,27 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::Bytes(content) => Ok(content),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
-    pub async fn get_uploads_size(&self, scope: SandboxScope, image_name: String) -> Result<u64> {
+    pub async fn get_uploads_size(
+        &self,
+        scope: SandboxScope,
+        image_name: String,
+    ) -> Result<u64, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::GetUploadsSize { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::U64(size) => Ok(size),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -515,36 +539,50 @@ impl SandboxBrokerClient {
         &self,
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::CleanupOldDownloads { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::U64(count) => Ok(count),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
-    pub async fn destroy(&self, scope: SandboxScope, image_name: String) -> Result<()> {
+    pub async fn destroy(
+        &self,
+        scope: SandboxScope,
+        image_name: String,
+    ) -> Result<(), SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::Destroy { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::Unit => Ok(()),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
-    pub async fn recreate(&self, scope: SandboxScope, image_name: String) -> Result<()> {
+    pub async fn recreate(
+        &self,
+        scope: SandboxScope,
+        image_name: String,
+    ) -> Result<(), SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::Recreate { scope, image_name })
             .await?
         {
             SandboxBrokerResponse::Unit => Ok(()),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
@@ -553,7 +591,7 @@ impl SandboxBrokerClient {
         scope: SandboxScope,
         image_name: String,
         container_path: &str,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::FileSizeBytes {
                 scope,
@@ -563,86 +601,70 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::U64(size) => Ok(size),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
     pub async fn list_stack_log_sources(
         &self,
         request: StackLogsListSourcesRequest,
-    ) -> Result<StackLogsListSourcesResponse> {
+    ) -> Result<StackLogsListSourcesResponse, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::ListStackLogSources { request })
             .await?
         {
             SandboxBrokerResponse::StackLogSources(response) => Ok(response),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 
     pub async fn fetch_stack_logs(
         &self,
         request: StackLogsFetchRequest,
-    ) -> Result<StackLogsFetchResponse> {
+    ) -> Result<StackLogsFetchResponse, SandboxError> {
         match self
             .send_request(&SandboxBrokerRequest::FetchStackLogs { request })
             .await?
         {
             SandboxBrokerResponse::StackLogs(response) => Ok(response),
-            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
-            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+            SandboxBrokerResponse::Error(message) => Err(SandboxError::Broker(message)),
+            response => Err(SandboxError::Protocol(format!(
+                "Unexpected broker response: {response:?}"
+            ))),
         }
     }
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 pub struct SandboxBrokerServer {
     listener: UnixListener,
     socket_path: PathBuf,
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 impl SandboxBrokerServer {
-    pub async fn bind(socket_path: impl AsRef<Path>) -> Result<Self> {
+    pub async fn bind(socket_path: impl AsRef<Path>) -> Result<Self, SandboxError> {
         let socket_path = socket_path.as_ref().to_path_buf();
         if let Some(parent) = socket_path.parent() {
-            fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "Failed to create sandbox broker directory {}",
-                    parent.display()
-                )
-            })?;
+            fs::create_dir_all(parent).await?;
         }
 
         match fs::remove_file(&socket_path).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Failed to remove existing sandbox broker socket {}",
-                        socket_path.display()
-                    )
-                });
+                return Err(SandboxError::Io(error));
             }
         }
 
-        let listener = UnixListener::bind(&socket_path).with_context(|| {
-            format!(
-                "Failed to bind sandbox broker socket {}",
-                socket_path.display()
-            )
-        })?;
-        fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o666))
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to set sandbox broker socket permissions for {}",
-                    socket_path.display()
-                )
-            })?;
+        let listener = UnixListener::bind(&socket_path)?;
+        fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o666)).await?;
 
         Ok(Self {
             listener,
@@ -650,7 +672,7 @@ impl SandboxBrokerServer {
         })
     }
 
-    pub async fn bind_default() -> Result<Self> {
+    pub async fn bind_default() -> Result<Self, SandboxError> {
         Self::bind(get_sandboxd_socket()).await
     }
 
@@ -659,13 +681,9 @@ impl SandboxBrokerServer {
         &self.socket_path
     }
 
-    pub async fn serve(self) -> Result<()> {
+    pub async fn serve(self) -> Result<(), SandboxError> {
         loop {
-            let (stream, _) = self
-                .listener
-                .accept()
-                .await
-                .context("Failed to accept sandbox broker connection")?;
+            let (stream, _) = self.listener.accept().await?;
             tokio::spawn(async move {
                 if let Err(error) = handle_connection(stream).await {
                     warn!(error = %error, "Sandbox broker connection failed");
@@ -675,8 +693,8 @@ impl SandboxBrokerServer {
     }
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
-async fn handle_connection(mut stream: UnixStream) -> Result<()> {
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
+async fn handle_connection(mut stream: UnixStream) -> Result<(), SandboxError> {
     let request: SandboxBrokerRequest = read_frame(&mut stream).await?;
     let response = handle_request(request, &mut stream).await?;
     if let Some(response) = response {
@@ -685,14 +703,17 @@ async fn handle_connection(mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
-async fn docker_manager(scope: SandboxScope, image_name: String) -> Result<DockerSandboxManager> {
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
+async fn docker_manager(
+    scope: SandboxScope,
+    image_name: String,
+) -> Result<DockerSandboxManager, SandboxError> {
     DockerSandboxManager::new_with_image(scope, image_name).await
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 fn response_from_result<T>(
-    result: Result<T>,
+    result: Result<T, SandboxError>,
     map: impl FnOnce(T) -> SandboxBrokerResponse,
 ) -> SandboxBrokerResponse {
     match result {
@@ -701,7 +722,7 @@ fn response_from_result<T>(
     }
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -715,7 +736,7 @@ async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> Sandb
     })
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_write_file(
     scope: SandboxScope,
     image_name: String,
@@ -736,7 +757,7 @@ async fn handle_write_file(
     })
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_read_file(
     scope: SandboxScope,
     image_name: String,
@@ -750,7 +771,7 @@ async fn handle_read_file(
     response_from_result(manager.read_file(&path).await, SandboxBrokerResponse::Bytes)
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_upload_file(
     scope: SandboxScope,
     image_name: String,
@@ -771,7 +792,7 @@ async fn handle_upload_file(
     })
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_download_file(
     scope: SandboxScope,
     image_name: String,
@@ -792,7 +813,7 @@ async fn handle_download_file(
     )
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -802,7 +823,7 @@ async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> San
     response_from_result(manager.get_uploads_size().await, SandboxBrokerResponse::U64)
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_cleanup_old_downloads(
     scope: SandboxScope,
     image_name: String,
@@ -818,7 +839,7 @@ async fn handle_cleanup_old_downloads(
     )
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -828,7 +849,7 @@ async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBroke
     response_from_result(manager.destroy().await, |_| SandboxBrokerResponse::Unit)
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -838,7 +859,7 @@ async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrok
     response_from_result(manager.recreate().await, |_| SandboxBrokerResponse::Unit)
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_file_size_bytes(
     scope: SandboxScope,
     image_name: String,
@@ -855,13 +876,13 @@ async fn handle_file_size_bytes(
     )
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_exec_command(
     scope: SandboxScope,
     image_name: String,
     command: String,
     stream: &mut UnixStream,
-) -> Result<Option<SandboxBrokerResponse>> {
+) -> Result<Option<SandboxBrokerResponse>, SandboxError> {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
         Err(error) => return Ok(Some(SandboxBrokerResponse::Error(error.to_string()))),
@@ -891,11 +912,11 @@ async fn handle_exec_command(
     Ok(Some(response))
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 async fn handle_request(
     request: SandboxBrokerRequest,
     stream: &mut UnixStream,
-) -> Result<Option<SandboxBrokerResponse>> {
+) -> Result<Option<SandboxBrokerResponse>, SandboxError> {
     let response = match request {
         SandboxBrokerRequest::ListUserSandboxes { user_id } => response_from_result(
             DockerSandboxManager::list_user_sandboxes(user_id).await,
@@ -983,78 +1004,80 @@ async fn handle_request(
     Ok(Some(response))
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
-async fn wait_for_peer_disconnect(stream: &mut UnixStream) -> Result<()> {
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
+async fn wait_for_peer_disconnect(stream: &mut UnixStream) -> Result<(), SandboxError> {
     let mut buf = [0_u8; 1];
-    let read = stream
-        .read(&mut buf)
-        .await
-        .context("Failed while waiting for sandbox broker client disconnect")?;
+    let read = stream.read(&mut buf).await?;
     if read == 0 {
         Ok(())
     } else {
-        Err(anyhow!(
-            "Sandbox broker protocol violation: unexpected trailing bytes"
+        Err(SandboxError::Protocol(
+            "Sandbox broker protocol violation: unexpected trailing bytes".to_string(),
         ))
     }
 }
 
-async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {
-    let payload = bincode::serialize(value).context("Failed to encode sandbox broker payload")?;
-    let payload_len = u64::try_from(payload.len()).context("Sandbox broker payload too large")?;
-    stream
-        .write_u64(payload_len)
-        .await
-        .context("Failed to write sandbox broker frame size")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("Failed to write sandbox broker frame payload")?;
-    stream
-        .flush()
-        .await
-        .context("Failed to flush sandbox broker frame")?;
+async fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), SandboxError> {
+    let payload = bincode::serialize(value).map_err(|e| {
+        SandboxError::Protocol(format!("Failed to encode sandbox broker payload: {e}"))
+    })?;
+    let payload_len = u64::try_from(payload.len())
+        .map_err(|_| SandboxError::Protocol("Sandbox broker payload too large".to_string()))?;
+    stream.write_u64(payload_len).await?;
+    stream.write_all(&payload).await?;
+    stream.flush().await?;
     debug!(bytes = payload_len, "Sandbox broker frame sent");
     Ok(())
 }
 
-async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
-    let payload_len = stream
-        .read_u64()
-        .await
-        .context("Failed to read sandbox broker frame size")?;
-    let payload_size = usize::try_from(payload_len).context("Sandbox broker frame too large")?;
+async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T, SandboxError> {
+    let payload_len = stream.read_u64().await?;
+    let payload_size = usize::try_from(payload_len)
+        .map_err(|_| SandboxError::Protocol("Sandbox broker frame too large".to_string()))?;
     let mut payload = vec![0_u8; payload_size];
-    stream
-        .read_exact(&mut payload)
-        .await
-        .context("Failed to read sandbox broker frame payload")?;
-    bincode::deserialize(&payload).context("Failed to decode sandbox broker payload")
+    stream.read_exact(&mut payload).await?;
+    bincode::deserialize(&payload).map_err(|e| {
+        SandboxError::Protocol(format!("Failed to decode sandbox broker payload: {e}"))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    use super::SandboxError;
     use super::{
         ResolvedStackLogsSelector, SandboxBrokerRequest, SandboxBrokerResponse, StackLogCursor,
         StackLogEntry, StackLogSource, StackLogSuppression, StackLogsFetchRequest,
         StackLogsFetchResponse, StackLogsListSourcesRequest, StackLogsListSourcesResponse,
         StackLogsSelector, StackLogsWindow,
     };
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use super::{SandboxBrokerClient, SandboxBrokerServer};
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use crate::config::get_sandbox_image;
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use crate::sandbox::scope::SandboxScope;
-    #[cfg(feature = "sandbox-backend-docker-direct")]
-    use anyhow::{Context, Result, bail};
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use chrono::{TimeZone, Utc};
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use std::path::PathBuf;
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    fn utc_ts(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        min: u32,
+        sec: u32,
+    ) -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .expect("valid UTC timestamp")
+    }
+
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1063,7 +1086,7 @@ mod tests {
         std::env::temp_dir().join(format!("oxide-agent-{test_name}-{nonce}.sock"))
     }
 
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     fn unique_scope(test_name: &str) -> SandboxScope {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1088,7 +1111,7 @@ mod tests {
 
     #[test]
     fn stack_logs_broker_payload_roundtrip_preserves_contract_types() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 3, 4).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 3, 4);
         let request = SandboxBrokerRequest::FetchStackLogs {
             request: StackLogsFetchRequest {
                 selector: StackLogsSelector {
@@ -1170,7 +1193,7 @@ mod tests {
 
     #[test]
     fn stack_logs_list_sources_payload_roundtrip_preserves_source_records() {
-        let started_at = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let started_at = utc_ts(2026, 4, 2, 10, 11, 12);
         let response = SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
             stack_selector: ResolvedStackLogsSelector {
                 compose_project: "oxide-agent".to_string(),
@@ -1231,13 +1254,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     #[ignore = "Requires Docker daemon"]
-    async fn broker_download_file_roundtrip_reads_existing_container_file() -> Result<()> {
+    async fn broker_download_file_roundtrip_reads_existing_container_file()
+    -> Result<(), SandboxError> {
         let socket_path = unique_socket_path("broker-download-roundtrip");
-        let server = SandboxBrokerServer::bind(&socket_path)
-            .await
-            .context("bind sandbox broker test server")?;
+        let server = SandboxBrokerServer::bind(&socket_path).await?;
         let server_task = tokio::spawn(server.serve());
 
         let client = SandboxBrokerClient::new(&socket_path);
@@ -1266,31 +1288,28 @@ mod tests {
         let _ = server_task.await;
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        exec_result.context("create file in broker-backed sandbox")?;
-        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+        exec_result?;
+        cleanup_result?;
 
-        let content = download_result.context(
-            "broker should download a file created by a previous request for the same sandbox scope",
-        )?;
+        let content = download_result?;
 
         if content != b"audit ok" {
-            bail!(
+            return Err(SandboxError::Other(format!(
                 "unexpected file content from broker download: {:?}",
                 String::from_utf8_lossy(&content)
-            );
+            )));
         }
 
         Ok(())
     }
 
     #[tokio::test]
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     #[ignore = "Requires Docker daemon"]
-    async fn broker_write_file_roundtrip_persists_to_existing_container() -> Result<()> {
+    async fn broker_write_file_roundtrip_persists_to_existing_container() -> Result<(), SandboxError>
+    {
         let socket_path = unique_socket_path("broker-write-roundtrip");
-        let server = SandboxBrokerServer::bind(&socket_path)
-            .await
-            .context("bind sandbox broker test server")?;
+        let server = SandboxBrokerServer::bind(&socket_path).await?;
         let server_task = tokio::spawn(server.serve());
 
         let client = SandboxBrokerClient::new(&socket_path);
@@ -1323,31 +1342,28 @@ mod tests {
         let _ = server_task.await;
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        exec_result.context("prepare directory in broker-backed sandbox")?;
-        write_result.context(
-            "broker should write into a sandbox created by a previous request for the same scope",
-        )?;
-        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+        exec_result?;
+        write_result?;
+        cleanup_result?;
 
-        let content = read_result.context("read file written through broker")?;
+        let content = read_result?;
         if content != b"write ok" {
-            bail!(
+            return Err(SandboxError::Other(format!(
                 "unexpected file content from broker write roundtrip: {:?}",
                 String::from_utf8_lossy(&content)
-            );
+            )));
         }
 
         Ok(())
     }
 
     #[tokio::test]
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     #[ignore = "Requires Docker daemon"]
-    async fn broker_upload_file_roundtrip_persists_to_existing_container() -> Result<()> {
+    async fn broker_upload_file_roundtrip_persists_to_existing_container()
+    -> Result<(), SandboxError> {
         let socket_path = unique_socket_path("broker-upload-roundtrip");
-        let server = SandboxBrokerServer::bind(&socket_path)
-            .await
-            .context("bind sandbox broker test server")?;
+        let server = SandboxBrokerServer::bind(&socket_path).await?;
         let server_task = tokio::spawn(server.serve());
 
         let client = SandboxBrokerClient::new(&socket_path);
@@ -1380,18 +1396,16 @@ mod tests {
         let _ = server_task.await;
         let _ = tokio::fs::remove_file(&socket_path).await;
 
-        exec_result.context("prepare upload directory in broker-backed sandbox")?;
-        upload_result.context(
-            "broker should upload into a sandbox created by a previous request for the same scope",
-        )?;
-        cleanup_result.context("cleanup broker-backed sandbox after test")?;
+        exec_result?;
+        upload_result?;
+        cleanup_result?;
 
-        let content = download_result.context("download file uploaded through broker")?;
+        let content = download_result?;
         if content != b"upload ok" {
-            bail!(
+            return Err(SandboxError::Other(format!(
                 "unexpected file content from broker upload roundtrip: {:?}",
                 String::from_utf8_lossy(&content)
-            );
+            )));
         }
 
         Ok(())

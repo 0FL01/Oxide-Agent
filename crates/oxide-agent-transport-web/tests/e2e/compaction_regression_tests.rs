@@ -75,11 +75,18 @@ fn strict_tool_history_messages(messages: Vec<AgentMessage>) -> Vec<AgentMessage
 
     for message in messages {
         if let Some(tool_calls) = &message.tool_calls {
-            pending_tool_call_ids.extend(tool_calls.iter().map(|tool_call| tool_call.id.clone()));
+            pending_tool_call_ids.extend(
+                tool_calls
+                    .iter()
+                    .map(|tool_call| tool_call.invocation_id().as_str().to_string()),
+            );
         }
 
         if message.role == oxide_agent_core::agent::memory::MessageRole::Tool
-            && let Some(tool_call_id) = message.tool_call_id.as_deref()
+            && let Some(tool_call_id) = message
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str())
         {
             if let Some(position) = pending_tool_call_ids
                 .iter()
@@ -214,7 +221,11 @@ fn compress_and_write_todos_response() -> ChatResponse {
                 "call-compress".to_string(),
                 ToolCallFunction {
                     name: "compress".to_string(),
-                    arguments: serde_json::json!({}).to_string(),
+                    arguments: serde_json::json!({
+                        "reason": "free_context",
+                        "preserve": "Compression e2e checkpoint: preserve old tool-heavy work and continue with todo verification."
+                    })
+                    .to_string(),
                 },
                 false,
             ),
@@ -266,10 +277,13 @@ fn assert_tool_payload_compacted_or_removed(
     tool_call_id: &str,
     marker: &str,
 ) {
-    if let Some(message) = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some(tool_call_id))
-    {
+    if let Some(message) = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some(tool_call_id)
+    }) {
         assert!(message.is_externalized() || message.is_pruned());
         assert!(!message.content.contains(marker));
     } else {
@@ -282,7 +296,7 @@ fn assert_tool_payload_compacted_or_removed(
     }
 }
 
-fn assert_compress_tool_result_scheduled(content: &str) {
+fn assert_compress_tool_result_applied(content: &str) {
     let tool_output: serde_json::Value =
         serde_json::from_str(content).expect("compress tool result should be valid json");
     assert_eq!(tool_output["success"], true);
@@ -293,8 +307,7 @@ fn assert_compress_tool_result_scheduled(content: &str) {
         .expect("compress tool output should include stdout text");
     let stdout_json: serde_json::Value =
         serde_json::from_str(stdout).expect("compress stdout should be valid json");
-    assert_eq!(stdout_json["ok"], true);
-    assert_eq!(stdout_json["scheduled"], true);
+    assert_eq!(stdout_json["compressed"], true);
 }
 
 fn token_rich_payload(label: &str, words: usize) -> String {
@@ -460,15 +473,27 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let read_one = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-1"));
-    let read_two = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-2"));
-    let read_three = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-3"));
+    let read_one = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-1")
+    });
+    let read_two = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-2")
+    });
+    let read_three = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-3")
+    });
 
     if let Some(read_one) = read_one {
         assert!(read_one.content.starts_with("[deduplicated tool result]"));
@@ -637,15 +662,27 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let read_a_1 = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-a-1"));
-    let read_b = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-b"));
-    let read_a_2 = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-a-2"));
+    let read_a_1 = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-a-1")
+    });
+    let read_b = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-b")
+    });
+    let read_a_2 = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-a-2")
+    });
 
     if let Some(read_a_1) = read_a_1 {
         assert!(read_a_1.content.starts_with("[deduplicated tool result]"));
@@ -810,15 +847,27 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let read_one = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-1"));
-    let write_one = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-write-1"));
-    let read_two = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-read-2"));
+    let read_one = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-1")
+    });
+    let write_one = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-write-1")
+    });
+    let read_two = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-read-2")
+    });
 
     if let Some(read_one) = read_one {
         assert_eq!(read_one.content, "setting_a=1\nsetting_b=2");
@@ -1060,10 +1109,13 @@ async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    if let Some(sub_agent_tool) = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("sub-agent-wait-old"))
-    {
+    if let Some(sub_agent_tool) = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("sub-agent-wait-old")
+    }) {
         assert!(sub_agent_tool.content.contains("SUB_AGENT_MARKER"));
         assert!(!sub_agent_tool.is_externalized());
         assert!(!sub_agent_tool.is_pruned());
@@ -1154,7 +1206,13 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let messages = executor.session().memory.get_messages();
     let old_tool = messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("old-anchor"))
+        .find(|message| {
+            message
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str())
+                == Some("old-anchor")
+        })
         .expect("old tool message should exist after runtime compaction");
     assert!(!old_tool.is_pruned());
     assert!(old_tool.content.contains(anchor));
@@ -1452,9 +1510,13 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let after_summary = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("after-summary-1"));
+    let after_summary = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("after-summary-1")
+    });
 
     assert_tool_payload_compacted_or_removed(
         messages,
@@ -1477,7 +1539,13 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     init_test_tracing();
 
     let llm_provider = Arc::new(SequencedLlmProvider::new(vec![
-        tool_call_response("compress", serde_json::json!({})),
+        tool_call_response(
+            "compress",
+            serde_json::json!({
+                "reason": "free_context",
+                "preserve": "Compression e2e checkpoint: preserve seeded old context before final answer."
+            }),
+        ),
         super::helpers::structured_final_answer_response("done"),
     ]));
     let app_state = setup_web_test_with_compaction_budget(llm_provider.clone());
@@ -1559,16 +1627,21 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
     assert!(
-        messages.iter().any(|message| message
-            .content
-            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
-        "runtime manual compaction should insert a Codex-style compacted summary"
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "runtime manual compaction should create an active block in compaction state"
     );
-    if let Some(tool_result) = messages
-        .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
-    {
-        assert_compress_tool_result_scheduled(&tool_result.content);
+    if let Some(tool_result) = messages.iter().find(|message| {
+        message
+            .tool_call_correlation
+            .as_ref()
+            .map(|c| c.invocation_id.as_str())
+            == Some("call-compress")
+    }) {
+        assert_compress_tool_result_applied(&tool_result.content);
     }
 
     server.abort();
@@ -1676,16 +1749,18 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
     let messages = executor.session().memory.get_messages();
 
     assert!(
-        messages.iter().any(|message| message
-            .content
-            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
-        "runtime compaction should insert a Codex-style compacted summary"
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "runtime compaction should create an active block in compaction state"
     );
     if let Some(compress_result) = messages
         .iter()
         .find(|message| message.tool_name.as_deref() == Some("compress"))
     {
-        assert_compress_tool_result_scheduled(&compress_result.content);
+        assert_compress_tool_result_applied(&compress_result.content);
     }
     if let Some(write_todos_result) = messages
         .iter()

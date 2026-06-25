@@ -2,17 +2,17 @@
 
 //! Sandbox manager facade used when no sandbox backend feature is compiled.
 
+use super::error::SandboxError;
 use super::{
     SandboxApplyFileEditResult, SandboxEditReadGuard, SandboxFileEdit, SandboxFileListing,
     SandboxScope,
 };
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-fn unavailable() -> anyhow::Error {
-    anyhow::anyhow!(
-        "sandbox support is not compiled; enable sandbox-backend-docker-direct or sandbox-daemon"
+fn unavailable() -> SandboxError {
+    SandboxError::BackendNotCompiled(
+        "sandbox support is not compiled; enable sandbox-backend-docker-direct or sandbox-daemon",
     )
 }
 
@@ -131,32 +131,41 @@ pub struct SandboxManager {
 }
 
 impl SandboxManager {
-    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self, SandboxError> {
         Ok(Self {
             scope: scope.into(),
         })
     }
 
-    pub async fn list_user_sandboxes(_user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+    pub async fn list_user_sandboxes(
+        _user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         Err(unavailable())
     }
 
     pub async fn inspect_sandbox_by_name(
         _user_id: i64,
         _container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>> {
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn ensure_scope_sandbox(_scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn ensure_scope_sandbox(
+        _scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn recreate_scope_sandbox(_scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn recreate_scope_sandbox(
+        _scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn delete_sandbox_by_name(_user_id: i64, _container_name: &str) -> Result<bool> {
+    pub async fn delete_sandbox_by_name(
+        _user_id: i64,
+        _container_name: &str,
+    ) -> Result<bool, SandboxError> {
         Err(unavailable())
     }
 
@@ -175,7 +184,7 @@ impl SandboxManager {
         &self.scope
     }
 
-    pub async fn create_sandbox(&mut self) -> Result<()> {
+    pub async fn create_sandbox(&mut self) -> Result<(), SandboxError> {
         Err(unavailable())
     }
 
@@ -183,39 +192,43 @@ impl SandboxManager {
         &mut self,
         _cmd: &str,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn write_file(&mut self, _path: &str, _content: &[u8]) -> Result<()> {
+    pub async fn write_file(&mut self, _path: &str, _content: &[u8]) -> Result<(), SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn read_file(&mut self, _path: &str) -> Result<Vec<u8>> {
+    pub async fn read_file(&mut self, _path: &str) -> Result<Vec<u8>, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn upload_file(&mut self, _container_path: &str, _content: &[u8]) -> Result<()> {
+    pub async fn upload_file(
+        &mut self,
+        _container_path: &str,
+        _content: &[u8],
+    ) -> Result<(), SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn download_file(&mut self, _container_path: &str) -> Result<Vec<u8>> {
+    pub async fn download_file(&mut self, _container_path: &str) -> Result<Vec<u8>, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn get_uploads_size(&mut self) -> Result<u64> {
+    pub async fn get_uploads_size(&mut self) -> Result<u64, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+    pub async fn cleanup_old_downloads(&mut self) -> Result<u64, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn destroy(&mut self) -> Result<()> {
+    pub async fn destroy(&mut self) -> Result<(), SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn recreate(&mut self) -> Result<()> {
+    pub async fn recreate(&mut self) -> Result<(), SandboxError> {
         Err(unavailable())
     }
 
@@ -223,11 +236,11 @@ impl SandboxManager {
         &mut self,
         _container_path: &str,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         Err(unavailable())
     }
 
-    pub async fn list_files(&mut self, _path: &str) -> Result<SandboxFileListing> {
+    pub async fn list_files(&mut self, _path: &str) -> Result<SandboxFileListing, SandboxError> {
         Err(unavailable())
     }
 
@@ -236,7 +249,7 @@ impl SandboxManager {
         _path: &str,
         _edit: SandboxFileEdit,
         _read_guard: Option<SandboxEditReadGuard>,
-    ) -> Result<SandboxApplyFileEditResult> {
+    ) -> Result<SandboxApplyFileEditResult, SandboxError> {
         Err(unavailable())
     }
 }

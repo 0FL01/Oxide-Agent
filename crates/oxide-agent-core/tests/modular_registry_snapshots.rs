@@ -463,9 +463,6 @@ fn allowed_provider_names_for_enabled_modules(
             "llm-provider/anthropic" => {
                 allowed.extend(["llm-provider/anthropic", "anthropic"]);
             }
-            "llm-provider/mistral" => {
-                allowed.extend(["llm-provider/mistral", "mistral"]);
-            }
             "llm-provider/openai-chatgpt" => {
                 allowed.extend(["llm-provider/openai-chatgpt", "chatgpt", "openai-chatgpt"]);
             }

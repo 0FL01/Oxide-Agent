@@ -17,14 +17,6 @@ use std::fmt;
 use std::str::FromStr;
 
 // LLM provider defaults
-/// Default temperature used for Mistral text requests.
-pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
-/// Temperature used for Mistral reasoning chat requests.
-pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
-/// Temperature used when Mistral runs tool-enabled chat requests.
-pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
-/// Temperature for Mistral audio transcription requests.
-pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Default temperature used for OpenRouter text requests.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for generic OpenAI-compatible text requests.
@@ -130,10 +122,31 @@ pub struct AgentSettings {
     /// Media model context window tokens override.
     pub media_model_context_window_tokens: Option<u32>,
 
+    /// Enable Browser Live Agent configuration.
+    pub browser_agent_enabled: Option<bool>,
+    /// Browser Live Agent sidecar REST base URL.
+    pub browser_agent_sidecar_base_url: Option<String>,
+    /// Browser Live Agent sidecar WebSocket URL.
+    pub browser_agent_sidecar_ws_url: Option<String>,
+    /// Browser Live Agent sidecar bearer token.
+    pub browser_agent_sidecar_token: Option<String>,
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
     /// Sub-agent timeout in seconds
     pub sub_agent_timeout_secs: Option<u64>,
+}
+
+/// Resolved Browser Live Agent runtime settings.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BrowserAgentSettings {
+    /// Whether Browser Live Agent is enabled at runtime.
+    pub enabled: bool,
+    /// Sidecar REST base URL.
+    pub sidecar_base_url: Option<String>,
+    /// Sidecar WebSocket URL.
+    pub sidecar_ws_url: Option<String>,
+    /// Sidecar bearer token.
+    pub sidecar_token: Option<String>,
 }
 
 /// Runtime config for a single capability module.
@@ -358,6 +371,15 @@ impl AgentSettings {
     ///
     /// Returns a `ConfigError` if loading fails.
     pub fn new() -> Result<Self, ConfigError> {
+        // Prime the Models.dev catalog before validation so vision capability
+        // checks (MEDIA_MODEL route validation) have data available.
+        #[cfg(oxide_module_llm_provider_opencode_go)]
+        {
+            crate::llm::providers::opencode_go::discovery::init_models_dev_catalog(
+                reqwest::Client::new(),
+            );
+        }
+
         let mut settings: Self = build_config()?.try_deserialize()?;
         settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();
@@ -377,6 +399,7 @@ impl AgentSettings {
         settings.validate_route_providers()?;
         settings.canonicalize_route_provider_ids()?;
         settings.validate_route_model_capabilities()?;
+        settings.validate_browser_agent_config()?;
         settings.validate_route_credentials()?;
 
         Ok(settings)
@@ -496,6 +519,40 @@ impl AgentSettings {
                     route.provider, route.id
                 )));
             }
+        }
+
+        Ok(())
+    }
+
+    fn validate_browser_agent_config(&self) -> Result<(), ConfigError> {
+        if !self.is_browser_agent_enabled() {
+            return Ok(());
+        }
+
+        if self
+            .browser_agent_sidecar_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(ConfigError::Message(
+                "Critical: BROWSER_AGENT_ENABLED=true requires BROWSER_AGENT_SIDECAR_BASE_URL"
+                    .to_string(),
+            ));
+        }
+
+        if self
+            .browser_agent_sidecar_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(ConfigError::Message(
+                "Critical: BROWSER_AGENT_ENABLED=true requires BROWSER_AGENT_SIDECAR_TOKEN"
+                    .to_string(),
+            ));
         }
 
         Ok(())
@@ -625,7 +682,7 @@ impl AgentSettings {
     }
 
     fn configured_route_provider_values(&self) -> impl Iterator<Item = &str> {
-        let direct_providers = [
+        let direct_providers = vec![
             self.agent_model_provider.as_deref(),
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
@@ -997,7 +1054,25 @@ impl AgentSettings {
     }
 
     /// Returns the configured weighted routes for the sub-agent.
+    ///
+    /// Falls back to the main-agent routes when no explicit sub-agent model is
+    /// configured. Use [`explicit_sub_agent_model_routes`] when you need to
+    /// distinguish "explicitly configured" from "inherited/fallback".
     pub fn get_configured_sub_agent_model_routes(&self) -> Vec<ModelInfo> {
+        let routes = self.explicit_sub_agent_model_routes();
+        if !routes.is_empty() {
+            return routes;
+        }
+        self.get_configured_agent_model_routes()
+    }
+
+    /// Returns the explicitly configured sub-agent routes (env/config only).
+    ///
+    /// Unlike [`get_configured_sub_agent_model_routes`], this does NOT fall back
+    /// to the main-agent routes. The delegation provider uses this to decide
+    /// whether to use an explicit sub-agent model, an inherited parent session
+    /// model, or the global agent-route fallback.
+    pub fn explicit_sub_agent_model_routes(&self) -> Vec<ModelInfo> {
         let routes = self
             .sub_agent_model_routes
             .as_deref()
@@ -1018,7 +1093,7 @@ impl AgentSettings {
         if self.sub_agent_model_spec().is_some() {
             vec![self.resolve_execution_model(true)]
         } else {
-            self.get_configured_agent_model_routes()
+            Vec::new()
         }
     }
 
@@ -1086,6 +1161,19 @@ impl AgentSettings {
         )
     }
 
+    /// Returns the internal sub-agent context budget for a specific model,
+    /// using the main-agent budget as the default floor.
+    ///
+    /// This allows sub-agents that inherit the parent session's model (e.g. a
+    /// web UI model selection) to compute the context budget from the inherited
+    /// model's context window rather than the global sub-agent configuration.
+    pub fn sub_agent_internal_context_budget_for_model(&self, model: &ModelInfo) -> usize {
+        resolve_internal_context_budget_tokens(
+            model.context_window_tokens,
+            self.get_agent_internal_context_budget_tokens(),
+        )
+    }
+
     fn inherited_sub_agent_context_window_tokens(&self) -> u32 {
         let inherited = self.get_configured_agent_model().context_window_tokens;
         if inherited == 0 {
@@ -1109,6 +1197,23 @@ impl AgentSettings {
         (String::new(), String::new())
     }
 
+    /// Returns true when Browser Live Agent is explicitly enabled.
+    #[must_use]
+    pub fn is_browser_agent_enabled(&self) -> bool {
+        self.browser_agent_enabled.unwrap_or(false)
+    }
+
+    /// Returns resolved Browser Live Agent settings.
+    #[must_use]
+    pub fn get_browser_agent_settings(&self) -> BrowserAgentSettings {
+        BrowserAgentSettings {
+            enabled: self.is_browser_agent_enabled(),
+            sidecar_base_url: non_empty_string(&self.browser_agent_sidecar_base_url),
+            sidecar_ws_url: non_empty_string(&self.browser_agent_sidecar_ws_url),
+            sidecar_token: non_empty_string(&self.browser_agent_sidecar_token),
+        }
+    }
+
     /// Returns the configured agent timeout in seconds
     pub fn get_agent_timeout_secs(&self) -> u64 {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
@@ -1129,6 +1234,14 @@ impl AgentSettings {
     }
 }
 
+fn non_empty_string(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
     use std::sync::OnceLock;
@@ -1145,10 +1258,10 @@ mod tests {
     use std::env;
 
     #[cfg(any(
-        feature = "llm-minimax",
-        feature = "llm-openai-base",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
     ))]
     fn clear_model_route_env() {
         let keys: Vec<String> = env::vars()
@@ -1163,7 +1276,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     fn clear_opencode_go_env() {
         for key in [
             "OPENCODE_API_KEY",
@@ -1177,8 +1290,49 @@ mod tests {
         }
     }
 
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    fn clear_browser_agent_env() {
+        for key in [
+            "BROWSER_AGENT_ENABLED",
+            "BROWSER_AGENT_SIDECAR_BASE_URL",
+            "BROWSER_AGENT_SIDECAR_WS_URL",
+            "BROWSER_AGENT_SIDECAR_TOKEN",
+            "MEDIA_MODEL_ID",
+            "MEDIA_MODEL_PROVIDER",
+            "MEDIA_MODEL_MAX_OUTPUT_TOKENS",
+            "MEDIA_MODEL_CONTEXT_WINDOW_TOKENS",
+        ] {
+            test_remove_env(key);
+        }
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    fn set_minimal_opencode_go_agent_env() {
+        clear_model_route_env();
+        clear_opencode_go_env();
+        test_set_env("OPENCODE_GO_API_KEY", "test-opencode-go-key");
+        test_set_env("AGENT_MODEL_ID", "deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "opencode-go");
+        test_set_env("AGENT_MODEL_MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_CONTEXT_WINDOW_TOKENS", "240000");
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    fn clear_minimal_opencode_go_agent_env() {
+        clear_opencode_go_env();
+        clear_model_route_env();
+        for key in [
+            "AGENT_MODEL_ID",
+            "AGENT_MODEL_PROVIDER",
+            "AGENT_MODEL_MAX_OUTPUT_TOKENS",
+            "AGENT_MODEL_CONTEXT_WINDOW_TOKENS",
+        ] {
+            test_remove_env(key);
+        }
+    }
+
     // Tests run sequentially to avoid environment variable race conditions
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
@@ -1314,7 +1468,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openai-base")]
+    #[cfg(oxide_module_llm_provider_openai_base)]
     #[test]
     fn route_validation_accepts_openai_base_zai_instance() {
         let _guard = test_env_mutex()
@@ -1393,7 +1547,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_validation_accepts_compiled_provider_alias_and_id() {
         let settings = AgentSettings {
@@ -1409,7 +1563,7 @@ mod tests {
             .expect("compiled provider alias and id should validate");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_validation_rejects_disabled_provider_module() {
         let mut settings = AgentSettings {
@@ -1431,7 +1585,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_provider_canonicalization_rewrites_aliases_to_module_ids() {
         let mut settings = AgentSettings {
@@ -1493,7 +1647,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_model_validation_rejects_unapproved_openrouter_agent_model() {
         let mut settings = AgentSettings {
@@ -1516,7 +1670,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn route_model_validation_rejects_unapproved_openrouter_media_model() {
         let mut settings = AgentSettings {
@@ -1541,7 +1695,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn route_credentials_validation_resolves_provider_module_ids() {
         let _guard = test_env_mutex()
@@ -1560,6 +1714,105 @@ mod tests {
 
         assert!(error.to_string().contains("OPENCODE_API_KEY"));
         clear_opencode_go_env();
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    #[test]
+    fn browser_agent_config_defaults_to_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_minimal_opencode_go_agent_env();
+        clear_browser_agent_env();
+
+        let settings = AgentSettings::new()?;
+
+        assert!(!settings.is_browser_agent_enabled());
+        let browser = settings.get_browser_agent_settings();
+        assert!(!browser.enabled);
+        assert!(browser.sidecar_base_url.is_none());
+        assert!(browser.sidecar_token.is_none());
+
+        clear_browser_agent_env();
+        clear_minimal_opencode_go_agent_env();
+        Ok(())
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    #[test]
+    fn browser_agent_config_keeps_existing_media_model_when_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let mut mock = std::collections::HashMap::new();
+        mock.insert("mimo-v2.5".to_string(), true);
+        crate::llm::providers::opencode_go::discovery::init_models_dev_catalog_for_tests(mock);
+
+        set_minimal_opencode_go_agent_env();
+        clear_browser_agent_env();
+        test_set_env("MEDIA_MODEL_ID", "mimo-v2.5");
+        test_set_env("MEDIA_MODEL_PROVIDER", "opencode-go");
+
+        let settings = AgentSettings::new()?;
+        let (media_id, media_provider) = settings.get_media_model();
+
+        assert!(!settings.is_browser_agent_enabled());
+        assert_eq!(media_id, "mimo-v2.5");
+        assert_eq!(media_provider, "llm-provider/opencode-go");
+
+        clear_browser_agent_env();
+        clear_minimal_opencode_go_agent_env();
+        Ok(())
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    #[test]
+    fn browser_agent_config_parses_enabled() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_minimal_opencode_go_agent_env();
+        clear_browser_agent_env();
+        test_set_env("BROWSER_AGENT_ENABLED", "true");
+        test_set_env(
+            "BROWSER_AGENT_SIDECAR_BASE_URL",
+            "http://browser-sidecar:8787",
+        );
+        test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
+
+        let settings = AgentSettings::new()?;
+        let browser = settings.get_browser_agent_settings();
+
+        assert!(browser.enabled);
+        assert_eq!(
+            browser.sidecar_base_url.as_deref(),
+            Some("http://browser-sidecar:8787")
+        );
+        assert_eq!(browser.sidecar_token.as_deref(), Some("test-browser-token"));
+
+        clear_browser_agent_env();
+        clear_minimal_opencode_go_agent_env();
+        Ok(())
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    #[test]
+    fn browser_agent_config_rejects_missing_sidecar_url() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_minimal_opencode_go_agent_env();
+        clear_browser_agent_env();
+        test_set_env("BROWSER_AGENT_ENABLED", "true");
+        test_set_env("BROWSER_AGENT_SIDECAR_TOKEN", "test-browser-token");
+
+        let error = AgentSettings::new().expect_err("missing sidecar URL should fail");
+
+        assert!(error.to_string().contains("BROWSER_AGENT_SIDECAR_BASE_URL"));
+        clear_browser_agent_env();
+        clear_minimal_opencode_go_agent_env();
     }
 
     #[test]
@@ -1665,7 +1918,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "llm-minimax", feature = "llm-openai-base"))]
+    #[cfg(all(
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_openai_base
+    ))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1724,7 +1980,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_resolves_opencode_go_module_env_config() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1773,7 +2029,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_bootstraps_opencode_go_route_from_api_key_only() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1804,7 +2060,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_do_not_require_unrelated_provider_key_when_active_routes_use_opencode_go()
     -> Result<(), ConfigError> {
@@ -1840,7 +2096,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn settings_error_when_active_opencode_go_key_missing() {
         let _guard = test_env_mutex()

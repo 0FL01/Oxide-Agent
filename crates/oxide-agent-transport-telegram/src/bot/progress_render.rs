@@ -10,6 +10,7 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     ));
     lines.push(String::new());
 
+    push_browser_milestone(&mut lines, state);
     push_current_thought(&mut lines, state);
     push_todos(&mut lines, state);
     push_context(&mut lines, state);
@@ -67,12 +68,155 @@ pub fn render_progress_html(state: &ProgressState) -> String {
 
 fn push_current_thought(lines: &mut Vec<String>, state: &ProgressState) {
     if let Some(ref thought) = state.current_thought {
+        if is_browser_live_progress(thought) {
+            return;
+        }
         lines.push("💭 <i>Agent thoughts:</i>".to_string());
         lines.push(format!(
             "   {}",
             html_escape::encode_text(&oxide_agent_core::utils::truncate_str(thought, 120))
         ));
         lines.push(String::new());
+    }
+}
+
+fn push_browser_milestone(lines: &mut Vec<String>, state: &ProgressState) {
+    let Some(ref thought) = state.current_thought else {
+        return;
+    };
+    let Some(milestone) = BrowserMilestone::parse(thought) else {
+        return;
+    };
+
+    lines.push("🌐 <b>Browser:</b>".to_string());
+    lines.push(format!(
+        "   {}",
+        html_escape::encode_text(&oxide_agent_core::utils::truncate_str(
+            milestone.summary(),
+            180,
+        ))
+    ));
+    if let Some(blocked_reason) = milestone.blocked_reason() {
+        lines.push(format!(
+            "   Blocked: {}",
+            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(blocked_reason, 180))
+        ));
+    }
+    lines.push(
+        "   Telegram shows milestones/final reports only; live screenshots stay as artifacts."
+            .to_string(),
+    );
+    lines.push(String::new());
+}
+
+fn is_browser_live_progress(summary: &str) -> bool {
+    summary.starts_with("Browser")
+}
+
+/// Typed browser milestone kind. Parsing rejects unknown kinds, so the
+/// exhaustive matches in [`BrowserMilestone::summary`] and
+/// [`BrowserMilestone::blocked_reason`] are verified by the compiler — adding
+/// a variant here is a compile-time prompt to update every consumer, instead
+/// of a runtime `unreachable!` panic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserMilestoneKind {
+    Action,
+    Verification,
+    Recovery,
+}
+
+impl BrowserMilestoneKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "BrowserAction" => Some(Self::Action),
+            "BrowserVerification" => Some(Self::Verification),
+            "BrowserRecovery" => Some(Self::Recovery),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserMilestone<'a> {
+    kind: BrowserMilestoneKind,
+    session_id: Option<&'a str>,
+    action_seq: Option<&'a str>,
+    status: Option<&'a str>,
+    action_kind: Option<&'a str>,
+}
+
+impl<'a> BrowserMilestone<'a> {
+    fn parse(summary: &'a str) -> Option<Self> {
+        let (kind_str, rest) = summary.split_once(' ')?;
+        let kind = BrowserMilestoneKind::parse(kind_str)?;
+
+        let mut milestone = Self {
+            kind,
+            session_id: None,
+            action_seq: None,
+            status: None,
+            action_kind: None,
+        };
+        for part in rest.split_whitespace() {
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            match key {
+                "session_id" => milestone.session_id = Some(value),
+                "action_seq" => milestone.action_seq = Some(value),
+                "status" => milestone.status = Some(value),
+                "kind" => milestone.action_kind = Some(value),
+                _ => {}
+            }
+        }
+        Some(milestone)
+    }
+
+    fn summary(&self) -> String {
+        let seq = self
+            .action_seq
+            .map(|value| format!(" step {value}"))
+            .unwrap_or_default();
+        let session = self
+            .session_id
+            .map(|value| format!(" ({value})"))
+            .unwrap_or_default();
+        match self.kind {
+            BrowserMilestoneKind::Action => format!(
+                "Action{seq}: {}{session}",
+                self.action_kind.unwrap_or("planned")
+            ),
+            BrowserMilestoneKind::Verification => format!(
+                "Verification{seq}: {}{session}",
+                self.status.unwrap_or("unknown")
+            ),
+            BrowserMilestoneKind::Recovery => format!(
+                "Recovery{seq}: {} {}{session}",
+                self.status.unwrap_or("unknown"),
+                self.action_kind.unwrap_or("unknown")
+            ),
+        }
+    }
+
+    fn blocked_reason(&self) -> Option<&'static str> {
+        match self.kind {
+            BrowserMilestoneKind::Verification
+                if matches!(
+                    self.status,
+                    Some("NeedsUser" | "VerificationFailed" | "Timeout")
+                ) =>
+            {
+                Some(
+                    "autonomous browser progress stopped for safety; user input or diagnostics are required",
+                )
+            }
+            BrowserMilestoneKind::Recovery
+                if matches!(self.status, Some("SafeStopped" | "RepeatedLoopStopped")) =>
+            {
+                Some("bounded recovery could not continue safely")
+            }
+            _ => None,
+        }
     }
 }
 
@@ -491,13 +635,13 @@ mod tests {
             max_attempts: 5,
             unbounded: false,
             wait_secs: Some(30),
-            provider: "mistral".to_string(),
+            provider: "openrouter".to_string(),
         });
 
         let output = render_progress_html(&state);
 
         assert!(output.contains("🔄 <b>Rate limited</b>"));
-        assert!(output.contains("mistral"));
+        assert!(output.contains("openrouter"));
         assert!(output.contains("Attempt 2/5"));
         assert!(output.contains("~30s"));
     }
@@ -542,5 +686,55 @@ mod tests {
         assert!(output.contains("Attempt 16 - retrying"));
         assert!(!output.contains("Attempt 16/16"));
         assert!(!output.contains("Rate limited"));
+    }
+
+    #[test]
+    fn renders_browser_milestone_without_live_frame_spam() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserAction session_id=browser-1 action_seq=7 kind=click".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("<b>Browser:</b>"));
+        assert!(output.contains("Action step 7: click"));
+        assert!(output.contains("milestones/final reports only"));
+        assert!(!output.contains("Agent thoughts"));
+        assert!(!output.contains("artifact://"));
+    }
+
+    #[test]
+    fn renders_browser_blocked_safe_stop_report() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserRecovery session_id=browser-1 action_seq=7 status=SafeStopped kind=LowConfidence"
+                .to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("Recovery step 7: SafeStopped LowConfidence"));
+        assert!(output.contains("Blocked:"));
+        assert!(output.contains("bounded recovery could not continue safely"));
+    }
+
+    #[test]
+    fn suppresses_browser_observe_progress_by_default() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "Browser session browser-1 observed at action_seq 7".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(!output.contains("Browser session browser-1 observed"));
+        assert!(!output.contains("Agent thoughts"));
     }
 }

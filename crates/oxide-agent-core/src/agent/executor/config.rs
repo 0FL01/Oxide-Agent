@@ -8,7 +8,7 @@ use crate::agent::hooks::{
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
-use crate::agent::wiki_memory::WikiStore;
+use crate::agent::wiki_memory::{WikiPromptContextProvider, WikiStore};
 use crate::config::ModelInfo;
 use crate::config::get_agent_search_limit;
 use crate::llm::LlmClient;
@@ -79,15 +79,29 @@ impl AgentExecutor {
             tool_policy_state,
             hook_policy_state,
             compaction_controller,
+            dynamic_prompt_context_provider: None,
             wiki_memory_store: None,
             last_topic_infra_preflight_summary: None,
+            storage: None,
         }
     }
 
     /// Attach the durable LLM Wiki memory store used for bounded prompt context.
     #[must_use]
     pub fn with_wiki_memory_store(mut self, store: WikiStore) -> Self {
+        self.dynamic_prompt_context_provider =
+            Some(Arc::new(WikiPromptContextProvider::new(store.clone())));
         self.wiki_memory_store = Some(store);
+        self
+    }
+
+    /// Attach a dynamic prompt context provider used for bounded per-run context blocks.
+    #[must_use]
+    pub fn with_dynamic_prompt_context_provider(
+        mut self,
+        provider: Arc<dyn crate::agent::prompt::DynamicPromptContextProvider>,
+    ) -> Self {
+        self.dynamic_prompt_context_provider = Some(provider);
         self
     }
 
@@ -99,7 +113,17 @@ impl AgentExecutor {
 
     /// Attach or replace the durable LLM Wiki memory store for this executor.
     pub fn set_wiki_memory_store(&mut self, store: WikiStore) {
+        self.dynamic_prompt_context_provider =
+            Some(Arc::new(WikiPromptContextProvider::new(store.clone())));
         self.wiki_memory_store = Some(store);
+    }
+
+    /// Attach or replace the dynamic prompt context provider for this executor.
+    pub fn set_dynamic_prompt_context_provider(
+        &mut self,
+        provider: Arc<dyn crate::agent::prompt::DynamicPromptContextProvider>,
+    ) {
+        self.dynamic_prompt_context_provider = Some(provider);
     }
 
     /// Apply the latest execution profile for the next task run.
@@ -192,6 +216,14 @@ impl AgentExecutor {
         if let Some(control_plane) = self.manager_control_plane.as_mut() {
             control_plane.topic_lifecycle = Some(topic_lifecycle);
         }
+        self
+    }
+
+    /// Attach durable storage for tool modules that need Postgres
+    /// (e.g. browser-live screenshot artifacts).
+    #[must_use]
+    pub fn with_storage(mut self, storage: Arc<dyn StorageProvider>) -> Self {
+        self.storage = Some(storage);
         self
     }
 }

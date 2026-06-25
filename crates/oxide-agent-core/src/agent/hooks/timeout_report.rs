@@ -1,4 +1,6 @@
 //! Hook for generating a structured report when a timeout is reached.
+//!
+//! Documentation: `docs/hooks/timeout-report.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
@@ -31,7 +33,9 @@ impl TimeoutReportHook {
             "stats": {
                 "iterations": context.iteration,
                 "continuation_count": context.continuation_count,
-                "tokens_used": context.token_count,
+                "tokens_used": context.rendered_tokens,
+                "rendered_tokens": context.rendered_tokens,
+                "raw_tokens": context.raw_tokens,
                 "max_tokens": context.max_tokens,
             },
             "todos": &context.todos,

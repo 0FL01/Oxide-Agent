@@ -117,11 +117,6 @@ const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
             .with_env("CHATGPT_AUTH_PATH"),
     ];
 #[allow(dead_code)]
-const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "Mistral API key.")
-        .with_env("MISTRAL_API_KEY")
-        .secret()];
-#[allow(dead_code)]
 const ANTHROPIC_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[
         ModuleConfigProperty::string("api_key", "Anthropic API key.")
@@ -159,7 +154,7 @@ const OPENAI_BASE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     .with_default("1800"),
     ModuleConfigProperty::string(
         "providers.N.profile",
-        "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+        "Behavioral profile for provider instance N: 'generic' (default) or 'zai'. Controls response parsing, temperatures, streaming, thinking, and structured-output model gating.",
     )
     .with_env("OPENAI_BASE_PROVIDERS__N__PROFILE"),
 ];
@@ -334,14 +329,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module_with_config!(
         modules,
-        "llm-mistral",
-        "llm-provider/mistral",
-        LlmProvider,
-        ["llm-provider/mistral"],
-        MISTRAL_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
         "llm-minimax",
         "llm-provider/anthropic",
         LlmProvider,
@@ -454,6 +441,20 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         "tool/crw",
         Search,
         ["tool/crw-search", "tool/crw-scrape"]
+    );
+    push_module!(
+        modules,
+        "tool-browser-live",
+        "tool/browser-live",
+        Browser,
+        [
+            "tool/browser-start",
+            "tool/browser-observe",
+            "tool/browser-step",
+            "tool/browser-debug",
+            "tool/browser-close",
+            "tool/browser-save-screenshot"
+        ]
     );
     push_module_with_requires!(
         modules,
@@ -616,7 +617,37 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "storage-sqlx")]
+    #[cfg(oxide_module_tool_browser_live)]
+    #[test]
+    fn compiled_manifest_exposes_browser_live_tool_module() {
+        let manifest =
+            super::compiled_capability_manifest().expect("compiled manifest should be valid");
+        let module = manifest
+            .modules()
+            .iter()
+            .find(|module| module.id().as_str() == "tool/browser-live")
+            .expect("browser live module should be compiled");
+        let provides = module
+            .provides()
+            .iter()
+            .map(|capability| capability.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(module.kind(), crate::capabilities::CapabilityKind::Browser);
+        assert_eq!(
+            provides,
+            [
+                "tool/browser-close",
+                "tool/browser-debug",
+                "tool/browser-observe",
+                "tool/browser-save-screenshot",
+                "tool/browser-start",
+                "tool/browser-step"
+            ]
+        );
+    }
+
+    #[cfg(oxide_module_storage_sqlx)]
     #[test]
     fn compiled_manifest_exposes_compiled_durable_storage_backends() {
         let manifest =
@@ -635,7 +666,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn openrouter_module_declares_provider_config_schema() {
         let manifest =

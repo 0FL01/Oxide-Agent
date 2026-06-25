@@ -12,14 +12,20 @@ use tower_http::trace::TraceLayer;
 
 use super::types::is_production_run_mode;
 use super::{
-    AppState, api_bootstrap, api_cancel_task, api_change_password, api_create_agent_profile,
-    api_create_session_with_request, api_create_task, api_create_task_version,
-    api_delete_agent_profile, api_delete_session, api_download_task_file, api_get_session,
-    api_get_settings, api_get_task, api_get_task_events, api_get_task_progress,
-    api_list_agent_profiles, api_list_model_routes, api_list_sessions, api_list_tasks, api_login,
-    api_logout, api_me, api_public_config, api_refresh_model_routes, api_register, api_resume_task,
+    AppState, api_activate_life_generation, api_bootstrap, api_cancel_task, api_change_password,
+    api_create_agent_profile, api_create_life_link_token, api_create_session_with_request,
+    api_create_task, api_create_task_version, api_delete_agent_profile, api_delete_session,
+    api_download_artifact, api_download_task_file, api_forget_life_memory, api_get_life_profile,
+    api_get_life_state, api_get_session, api_get_settings, api_get_task, api_get_task_events,
+    api_get_task_progress, api_list_agent_profiles, api_list_life_events,
+    api_list_life_friction_patterns, api_list_life_generations, api_list_life_memories,
+    api_list_life_support_protocols, api_list_life_task_states, api_list_life_turns,
+    api_list_model_routes, api_list_sessions, api_list_tasks, api_login, api_logout, api_me,
+    api_privacy_hard_wipe_life, api_public_config, api_refresh_model_routes, api_register,
+    api_resume_task, api_soft_reset_life_generation, api_submit_life_input,
     api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_large_input, api_upload_task_attachments, auto_title, health, sse, static_assets,
+    api_upload_large_input, api_upload_task_attachments, api_wipe_life_derived_generation,
+    api_wipe_life_generation, auto_title, health, sse, static_assets,
 };
 
 pub fn build_router(state: AppState) -> Router {
@@ -39,6 +45,44 @@ pub fn build_router(state: AppState) -> Router {
             get(api_get_settings).patch(api_update_settings),
         )
         .route("/api/v1/model-routes", get(api_list_model_routes))
+        .route("/api/v1/life/state", get(api_get_life_state))
+        .route("/api/v1/life/state", delete(api_privacy_hard_wipe_life))
+        .route("/api/v1/life/inputs", post(api_submit_life_input))
+        .route("/api/v1/life/profile", get(api_get_life_profile))
+        .route("/api/v1/life/turns", get(api_list_life_turns))
+        .route("/api/v1/life/events", get(api_list_life_events))
+        .route("/api/v1/life/memories", get(api_list_life_memories))
+        .route(
+            "/api/v1/life/memories/:memory_id",
+            delete(api_forget_life_memory),
+        )
+        .route("/api/v1/life/task-states", get(api_list_life_task_states))
+        .route(
+            "/api/v1/life/friction-patterns",
+            get(api_list_life_friction_patterns),
+        )
+        .route(
+            "/api/v1/life/support-protocols",
+            get(api_list_life_support_protocols),
+        )
+        .route("/api/v1/life/link-tokens", post(api_create_life_link_token))
+        .route("/api/v1/life/generations", get(api_list_life_generations))
+        .route(
+            "/api/v1/life/generations/soft-reset",
+            post(api_soft_reset_life_generation),
+        )
+        .route(
+            "/api/v1/life/generations/:generation_id/activate",
+            post(api_activate_life_generation),
+        )
+        .route(
+            "/api/v1/life/generations/:generation_id",
+            delete(api_wipe_life_generation),
+        )
+        .route(
+            "/api/v1/life/generations/:generation_id/derived",
+            delete(api_wipe_life_derived_generation),
+        )
         .route(
             "/api/v1/model-routes/refresh",
             post(api_refresh_model_routes),
@@ -87,6 +131,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/files/:file_id",
             get(api_download_task_file),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/tasks/:task_id/artifacts/*path",
+            get(api_download_artifact),
         )
         .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/stream",
@@ -163,7 +211,7 @@ async fn add_web_response_headers(request: Request<Body>, next: Next) -> Respons
     headers.insert(
         CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
         ),
     );
     response

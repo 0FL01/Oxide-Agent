@@ -1,106 +1,111 @@
 //! Capability-oriented tool modules.
 
 use super::ToolExecutor;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use super::{
     OutputNormalizer, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::agent::progress::AgentEvent;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::providers::SandboxExecProvider;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::providers::SandboxFileOpsProvider;
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 use crate::agent::providers::SandboxLifecycleProvider;
 use crate::agent::providers::{SandboxRuntime, TodoList};
-#[cfg(feature = "tool-wiki-memory")]
 use crate::agent::session::AgentMemoryScope;
-#[cfg(feature = "tool-wiki-memory")]
 use crate::agent::wiki_memory::WikiStore;
 use crate::capabilities::ModuleId;
 use crate::config::AgentSettings;
 use crate::llm::LlmClient;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::llm::ToolDefinition;
+#[cfg(oxide_module_tool_browser_live)]
+use crate::sandbox::SandboxFileOps;
 use crate::sandbox::SandboxScope;
-#[cfg(feature = "tool-webfetch-md")]
 use async_trait::async_trait;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use serde::Deserialize;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use serde_json::{Value, json};
 use std::sync::Arc;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use std::sync::OnceLock;
 use tokio::sync::{Mutex, mpsc::Sender};
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 use crate::agent::providers::AgentsMdProvider;
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 use crate::agent::providers::BraveSearchProvider;
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 use crate::agent::providers::CompressionProvider;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 use crate::agent::providers::CrwProvider;
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 use crate::agent::providers::DelegationProvider;
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 use crate::agent::providers::FileHosterProvider;
+#[cfg(oxide_module_manager_control_plane)]
+use crate::agent::providers::ManagerControlPlaneProvider;
+use crate::agent::providers::ManagerTopicLifecycle;
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 use crate::agent::providers::MediaFileProvider;
-#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::ReminderContext;
+#[cfg(oxide_module_tool_reminder)]
+use crate::agent::providers::ReminderProvider;
+#[cfg(oxide_module_integration_ssh_mcp)]
 use crate::agent::providers::SshMcpProvider;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 use crate::agent::providers::StackLogsProvider;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 use crate::agent::providers::TavilyProvider;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 use crate::agent::providers::TodosProvider;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::WebFetchMdProvider;
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 use crate::agent::providers::WikiMemoryProvider;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::providers::YtdlpProvider;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
+use crate::agent::providers::webfetch_md::FetchedMarkdownDocument;
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::webfetch_md::WebMarkdownArgs;
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_tool_webfetch_md)]
+use crate::agent::providers::webfetch_md::{
+    DeliveryPayloadExtra, DeliveryStdoutExtra, MarkdownReadMode, delivery_success_payload,
+    no_cached_document_message, no_cached_document_payload, parse_read_mode,
+    render_delivery_stdout, require_url, resolve_output_window,
+};
+#[cfg(oxide_module_tool_browser_live)]
+use crate::agent::providers::{BrowserArtifactSettings, BrowserLiveProvider};
+#[cfg(oxide_module_integration_mcp_jira)]
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
-#[cfg(feature = "manager-control-plane")]
-use crate::agent::providers::{ManagerControlPlaneProvider, ManagerTopicLifecycle};
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
-#[cfg(feature = "tool-reminder")]
-use crate::agent::providers::{ReminderContext, ReminderProvider};
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(any(
-    feature = "tool-agents-md",
-    feature = "manager-control-plane",
-    feature = "integration-ssh-mcp"
-))]
 use crate::storage::StorageProvider;
-#[cfg(feature = "integration-ssh-mcp")]
 use crate::storage::TopicInfraConfigRecord;
 
 /// Topic-scoped context required by the AGENTS.md tools.
-#[cfg(feature = "tool-agents-md")]
 #[derive(Clone)]
+#[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
 pub struct AgentsMdModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_id: String,
 }
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
 impl AgentsMdModuleContext {
     /// Create a context for topic-scoped AGENTS.md tools.
     #[must_use]
@@ -114,15 +119,15 @@ impl AgentsMdModuleContext {
 }
 
 /// User-scoped context required by manager control-plane tools.
-#[cfg(feature = "manager-control-plane")]
 #[derive(Clone)]
+#[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
 pub struct ManagerControlPlaneModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
 impl ManagerControlPlaneModuleContext {
     /// Create a context for manager control-plane tools.
     #[must_use]
@@ -140,8 +145,8 @@ impl ManagerControlPlaneModuleContext {
 }
 
 /// Topic-scoped infrastructure context required by SSH MCP tools.
-#[cfg(feature = "integration-ssh-mcp")]
 #[derive(Clone)]
+#[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
 pub struct SshMcpModuleContext {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
@@ -149,7 +154,7 @@ pub struct SshMcpModuleContext {
     config: TopicInfraConfigRecord,
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
 impl SshMcpModuleContext {
     /// Create a context for topic-scoped SSH MCP tools.
     #[must_use]
@@ -168,6 +173,60 @@ impl SshMcpModuleContext {
     }
 }
 
+/// RAII cleanup contract for browser session lifecycle.
+///
+/// Implemented by `BrowserLiveProvider` when the browser-live module is
+/// compiled. Held by sub-agent execution to ensure all browser sessions
+/// are closed when the sub-agent ends (success, timeout, cancel, or error),
+/// preventing Chromium process leaks at the sidecar.
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
+#[async_trait]
+pub trait BrowserSessionCleanup: Send + Sync {
+    /// Close all browser sessions tracked by this provider.
+    async fn close_all_sessions(&self);
+}
+
+/// Context required by browser-live tools: durable storage for screenshot
+/// artifacts and transport-agnostic session scope for deletion.
+#[derive(Clone)]
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
+pub struct BrowserLiveModuleContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    context_key: String,
+}
+
+#[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
+impl BrowserLiveModuleContext {
+    /// Create a context for browser-live screenshot storage.
+    #[must_use]
+    pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64, context_key: String) -> Self {
+        Self {
+            storage,
+            user_id,
+            context_key,
+        }
+    }
+
+    /// Durable storage handle for saving/loading browser artifacts.
+    #[must_use]
+    pub fn storage(&self) -> Arc<dyn StorageProvider> {
+        Arc::clone(&self.storage)
+    }
+
+    /// Owning user ID.
+    #[must_use]
+    pub const fn user_id(&self) -> i64 {
+        self.user_id
+    }
+
+    /// Transport-agnostic session identifier (from `AgentMemoryScope`).
+    #[must_use]
+    pub fn context_key(&self) -> &str {
+        &self.context_key
+    }
+}
+
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
@@ -175,19 +234,15 @@ pub struct ToolModuleContext {
     sandbox_runtime: Arc<SandboxRuntime>,
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
-    #[cfg(feature = "tool-agents-md")]
     agents_md_context: Option<AgentsMdModuleContext>,
-    #[cfg(feature = "manager-control-plane")]
     manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
-    #[cfg(feature = "integration-ssh-mcp")]
     ssh_mcp_context: Option<SshMcpModuleContext>,
-    #[cfg(feature = "tool-reminder")]
+    browser_live_context: Option<BrowserLiveModuleContext>,
     reminder_context: Option<ReminderContext>,
-    #[cfg(feature = "tool-wiki-memory")]
     wiki_memory_store: Option<WikiStore>,
-    #[cfg(feature = "tool-wiki-memory")]
     memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
+    inherited_model: Option<crate::config::ModelInfo>,
 }
 
 /// Constructor arguments for [`ToolModuleContext`].
@@ -203,25 +258,26 @@ pub struct ToolModuleContextParts {
     /// Shared agent settings.
     pub settings: Arc<AgentSettings>,
     /// Optional AGENTS.md context.
-    #[cfg(feature = "tool-agents-md")]
     pub agents_md_context: Option<AgentsMdModuleContext>,
     /// Optional manager control-plane context.
-    #[cfg(feature = "manager-control-plane")]
     pub manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
     /// Optional topic infrastructure context for SSH MCP tools.
-    #[cfg(feature = "integration-ssh-mcp")]
     pub ssh_mcp_context: Option<SshMcpModuleContext>,
+    /// Optional browser-live context for screenshot storage.
+    pub browser_live_context: Option<BrowserLiveModuleContext>,
     /// Optional reminder context.
-    #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
     /// Optional durable wiki memory store.
-    #[cfg(feature = "tool-wiki-memory")]
     pub wiki_memory_store: Option<WikiStore>,
     /// Stable memory scope for wiki memory tools.
-    #[cfg(feature = "tool-wiki-memory")]
     pub memory_scope: AgentMemoryScope,
     /// Optional progress sender.
     pub progress_tx: Option<Sender<AgentEvent>>,
+    /// Parent session's effective model, inherited by sub-agents when no
+    /// explicit sub-agent model is configured. `None` when no per-session
+    /// override is active (e.g. Telegram, or web sessions using the bootstrap
+    /// default).
+    pub inherited_model: Option<crate::config::ModelInfo>,
 }
 
 impl ToolModuleContext {
@@ -234,19 +290,15 @@ impl ToolModuleContext {
             sandbox_runtime: parts.sandbox_runtime,
             llm_client: parts.llm_client,
             settings: parts.settings,
-            #[cfg(feature = "tool-agents-md")]
             agents_md_context: parts.agents_md_context,
-            #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: parts.manager_control_plane_context,
-            #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: parts.ssh_mcp_context,
-            #[cfg(feature = "tool-reminder")]
+            browser_live_context: parts.browser_live_context,
             reminder_context: parts.reminder_context,
-            #[cfg(feature = "tool-wiki-memory")]
             wiki_memory_store: parts.wiki_memory_store,
-            #[cfg(feature = "tool-wiki-memory")]
             memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
+            inherited_model: parts.inherited_model,
         }
     }
 
@@ -281,42 +333,49 @@ impl ToolModuleContext {
     }
 
     /// Optional context for topic-scoped AGENTS.md tools.
-    #[cfg(feature = "tool-agents-md")]
+    #[cfg_attr(not(oxide_module_tool_agents_md), allow(dead_code))]
     #[must_use]
     pub fn agents_md_context(&self) -> Option<AgentsMdModuleContext> {
         self.agents_md_context.clone()
     }
 
     /// Optional context for manager control-plane tools.
-    #[cfg(feature = "manager-control-plane")]
+    #[cfg_attr(not(oxide_module_manager_control_plane), allow(dead_code))]
     #[must_use]
     pub fn manager_control_plane_context(&self) -> Option<ManagerControlPlaneModuleContext> {
         self.manager_control_plane_context.clone()
     }
 
     /// Optional context for topic-scoped SSH MCP tools.
-    #[cfg(feature = "integration-ssh-mcp")]
+    #[cfg_attr(not(oxide_module_integration_ssh_mcp), allow(dead_code))]
     #[must_use]
     pub fn ssh_mcp_context(&self) -> Option<SshMcpModuleContext> {
         self.ssh_mcp_context.clone()
     }
 
+    /// Optional context for browser-live screenshot storage.
+    #[cfg_attr(not(oxide_module_tool_browser_live), allow(dead_code))]
+    #[must_use]
+    pub fn browser_live_context(&self) -> Option<BrowserLiveModuleContext> {
+        self.browser_live_context.clone()
+    }
+
     /// Optional context for reminder tools.
-    #[cfg(feature = "tool-reminder")]
+    #[cfg_attr(not(oxide_module_tool_reminder), allow(dead_code))]
     #[must_use]
     pub fn reminder_context(&self) -> Option<ReminderContext> {
         self.reminder_context.clone()
     }
 
     /// Optional durable wiki memory store.
-    #[cfg(feature = "tool-wiki-memory")]
+    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
     #[must_use]
     pub fn wiki_memory_store(&self) -> Option<WikiStore> {
         self.wiki_memory_store.clone()
     }
 
     /// Stable memory scope used by wiki memory tools.
-    #[cfg(feature = "tool-wiki-memory")]
+    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
     #[must_use]
     pub fn memory_scope(&self) -> AgentMemoryScope {
         self.memory_scope.clone()
@@ -326,6 +385,17 @@ impl ToolModuleContext {
     #[must_use]
     pub fn progress_tx(&self) -> Option<Sender<AgentEvent>> {
         self.progress_tx.clone()
+    }
+
+    /// Parent session's effective model for sub-agent inheritance.
+    ///
+    /// Returns the per-execution model override (e.g. from a web UI model
+    /// selection) that sub-agents should inherit when no explicit sub-agent
+    /// model is configured. `None` when no override is active.
+    #[cfg_attr(not(oxide_module_tool_delegation), allow(dead_code))]
+    #[must_use]
+    pub fn inherited_model(&self) -> Option<crate::config::ModelInfo> {
+        self.inherited_model.clone()
     }
 }
 
@@ -338,11 +408,64 @@ pub trait ToolModule {
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
 }
 
+/// Capability module for Browser Live autonomous browser tools.
+#[cfg(oxide_module_tool_browser_live)]
+pub struct BrowserLiveToolModule;
+
+#[cfg(oxide_module_tool_browser_live)]
+impl BrowserLiveToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<BrowserLiveProvider> {
+        let settings = ctx.settings();
+        let browser = settings.get_browser_agent_settings();
+        if !browser.enabled {
+            return None;
+        }
+        let base_url = browser.sidecar_base_url.as_deref()?;
+        let token = browser.sidecar_token.as_deref()?;
+        let live_ctx = ctx.browser_live_context()?;
+        let fileops: Arc<dyn SandboxFileOps> = ctx.sandbox_runtime();
+        BrowserLiveProvider::from_sidecar_config(
+            base_url,
+            token,
+            BrowserArtifactSettings::default(),
+            ctx.progress_tx(),
+            live_ctx.storage(),
+            live_ctx.user_id(),
+            live_ctx.context_key().to_string(),
+            Some(fileops),
+        )
+        .ok()
+    }
+
+    /// Build a shared browser-live provider wrapped in `Arc`.
+    ///
+    /// Unlike `tool_runtime_executors`, this exposes the `Arc<BrowserLiveProvider>`
+    /// so callers (e.g. sub-agent delegation) can hold it for RAII cleanup via
+    /// [`BrowserSessionCleanup::close_all_sessions`].
+    #[must_use]
+    pub fn shared_provider(&self, ctx: &ToolModuleContext) -> Option<Arc<BrowserLiveProvider>> {
+        self.provider(ctx).map(Arc::new)
+    }
+}
+
+#[cfg(oxide_module_tool_browser_live)]
+impl ToolModule for BrowserLiveToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/browser-live")
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
+}
+
 /// Capability module for the runner-handled `compress` tool.
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 pub struct CompressionToolModule;
 
-#[cfg(feature = "tool-compression")]
+#[cfg(oxide_module_tool_compression)]
 impl ToolModule for CompressionToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/compression")
@@ -354,10 +477,10 @@ impl ToolModule for CompressionToolModule {
 }
 
 /// Capability module for chat and external file delivery from sandbox files.
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 pub struct FileDeliveryToolModule;
 
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 impl ToolModule for FileDeliveryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/file-delivery")
@@ -370,10 +493,10 @@ impl ToolModule for FileDeliveryToolModule {
 }
 
 /// Capability module for topic-scoped AGENTS.md self-editing tools.
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 pub struct AgentsMdToolModule;
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 impl AgentsMdToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<AgentsMdProvider> {
         ctx.agents_md_context().map(|agents_md| {
@@ -382,7 +505,7 @@ impl AgentsMdToolModule {
     }
 }
 
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
@@ -396,16 +519,16 @@ impl ToolModule for AgentsMdToolModule {
 }
 
 /// Capability module for sub-agent delegation tools.
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 pub struct DelegationToolModule;
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 impl DelegationToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> DelegationProvider {
         let provider =
             DelegationProvider::new(ctx.llm_client(), ctx.sandbox_scope(), ctx.settings());
 
-        #[cfg(feature = "tool-agents-md")]
+        #[cfg(oxide_module_tool_agents_md)]
         let provider = if let Some(agents_md) = ctx.agents_md_context() {
             provider.with_topic_agents_md_context(
                 agents_md.storage,
@@ -416,11 +539,14 @@ impl DelegationToolModule {
             provider
         };
 
-        provider
+        #[cfg(oxide_module_tool_browser_live)]
+        let provider = provider.with_browser_live_context(ctx.browser_live_context());
+
+        provider.with_inherited_model(ctx.inherited_model())
     }
 }
 
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 impl ToolModule for DelegationToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/delegation")
@@ -432,10 +558,10 @@ impl ToolModule for DelegationToolModule {
 }
 
 /// Capability module for manager control-plane tools.
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub struct ManagerControlPlaneToolModule;
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 impl ManagerControlPlaneToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<ManagerControlPlaneProvider> {
         let manager = ctx.manager_control_plane_context()?;
@@ -447,7 +573,7 @@ impl ManagerControlPlaneToolModule {
     }
 }
 
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 impl ToolModule for ManagerControlPlaneToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("manager/control-plane")
@@ -461,13 +587,13 @@ impl ToolModule for ManagerControlPlaneToolModule {
 }
 
 /// Capability module for topic-scoped SSH MCP tools.
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub struct SshMcpToolModule;
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 static SSH_PRIVATE_KEY_CLEANUP_RESULT: OnceLock<Result<usize, String>> = OnceLock::new();
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 impl SshMcpToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SshMcpProvider> {
         let ssh = ctx.ssh_mcp_context()?;
@@ -496,7 +622,7 @@ impl SshMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 impl ToolModule for SshMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/ssh-mcp")
@@ -510,17 +636,17 @@ impl ToolModule for SshMcpToolModule {
 }
 
 /// Capability module for reminder scheduling tools.
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 pub struct ReminderToolModule;
 
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 impl ReminderToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<ReminderProvider> {
         ctx.reminder_context().map(ReminderProvider::new)
     }
 }
 
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 impl ToolModule for ReminderToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/reminder")
@@ -534,10 +660,10 @@ impl ToolModule for ReminderToolModule {
 }
 
 /// Capability module for scoped durable wiki memory tools.
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 pub struct WikiMemoryToolModule;
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 impl WikiMemoryToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<WikiMemoryProvider> {
         let store = ctx.wiki_memory_store()?;
@@ -550,7 +676,7 @@ impl WikiMemoryToolModule {
     }
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 impl ToolModule for WikiMemoryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/wiki-memory")
@@ -564,19 +690,27 @@ impl ToolModule for WikiMemoryToolModule {
 }
 
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
-    MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime())
+    match ctx.browser_live_context() {
+        Some(live_ctx) => MediaFileProvider::from_runtime_with_storage(
+            ctx.llm_client(),
+            ctx.sandbox_runtime(),
+            live_ctx.storage(),
+            live_ctx.user_id(),
+        ),
+        None => MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime()),
+    }
 }
 
 /// Capability module for audio file transcription.
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 pub struct MediaAudioToolModule;
 
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 impl ToolModule for MediaAudioToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-audio")
@@ -588,10 +722,10 @@ impl ToolModule for MediaAudioToolModule {
 }
 
 /// Capability module for image file description.
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 pub struct MediaImageToolModule;
 
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 impl ToolModule for MediaImageToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-image")
@@ -603,10 +737,10 @@ impl ToolModule for MediaImageToolModule {
 }
 
 /// Capability module for video file description.
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 pub struct MediaVideoToolModule;
 
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 impl ToolModule for MediaVideoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-video")
@@ -618,10 +752,10 @@ impl ToolModule for MediaVideoToolModule {
 }
 
 /// Capability module for Jira MCP tools.
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 pub struct JiraMcpToolModule;
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 impl JiraMcpToolModule {
     fn provider(&self) -> Option<JiraMcpProvider> {
         match JiraMcpConfig::from_env() {
@@ -649,36 +783,24 @@ impl JiraMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 impl ToolModule for JiraMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-jira")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        let executors = self
-            .provider()
+        self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default();
-
-        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
-        #[cfg(feature = "tool-crw")]
-        if crate::config::is_crw_enabled() {
-            return executors
-                .into_iter()
-                .filter(|executor| executor.name().as_str() != "web_search")
-                .collect();
-        }
-
-        executors
+            .unwrap_or_default()
     }
 }
 
 /// Capability module for Mattermost MCP tools.
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 pub struct MattermostMcpToolModule;
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 impl MattermostMcpToolModule {
     fn provider(&self) -> Option<MattermostMcpProvider> {
         match MattermostMcpConfig::from_env() {
@@ -708,7 +830,7 @@ impl MattermostMcpToolModule {
     }
 }
 
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 impl ToolModule for MattermostMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-mattermost")
@@ -722,10 +844,10 @@ impl ToolModule for MattermostMcpToolModule {
 }
 
 /// Capability module for compose-stack log tools.
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 pub struct StackLogsToolModule;
 
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 impl ToolModule for StackLogsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/stack-logs")
@@ -737,10 +859,10 @@ impl ToolModule for StackLogsToolModule {
 }
 
 /// Capability module for one-shot URL-to-Markdown fetches.
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub struct WebFetchMdToolModule;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
@@ -755,10 +877,10 @@ impl ToolModule for WebFetchMdToolModule {
 }
 
 /// Capability module for merged URL-to-Markdown fetches.
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub struct WebCrawlerToolModule;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl ToolModule for WebCrawlerToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/web-crawler")
@@ -772,40 +894,82 @@ impl ToolModule for WebCrawlerToolModule {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const TOOL_WEB_CRAWLER: &str = "web_crawler";
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS: u64 = 10;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_DEFAULT_INLINE_CHARS: usize = 60_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_MIN_INLINE_CHARS: usize = 1_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_MAX_INLINE_CHARS: usize = 100_000;
+#[cfg(oxide_module_tool_webfetch_md)]
+const WEB_CRAWLER_DEFAULT_RENDER_WAIT_MS: u64 = 3000;
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderMode {
+    Http,
+    Lightpanda,
+    Playwright,
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+impl RenderMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Lightpanda => "lightpanda",
+            Self::Playwright => "playwright",
+        }
+    }
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
+fn parse_render_mode(value: Option<&str>) -> anyhow::Result<RenderMode> {
+    match value.unwrap_or("http").trim() {
+        "http" | "" => Ok(RenderMode::Http),
+        "lightpanda" => Ok(RenderMode::Lightpanda),
+        "playwright" => Ok(RenderMode::Playwright),
+        other => anyhow::bail!(
+            "invalid web_crawler render mode: {other} (expected http, lightpanda, or playwright)"
+        ),
+    }
+}
+
+#[cfg(oxide_module_tool_webfetch_md)]
 #[derive(Debug, Deserialize, Clone, Default)]
 struct WebCrawlerArgs {
-    url: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    read: Option<String>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     #[serde(default)]
     max_chars: Option<usize>,
+    /// Render mode: `http` (default), `lightpanda`, or `playwright`.
     #[serde(default)]
-    offset_chars: Option<usize>,
+    render: Option<String>,
+    /// Milliseconds to wait after JS rendering for late content (rendered modes only).
     #[serde(default)]
-    wait_for: Option<String>,
-    #[serde(default)]
-    fresh: bool,
+    render_wait_ms: Option<u64>,
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 struct WebCrawlerToolExecutor {
     webfetch: WebFetchMdProvider,
-    #[cfg(feature = "tool-crw")]
+    #[cfg(oxide_module_tool_crw)]
     crw: Option<Arc<CrwProvider>>,
     name: ToolName,
     spec: ToolDefinition,
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 impl WebCrawlerToolExecutor {
     fn new() -> Self {
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         let crw = crate::config::is_crw_enabled()
             .then(CrwProvider::new)
             .and_then(|res| res.ok())
@@ -813,7 +977,7 @@ impl WebCrawlerToolExecutor {
 
         Self {
             webfetch: WebFetchMdProvider::new(),
-            #[cfg(feature = "tool-crw")]
+            #[cfg(oxide_module_tool_crw)]
             crw,
             name: ToolName::from(TOOL_WEB_CRAWLER),
             spec: web_crawler_tool_definition(),
@@ -830,158 +994,196 @@ impl WebCrawlerToolExecutor {
             artifact_dir: invocation.execution_context.artifact_dir.clone(),
             ..ToolRuntimeConfig::default()
         });
-        let webfetch_args = WebMarkdownArgs {
-            url: args.url.clone(),
-            timeout_secs: Some(web_crawler_webfetch_timeout_secs(&args)),
-            max_chars: args.max_chars,
-            offset_chars: args.offset_chars,
-        };
-
-        match self
-            .webfetch
-            .fetch_markdown(webfetch_args.clone(), Some(&invocation.cancellation_token))
-            .await
-        {
-            Ok(markdown) => {
-                let stdout = web_crawler_output("webfetch_md", None, &args.url, None, &markdown);
-                let mut output = normalizer.success(invocation, &stdout, "");
-                output.structured_payload = Some(web_crawler_success_payload(
-                    "webfetch_md",
-                    None,
-                    &args.url,
-                    None,
-                    &markdown,
-                    None,
-                    None,
-                    None,
-                ));
-                Ok(output)
-            }
-            Err(webfetch_error) => {
-                let fallback_reason = web_crawler_fallback_reason(&webfetch_args, &webfetch_error);
-                let Some(fallback_reason) = fallback_reason else {
-                    let message =
-                        WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
-                    let mut output = normalizer.failure(invocation, message);
-                    output.structured_payload = Some(web_crawler_webfetch_failure_payload(
-                        Some(&webfetch_args),
-                        &webfetch_error,
-                    ));
-                    return Ok(output);
-                };
-
-                self.execute_rendered_fallback(
-                    invocation,
-                    &normalizer,
-                    args,
-                    webfetch_args,
-                    &webfetch_error,
-                    fallback_reason,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn execute_rendered_fallback(
-        &self,
-        invocation: &ToolInvocation,
-        normalizer: &OutputNormalizer,
-        args: WebCrawlerArgs,
-        webfetch_args: WebMarkdownArgs,
-        webfetch_error: &anyhow::Error,
-        fallback_reason: &'static str,
-    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        let _ = (&args.wait_for, args.fresh);
-
-        #[cfg(feature = "tool-crw")]
-        if let Some(crw) = &self.crw {
+        if parse_read_mode(args.read.as_deref(), TOOL_WEB_CRAWLER)? == MarkdownReadMode::Next {
             return self
-                .execute_crw_scrape_fallback(
-                    invocation,
-                    normalizer,
-                    &args,
-                    &webfetch_args,
-                    webfetch_error,
-                    fallback_reason,
-                    crw,
-                )
+                .execute_cached_next(invocation, &normalizer, &args)
                 .await;
         }
 
-        let mut output = normalizer.failure(
-            invocation,
-            web_crawler_fallback_unavailable_message(&args.url),
-        );
-        output.structured_payload = Some(web_crawler_no_fallback_payload(
-            &webfetch_args,
-            webfetch_error,
-            fallback_reason,
-        ));
-        Ok(output)
+        let url = require_url(args.url.as_deref(), TOOL_WEB_CRAWLER)?.to_string();
+        let render_mode =
+            parse_render_mode(args.render.as_deref()).map_err(web_crawler_runtime_error)?;
+
+        match render_mode {
+            RenderMode::Http => self.execute_http(invocation, &normalizer, &args, url).await,
+            RenderMode::Lightpanda | RenderMode::Playwright => {
+                self.execute_rendered(invocation, &normalizer, &args, url, render_mode)
+                    .await
+            }
+        }
     }
 
-    /// CRW scrape fallback for anti-bot/JS-blocked URLs.
-    ///
-    /// Called when webfetch fails with an anti-bot or access-block error
-    /// and a CRW provider is configured.
-    #[cfg(feature = "tool-crw")]
-    async fn execute_crw_scrape_fallback(
+    async fn execute_http(
         &self,
         invocation: &ToolInvocation,
         normalizer: &OutputNormalizer,
         args: &WebCrawlerArgs,
-        webfetch_args: &WebMarkdownArgs,
-        webfetch_error: &anyhow::Error,
-        fallback_reason: &'static str,
-        crw: &Arc<CrwProvider>,
+        url: String,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let webfetch_args = WebMarkdownArgs {
+            url: Some(url.clone()),
+            read: None,
+            timeout_secs: Some(web_crawler_webfetch_timeout_secs(args)),
+            max_chars: None,
+        };
+
+        match self
+            .webfetch
+            .fetch_markdown_document(webfetch_args.clone(), Some(&invocation.cancellation_token))
+            .await
+        {
+            Ok(document) => {
+                let output_window = resolve_output_window(
+                    args.max_chars,
+                    WEB_CRAWLER_DEFAULT_INLINE_CHARS,
+                    WEB_CRAWLER_MIN_INLINE_CHARS,
+                    WEB_CRAWLER_MAX_INLINE_CHARS,
+                );
+                let delivery = self
+                    .webfetch
+                    .store_markdown_window(
+                        invocation.session_id.as_i64(),
+                        url.clone(),
+                        document,
+                        output_window,
+                    )
+                    .await;
+                let stdout = render_delivery_stdout(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryStdoutExtra {
+                        backend: Some("webfetch_md"),
+                        render: Some("http"),
+                    }),
+                );
+                let mut output = normalizer.success(invocation, &stdout, "");
+                output.structured_payload = Some(delivery_success_payload(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryPayloadExtra {
+                        backend: Some("webfetch_md"),
+                        render: Some("http"),
+                        rendered_with: None,
+                        status_code: None,
+                        raw_payload: None,
+                    }),
+                ));
+                Ok(output)
+            }
+            Err(webfetch_error) => {
+                let message =
+                    WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
+                let mut output = normalizer.failure(invocation, message);
+                output.structured_payload = Some(web_crawler_webfetch_failure_payload(
+                    Some(&webfetch_args),
+                    &webfetch_error,
+                ));
+                Ok(output)
+            }
+        }
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    async fn execute_rendered(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        args: &WebCrawlerArgs,
+        url: String,
+        render_mode: RenderMode,
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         use crate::agent::providers::crw::CrwScrapeArgs;
 
+        let crw = match &self.crw {
+            Some(crw) => crw,
+            None => {
+                let mut output = normalizer.failure(
+                    invocation,
+                    web_crawler_render_unavailable_message(&url, render_mode.as_str()),
+                );
+                output.structured_payload = Some(web_crawler_render_unavailable_payload(
+                    &url,
+                    render_mode.as_str(),
+                ));
+                return Ok(output);
+            }
+        };
+
+        let wait_for_ms = args
+            .render_wait_ms
+            .unwrap_or(WEB_CRAWLER_DEFAULT_RENDER_WAIT_MS);
         let scrape_args = CrwScrapeArgs {
-            url: args.url.clone(),
+            url: url.clone(),
+            renderer: render_mode.as_str().to_string(),
+            wait_for_ms,
         };
 
         match crw.client().scrape(&scrape_args).await {
             Ok(response) => {
-                let markdown = &response.data.markdown;
-                let final_url = response.data.metadata.url.as_deref();
+                let final_url = response.data.metadata.url.as_deref().unwrap_or(&url);
                 let status_code = response.data.metadata.status_code.map(u64::from);
+                let rendered_with = response
+                    .data
+                    .metadata
+                    .rendered_with
+                    .as_deref()
+                    .unwrap_or(render_mode.as_str());
 
-                let stdout = web_crawler_output(
-                    "crw_scrape",
-                    Some(fallback_reason),
-                    &args.url,
-                    final_url,
-                    markdown,
+                let document = FetchedMarkdownDocument {
+                    metadata: vec![("URL".to_string(), final_url.to_string())],
+                    fetched_bytes: None,
+                    markdown: response.data.markdown.trim().to_string(),
+                };
+                let output_window = resolve_output_window(
+                    args.max_chars,
+                    WEB_CRAWLER_DEFAULT_INLINE_CHARS,
+                    WEB_CRAWLER_MIN_INLINE_CHARS,
+                    WEB_CRAWLER_MAX_INLINE_CHARS,
+                );
+                let delivery = self
+                    .webfetch
+                    .store_markdown_window(
+                        invocation.session_id.as_i64(),
+                        url,
+                        document,
+                        output_window,
+                    )
+                    .await;
+                let stdout = render_delivery_stdout(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryStdoutExtra {
+                        backend: Some("crw_scrape"),
+                        render: Some(render_mode.as_str()),
+                    }),
                 );
                 let mut output = normalizer.success(invocation, &stdout, "");
-                output.structured_payload = Some(web_crawler_success_payload(
-                    "crw_scrape",
-                    Some(fallback_reason),
-                    &args.url,
-                    final_url,
-                    markdown,
-                    status_code,
-                    None,
-                    None,
+                output.structured_payload = Some(delivery_success_payload(
+                    TOOL_WEB_CRAWLER,
+                    &delivery,
+                    Some(&DeliveryPayloadExtra {
+                        backend: Some("crw_scrape"),
+                        render: Some(render_mode.as_str()),
+                        rendered_with: Some(rendered_with),
+                        status_code,
+                        raw_payload: None,
+                    }),
                 ));
                 Ok(output)
             }
             Err(crw_error) => {
                 let crw_error_kind = crw_error.kind().to_string();
-                let crw_error_message = crw_error.agent_message();
+                let crw_error_message = crw_error.scrape_agent_message();
                 let message = format!(
-                    "web_crawler lightweight fetch failed for {} ({}); \
-                     CRW scrape fallback also failed: {}. \
-                     This path is closed for this task; use another source.",
-                    args.url, fallback_reason, crw_error_message
+                    "web_crawler render:{} failed for {}: {}",
+                    render_mode.as_str(),
+                    url,
+                    crw_error_message,
                 );
                 let mut output = normalizer.failure(invocation, message);
                 output.structured_payload = Some(web_crawler_crw_failure_payload(
-                    webfetch_args,
-                    webfetch_error,
-                    fallback_reason,
+                    &url,
+                    render_mode.as_str(),
                     &crw_error_kind,
                     &crw_error_message,
                 ));
@@ -989,9 +1191,82 @@ impl WebCrawlerToolExecutor {
             }
         }
     }
+
+    #[cfg(not(oxide_module_tool_crw))]
+    async fn execute_rendered(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        _args: &WebCrawlerArgs,
+        url: String,
+        render_mode: RenderMode,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let mut output = normalizer.failure(
+            invocation,
+            web_crawler_render_unavailable_message(&url, render_mode.as_str()),
+        );
+        output.structured_payload = Some(web_crawler_render_unavailable_payload(
+            &url,
+            render_mode.as_str(),
+        ));
+        Ok(output)
+    }
+
+    async fn execute_cached_next(
+        &self,
+        invocation: &ToolInvocation,
+        normalizer: &OutputNormalizer,
+        args: &WebCrawlerArgs,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let output_window = resolve_output_window(
+            args.max_chars,
+            WEB_CRAWLER_DEFAULT_INLINE_CHARS,
+            WEB_CRAWLER_MIN_INLINE_CHARS,
+            WEB_CRAWLER_MAX_INLINE_CHARS,
+        );
+        let Some(delivery) = self
+            .webfetch
+            .next_markdown_window(
+                invocation.session_id.as_i64(),
+                args.url.as_deref(),
+                output_window,
+            )
+            .await
+        else {
+            let mut output =
+                normalizer.failure(invocation, no_cached_document_message(TOOL_WEB_CRAWLER));
+            output.structured_payload = Some(no_cached_document_payload(
+                TOOL_WEB_CRAWLER,
+                Some("webfetch_md"),
+            ));
+            return Ok(output);
+        };
+
+        let stdout = render_delivery_stdout(
+            TOOL_WEB_CRAWLER,
+            &delivery,
+            Some(&DeliveryStdoutExtra {
+                backend: Some("webfetch_md"),
+                render: Some("http"),
+            }),
+        );
+        let mut output = normalizer.success(invocation, &stdout, "");
+        output.structured_payload = Some(delivery_success_payload(
+            TOOL_WEB_CRAWLER,
+            &delivery,
+            Some(&DeliveryPayloadExtra {
+                backend: Some("webfetch_md"),
+                render: Some("http"),
+                rendered_with: None,
+                status_code: None,
+                raw_payload: None,
+            }),
+        ));
+        Ok(output)
+    }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 #[async_trait]
 impl ToolExecutor for WebCrawlerToolExecutor {
     fn name(&self) -> ToolName {
@@ -1019,14 +1294,17 @@ impl ToolExecutor for WebCrawlerToolExecutor {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_WEB_CRAWLER.to_string(),
         description: concat!(
-            "Fetch one known http/https URL as Markdown. Uses lightweight webfetch first, ",
-            "then falls back to a browser-rendered service only for JS/CAPTCHA/anti-bot blocks when configured. ",
-            "If both paths fail, use another source instead of retrying the same host."
+            "Fetch one known http/https URL as Markdown. ",
+            "Use render:\"http\" for static pages (default), ",
+            "render:\"lightpanda\" for lightweight JS rendering, ",
+            "or render:\"playwright\" for full browser rendering of SPAs and dynamic content. ",
+            "If a render mode returns only a shell or loading placeholder, ",
+            "retry with a heavier mode instead of the same one."
         )
         .to_string(),
         parameters: json!({
@@ -1034,48 +1312,49 @@ fn web_crawler_tool_definition() -> ToolDefinition {
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Fully-qualified public http/https URL to fetch"
+                    "description": "Fully-qualified public http/https URL to fetch. Required unless read is \"next\"."
+                },
+                "read": {
+                    "type": "string",
+                    "enum": ["auto", "next"],
+                    "description": "auto fetches the URL and starts reading; next continues the last cached page in this session"
+                },
+                "render": {
+                    "type": "string",
+                    "enum": ["http", "lightpanda", "playwright"],
+                    "description": "Render mode: http (default, no JS), lightpanda (lightweight JS), playwright (full browser). Use http for static pages; lightpanda or playwright for SPAs and JS-rendered content."
+                },
+                "render_wait_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds to wait after JS rendering for late content (rendered modes only; default 3000)"
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Optional request timeout in seconds; lightweight fast path defaults to 10 seconds"
+                    "description": "Optional request timeout in seconds for http mode; defaults to 10"
                 },
                 "max_chars": {
                     "type": "integer",
                     "description": "Optional maximum Markdown output characters"
-                },
-                "offset_chars": {
-                    "type": "integer",
-                    "description": "Optional character offset for lightweight webfetch pagination"
-                },
-                "wait_for": {
-                    "type": "string",
-                    "description": "Optional CSS selector for rendered fallback"
-                },
-                "fresh": {
-                    "type": "boolean",
-                    "description": "If true, bypass cache on rendered fallback; default false"
                 }
             },
-            "required": ["url"],
             "additionalProperties": false
         }),
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn parse_web_crawler_args(arguments: &str) -> anyhow::Result<WebCrawlerArgs> {
     serde_json::from_str(arguments)
         .map_err(|error| anyhow::anyhow!("invalid web_crawler arguments: {error}"))
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
     args.timeout_secs
         .unwrap_or(WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS)
 }
 
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     let message = error.to_string();
     if message.contains("invalid web_crawler arguments") {
@@ -1085,65 +1364,7 @@ fn web_crawler_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     }
 }
 
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_output(
-    backend: &str,
-    fallback_reason: Option<&str>,
-    url: &str,
-    final_url: Option<&str>,
-    markdown: &str,
-) -> String {
-    let mut output = String::from("## Web Crawler\n\n");
-    output.push_str("Backend: ");
-    output.push_str(backend);
-    output.push('\n');
-    if let Some(reason) = fallback_reason {
-        output.push_str("Fallback-Reason: ");
-        output.push_str(reason);
-        output.push('\n');
-    }
-    output.push_str("URL: ");
-    output.push_str(url);
-    output.push('\n');
-    if let Some(final_url) = final_url {
-        output.push_str("Final-URL: ");
-        output.push_str(final_url);
-        output.push('\n');
-    }
-    output.push_str("Chars: ");
-    output.push_str(&markdown.chars().count().to_string());
-    output.push_str("\n\n---\n\n");
-    output.push_str(markdown);
-    output
-}
-
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_success_payload(
-    backend: &str,
-    fallback_reason: Option<&str>,
-    url: &str,
-    final_url: Option<&str>,
-    markdown: &str,
-    status_code: Option<u64>,
-    truncated: Option<bool>,
-    raw_payload: Option<&Value>,
-) -> Value {
-    json!({
-        "provider": TOOL_WEB_CRAWLER,
-        "backend": backend,
-        "fallback_reason": fallback_reason,
-        "url": url,
-        "final_url": final_url,
-        "status_code": status_code,
-        "markdown": markdown,
-        "chars": markdown.chars().count(),
-        "truncated": truncated.unwrap_or(false),
-        "raw_payload": raw_payload,
-        "success": true
-    })
-}
-
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 fn web_crawler_webfetch_failure_payload(
     args: Option<&WebMarkdownArgs>,
     error: &anyhow::Error,
@@ -1152,6 +1373,7 @@ fn web_crawler_webfetch_failure_payload(
     if let Some(object) = payload.as_object_mut() {
         object.insert("provider".to_string(), json!(TOOL_WEB_CRAWLER));
         object.insert("backend".to_string(), json!("webfetch_md"));
+        object.insert("render".to_string(), json!("http"));
         object.insert(
             "webfetch_error_kind".to_string(),
             json!(WebFetchMdProvider::error_kind(error)),
@@ -1160,138 +1382,60 @@ fn web_crawler_webfetch_failure_payload(
     payload
 }
 
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_no_fallback_payload(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-    fallback_reason: &'static str,
-) -> Value {
-    let mut payload = web_crawler_webfetch_failure_payload(Some(args), error);
-    if let Some(object) = payload.as_object_mut() {
-        object.insert("backend".to_string(), json!("webfetch_md"));
-        object.insert("fallback_backend".to_string(), json!("rendered_fallback"));
-        object.insert("fallback_attempted".to_string(), json!(false));
-        object.insert("fallback_reason".to_string(), json!(fallback_reason));
-        object.insert(
-            "fallback_error_kind".to_string(),
-            json!("fallback_unavailable"),
-        );
-        object.insert("provider_unavailable".to_string(), json!(true));
-        object.insert("retryable".to_string(), json!(false));
-        object.insert(
-            "message".to_string(),
-            json!(web_crawler_fallback_unavailable_message(&args.url)),
-        );
-    }
-    payload
-}
-
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_fallback_unavailable_message(url: &str) -> String {
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_render_unavailable_message(url: &str, render: &str) -> String {
     format!(
-        "web_crawler lightweight fetch needs rendered fallback for {url}, but no rendered fallback provider is configured. This path is closed for this task; use another source."
+        "web_crawler render:{render} requested for {url}, but no CRW provider is configured. \
+         Use render:\"http\" or configure CRW."
     )
 }
 
-#[cfg(all(feature = "tool-webfetch-md", feature = "tool-crw"))]
-fn web_crawler_crw_failure_payload(
-    webfetch_args: &WebMarkdownArgs,
-    webfetch_error: &anyhow::Error,
-    fallback_reason: &'static str,
-    crw_error_kind: &str,
-    crw_error_message: &str,
-) -> Value {
-    let web_payload = WebFetchMdProvider::failure_payload(Some(webfetch_args), webfetch_error);
+#[cfg(oxide_module_tool_webfetch_md)]
+fn web_crawler_render_unavailable_payload(url: &str, render: &str) -> Value {
     json!({
         "provider": TOOL_WEB_CRAWLER,
-        "backend": "crw_scrape",
-        "fallback_backend": "crw_scrape",
-        "fallback_attempted": true,
-        "fallback_reason": fallback_reason,
-        "url": webfetch_args.url.as_str(),
-        "host": web_payload.get("host").cloned().unwrap_or(Value::Null),
-        "error_kind": crw_error_kind,
-        "webfetch_error_kind": WebFetchMdProvider::error_kind(webfetch_error),
-        "crw_error_kind": crw_error_kind,
+        "backend": null,
+        "render": render,
+        "kind": "fetch",
+        "url": url,
+        "error_kind": "render_provider_unavailable",
         "retryable": false,
         "provider_unavailable": true,
-        "message": crw_error_message,
-        "webfetch_payload": web_payload
+        "success": false,
+        "message": web_crawler_render_unavailable_message(url, render)
     })
 }
 
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_fallback_reason(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-) -> Option<&'static str> {
-    match WebFetchMdProvider::error_kind(error) {
-        "anti_bot" => Some("webfetch anti_bot"),
-        "http_status" => web_crawler_http_status_fallback_reason(args, error),
-        _ => None,
-    }
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
+fn web_crawler_crw_failure_payload(
+    url: &str,
+    render: &str,
+    crw_error_kind: &str,
+    crw_error_message: &str,
+) -> Value {
+    json!({
+        "provider": TOOL_WEB_CRAWLER,
+        "backend": "crw_scrape",
+        "render": render,
+        "kind": "fetch",
+        "url": url,
+        "error_kind": crw_error_kind,
+        "retryable": false,
+        "provider_unavailable": true,
+        "success": false,
+        "message": crw_error_message
+    })
 }
 
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_http_status_fallback_reason(
-    args: &WebMarkdownArgs,
-    error: &anyhow::Error,
-) -> Option<&'static str> {
-    let payload = WebFetchMdProvider::failure_payload(Some(args), error);
-    let status = payload.get("status_code").and_then(Value::as_u64);
-    match status {
-        Some(400..=403 | 429) if web_crawler_is_reddit_thread_url(&args.url) => {
-            Some("webfetch reddit_rss_http_status")
-        }
-        Some(400..=403 | 429) => Some("webfetch http_status"),
-        Some(503) => Some("webfetch http_status"),
-        Some(500..=504) if web_crawler_is_reddit_thread_url(&args.url) => {
-            Some("webfetch reddit_rss_http_status")
-        }
-        _ => None,
-    }
-}
-
-#[cfg(feature = "tool-webfetch-md")]
-fn web_crawler_is_reddit_thread_url(raw_url: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(raw_url) else {
-        return false;
-    };
-    let Some(host) = url
-        .host_str()
-        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
-    else {
-        return false;
-    };
-    if !matches!(
-        host.as_str(),
-        "reddit.com" | "www.reddit.com" | "old.reddit.com" | "new.reddit.com" | "sh.reddit.com"
-    ) {
-        return false;
-    }
-
-    let Some(mut segments) = url.path_segments() else {
-        return false;
-    };
-    matches!(
-        (
-            segments.next(),
-            segments.next(),
-            segments.next(),
-            segments.next()
-        ),
-        (Some("r"), Some(_), Some("comments"), Some(_))
-    )
-}
-
-#[cfg(all(test, feature = "tool-webfetch-md"))]
+#[cfg(all(test, oxide_module_tool_webfetch_md))]
 mod web_crawler_tests {
     use super::*;
+    use crate::agent::providers::webfetch_md::{FetchedMarkdownDocument, OutputWindow};
 
     #[test]
     fn web_crawler_webfetch_timeout_defaults_to_ten_seconds() {
         let args = WebCrawlerArgs {
-            url: "https://example.test".to_string(),
+            url: Some("https://example.test".to_string()),
             ..WebCrawlerArgs::default()
         };
 
@@ -1301,7 +1445,7 @@ mod web_crawler_tests {
     #[test]
     fn web_crawler_webfetch_timeout_preserves_explicit_value() {
         let args = WebCrawlerArgs {
-            url: "https://example.test".to_string(),
+            url: Some("https://example.test".to_string()),
             timeout_secs: Some(3),
             ..WebCrawlerArgs::default()
         };
@@ -1310,111 +1454,168 @@ mod web_crawler_tests {
     }
 
     #[test]
-    fn web_crawler_falls_back_for_reddit_rss_retryable_http_status() {
-        let args = WebMarkdownArgs {
-            url: "https://www.reddit.com/r/LocalLLaMA/comments/1tcv14c/mtp_speed_with_3090_qwen_27b_q4/".to_string(),
-            ..WebMarkdownArgs::default()
+    fn web_crawler_read_next_does_not_require_url() {
+        let args = WebCrawlerArgs {
+            read: Some("next".to_string()),
+            ..WebCrawlerArgs::default()
         };
-        let error = anyhow::anyhow!(
-            "reddit rss fast-path failed: reddit rss returned non-success status: 429 Too Many Requests"
-        );
 
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch reddit_rss_http_status")
+            parse_read_mode(args.read.as_deref(), TOOL_WEB_CRAWLER).expect("valid read mode"),
+            MarkdownReadMode::Next
         );
     }
 
-    #[test]
-    fn web_crawler_falls_back_for_generic_rate_limit_http_status() {
-        let args = WebMarkdownArgs {
-            url: "https://example.test/page".to_string(),
-            ..WebMarkdownArgs::default()
+    #[tokio::test]
+    async fn web_crawler_window_payload_reports_honest_continuation() {
+        let executor = WebCrawlerToolExecutor::new();
+        let document = FetchedMarkdownDocument {
+            metadata: vec![("URL".to_string(), "https://example.test/page".to_string())],
+            fetched_bytes: Some(42),
+            markdown: "abcdef".to_string(),
         };
-        let error =
-            anyhow::anyhow!("web_markdown fetch failed: non-success status: 429 Too Many Requests");
+        let window = executor
+            .webfetch
+            .store_markdown_window(
+                7,
+                "https://example.test/page".to_string(),
+                document,
+                OutputWindow {
+                    max_chars: 3,
+                    offset_chars: 0,
+                },
+            )
+            .await;
 
+        let payload = delivery_success_payload(
+            TOOL_WEB_CRAWLER,
+            &window,
+            Some(&DeliveryPayloadExtra {
+                backend: Some("webfetch_md"),
+                render: Some("http"),
+                rendered_with: None,
+                status_code: None,
+                raw_payload: None,
+            }),
+        );
+
+        assert_eq!(payload["truncated"], true);
+        assert_eq!(payload["complete"], false);
+        assert_eq!(payload["markdown_chars"], 6);
+        assert_eq!(payload["returned_chars"], 3);
+        assert_eq!(payload["remaining_chars"], 3);
+        assert_eq!(payload["next_offset_chars"], 3);
+        assert_eq!(payload["continue_with"]["args"]["read"], "next");
+    }
+
+    #[tokio::test]
+    async fn web_crawler_cached_next_advances_without_llm_offset() {
+        let executor = WebCrawlerToolExecutor::new();
+        let document = FetchedMarkdownDocument {
+            metadata: vec![("URL".to_string(), "https://example.test/page".to_string())],
+            fetched_bytes: Some(42),
+            markdown: "abcdef".to_string(),
+        };
+        let first = executor
+            .webfetch
+            .store_markdown_window(
+                7,
+                "https://example.test/page".to_string(),
+                document,
+                OutputWindow {
+                    max_chars: 3,
+                    offset_chars: 0,
+                },
+            )
+            .await;
+        assert_eq!(first.windowed.next_offset_chars, Some(3));
+
+        let next = executor
+            .webfetch
+            .next_markdown_window(
+                7,
+                None,
+                OutputWindow {
+                    max_chars: 3,
+                    offset_chars: 0,
+                },
+            )
+            .await
+            .expect("cached document");
+
+        assert_eq!(next.output_window.offset_chars, 3);
+        assert_eq!(next.windowed.text, "def");
+        assert_eq!(next.windowed.next_offset_chars, None);
+    }
+
+    #[test]
+    fn parse_render_mode_defaults_to_http() {
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(None).expect("missing render defaults to http"),
+            RenderMode::Http
         );
-    }
-
-    #[test]
-    fn web_crawler_falls_back_for_generic_payment_required_http_status() {
-        let args = WebMarkdownArgs {
-            url: "https://www.investopedia.com/article-123".to_string(),
-            ..WebMarkdownArgs::default()
-        };
-        let error =
-            anyhow::anyhow!("web_markdown fetch failed: non-success status: 402 Payment Required");
-
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(Some("")).expect("empty render defaults to http"),
+            RenderMode::Http
         );
-    }
-
-    #[test]
-    fn web_crawler_falls_back_for_generic_forbidden_http_status() {
-        let args = WebMarkdownArgs {
-            url: "https://example.test/page".to_string(),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 403 Forbidden");
-
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(Some("http")).expect("http render parses"),
+            RenderMode::Http
         );
     }
 
     #[test]
-    fn web_crawler_falls_back_for_generic_service_unavailable() {
-        let args = WebMarkdownArgs {
-            url: "https://example.test/page".to_string(),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!(
-            "web_markdown fetch failed: non-success status: 503 Service Unavailable"
-        );
-
+    fn parse_render_mode_accepts_lightpanda_and_playwright() {
         assert_eq!(
-            web_crawler_fallback_reason(&args, &error),
-            Some("webfetch http_status")
+            parse_render_mode(Some("lightpanda")).expect("lightpanda render parses"),
+            RenderMode::Lightpanda
+        );
+        assert_eq!(
+            parse_render_mode(Some("playwright")).expect("playwright render parses"),
+            RenderMode::Playwright
         );
     }
 
     #[test]
-    fn web_crawler_does_not_fallback_for_generic_not_found() {
-        let args = WebMarkdownArgs {
-            url: "https://example.test/missing".to_string(),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!("web_markdown fetch failed: non-success status: 404 Not Found");
-
-        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
+    fn parse_render_mode_rejects_unknown() {
+        assert!(parse_render_mode(Some("chrome")).is_err());
+        assert!(parse_render_mode(Some("auto")).is_err());
+        assert!(parse_render_mode(Some("rendered")).is_err());
     }
 
     #[test]
-    fn web_crawler_does_not_fallback_for_reddit_not_found() {
-        let args = WebMarkdownArgs {
-            url: "https://www.reddit.com/r/LocalLLaMA/comments/missing/thread/".to_string(),
-            ..WebMarkdownArgs::default()
-        };
-        let error = anyhow::anyhow!(
-            "reddit rss fast-path failed: reddit rss returned non-success status: 404 Not Found"
+    fn parse_render_mode_trims_whitespace() {
+        assert_eq!(
+            parse_render_mode(Some("  playwright  ")).expect("trimmed playwright render parses"),
+            RenderMode::Playwright
         );
+    }
 
-        assert_eq!(web_crawler_fallback_reason(&args, &error), None);
+    #[test]
+    fn render_mode_as_str_round_trips() {
+        assert_eq!(RenderMode::Http.as_str(), "http");
+        assert_eq!(RenderMode::Lightpanda.as_str(), "lightpanda");
+        assert_eq!(RenderMode::Playwright.as_str(), "playwright");
+    }
+
+    #[test]
+    fn web_crawler_render_unavailable_payload_has_correct_shape() {
+        let payload =
+            web_crawler_render_unavailable_payload("https://example.test/page", "playwright");
+        assert_eq!(payload["provider"], "web_crawler");
+        assert_eq!(payload["render"], "playwright");
+        assert_eq!(payload["error_kind"], "render_provider_unavailable");
+        assert_eq!(payload["provider_unavailable"], true);
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["retryable"], false);
     }
 }
 
 /// Capability module for Tavily search/extract tools.
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 pub struct TavilyToolModule;
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 impl TavilyToolModule {
     fn provider(&self) -> Option<TavilyProvider> {
         if !crate::config::is_tavily_enabled() {
@@ -1447,24 +1648,36 @@ impl TavilyToolModule {
     }
 }
 
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 impl ToolModule for TavilyToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tavily")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
+        let executors = self
+            .provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // When CRW is enabled, CRW owns `web_search`; keep Tavily's `web_extract` only.
+        #[cfg(oxide_module_tool_crw)]
+        if crate::config::is_crw_enabled() {
+            return executors
+                .into_iter()
+                .filter(|executor| executor.name().as_str() != "web_search")
+                .collect();
+        }
+
+        executors
     }
 }
 
 /// Capability module for Brave Search API web search.
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 pub struct BraveSearchToolModule;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 impl BraveSearchToolModule {
     fn provider(&self) -> Option<BraveSearchProvider> {
         if !crate::config::is_brave_search_enabled() {
@@ -1481,7 +1694,7 @@ impl BraveSearchToolModule {
     }
 }
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 impl ToolModule for BraveSearchToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/brave-search")
@@ -1495,10 +1708,10 @@ impl ToolModule for BraveSearchToolModule {
 }
 
 /// Capability module for CRW-backed web search.
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 pub struct CrwSearchToolModule;
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 impl CrwSearchToolModule {
     fn provider(&self) -> Option<Arc<CrwProvider>> {
         if !crate::config::is_crw_enabled() {
@@ -1515,7 +1728,7 @@ impl CrwSearchToolModule {
     }
 }
 
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 impl ToolModule for CrwSearchToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/crw")
@@ -1529,10 +1742,10 @@ impl ToolModule for CrwSearchToolModule {
 }
 
 /// Capability module for Kokoro English text-to-speech tools.
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 pub struct KokoroTtsToolModule;
 
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 impl KokoroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<KokoroTtsProvider> {
         let config = TtsConfig::from_env();
@@ -1559,7 +1772,7 @@ impl KokoroTtsToolModule {
     }
 }
 
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 impl ToolModule for KokoroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-kokoro")
@@ -1573,10 +1786,10 @@ impl ToolModule for KokoroTtsToolModule {
 }
 
 /// Capability module for Silero Russian text-to-speech tools.
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 pub struct SileroTtsToolModule;
 
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 impl SileroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SileroTtsProvider> {
         let config = SileroTtsConfig::from_env();
@@ -1603,7 +1816,7 @@ impl SileroTtsToolModule {
     }
 }
 
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 impl ToolModule for SileroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-silero")
@@ -1617,10 +1830,10 @@ impl ToolModule for SileroTtsToolModule {
 }
 
 /// Capability module for yt-dlp media tools.
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 pub struct YtdlpToolModule;
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 impl YtdlpToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> YtdlpProvider {
         if let Some(tx) = ctx.progress_tx() {
@@ -1631,7 +1844,7 @@ impl YtdlpToolModule {
     }
 }
 
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 impl ToolModule for YtdlpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/ytdlp")
@@ -1643,10 +1856,10 @@ impl ToolModule for YtdlpToolModule {
 }
 
 /// Capability module for the `write_todos` typed runtime tool.
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 pub struct TodosToolModule;
 
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 impl ToolModule for TodosToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/todos")
@@ -1658,10 +1871,10 @@ impl ToolModule for TodosToolModule {
 }
 
 /// Capability module for sandbox command execution.
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 pub struct SandboxExecToolModule;
 
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 impl ToolModule for SandboxExecToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-exec")
@@ -1673,10 +1886,10 @@ impl ToolModule for SandboxExecToolModule {
 }
 
 /// Capability module for sandbox file operations.
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 pub struct SandboxFileOpsToolModule;
 
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 impl ToolModule for SandboxFileOpsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-fileops")
@@ -1688,10 +1901,10 @@ impl ToolModule for SandboxFileOpsToolModule {
 }
 
 /// Capability module for sandbox recreation.
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 pub struct SandboxRecreateToolModule;
 
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 impl ToolModule for SandboxRecreateToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-recreate")

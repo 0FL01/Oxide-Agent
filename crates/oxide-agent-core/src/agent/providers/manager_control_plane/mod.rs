@@ -200,15 +200,15 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
     "reminder_resume",
     "reminder_retry",
 ];
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 const TOPIC_AGENT_CRW_TOOLS: &[&str] = &["web_search"];
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const TOPIC_AGENT_WEB_CRAWLER_TOOLS: &[&str] = &["web_crawler"];
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_sudo_exec",
@@ -217,9 +217,9 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_check_process",
     "ssh_send_file_to_user",
 ];
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_list_teams",
     "mattermost_get_team",
@@ -242,18 +242,18 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_upload_file",
 ];
 #[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video
 ))]
 const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
     "transcribe_audio_file",
     "describe_image_file",
     "describe_video_file",
 ];
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en", "text_to_speech_en_file"];
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru", "text_to_speech_ru_file"];
 
 /// Transport-agnostic request for forum topic creation.
@@ -452,14 +452,20 @@ impl ManagerTopicSandboxCleanup for SandboxAdminTopicSandboxCleanup {
             ManagerControlPlaneProvider::forum_topic_context_key(topic.chat_id, topic.thread_id),
         )
         .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
-        self.admin.destroy_scope(scope).await
+        self.admin
+            .destroy_scope(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }
 
 #[async_trait]
 impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
     async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
-        self.admin.list_user_sandboxes(user_id).await
+        self.admin
+            .list_user_sandboxes(user_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn get_topic_sandbox(
@@ -470,20 +476,28 @@ impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
         self.admin
             .inspect_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        self.admin.ensure_scope_sandbox(scope).await
+        self.admin
+            .ensure_scope_sandbox(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        self.admin.recreate_scope_sandbox(scope).await
+        self.admin
+            .recreate_scope_sandbox(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
         self.admin
             .delete_sandbox_by_name(scope.owner_id(), &scope.container_name())
             .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_topic_sandbox_by_name(
@@ -494,6 +508,7 @@ impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
         self.admin
             .delete_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 }
 

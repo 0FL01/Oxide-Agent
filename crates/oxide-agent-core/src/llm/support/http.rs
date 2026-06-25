@@ -103,7 +103,11 @@ pub async fn send_json_request(
             is_body = e.is_body(),
             "LLM JSON request failed before response"
         );
-        LlmError::NetworkError(diagnostic)
+        if e.is_builder() {
+            LlmError::RequestBuilder(diagnostic)
+        } else {
+            LlmError::NetworkError(diagnostic)
+        }
     })?;
 
     let status = response.status();
@@ -173,7 +177,7 @@ pub async fn send_json_request(
             format!("API error: {status} - {truncated}")
         };
 
-        return Err(LlmError::ApiError(clean_message));
+        return Err(LlmError::api_error_status(status.as_u16(), clean_message));
     }
 
     let response_text = response.text().await.map_err(|e| {
@@ -191,7 +195,11 @@ pub async fn send_json_request(
             is_body = e.is_body(),
             "LLM JSON response body read failed"
         );
-        LlmError::NetworkError(diagnostic)
+        if e.is_builder() {
+            LlmError::RequestBuilder(diagnostic)
+        } else {
+            LlmError::NetworkError(diagnostic)
+        }
     })?;
 
     trace!(
@@ -292,11 +300,11 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
     for segment in path {
         if let Ok(index) = segment.parse::<usize>() {
             current = current.get(index).ok_or_else(|| {
-                LlmError::ApiError(format!("Invalid path: missing index {index}"))
+                LlmError::api_error(format!("Invalid path: missing index {index}"))
             })?;
         } else {
             current = current.get(*segment).ok_or_else(|| {
-                LlmError::ApiError(format!("Invalid path: missing key {segment}"))
+                LlmError::api_error(format!("Invalid path: missing key {segment}"))
             })?;
         }
     }
@@ -304,7 +312,7 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
     current
         .as_str()
         .map(ToString::to_string)
-        .ok_or_else(|| LlmError::ApiError(format!("Expected string at path, got: {current:?}")))
+        .ok_or_else(|| LlmError::api_error(format!("Expected string at path, got: {current:?}")))
 }
 
 /// Helper to parse Retry-After header

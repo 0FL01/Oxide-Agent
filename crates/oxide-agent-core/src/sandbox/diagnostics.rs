@@ -4,10 +4,10 @@ use super::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
+use super::error::SandboxError;
 use super::{
     SandboxBackend, SandboxBackendId, SandboxCapability, SandboxDiagnostics, SandboxManager,
 };
-use anyhow::Result;
 use async_trait::async_trait;
 
 const SANDBOX_DIAGNOSTICS_BACKEND_ID: SandboxBackendId =
@@ -46,14 +46,14 @@ impl SandboxDiagnostics for SandboxDiagnosticsRuntime {
     async fn list_stack_log_sources(
         &self,
         request: StackLogsListSourcesRequest,
-    ) -> Result<StackLogsListSourcesResponse> {
+    ) -> Result<StackLogsListSourcesResponse, SandboxError> {
         SandboxManager::list_stack_log_sources(request).await
     }
 
     async fn fetch_stack_logs(
         &self,
         request: StackLogsFetchRequest,
-    ) -> Result<StackLogsFetchResponse> {
+    ) -> Result<StackLogsFetchResponse, SandboxError> {
         SandboxManager::fetch_stack_logs(request).await
     }
 }

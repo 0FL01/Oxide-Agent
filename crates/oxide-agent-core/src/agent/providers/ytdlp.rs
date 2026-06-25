@@ -956,7 +956,8 @@ mod tests {
     };
     use crate::llm::InvocationId;
     use crate::sandbox::{
-        ExecResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing,
+        ExecResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxError,
+        SandboxFileListing,
     };
     use chrono::Utc;
     use std::sync::Mutex as StdMutex;
@@ -992,7 +993,7 @@ mod tests {
             &self,
             command: &str,
             _cancellation_token: Option<&CancellationToken>,
-        ) -> Result<ExecResult> {
+        ) -> Result<ExecResult, SandboxError> {
             self.commands
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1017,11 +1018,11 @@ mod tests {
 
     #[async_trait]
     impl SandboxFileOps for FakeSandbox {
-        async fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
+        async fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), SandboxError> {
             Ok(())
         }
 
-        async fn read_file(&self, _path: &str) -> Result<Vec<u8>> {
+        async fn read_file(&self, _path: &str) -> Result<Vec<u8>, SandboxError> {
             Ok(Vec::new())
         }
 
@@ -1029,11 +1030,11 @@ mod tests {
             &self,
             _path: &str,
             _cancellation_token: Option<&CancellationToken>,
-        ) -> Result<u64> {
+        ) -> Result<u64, SandboxError> {
             Ok(0)
         }
 
-        async fn list_files(&self, _path: &str) -> Result<SandboxFileListing> {
+        async fn list_files(&self, _path: &str) -> Result<SandboxFileListing, SandboxError> {
             Ok(SandboxFileListing {
                 path: DOWNLOADS_DIR.to_string(),
                 listing: String::new(),
@@ -1046,8 +1047,10 @@ mod tests {
             &self,
             _path: &str,
             _edit: crate::sandbox::SandboxFileEdit,
-        ) -> Result<crate::sandbox::SandboxApplyFileEditResult> {
-            anyhow::bail!("test sandbox file edit is not implemented")
+        ) -> Result<crate::sandbox::SandboxApplyFileEditResult, SandboxError> {
+            Err(SandboxError::Other(
+                "test sandbox file edit is not implemented".to_string(),
+            ))
         }
     }
 

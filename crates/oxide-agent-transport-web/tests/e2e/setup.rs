@@ -205,7 +205,9 @@ pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
 /// Best-effort cleanup for the persistent web sandbox container used by a test user.
 pub async fn cleanup_web_sandbox(user_id: i64) -> anyhow::Result<bool> {
     let scope = SandboxScope::new(user_id, "web");
-    SandboxManager::delete_sandbox_by_name(user_id, &scope.container_name()).await
+    SandboxManager::delete_sandbox_by_name(user_id, &scope.container_name())
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 /// Execute a task directly via the session registry (bypasses HTTP layer).

@@ -4,6 +4,7 @@
 //! conversion. It is intentionally not a crawler, browser, or PDF exporter.
 
 mod convert;
+mod delivery;
 mod error;
 mod fetch;
 mod known_sources;
@@ -11,6 +12,15 @@ mod reddit;
 mod url;
 
 use error::{webfetch_failure_message, webfetch_failure_payload};
+
+pub(crate) use convert::OutputWindow;
+pub(crate) use delivery::{
+    DeliveryPayloadExtra, DeliveryStdoutExtra, MarkdownDeliveryCache, MarkdownDeliveryResult,
+    MarkdownReadMode, delivery_success_payload, no_cached_document_message,
+    no_cached_document_payload, parse_read_mode, render_delivery_stdout, require_url,
+    resolve_output_window,
+};
+pub(crate) use fetch::FetchedMarkdownDocument;
 
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -31,7 +41,6 @@ const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 20_000;
 const MIN_OUTPUT_CHARS: usize = 1_000;
 const MAX_OUTPUT_CHARS_REQUEST: usize = 100_000;
-const MAX_OFFSET_CHARS: usize = 1_000_000;
 const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
@@ -42,17 +51,19 @@ const ANTI_BOT_ERROR: &str = "web_markdown blocked by anti-bot protection; this 
 /// Local provider for fetching a single URL as Markdown.
 pub struct WebFetchMdProvider {
     client: reqwest::Client,
+    delivery: MarkdownDeliveryCache,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub(crate) struct WebMarkdownArgs {
-    pub url: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub read: Option<String>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub max_chars: Option<usize>,
-    #[serde(default)]
-    pub offset_chars: Option<usize>,
 }
 
 impl WebFetchMdProvider {
@@ -78,12 +89,41 @@ impl WebFetchMdProvider {
             Err(_) => reqwest::Client::new(),
         };
 
-        Self { client }
+        Self {
+            client,
+            delivery: MarkdownDeliveryCache::default(),
+        }
     }
 
     #[cfg(test)]
     fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            delivery: MarkdownDeliveryCache::default(),
+        }
+    }
+
+    pub(crate) async fn store_markdown_window(
+        &self,
+        session_id: i64,
+        requested_url: String,
+        document: FetchedMarkdownDocument,
+        output_window: OutputWindow,
+    ) -> MarkdownDeliveryResult {
+        self.delivery
+            .store_document_window(session_id, requested_url, document, output_window)
+            .await
+    }
+
+    pub(crate) async fn next_markdown_window(
+        &self,
+        session_id: i64,
+        requested_url: Option<&str>,
+        output_window: OutputWindow,
+    ) -> Option<MarkdownDeliveryResult> {
+        self.delivery
+            .next_document_window(session_id, requested_url, output_window)
+            .await
     }
 
     /// Build native typed runtime executors for the web markdown tool.
@@ -124,7 +164,12 @@ impl WebFetchMdProvider {
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Fully-qualified http/https URL to fetch"
+                        "description": "Fully-qualified http/https URL to fetch. Required unless read is \"next\"."
+                    },
+                    "read": {
+                        "type": "string",
+                        "enum": ["auto", "next"],
+                        "description": "auto fetches the URL and starts reading; next continues the last cached page in this session"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -133,13 +178,9 @@ impl WebFetchMdProvider {
                     "max_chars": {
                         "type": "integer",
                         "description": "Optional maximum Markdown output characters, clamped to 1000..100000; default is 20000"
-                    },
-                    "offset_chars": {
-                        "type": "integer",
-                        "description": "Optional character offset into extracted Markdown for reading later chunks; default is 0"
                     }
                 },
-                "required": ["url"]
+                "additionalProperties": false
             }),
         }
     }
@@ -187,12 +228,65 @@ impl ToolExecutor for WebFetchMdToolExecutor {
         let args =
             parse_web_markdown_args(&invocation.raw_arguments).map_err(webfetch_runtime_error)?;
 
+        if parse_read_mode(args.read.as_deref(), TOOL_WEB_MARKDOWN)? == MarkdownReadMode::Next {
+            let output_window = resolve_output_window(
+                args.max_chars,
+                MAX_OUTPUT_CHARS,
+                MIN_OUTPUT_CHARS,
+                MAX_OUTPUT_CHARS_REQUEST,
+            );
+            let Some(delivery) = self
+                .provider
+                .next_markdown_window(
+                    invocation.session_id.as_i64(),
+                    args.url.as_deref(),
+                    output_window,
+                )
+                .await
+            else {
+                let mut output =
+                    normalizer.failure(&invocation, no_cached_document_message(TOOL_WEB_MARKDOWN));
+                output.structured_payload =
+                    Some(no_cached_document_payload(TOOL_WEB_MARKDOWN, None));
+                return Ok(output);
+            };
+
+            let output_text = render_delivery_stdout(TOOL_WEB_MARKDOWN, &delivery, None);
+            let mut output = normalizer.success(&invocation, &output_text, "");
+            output.structured_payload =
+                Some(delivery_success_payload(TOOL_WEB_MARKDOWN, &delivery, None));
+            return Ok(output);
+        }
+
+        let requested_url = require_url(args.url.as_deref(), TOOL_WEB_MARKDOWN)?.to_string();
+
         match self
             .provider
-            .fetch_markdown(args.clone(), Some(&invocation.cancellation_token))
+            .fetch_markdown_document(args.clone(), Some(&invocation.cancellation_token))
             .await
         {
-            Ok(output) => Ok(normalizer.success(&invocation, &output, "")),
+            Ok(document) => {
+                let output_window = resolve_output_window(
+                    args.max_chars,
+                    MAX_OUTPUT_CHARS,
+                    MIN_OUTPUT_CHARS,
+                    MAX_OUTPUT_CHARS_REQUEST,
+                );
+                let delivery = self
+                    .provider
+                    .store_markdown_window(
+                        invocation.session_id.as_i64(),
+                        requested_url,
+                        document,
+                        output_window,
+                    )
+                    .await;
+                let output_text = render_delivery_stdout(TOOL_WEB_MARKDOWN, &delivery, None);
+                let mut output = normalizer.success(&invocation, &output_text, "");
+                output.structured_payload =
+                    Some(delivery_success_payload(TOOL_WEB_MARKDOWN, &delivery, None));
+                Ok(output)
+            }
             Err(error) => {
                 let mut output =
                     normalizer.failure(&invocation, webfetch_failure_message(Some(&args), &error));

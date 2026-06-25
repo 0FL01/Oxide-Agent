@@ -12,6 +12,7 @@ use crate::config::{
     get_agent_search_limit,
 };
 use crate::llm::{Message, ToolDefinition};
+use crate::storage::StorageProvider;
 use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -153,6 +154,12 @@ pub struct AgentRunnerContext<'a> {
     pub memory_scope: Option<AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
+    /// Durable storage handle for Postgres-based image resolution.
+    /// Set by the executor from `AgentExecutor.storage`. When `Some`,
+    /// the runner resolves browser screenshot bytes from `browser_artifacts`
+    /// via `load_browser_artifact(user_id, artifact_uri)` — the 2nd tier
+    /// after inline `data` and before filesystem fallback.
+    pub storage: Option<Arc<dyn StorageProvider>>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }
@@ -191,6 +198,7 @@ impl<'a> AgentRunnerContext<'a> {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config,
         }
     }

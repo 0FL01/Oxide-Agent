@@ -3,80 +3,83 @@
 //! Sandbox manager facade.
 //!
 //! Dispatches sandbox operations to the selected compiled backend.
+//!
+//! Deployment: `docs/deploy.md`
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
-use anyhow::Context;
-use anyhow::{Result, anyhow};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+use super::error::SandboxError;
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::Docker;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::container::LogOutput;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::errors::Error as DockerError;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::exec::{CreateExecOptions, StartExecResults};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum, HostConfig,
 };
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
     LogsOptionsBuilder, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use bytes::Bytes;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use chrono::{DateTime, Utc};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use futures_util::{StreamExt, TryStreamExt};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use http_body_util::{Either, Full};
 use serde::{Deserialize, Serialize};
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use shell_escape::escape;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::io::Read;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use std::time::Duration;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tokio::time::sleep;
 use tracing::instrument;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use tracing::{debug, info, warn};
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use crate::config::get_sandbox_image;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use crate::config::{
     SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
     get_stack_logs_project,
 };
 use crate::config::{SandboxBackendConfig, get_sandbox_backend_config};
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 use crate::sandbox::broker::SandboxBrokerClient;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 use crate::sandbox::broker::{
     ResolvedStackLogsSelector, StackLogCursor, StackLogEntry, StackLogSource, StackLogSuppression,
     StackLogsSelector, StackLogsWindow,
 };
-#[cfg(any(feature = "sandbox-backend-docker-direct", feature = "tool-stack-logs"))]
+#[cfg(any(
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_tool_stack_logs
+))]
 use crate::sandbox::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 use crate::sandbox::traits::apply_sandbox_file_edit;
 use crate::sandbox::{
@@ -84,22 +87,22 @@ use crate::sandbox::{
     SandboxScope,
 };
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const DOCKER_COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOGS_PROJECT_ENV: &str = "STACK_LOGS_PROJECT";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const UNKNOWN_STACK_LOG_STATE: &str = "unknown";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOG_STREAM_STDOUT: &str = "stdout";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOG_STREAM_STDERR: &str = "stderr";
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const STACK_LOGS_HARD_MAX_ENTRIES: usize = 500;
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[derive(Default)]
 struct StackLogBufferState {
     buffer: String,
@@ -243,13 +246,13 @@ pub struct SandboxManager {
 
 #[derive(Clone)]
 enum SandboxManagerInner {
-    #[cfg(feature = "sandbox-backend-docker-direct")]
+    #[cfg(oxide_module_sandbox_backend_docker_direct)]
     Docker(DockerSandboxManager),
-    #[cfg(feature = "sandbox-backend-sandboxd-client")]
+    #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
     Broker(BrokerSandboxManager),
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 #[derive(Clone)]
 struct BrokerSandboxManager {
     client: SandboxBrokerClient,
@@ -278,7 +281,7 @@ impl ExecResult {
     }
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 impl BrokerSandboxManager {
     fn new(scope: SandboxScope) -> Self {
         Self {
@@ -301,7 +304,7 @@ impl BrokerSandboxManager {
         &self.scope
     }
 
-    async fn create_sandbox(&mut self) -> Result<()> {
+    async fn create_sandbox(&mut self) -> Result<(), SandboxError> {
         self.container_id = self
             .client
             .create_sandbox(self.scope.clone(), self.image_name.clone())
@@ -314,7 +317,7 @@ impl BrokerSandboxManager {
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         let result = self
             .client
             .exec_command(
@@ -329,16 +332,16 @@ impl BrokerSandboxManager {
         Ok(result)
     }
 
-    async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+    async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<(), SandboxError> {
         if self.container_id.is_none() {
-            return Err(anyhow!("Sandbox not running"));
+            return Err(SandboxError::NotRunning);
         }
         self.client
             .write_file(self.scope.clone(), self.image_name.clone(), path, content)
             .await
     }
 
-    async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+    async fn read_file(&mut self, path: &str) -> Result<Vec<u8>, SandboxError> {
         let result = self
             .client
             .read_file(self.scope.clone(), self.image_name.clone(), path)
@@ -348,9 +351,13 @@ impl BrokerSandboxManager {
         Ok(result)
     }
 
-    async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
+    async fn upload_file(
+        &mut self,
+        container_path: &str,
+        content: &[u8],
+    ) -> Result<(), SandboxError> {
         if self.container_id.is_none() {
-            return Err(anyhow!("Sandbox not running"));
+            return Err(SandboxError::NotRunning);
         }
         self.client
             .upload_file(
@@ -362,16 +369,16 @@ impl BrokerSandboxManager {
             .await
     }
 
-    async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+    async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>, SandboxError> {
         if self.container_id.is_none() {
-            return Err(anyhow!("Sandbox not running"));
+            return Err(SandboxError::NotRunning);
         }
         self.client
             .download_file(self.scope.clone(), self.image_name.clone(), container_path)
             .await
     }
 
-    async fn get_uploads_size(&mut self) -> Result<u64> {
+    async fn get_uploads_size(&mut self) -> Result<u64, SandboxError> {
         let size = self
             .client
             .get_uploads_size(self.scope.clone(), self.image_name.clone())
@@ -381,7 +388,7 @@ impl BrokerSandboxManager {
         Ok(size)
     }
 
-    async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+    async fn cleanup_old_downloads(&mut self) -> Result<u64, SandboxError> {
         let count = self
             .client
             .cleanup_old_downloads(self.scope.clone(), self.image_name.clone())
@@ -391,7 +398,7 @@ impl BrokerSandboxManager {
         Ok(count)
     }
 
-    async fn destroy(&mut self) -> Result<()> {
+    async fn destroy(&mut self) -> Result<(), SandboxError> {
         self.client
             .destroy(self.scope.clone(), self.image_name.clone())
             .await?;
@@ -399,7 +406,7 @@ impl BrokerSandboxManager {
         Ok(())
     }
 
-    async fn recreate(&mut self) -> Result<()> {
+    async fn recreate(&mut self) -> Result<(), SandboxError> {
         self.client
             .recreate(self.scope.clone(), self.image_name.clone())
             .await?;
@@ -411,7 +418,7 @@ impl BrokerSandboxManager {
         &mut self,
         container_path: &str,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         let size = self
             .client
             .file_size_bytes(self.scope.clone(), self.image_name.clone(), container_path)
@@ -422,22 +429,26 @@ impl BrokerSandboxManager {
     }
 }
 
-#[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-fn broker_backend_not_compiled() -> anyhow::Error {
-    anyhow!("sandbox broker client backend is not compiled; enable sandbox-backend-sandboxd-client")
+#[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
+fn broker_backend_not_compiled() -> SandboxError {
+    SandboxError::BackendNotCompiled(
+        "sandbox broker client backend is not compiled; enable sandbox-backend-sandboxd-client",
+    )
 }
 
-#[cfg(not(feature = "sandbox-backend-docker-direct"))]
-fn docker_backend_not_compiled() -> anyhow::Error {
-    anyhow!("sandbox Docker direct backend is not compiled; enable sandbox-backend-docker-direct")
+#[cfg(not(oxide_module_sandbox_backend_docker_direct))]
+fn docker_backend_not_compiled() -> SandboxError {
+    SandboxError::BackendNotCompiled(
+        "sandbox Docker direct backend is not compiled; enable sandbox-backend-docker-direct",
+    )
 }
 
 fn compiled_sandbox_backends() -> Vec<&'static str> {
     let mut backends = Vec::new();
-    if cfg!(feature = "sandbox-backend-docker-direct") {
+    if cfg!(oxide_module_sandbox_backend_docker_direct) {
         backends.push("docker");
     }
-    if cfg!(feature = "sandbox-backend-sandboxd-client") {
+    if cfg!(oxide_module_sandbox_backend_sandboxd_client) {
         backends.push("broker");
     }
     backends
@@ -464,25 +475,25 @@ fn sandbox_backend_mismatch_advice(compiled: &[&'static str]) -> String {
     }
 }
 
-fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
-    let backend = get_sandbox_backend_config().map_err(anyhow::Error::msg)?;
+fn selected_sandbox_backend() -> Result<SandboxBackendConfig, SandboxError> {
+    let backend = get_sandbox_backend_config().map_err(SandboxError::Other)?;
     let compiled = compiled_sandbox_backends();
 
     let selected_is_compiled = match backend {
-        SandboxBackendConfig::Docker => cfg!(feature = "sandbox-backend-docker-direct"),
-        SandboxBackendConfig::Broker => cfg!(feature = "sandbox-backend-sandboxd-client"),
+        SandboxBackendConfig::Docker => cfg!(oxide_module_sandbox_backend_docker_direct),
+        SandboxBackendConfig::Broker => cfg!(oxide_module_sandbox_backend_sandboxd_client),
     };
 
     if selected_is_compiled {
         return Ok(backend);
     }
 
-    Err(anyhow!(
+    Err(SandboxError::Other(format!(
         "SANDBOX_BACKEND={} was selected, but this binary was not compiled with that backend. Compiled sandbox backends: {}. {}",
         backend,
         compiled_sandbox_backends_text(&compiled),
         sandbox_backend_mismatch_advice(&compiled)
-    ))
+    )))
 }
 
 #[must_use]
@@ -492,50 +503,52 @@ pub fn sandbox_backend_available() -> bool {
 
 impl SandboxManager {
     #[instrument(skip_all)]
-    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+    pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self, SandboxError> {
         let scope = scope.into();
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 {
                     return Ok(Self {
                         inner: SandboxManagerInner::Broker(BrokerSandboxManager::new(scope)),
                     });
                 }
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 {
                     return Ok(Self {
                         inner: SandboxManagerInner::Docker(DockerSandboxManager::new(scope).await?),
                     });
                 }
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+    pub async fn list_user_sandboxes(
+        user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .list_user_sandboxes(user_id)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::list_user_sandboxes(user_id).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -544,134 +557,141 @@ impl SandboxManager {
     pub async fn inspect_sandbox_by_name(
         user_id: i64,
         container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>> {
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .inspect_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn ensure_scope_sandbox(
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .ensure_scope_sandbox(scope, get_sandbox_image())
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::ensure_scope_sandbox(scope).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn recreate_scope_sandbox(
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .recreate_scope_sandbox(scope, get_sandbox_image())
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::recreate_scope_sandbox(scope).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    pub async fn delete_sandbox_by_name(user_id: i64, container_name: &str) -> Result<bool> {
+    pub async fn delete_sandbox_by_name(
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .delete_sandbox_by_name(user_id, container_name)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::delete_sandbox_by_name(user_id, container_name).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    #[cfg(feature = "tool-stack-logs")]
+    #[cfg(oxide_module_tool_stack_logs)]
     pub async fn list_stack_log_sources(
         request: StackLogsListSourcesRequest,
-    ) -> Result<StackLogsListSourcesResponse> {
+    ) -> Result<StackLogsListSourcesResponse, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .list_stack_log_sources(request)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::list_stack_log_sources(request).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
     }
 
-    #[cfg(feature = "tool-stack-logs")]
+    #[cfg(oxide_module_tool_stack_logs)]
     pub async fn fetch_stack_logs(
         request: StackLogsFetchRequest,
-    ) -> Result<StackLogsFetchResponse> {
+    ) -> Result<StackLogsFetchResponse, SandboxError> {
         match selected_sandbox_backend()? {
             SandboxBackendConfig::Broker => {
-                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
                 return SandboxBrokerClient::from_env()
                     .fetch_stack_logs(request)
                     .await;
 
-                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                #[cfg(not(oxide_module_sandbox_backend_sandboxd_client))]
                 return Err(broker_backend_not_compiled());
             }
             SandboxBackendConfig::Docker => {
-                #[cfg(feature = "sandbox-backend-docker-direct")]
+                #[cfg(oxide_module_sandbox_backend_docker_direct)]
                 return DockerSandboxManager::fetch_stack_logs(request).await;
 
-                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                #[cfg(not(oxide_module_sandbox_backend_docker_direct))]
                 return Err(docker_backend_not_compiled());
             }
         }
@@ -680,9 +700,9 @@ impl SandboxManager {
     #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.is_running(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.is_running(),
         }
     }
@@ -690,9 +710,9 @@ impl SandboxManager {
     #[must_use]
     pub fn container_id(&self) -> Option<&str> {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.container_id(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.container_id(),
         }
     }
@@ -700,18 +720,18 @@ impl SandboxManager {
     #[must_use]
     pub fn scope(&self) -> &SandboxScope {
         match &self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.scope(),
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.scope(),
         }
     }
 
-    pub async fn create_sandbox(&mut self) -> Result<()> {
+    pub async fn create_sandbox(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.create_sandbox().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.create_sandbox().await,
         }
     }
@@ -720,33 +740,33 @@ impl SandboxManager {
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
         }
     }
 
-    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.write_file(path, content).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.write_file(path, content).await,
         }
     }
 
-    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.read_file(path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
         }
     }
@@ -756,9 +776,9 @@ impl SandboxManager {
         path: &str,
         edit: SandboxFileEdit,
         read_guard: Option<SandboxEditReadGuard>,
-    ) -> Result<SandboxApplyFileEditResult> {
+    ) -> Result<SandboxApplyFileEditResult, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 let current = manager.read_file(path).await?;
                 let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
@@ -767,7 +787,7 @@ impl SandboxManager {
                 }
                 Ok(applied.result)
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 let current = manager.read_file(path).await?;
                 let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
@@ -779,60 +799,64 @@ impl SandboxManager {
         }
     }
 
-    pub async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
+    pub async fn upload_file(
+        &mut self,
+        container_path: &str,
+        content: &[u8],
+    ) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager.upload_file(container_path, content).await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager.upload_file(container_path, content).await
             }
         }
     }
 
-    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.download_file(container_path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.download_file(container_path).await,
         }
     }
 
-    pub async fn get_uploads_size(&mut self) -> Result<u64> {
+    pub async fn get_uploads_size(&mut self) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.get_uploads_size().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.get_uploads_size().await,
         }
     }
 
-    pub async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+    pub async fn cleanup_old_downloads(&mut self) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.cleanup_old_downloads().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.cleanup_old_downloads().await,
         }
     }
 
-    pub async fn destroy(&mut self) -> Result<()> {
+    pub async fn destroy(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.destroy().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.destroy().await,
         }
     }
 
-    pub async fn recreate(&mut self) -> Result<()> {
+    pub async fn recreate(&mut self) -> Result<(), SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => manager.recreate().await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => manager.recreate().await,
         }
     }
@@ -841,15 +865,15 @@ impl SandboxManager {
         &mut self,
         container_path: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => {
                 manager
                     .file_size_bytes(container_path, cancellation_token)
                     .await
             }
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => {
                 manager
                     .file_size_bytes(container_path, cancellation_token)
@@ -858,24 +882,24 @@ impl SandboxManager {
         }
     }
 
-    pub async fn list_files(&mut self, path: &str) -> Result<SandboxFileListing> {
+    pub async fn list_files(&mut self, path: &str) -> Result<SandboxFileListing, SandboxError> {
         match &mut self.inner {
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             SandboxManagerInner::Docker(manager) => list_files_via_exec(manager, path).await,
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             SandboxManagerInner::Broker(manager) => list_files_via_exec(manager, path).await,
         }
     }
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 async fn list_files_via_exec(
     manager: &mut impl SandboxCommandExec,
     path: &str,
-) -> Result<SandboxFileListing> {
+) -> Result<SandboxFileListing, SandboxError> {
     let result = manager
         .exec_command(&list_files_command(path), None)
         .await?;
@@ -888,8 +912,8 @@ async fn list_files_via_exec(
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 #[async_trait::async_trait]
 trait SandboxCommandExec {
@@ -897,36 +921,36 @@ trait SandboxCommandExec {
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult>;
+    ) -> Result<ExecResult, SandboxError>;
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[async_trait::async_trait]
 impl SandboxCommandExec for DockerSandboxManager {
     async fn exec_command(
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         Self::exec_command(self, cmd, cancellation_token).await
     }
 }
 
-#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
 #[async_trait::async_trait]
 impl SandboxCommandExec for BrokerSandboxManager {
     async fn exec_command(
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         Self::exec_command(self, cmd, cancellation_token).await
     }
 }
 
 #[cfg(any(
-    feature = "sandbox-backend-docker-direct",
-    feature = "sandbox-backend-sandboxd-client"
+    oxide_module_sandbox_backend_docker_direct,
+    oxide_module_sandbox_backend_sandboxd_client
 ))]
 fn list_files_command(path: &str) -> String {
     format!(
@@ -937,7 +961,7 @@ fn list_files_command(path: &str) -> String {
 }
 
 /// Docker sandbox manager for isolated code execution
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 #[derive(Clone)]
 pub(crate) struct DockerSandboxManager {
     docker: Docker,
@@ -946,14 +970,14 @@ pub(crate) struct DockerSandboxManager {
     scope: SandboxScope,
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_MAX_ATTEMPTS: usize = 8;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 impl DockerSandboxManager {
     fn normalize_non_empty(value: &str) -> Option<String> {
         let trimmed = value.trim();
@@ -1056,12 +1080,13 @@ impl DockerSandboxManager {
     fn validate_stack_logs_window(
         since: Option<DateTime<Utc>>,
         until: Option<DateTime<Utc>>,
-    ) -> Result<()> {
+    ) -> Result<(), SandboxError> {
         if let (Some(since), Some(until)) = (since, until)
             && since > until
         {
-            return Err(anyhow!(
+            return Err(SandboxError::Other(
                 "Invalid stack log time window: 'since' must be earlier than or equal to 'until'"
+                    .to_string(),
             ));
         }
 
@@ -1072,7 +1097,7 @@ impl DockerSandboxManager {
         request_selector: &StackLogsSelector,
         env_compose_project: Option<String>,
         runtime_compose_project: Option<String>,
-    ) -> Result<ResolvedStackLogsSelector> {
+    ) -> Result<ResolvedStackLogsSelector, SandboxError> {
         if let Some(compose_project) =
             Self::normalize_optional_string(request_selector.compose_project.as_deref())
         {
@@ -1093,23 +1118,22 @@ impl DockerSandboxManager {
             return Ok(ResolvedStackLogsSelector { compose_project });
         }
 
-        Err(anyhow!(
+        Err(SandboxError::Other(format!(
             "Unable to resolve compose project for stack log discovery; set {STACK_LOGS_PROJECT_ENV} or run sandboxd inside a Docker Compose deployment"
-        ))
+        )))
     }
 
-    async fn detect_runtime_compose_project(docker: &Docker) -> Result<String> {
+    async fn detect_runtime_compose_project(docker: &Docker) -> Result<String, SandboxError> {
         let hostname = Self::normalize_optional_string(std::env::var("HOSTNAME").ok().as_deref())
             .ok_or_else(|| {
-                anyhow!(
+                SandboxError::Other(format!(
                     "Unable to resolve compose project for stack log discovery automatically: HOSTNAME is unavailable; set {STACK_LOGS_PROJECT_ENV}"
-                )
+                ))
             })?;
 
         let inspect = docker
             .inspect_container(&hostname, None::<InspectContainerOptions>)
-            .await
-            .context("Failed to inspect current sandboxd container for stack log discovery")?;
+            .await?;
 
         inspect
             .config
@@ -1121,9 +1145,9 @@ impl DockerSandboxManager {
                 )
             })
             .ok_or_else(|| {
-                anyhow!(
+                SandboxError::Other(format!(
                     "Unable to resolve compose project for stack log discovery automatically: current sandboxd container is missing label '{DOCKER_COMPOSE_PROJECT_LABEL}'; set {STACK_LOGS_PROJECT_ENV}"
-                )
+                ))
             })
     }
 
@@ -1462,7 +1486,7 @@ impl DockerSandboxManager {
         selector: &StackLogsSelector,
         services: &[String],
         include_stopped: bool,
-    ) -> Result<(ResolvedStackLogsSelector, Vec<StackLogSource>)> {
+    ) -> Result<(ResolvedStackLogsSelector, Vec<StackLogSource>), SandboxError> {
         let env_compose_project = get_stack_logs_project();
         let runtime_compose_project =
             if selector.compose_project.is_some() || env_compose_project.is_some() {
@@ -1489,8 +1513,7 @@ impl DockerSandboxManager {
                 filters: Some(filters),
                 ..Default::default()
             }))
-            .await
-            .context("Failed to list compose stack containers for stack log discovery")?;
+            .await?;
 
         let requested_services = Self::normalize_requested_stack_log_services(services);
         let mut sources = Vec::new();
@@ -1520,7 +1543,7 @@ impl DockerSandboxManager {
         source: &StackLogSource,
         request: &StackLogsFetchRequest,
         max_entries: usize,
-    ) -> Result<(Vec<StackLogEntry>, u64)> {
+    ) -> Result<(Vec<StackLogEntry>, u64), SandboxError> {
         let tail = max_entries.to_string();
         let options = LogsOptionsBuilder::new()
             .follow(false)
@@ -1539,7 +1562,7 @@ impl DockerSandboxManager {
         let mut unparsable_lines = 0_u64;
 
         while let Some(message) = output.next().await {
-            match message.context("Failed to stream Docker container logs")? {
+            match message? {
                 LogOutput::StdOut { message } => Self::ingest_stack_log_chunk(
                     source,
                     STACK_LOG_STREAM_STDOUT,
@@ -1578,13 +1601,9 @@ impl DockerSandboxManager {
         Ok((entries, unparsable_lines))
     }
 
-    async fn connect_and_ping() -> Result<Docker> {
-        let docker =
-            Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
-        docker
-            .ping()
-            .await
-            .context("Failed to ping Docker daemon")?;
+    async fn connect_and_ping() -> Result<Docker, SandboxError> {
+        let docker = Docker::connect_with_local_defaults()?;
+        docker.ping().await?;
         Ok(docker)
     }
 
@@ -1619,7 +1638,10 @@ impl DockerSandboxManager {
         error_message.contains("no such image") && error_message.contains(&image_name)
     }
 
-    async fn get_container_id_by_name(&self, container_name: &str) -> Result<Option<String>> {
+    async fn get_container_id_by_name(
+        &self,
+        container_name: &str,
+    ) -> Result<Option<String>, SandboxError> {
         let mut filters = HashMap::new();
         filters.insert("name".to_string(), vec![container_name.to_string()]);
 
@@ -1630,8 +1652,7 @@ impl DockerSandboxManager {
                 filters: Some(filters),
                 ..Default::default()
             }))
-            .await
-            .context("Failed to list containers by name")?;
+            .await?;
 
         Ok(containers
             .first()
@@ -1644,7 +1665,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if connection to Docker daemon fails or ping fails.
     #[instrument(skip_all)]
-    pub(crate) async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
+    pub(crate) async fn new(scope: impl Into<SandboxScope>) -> Result<Self, SandboxError> {
         Self::new_with_image(scope, get_sandbox_image()).await
     }
 
@@ -1652,7 +1673,7 @@ impl DockerSandboxManager {
     pub(crate) async fn new_with_image(
         scope: impl Into<SandboxScope>,
         image_name: String,
-    ) -> Result<Self> {
+    ) -> Result<Self, SandboxError> {
         let scope = scope.into();
         let docker = Self::connect_and_ping().await?;
 
@@ -1667,7 +1688,7 @@ impl DockerSandboxManager {
     }
 
     #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
-    pub(crate) async fn attach_existing_container(&mut self) -> Result<bool> {
+    pub(crate) async fn attach_existing_container(&mut self) -> Result<bool, SandboxError> {
         if self.refresh_container_liveness().await {
             return Ok(true);
         }
@@ -1704,7 +1725,9 @@ impl DockerSandboxManager {
     }
 
     /// List all sandbox containers owned by a user.
-    pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+    pub async fn list_user_sandboxes(
+        user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         let docker = Self::connect_and_ping().await?;
         let containers = docker
             .list_containers(Some(bollard::query_parameters::ListContainersOptions {
@@ -1712,8 +1735,7 @@ impl DockerSandboxManager {
                 filters: Some(Self::sandbox_filters(user_id)),
                 ..Default::default()
             }))
-            .await
-            .context("Failed to list sandbox containers")?;
+            .await?;
 
         let mut records = containers
             .iter()
@@ -1727,7 +1749,7 @@ impl DockerSandboxManager {
     pub async fn inspect_sandbox_by_name(
         user_id: i64,
         container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>> {
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         let docker = Self::connect_and_ping().await?;
         let mut filters = Self::sandbox_filters(user_id);
         filters.insert("name".to_string(), vec![container_name.to_string()]);
@@ -1737,8 +1759,7 @@ impl DockerSandboxManager {
                 filters: Some(filters),
                 ..Default::default()
             }))
-            .await
-            .context("Failed to inspect sandbox container by name")?;
+            .await?;
 
         Ok(containers
             .iter()
@@ -1749,7 +1770,7 @@ impl DockerSandboxManager {
     /// List compose-stack containers that can be used as stack log sources.
     pub(crate) async fn list_stack_log_sources(
         request: StackLogsListSourcesRequest,
-    ) -> Result<StackLogsListSourcesResponse> {
+    ) -> Result<StackLogsListSourcesResponse, SandboxError> {
         let docker = Self::connect_and_ping().await?;
         let (resolved_selector, sources) = Self::discover_stack_log_sources(
             &docker,
@@ -1768,7 +1789,7 @@ impl DockerSandboxManager {
     /// Fetch raw compose-stack log entries for the selected services and time window.
     pub(crate) async fn fetch_stack_logs(
         request: StackLogsFetchRequest,
-    ) -> Result<StackLogsFetchResponse> {
+    ) -> Result<StackLogsFetchResponse, SandboxError> {
         Self::validate_stack_logs_window(request.since, request.until)?;
 
         let docker = Self::connect_and_ping().await?;
@@ -1806,7 +1827,7 @@ impl DockerSandboxManager {
         }
 
         if !sources.is_empty() && entries.is_empty() && !source_failures.is_empty() {
-            return Err(anyhow!(source_failures.join("; ")));
+            return Err(SandboxError::Other(source_failures.join("; ")));
         }
         warnings.extend(source_failures);
 
@@ -1839,7 +1860,9 @@ impl DockerSandboxManager {
     }
 
     /// Ensure a sandbox exists for the provided scope and return its Docker metadata.
-    pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn ensure_scope_sandbox(
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         Self::ensure_scope_sandbox_with_image(scope, get_sandbox_image()).await
     }
 
@@ -1847,7 +1870,7 @@ impl DockerSandboxManager {
     pub(crate) async fn ensure_scope_sandbox_with_image(
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<SandboxContainerRecord> {
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         let container_name = scope.container_name();
         let owner_id = scope.owner_id();
         let mut sandbox = Self::new_with_image(scope, image_name).await?;
@@ -1855,12 +1878,16 @@ impl DockerSandboxManager {
         Self::inspect_sandbox_by_name(owner_id, &container_name)
             .await?
             .ok_or_else(|| {
-                anyhow!("sandbox container '{container_name}' was not found after create")
+                SandboxError::ContainerNotFound(format!(
+                    "sandbox container '{container_name}' was not found after create"
+                ))
             })
     }
 
     /// Recreate a sandbox for the provided scope and return its Docker metadata.
-    pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    pub async fn recreate_scope_sandbox(
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         Self::recreate_scope_sandbox_with_image(scope, get_sandbox_image()).await
     }
 
@@ -1868,7 +1895,7 @@ impl DockerSandboxManager {
     pub(crate) async fn recreate_scope_sandbox_with_image(
         scope: SandboxScope,
         image_name: String,
-    ) -> Result<SandboxContainerRecord> {
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         let container_name = scope.container_name();
         let owner_id = scope.owner_id();
         let mut sandbox = Self::new_with_image(scope, image_name).await?;
@@ -1876,12 +1903,17 @@ impl DockerSandboxManager {
         Self::inspect_sandbox_by_name(owner_id, &container_name)
             .await?
             .ok_or_else(|| {
-                anyhow!("sandbox container '{container_name}' was not found after recreate")
+                SandboxError::ContainerNotFound(format!(
+                    "sandbox container '{container_name}' was not found after recreate"
+                ))
             })
     }
 
     /// Delete a user-owned sandbox by Docker container name.
-    pub async fn delete_sandbox_by_name(user_id: i64, container_name: &str) -> Result<bool> {
+    pub async fn delete_sandbox_by_name(
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool, SandboxError> {
         let Some(_) = Self::inspect_sandbox_by_name(user_id, container_name).await? else {
             return Ok(false);
         };
@@ -1894,7 +1926,7 @@ impl DockerSandboxManager {
         match docker.remove_container(container_name, Some(options)).await {
             Ok(()) => Ok(true),
             Err(error) if Self::is_not_found_error(&error) => Ok(false),
-            Err(error) => Err(error).context("Failed to delete sandbox container by name"),
+            Err(error) => Err(SandboxError::Docker(error)),
         }
     }
 
@@ -1953,7 +1985,7 @@ impl DockerSandboxManager {
         &self.scope
     }
 
-    async fn has_container_with_name(&self, container_name: &str) -> Result<bool> {
+    async fn has_container_with_name(&self, container_name: &str) -> Result<bool, SandboxError> {
         let mut filters = HashMap::new();
         filters.insert("name".to_string(), vec![container_name.to_string()]);
 
@@ -1964,13 +1996,15 @@ impl DockerSandboxManager {
                 filters: Some(filters),
                 ..Default::default()
             }))
-            .await
-            .context("Failed to list containers by name")?;
+            .await?;
 
         Ok(!containers.is_empty())
     }
 
-    async fn wait_for_container_removal_by_name(&self, container_name: &str) -> Result<()> {
+    async fn wait_for_container_removal_by_name(
+        &self,
+        container_name: &str,
+    ) -> Result<(), SandboxError> {
         let mut backoff_ms = RECREATE_REMOVE_INITIAL_BACKOFF_MS;
 
         for attempt in 1..=RECREATE_REMOVE_MAX_ATTEMPTS {
@@ -1995,9 +2029,9 @@ impl DockerSandboxManager {
             backoff_ms = (backoff_ms.saturating_mul(2)).min(RECREATE_REMOVE_MAX_BACKOFF_MS);
         }
 
-        Err(anyhow!(
+        Err(SandboxError::Other(format!(
             "Timed out waiting for container removal: {container_name}"
-        ))
+        )))
     }
 
     /// Create and start a new sandbox container
@@ -2006,7 +2040,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if container creation or starting fails.
     #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
-    pub async fn create_sandbox(&mut self) -> Result<()> {
+    pub async fn create_sandbox(&mut self) -> Result<(), SandboxError> {
         if self.refresh_container_liveness().await {
             // Already tracked in this object
             return Ok(());
@@ -2080,30 +2114,25 @@ impl DockerSandboxManager {
                     .get_container_id_by_name(&container_name)
                     .await?
                     .ok_or_else(|| {
-                        anyhow!(
-                            "Sandbox create conflicted but no container found by name: {container_name}"
-                        )
+                        SandboxError::ContainerNotFound(format!("Sandbox create conflicted but no container found by name: {container_name}"))
                     })?;
 
                 info!(container_id = %resolved_id, "Resolved sandbox container after create conflict");
                 resolved_id
             }
             Err(error) if Self::is_image_not_found_error(&error, &self.image_name) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Sandbox image '{}' not found. Build it with `docker compose build sandbox_image` or start the full stack with `docker compose up --build -d`",
-                        self.image_name
-                    )
-                });
+                return Err(SandboxError::Other(format!(
+                    "Sandbox image '{}' not found. Build it with `docker compose build sandbox_image` or start the full stack with `docker compose up --build -d`",
+                    self.image_name
+                )));
             }
-            Err(error) => return Err(error).context("Failed to create sandbox container"),
+            Err(error) => return Err(SandboxError::Docker(error)),
         };
 
         // Start container
         self.docker
             .start_container(&container_id, None::<StartContainerOptions>)
-            .await
-            .context("Failed to start sandbox container")?;
+            .await?;
 
         self.container_id = Some(container_id.clone());
         info!(container_id = %container_id, "Sandbox container started");
@@ -2164,7 +2193,7 @@ impl DockerSandboxManager {
         &mut self,
         cmd: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult> {
+    ) -> Result<ExecResult, SandboxError> {
         if !self.refresh_container_liveness().await {
             self.create_sandbox().await?;
         }
@@ -2173,7 +2202,7 @@ impl DockerSandboxManager {
             .container_id
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow!("Sandbox not running"))?;
+            .ok_or_else(|| SandboxError::NotRunning)?;
 
         debug!(cmd = %cmd, "Executing command in sandbox");
 
@@ -2185,11 +2214,7 @@ impl DockerSandboxManager {
             ..Default::default()
         };
 
-        let exec = self
-            .docker
-            .create_exec(&container_id, exec_options)
-            .await
-            .context("Failed to create exec")?;
+        let exec = self.docker.create_exec(&container_id, exec_options).await?;
 
         // If cancellation_token is provided, use select! to handle cancellation
         let result = if let Some(token) = cancellation_token {
@@ -2199,8 +2224,8 @@ impl DockerSandboxManager {
                     std::time::Duration::from_secs(SANDBOX_EXEC_TIMEOUT_SECS),
                     self.run_exec(&exec.id),
                 ) => {
-                    res.map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
-                        .context("Command execution failed")?
+                    res.map_err(|_| SandboxError::ExecTimeout(SANDBOX_EXEC_TIMEOUT_SECS))?
+                        ?
                 },
                 _ = token.cancelled() => {
                     warn!(exec_id = %exec.id, cmd = %cmd, "Command cancelled by user, killing processes");
@@ -2208,7 +2233,7 @@ impl DockerSandboxManager {
                     // Kill all processes in the container
                     self.kill_processes().await;
 
-                    return Err(anyhow!("Command execution cancelled by user"));
+                    return Err(SandboxError::Cancelled);
                 }
             }
         } else {
@@ -2218,8 +2243,7 @@ impl DockerSandboxManager {
                 self.run_exec(&exec.id),
             )
             .await
-            .map_err(|_| anyhow!("Command execution timed out after {SANDBOX_EXEC_TIMEOUT_SECS}s"))?
-            .context("Command execution failed")?
+            .map_err(|_| SandboxError::ExecTimeout(SANDBOX_EXEC_TIMEOUT_SECS))??
         };
 
         debug!(
@@ -2233,7 +2257,7 @@ impl DockerSandboxManager {
     }
 
     /// Run the exec and collect output
-    async fn run_exec(&self, exec_id: &str) -> Result<ExecResult> {
+    async fn run_exec(&self, exec_id: &str) -> Result<ExecResult, SandboxError> {
         let output = self.docker.start_exec(exec_id, None).await?;
 
         let mut stdout = String::new();
@@ -2270,7 +2294,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if sandbox is not running or file writing fails.
     #[instrument(skip(self, content), fields(path = %path, content_len = content.len()))]
-    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
+    pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<(), SandboxError> {
         self.upload_file(path, content).await
     }
 
@@ -2280,7 +2304,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if file reading fails.
     #[instrument(skip(self), fields(path = %path))]
-    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
+    pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>, SandboxError> {
         self.download_file_via_docker_api(path, None).await
     }
 
@@ -2293,12 +2317,16 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if sandbox is not running, directory creation fails, or upload fails.
     #[instrument(skip(self, content), fields(path = %container_path, content_len = content.len()))]
-    pub async fn upload_file(&mut self, container_path: &str, content: &[u8]) -> Result<()> {
+    pub async fn upload_file(
+        &mut self,
+        container_path: &str,
+        content: &[u8],
+    ) -> Result<(), SandboxError> {
         let container_id = self
             .container_id
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow!("Sandbox not running"))?;
+            .ok_or_else(|| SandboxError::NotRunning)?;
 
         let path = std::path::Path::new(container_path);
         let parent = path.parent().map_or_else(
@@ -2341,8 +2369,7 @@ impl DockerSandboxManager {
                 }),
                 Either::Left(Full::new(Bytes::from(tar_buffer))),
             )
-            .await
-            .context("Failed to upload file to container")?;
+            .await?;
 
         info!(
             container_id = %container_id,
@@ -2363,7 +2390,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if sandbox is not running, file doesn't exist, file is too large, or download/extraction fails.
     #[instrument(skip(self), fields(path = %container_path))]
-    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+    pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>, SandboxError> {
         const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
         self.download_file_via_docker_api(container_path, Some(MAX_FILE_SIZE))
             .await
@@ -2373,25 +2400,25 @@ impl DockerSandboxManager {
         &mut self,
         container_path: &str,
         max_file_size: Option<u64>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, SandboxError> {
         // Reuse the existing size check to self-heal stale container IDs and verify the path exists.
         let file_size = self.file_size_bytes(container_path, None).await?;
 
         if let Some(max_file_size) = max_file_size
             && file_size > max_file_size
         {
-            anyhow::bail!(
+            return Err(SandboxError::Other(format!(
                 "File too large: {} bytes (max {} MB)",
                 file_size,
                 max_file_size / 1024 / 1024
-            );
+            )));
         }
 
         let container_id = self
             .container_id
             .as_ref()
             .cloned()
-            .ok_or_else(|| anyhow!("Sandbox not running"))?;
+            .ok_or_else(|| SandboxError::NotRunning)?;
 
         let stream = self
             .docker
@@ -2402,8 +2429,7 @@ impl DockerSandboxManager {
                 }),
             )
             .try_collect::<Vec<_>>()
-            .await
-            .context("Failed to download file from container")?;
+            .await?;
 
         let tar_data: Vec<u8> = stream.into_iter().flatten().collect();
         let mut archive = tar::Archive::new(tar_data.as_slice());
@@ -2423,7 +2449,9 @@ impl DockerSandboxManager {
 
             Ok(content)
         } else {
-            anyhow::bail!("Empty tar archive received")
+            Err(SandboxError::Protocol(
+                "Empty tar archive received".to_string(),
+            ))
         }
     }
 
@@ -2433,7 +2461,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if the command execution fails or the output cannot be parsed.
     #[instrument(skip(self))]
-    pub async fn get_uploads_size(&mut self) -> Result<u64> {
+    pub async fn get_uploads_size(&mut self) -> Result<u64, SandboxError> {
         let result = self
             .exec_command("du -sb /workspace/uploads 2>/dev/null || echo '0'", None)
             .await?;
@@ -2441,7 +2469,7 @@ impl DockerSandboxManager {
         let size_str = result.stdout.split_whitespace().next().unwrap_or("0");
         size_str
             .parse::<u64>()
-            .map_err(|e| anyhow!("Failed to parse uploads size: {e}"))
+            .map_err(|e| SandboxError::Protocol(format!("Failed to parse uploads size: {e}")))
     }
 
     /// Clean up old media files in /workspace/downloads/ (older than 7 days)
@@ -2453,7 +2481,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if the cleanup command fails.
     #[instrument(skip(self))]
-    pub async fn cleanup_old_downloads(&mut self) -> Result<u64> {
+    pub async fn cleanup_old_downloads(&mut self) -> Result<u64, SandboxError> {
         // Find and count files older than 7 days
         let count_cmd = "find /workspace/downloads -type f -mtime +7 2>/dev/null | wc -l";
         let count_result = self.exec_command(count_cmd, None).await?;
@@ -2475,7 +2503,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if container removal fails.
     #[instrument(skip(self), fields(container_id = ?self.container_id))]
-    pub async fn destroy(&mut self) -> Result<()> {
+    pub async fn destroy(&mut self) -> Result<(), SandboxError> {
         let container_ref = if let Some(container_id) = self.container_id.take() {
             Some(container_id)
         } else {
@@ -2514,7 +2542,7 @@ impl DockerSandboxManager {
     ///
     /// Returns an error if destruction or creation fails.
     #[instrument(skip(self), fields(owner_id = self.scope.owner_id(), scope = %self.scope.namespace()))]
-    pub async fn recreate(&mut self) -> Result<()> {
+    pub async fn recreate(&mut self) -> Result<(), SandboxError> {
         info!("Recreating sandbox");
 
         // Clear stale in-memory ID before recreation attempts.
@@ -2565,13 +2593,13 @@ impl DockerSandboxManager {
         &mut self,
         container_path: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64> {
+    ) -> Result<u64, SandboxError> {
         let escaped_path = escape(container_path.into());
 
         let check_cmd = format!("test -f {escaped_path} && echo 'exists'");
         let check = self.exec_command(&check_cmd, cancellation_token).await?;
         if !check.stdout.contains("exists") {
-            anyhow::bail!("File not found: {container_path}");
+            return Err(SandboxError::FileNotFound(container_path.to_string()));
         }
 
         let size_cmd = format!("stat -c %s {escaped_path}");
@@ -2580,13 +2608,13 @@ impl DockerSandboxManager {
             .stdout
             .trim()
             .parse()
-            .context("Failed to parse file size")?;
+            .map_err(|e| SandboxError::Other(format!("Failed to parse file size: {e}")))?;
 
         Ok(file_size)
     }
 }
 
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(oxide_module_sandbox_backend_docker_direct)]
 impl Drop for DockerSandboxManager {
     fn drop(&mut self) {
         if let Some(ref id) = self.container_id {
@@ -2641,7 +2669,7 @@ mod backend_selection_tests {
     }
 }
 
-#[cfg(all(test, feature = "sandbox-backend-docker-direct"))]
+#[cfg(all(test, oxide_module_sandbox_backend_docker_direct))]
 mod tests {
     use super::*;
     use crate::sandbox::broker::{
@@ -2665,6 +2693,12 @@ mod tests {
             ordinal,
             message: message.to_string(),
         }
+    }
+
+    fn utc_ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .expect("valid UTC timestamp")
     }
 
     // Integration test - requires Docker
@@ -2890,10 +2924,7 @@ mod tests {
             "2026-04-02T10:11:12.000000000Z",
         ))
         .expect("parse started_at");
-        assert_eq!(
-            started_at,
-            Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap()
-        );
+        assert_eq!(started_at, utc_ts(2026, 4, 2, 10, 11, 12));
     }
 
     #[test]
@@ -2922,8 +2953,8 @@ mod tests {
 
     #[test]
     fn validate_stack_logs_window_rejects_inverted_range() {
-        let since = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 13).unwrap();
-        let until = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let since = utc_ts(2026, 4, 2, 10, 11, 13);
+        let until = utc_ts(2026, 4, 2, 10, 11, 12);
 
         let error = DockerSandboxManager::validate_stack_logs_window(Some(since), Some(until))
             .expect_err("inverted range should fail");
@@ -2938,7 +2969,7 @@ mod tests {
         )
         .expect("parse timestamped log line");
 
-        assert_eq!(ts, Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap());
+        assert_eq!(ts, utc_ts(2026, 4, 2, 10, 11, 12));
         assert_eq!(message, "provider failover activated");
     }
 
@@ -2986,7 +3017,7 @@ mod tests {
 
     #[test]
     fn assign_stack_log_ordinals_counts_per_service_and_stream() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let mut entries = vec![
             StackLogEntry {
                 ts,
@@ -3023,7 +3054,7 @@ mod tests {
 
     #[test]
     fn apply_stack_log_noise_filter_suppresses_expected_noise_classes() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "useful"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, ""),
@@ -3066,7 +3097,7 @@ mod tests {
 
     #[test]
     fn apply_stack_log_cursor_returns_entries_after_cursor() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stderr", 0, "stderr"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
@@ -3089,7 +3120,7 @@ mod tests {
 
     #[test]
     fn paginate_stack_log_entries_sets_next_cursor_from_last_returned_entry() {
-        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let ts = utc_ts(2026, 4, 2, 10, 11, 12);
         let entries = vec![
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
             test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),

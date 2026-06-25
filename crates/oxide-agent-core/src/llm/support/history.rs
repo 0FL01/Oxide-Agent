@@ -508,8 +508,9 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 name: None,
-                tool_calls: Some(vec![tool_call("provider-a", "search")]),
-                tool_call_correlations: Some(vec![correlation.clone()]),
+                tool_calls: Some(vec![
+                    tool_call("provider-a", "search").with_correlation(correlation.clone()),
+                ]),
             },
             Message {
                 role: "tool".to_string(),
@@ -520,7 +521,6 @@ mod tests {
                 tool_call_correlation: Some(correlation),
                 name: Some("search".to_string()),
                 tool_calls: None,
-                tool_call_correlations: None,
             },
         ];
 
@@ -545,10 +545,9 @@ mod tests {
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
-            tool_calls: Some(vec![tool_call("call-1", "search")]),
-            tool_call_correlations: Some(vec![
+            tool_calls: Some(vec![tool_call("call-1", "search").with_correlation(
                 ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id(""),
-            ]),
+            )]),
         }];
 
         let error = validate_tool_history(
@@ -575,8 +574,9 @@ mod tests {
                 tool_call_id: None,
                 tool_call_correlation: None,
                 name: None,
-                tool_calls: Some(vec![tool_call("call-1", "search")]),
-                tool_call_correlations: Some(vec![assistant_correlation]),
+                tool_calls: Some(vec![
+                    tool_call("call-1", "search").with_correlation(assistant_correlation),
+                ]),
             },
             Message {
                 role: "tool".to_string(),
@@ -587,7 +587,6 @@ mod tests {
                 tool_call_correlation: Some(tool_result_correlation),
                 name: Some("search".to_string()),
                 tool_calls: None,
-                tool_call_correlations: None,
             },
         ];
 

@@ -1,9 +1,10 @@
 use super::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, StorageError,
-    TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord, TopicInfraConfigRecord,
-    UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
-    UpsertTopicContextOptions, UpsertTopicInfraConfigOptions, UserConfig,
+    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
+    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
+    TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
+    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+    UserConfig,
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
@@ -119,6 +120,63 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Config(
             "artifact text loading is not implemented for this storage provider".to_string(),
         ))
+    }
+    /// Save a browser screenshot artifact (JPEG bytes) to Postgres BYTEA.
+    async fn save_browser_artifact(
+        &self,
+        record: BrowserArtifactRecord,
+    ) -> Result<(), StorageError> {
+        let _ = record;
+        Err(StorageError::Config(
+            "browser artifact storage is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Load a browser screenshot artifact by its `artifact_uri` primary key.
+    ///
+    /// The `user_id` parameter enforces ownership at the storage layer —
+    /// only the artifact's owner can load it. This prevents cross-user
+    /// access via URI guessing.
+    async fn load_browser_artifact(
+        &self,
+        user_id: i64,
+        artifact_uri: &str,
+    ) -> Result<Option<BrowserArtifactData>, StorageError> {
+        let _ = user_id;
+        let _ = artifact_uri;
+        Ok(None)
+    }
+    /// Delete all browser artifacts for a session identified by
+    /// `(user_id, context_key)` — the transport-agnostic scope from
+    /// `AgentMemoryScope`. Called explicitly when a session is deleted.
+    async fn delete_browser_artifacts_by_context_key(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<u64, StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        Ok(0)
+    }
+    /// Delete all browser artifacts older than `cutoff`.
+    /// Used by the periodic retention sweep to enforce the retention period.
+    /// Returns the number of rows deleted.
+    async fn delete_browser_artifacts_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError> {
+        let _ = cutoff;
+        Ok(0)
+    }
+    /// Delete oldest browser artifacts until total bytes is at or below
+    /// `max_bytes`. Keeps the newest artifacts first (highest `created_at`).
+    /// Used by the periodic retention sweep to enforce the soft byte cap.
+    /// Returns the number of rows deleted.
+    async fn delete_browser_artifacts_oldest_until_cap(
+        &self,
+        max_bytes: i64,
+    ) -> Result<u64, StorageError> {
+        let _ = max_bytes;
+        Ok(0)
     }
     /// Load a durable LLM Wiki Markdown object by deterministic storage key.
     async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {

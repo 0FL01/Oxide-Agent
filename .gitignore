@@ -14,9 +14,11 @@ __pycache__
 .embeddings_cache/
 .claude
 .env.monitoring
+**/.oxide/tool-artifacts/
 .oxide/sandbox/
 .cargo-cache/
 .rustup-cache/
 dist/
 pg_data/
 postgres-init/
+.donor

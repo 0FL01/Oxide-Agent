@@ -1,6 +1,7 @@
 mod activity;
 mod composer;
 mod delivered_files;
+mod lightbox;
 mod payload;
 mod profile;
 mod state;

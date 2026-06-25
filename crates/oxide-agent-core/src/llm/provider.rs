@@ -1,4 +1,4 @@
-use super::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
+use super::{ChatResponse, ChatWithToolsRequest, LlmError, Message, TokenUsage};
 
 /// Interface for all LLM providers
 #[cfg_attr(test, mockall::automock)]
@@ -46,6 +46,24 @@ pub trait LlmProvider: Send + Sync {
         model_id: &str,
     ) -> Result<String, LlmError>;
 
+    /// Analyze an image and return token usage when the provider reports it.
+    ///
+    /// Default implementation delegates to [`Self::analyze_image`] and reports no
+    /// token usage. Providers that can extract usage from the response should
+    /// override this method without changing the text-analysis contract.
+    async fn analyze_image_with_usage(
+        &self,
+        image_bytes: Vec<u8>,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<(String, Option<TokenUsage>), LlmError> {
+        let text = self
+            .analyze_image(image_bytes, text_prompt, system_prompt, model_id)
+            .await?;
+        Ok((text, None))
+    }
+
     /// Analyze a video clip
     ///
     /// Default implementation returns an error indicating video analysis is not supported.
@@ -57,7 +75,7 @@ pub trait LlmProvider: Send + Sync {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Video analysis not supported by this provider".to_string(),
         ))
     }
@@ -65,12 +83,12 @@ pub trait LlmProvider: Send + Sync {
     /// Chat completion with tool calling support (optional, not all providers support it)
     ///
     /// Default implementation returns an error indicating tool calling is not supported.
-    /// Providers that support tool calling (e.g., Mistral, ZAI) should override this method.
+    /// Providers that support tool calling (e.g., ZAI) should override this method.
     async fn chat_with_tools<'a>(
         &self,
         _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Tool calling not supported by this provider".to_string(),
         ))
     }

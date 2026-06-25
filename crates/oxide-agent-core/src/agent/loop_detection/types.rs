@@ -29,6 +29,25 @@ pub struct LoopDetectedEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Outcome of a loop detection check.
+#[derive(Debug, Clone)]
+pub enum LoopDetectionOutcome {
+    /// No loop detected, continue normally.
+    NoLoop,
+    /// Loop detected, inject re-prompt context and continue iterating.
+    RePrompt {
+        /// Context message to inject into the conversation.
+        context: String,
+        /// Which loop type was detected.
+        loop_type: LoopType,
+    },
+    /// Loop detected, max re-prompts exhausted, must halt.
+    Halt {
+        /// Which loop type was detected.
+        loop_type: LoopType,
+    },
+}
+
 /// Errors produced by loop detection components.
 #[derive(Debug, Error)]
 pub enum LoopDetectionError {

@@ -16,6 +16,7 @@ use self::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext
 use crate::agent::compaction::CompactionController;
 use crate::agent::memory::AgentMessageAttachment;
 use crate::agent::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
+use crate::agent::prompt::DynamicPromptContextProvider;
 use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::{AgentSession, PendingUserInput};
@@ -174,8 +175,12 @@ pub struct AgentExecutor {
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
     compaction_controller: CompactionController,
+    dynamic_prompt_context_provider: Option<Arc<dyn DynamicPromptContextProvider>>,
     wiki_memory_store: Option<WikiStore>,
     last_topic_infra_preflight_summary: Option<String>,
+    /// Durable storage handle for tool modules that need Postgres
+    /// (e.g. browser-live screenshot artifacts). Set by the transport layer.
+    storage: Option<Arc<dyn crate::storage::StorageProvider>>,
 }
 
 /// Terminal outcome of an agent execution request.

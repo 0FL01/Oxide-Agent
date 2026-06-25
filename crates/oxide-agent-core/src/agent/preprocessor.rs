@@ -50,7 +50,7 @@ impl Preprocessor {
     /// use oxide_agent_core::config::AgentSettings;
     /// use oxide_agent_core::llm::LlmClient;
     ///
-    /// let settings = AgentSettings::new().unwrap();
+    /// let settings = AgentSettings::new().expect("valid settings");
     /// let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// ```
@@ -87,7 +87,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let audio_bytes = vec![0; 100];
@@ -133,7 +133,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let image_bytes = vec![0; 100];
@@ -445,7 +445,7 @@ impl Preprocessor {
     /// # use oxide_agent_core::llm::LlmClient;
     /// # #[tokio::main]
     /// # async fn main() -> anyhow::Result<()> {
-    /// # let settings = AgentSettings::new().unwrap();
+    /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
     /// let preprocessor = Preprocessor::new(llm_client, 123456789);
     /// let input = AgentInput::Text("Hello".to_string());
@@ -570,11 +570,13 @@ pub enum AgentInput {
 mod tests {
     use super::*;
     use crate::config::AgentSettings;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::config::ModuleRuntimeConfig;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::llm::MockLlmProvider;
-    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
+    use crate::sandbox::{
+        SandboxBackend, SandboxBackendId, SandboxCapability, SandboxError, SandboxFileListing,
+    };
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -607,7 +609,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SandboxFileOps for RecordingSandboxFileOps {
-        async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), SandboxError> {
             self.writes
                 .lock()
                 .expect("writes mutex poisoned")
@@ -615,7 +617,7 @@ mod tests {
             Ok(())
         }
 
-        async fn read_file(&self, _path: &str) -> Result<Vec<u8>> {
+        async fn read_file(&self, _path: &str) -> Result<Vec<u8>, SandboxError> {
             Ok(Vec::new())
         }
 
@@ -623,11 +625,11 @@ mod tests {
             &self,
             _path: &str,
             _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-        ) -> Result<u64> {
+        ) -> Result<u64, SandboxError> {
             Ok(0)
         }
 
-        async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+        async fn list_files(&self, path: &str) -> Result<SandboxFileListing, SandboxError> {
             Ok(SandboxFileListing {
                 path: path.to_string(),
                 listing: String::new(),
@@ -640,8 +642,10 @@ mod tests {
             &self,
             _path: &str,
             _edit: crate::sandbox::SandboxFileEdit,
-        ) -> Result<crate::sandbox::SandboxApplyFileEditResult> {
-            anyhow::bail!("test sandbox file edit is not implemented")
+        ) -> Result<crate::sandbox::SandboxApplyFileEditResult, SandboxError> {
+            Err(SandboxError::Other(
+                "test sandbox file edit is not implemented".to_string(),
+            ))
         }
     }
 
@@ -686,7 +690,7 @@ mod tests {
             &self,
             command: &str,
             _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-        ) -> Result<ExecResult> {
+        ) -> Result<ExecResult, SandboxError> {
             self.commands
                 .lock()
                 .expect("commands mutex poisoned")
@@ -859,7 +863,7 @@ mod tests {
         assert_eq!(fileops.writes()[0].0, staged.sandbox_path);
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_image_preserves_user_request_separately_from_description() {
         let mut settings = AgentSettings {
@@ -901,7 +905,7 @@ mod tests {
         assert!(result.contains("Attached image content:\nVisible text: OpenAI Developers"));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_image_without_context_keeps_plain_description() {
         let mut settings = AgentSettings {
@@ -942,7 +946,7 @@ mod tests {
         assert_eq!(result, "plain image description");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
         let mut settings = AgentSettings {

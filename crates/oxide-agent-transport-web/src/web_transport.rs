@@ -7,7 +7,10 @@
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord, WebUiStore};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
-use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus};
+use oxide_agent_web_contracts::{
+    BrowserLiveEventPayload, BrowserLiveEventType, PersistedTaskEvent, ProgressSnapshot,
+    TaskEventKind, TaskStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -17,6 +20,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// Returns the snake_case variant name of an AgentEvent.
@@ -48,9 +52,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
-        AgentEvent::SubAgent { .. } => {
-            unreachable!("effective_agent_event unwraps sub-agent events")
-        }
+        AgentEvent::SubAgent { .. } => "sub_agent".to_string(),
     }
 }
 
@@ -499,6 +501,48 @@ pub async fn collect_events(
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
 ) -> EventCollectionResult {
+    collect_events_inner(
+        event_log,
+        &mut rx,
+        browser_event_scope,
+        browser_file_store,
+        live_event_tx,
+        live_progress_tx,
+        None,
+    )
+    .await
+}
+
+pub async fn collect_events_until_shutdown(
+    event_log: TaskEventLog,
+    mut rx: mpsc::Receiver<AgentEvent>,
+    browser_event_scope: Option<BrowserEventScope>,
+    browser_file_store: Option<Arc<dyn WebUiStore>>,
+    live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
+    live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    shutdown_rx: oneshot::Receiver<()>,
+) -> EventCollectionResult {
+    collect_events_inner(
+        event_log,
+        &mut rx,
+        browser_event_scope,
+        browser_file_store,
+        live_event_tx,
+        live_progress_tx,
+        Some(shutdown_rx),
+    )
+    .await
+}
+
+async fn collect_events_inner(
+    event_log: TaskEventLog,
+    rx: &mut mpsc::Receiver<AgentEvent>,
+    browser_event_scope: Option<BrowserEventScope>,
+    browser_file_store: Option<Arc<dyn WebUiStore>>,
+    live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
+    live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    mut shutdown_rx: Option<oneshot::Receiver<()>>,
+) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
 
     let mut state = ProgressState::new(100); // max_iterations, can be overridden
@@ -508,7 +552,23 @@ pub async fn collect_events(
     let mut persisted_events = Vec::new();
     let mut next_seq = 1;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = if let Some(mut shutdown) = shutdown_rx.take() {
+            tokio::select! {
+                biased;
+                _ = &mut shutdown => {
+                    rx.close();
+                    continue;
+                }
+                event = rx.recv() => {
+                    shutdown_rx = Some(shutdown);
+                    event
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(event) = event else { break };
         let event_received_at = chrono::Utc::now();
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
@@ -655,9 +715,6 @@ pub async fn collect_events(
             timestamps.finished_at = Some(chrono::Utc::now());
         }
     }
-
-    // Close the event log — signals SSE subscribers to stop.
-    event_log.close().await;
 
     EventCollectionResult {
         state,
@@ -972,6 +1029,15 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
             )
         }
         AgentEvent::Reasoning { source, summary } => {
+            if let Some(payload) = browser_live_payload_from_reasoning(summary) {
+                return (
+                    TaskEventKind::BrowserLive,
+                    browser_live_summary(&payload),
+                    serde_json::to_value(payload).unwrap_or_else(|_| json!({})),
+                    false,
+                    false,
+                );
+            }
             let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::Reasoning,
@@ -999,6 +1065,89 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
             false,
         ),
         _ => unreachable!("lifecycle_event_parts called with wrong event"),
+    }
+}
+
+fn browser_live_payload_from_reasoning(summary: &str) -> Option<BrowserLiveEventPayload> {
+    let mut parts = summary.split_whitespace();
+    let event_type = match parts.next()? {
+        "BrowserAction" => BrowserLiveEventType::Action,
+        "BrowserVerification" => BrowserLiveEventType::Verification,
+        "BrowserRecovery" => BrowserLiveEventType::Recovery,
+        _ => return None,
+    };
+    let mut session_id = None::<String>;
+    let mut action_seq = None::<u64>;
+    let mut action = None::<String>;
+    let mut status = None::<String>;
+    let mut recovery_kind = None::<String>;
+
+    for token in parts {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        match key {
+            "session_id" => session_id = Some(value.to_string()),
+            "action_seq" => action_seq = value.parse::<u64>().ok(),
+            "kind" => {
+                if event_type == BrowserLiveEventType::Recovery {
+                    recovery_kind = Some(value.to_ascii_lowercase());
+                } else {
+                    action = Some(value.to_string());
+                }
+            }
+            "status" => status = Some(value.to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    let session_id = session_id?;
+    let blocked_reason = match event_type {
+        BrowserLiveEventType::Recovery => recovery_kind
+            .as_ref()
+            .map(|kind| format!("recovery: {kind}")),
+        BrowserLiveEventType::Verification => status.as_ref().and_then(|status| {
+            matches!(status.as_str(), "needsuser" | "blocked" | "timeout").then(|| status.clone())
+        }),
+        _ => None,
+    };
+    if event_type == BrowserLiveEventType::Recovery {
+        action = recovery_kind;
+    }
+
+    Some(BrowserLiveEventPayload {
+        event_type,
+        session_id,
+        action_seq,
+        url: None,
+        title: None,
+        action,
+        confidence: None,
+        status,
+        blocked_reason,
+        screenshot: None,
+        debug: None,
+        artifact_refs: None,
+    })
+}
+
+fn browser_live_summary(payload: &BrowserLiveEventPayload) -> String {
+    match payload.event_type {
+        BrowserLiveEventType::Action => format!(
+            "Browser action {}",
+            payload.action.as_deref().unwrap_or("planned")
+        ),
+        BrowserLiveEventType::Verification => format!(
+            "Browser verification {}",
+            payload.status.as_deref().unwrap_or("updated")
+        ),
+        BrowserLiveEventType::Recovery => format!(
+            "Browser recovery {}",
+            payload.status.as_deref().unwrap_or("updated")
+        ),
+        BrowserLiveEventType::Observation => "Browser observation".to_string(),
+        BrowserLiveEventType::Session => "Browser session".to_string(),
+        BrowserLiveEventType::Debug => "Browser debug".to_string(),
+        BrowserLiveEventType::Closed => "Browser closed".to_string(),
     }
 }
 
@@ -1225,10 +1374,16 @@ fn truncate_summary(value: &str) -> String {
 }
 
 fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value> {
-    if name != "web_crawler" || !success {
-        return None;
+    if name == "web_crawler" && success {
+        return web_crawler_display_payload(output);
     }
+    if name.starts_with("browser_") {
+        return browser_display_payload(name, output);
+    }
+    None
+}
 
+fn web_crawler_display_payload(output: &str) -> Option<Value> {
     let output = serde_json::from_str::<Value>(output).ok()?;
     let payload = output.get("structured_payload")?;
     let markdown = payload
@@ -1242,7 +1397,8 @@ fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value
     Some(json!({
         "provider": "web_crawler",
         "backend": payload.get("backend").and_then(Value::as_str),
-        "fallback_reason": payload.get("fallback_reason").and_then(Value::as_str),
+        "render": payload.get("render").and_then(Value::as_str),
+        "rendered_with": payload.get("rendered_with").and_then(Value::as_str),
         "url": payload.get("url").and_then(Value::as_str),
         "final_url": payload.get("final_url").and_then(Value::as_str),
         "status_code": payload.get("status_code").and_then(Value::as_u64),
@@ -1256,6 +1412,119 @@ fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value
             .and_then(Value::as_bool)
             .unwrap_or(false),
         "markdown_preview_truncated": markdown_preview_truncated,
+    }))
+}
+
+/// Extract a compact, truncation-safe summary of a browser tool result.
+///
+/// Browser tool outputs (browser_observe, browser_execute) are large JSON
+/// objects that exceed `EVENT_PREVIEW_MAX_CHARS` when serialized, so
+/// `output_preview` becomes invalid JSON after truncation. This function
+/// extracts the key display fields (screenshot URI, URL, title, action,
+/// network/console counts, session ID) from the **full** output before
+/// truncation, storing them as a structured `display_payload` in the event.
+fn browser_display_payload(name: &str, output: &str) -> Option<Value> {
+    let output = serde_json::from_str::<Value>(output).ok()?;
+    let payload = output
+        .get("structured_payload")
+        .filter(|v| v.is_object())
+        .unwrap_or(&output);
+
+    // Observation: browser_execute has post_observation, browser_observe has
+    // fields directly on the payload.
+    let observation = payload
+        .get("post_observation")
+        .or_else(|| payload.get("observation"))
+        .filter(|v| v.is_object())
+        .unwrap_or(payload);
+
+    let screenshot_uri = observation
+        .get("screenshot")
+        .and_then(|s| s.get("artifact_uri"))
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+        .map(|s| s.to_string());
+    let screenshot_width = observation
+        .get("screenshot")
+        .and_then(|s| s.get("width"))
+        .and_then(Value::as_u64);
+    let screenshot_height = observation
+        .get("screenshot")
+        .and_then(|s| s.get("height"))
+        .and_then(Value::as_u64);
+    let screenshot_mime_type = observation
+        .get("screenshot")
+        .and_then(|s| s.get("mime_type"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let url = observation
+        .get("url")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let title = observation
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let action_kind = payload
+        .get("action_result")
+        .and_then(|ar| ar.get("kind"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let action_status = payload
+        .get("action_result")
+        .and_then(|ar| ar.get("status"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let network_failed = observation
+        .get("network_summary")
+        .and_then(|ns| ns.get("failed_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let network_total = observation
+        .get("network_summary")
+        .and_then(|ns| ns.get("request_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let console_errors = observation
+        .get("console_summary")
+        .and_then(|cs| cs.get("error_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let console_warnings = observation
+        .get("console_summary")
+        .and_then(|cs| cs.get("warning_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    let status = output
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    Some(json!({
+        "tool": name,
+        "screenshot_uri": screenshot_uri,
+        "screenshot_width": screenshot_width,
+        "screenshot_height": screenshot_height,
+        "screenshot_mime_type": screenshot_mime_type,
+        "url": url,
+        "title": title,
+        "action_kind": action_kind,
+        "action_status": action_status,
+        "session_id": session_id,
+        "status": status,
+        "network_failed": network_failed,
+        "network_total": network_total,
+        "console_errors": console_errors,
+        "console_warnings": console_warnings,
     }))
 }
 
@@ -1293,12 +1562,17 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
         ("web_crawler", Some("web_crawler")) => {
             let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
             let host = payload.get("host").and_then(Value::as_str);
+            let url = payload.get("url").and_then(Value::as_str);
+            let render = payload.get("render").and_then(Value::as_str);
             let status_code = payload.get("status_code").and_then(Value::as_u64);
 
             Some(match error_kind {
                 "anti_bot" => host
                     .map(|host| format!("anti_bot at {host}"))
                     .unwrap_or_else(|| "anti_bot".to_string()),
+                "render_provider_unavailable" => render
+                    .map(|r| format!("render:{r} unavailable"))
+                    .unwrap_or_else(|| "render unavailable".to_string()),
                 "crw_http_status" => status_code
                     .map(|code| format!("http_status {code}"))
                     .unwrap_or_else(|| "http_status".to_string()),
@@ -1314,7 +1588,10 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                 "network" => host
                     .map(|host| format!("network at {host}"))
                     .unwrap_or_else(|| "network".to_string()),
-                other => other.to_string(),
+                other => url
+                    .map(|url| format!("{other} at {url}"))
+                    .or_else(|| host.map(|host| format!("{other} at {host}")))
+                    .unwrap_or_else(|| other.to_string()),
             })
         }
         _ => None,
@@ -1403,7 +1680,8 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserEventScope, TaskEventLog, TaskEventLogMessage, collect_events, event_variant_name,
+        BrowserEventScope, TaskEventLog, TaskEventLogMessage, browser_display_payload,
+        collect_events, collect_events_until_shutdown, event_variant_name,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
@@ -1414,7 +1692,7 @@ mod tests {
         PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus,
     };
     use std::sync::Arc;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     #[test]
     fn runtime_compaction_events_use_stable_web_event_names() {
@@ -1530,6 +1808,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_events_does_not_close_event_log() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(2);
+
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send finished event");
+        drop(tx);
+
+        let _ = collect_events(event_log.clone(), rx, None, None, None, None).await;
+
+        assert!(!event_log.is_closed().await);
+    }
+
+    #[tokio::test]
+    async fn collect_events_until_shutdown_finishes_with_live_sender_and_drains_buffered_event() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let live_sender = tx.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send buffered finished event");
+
+        let handle = tokio::spawn(collect_events_until_shutdown(
+            event_log.clone(),
+            rx,
+            None,
+            None,
+            None,
+            None,
+            shutdown_rx,
+        ));
+        shutdown_tx.send(()).expect("send shutdown");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("collector should not wait for live sender")
+            .expect("collector task should not panic");
+
+        assert!(result.state.is_finished);
+        assert!(!event_log.is_closed().await);
+        assert!(live_sender.send(AgentEvent::Finished).await.is_err());
+
+        let event_names: Vec<String> = event_log
+            .drain()
+            .await
+            .into_iter()
+            .map(|entry| entry.event_name)
+            .collect();
+        assert_eq!(event_names, vec!["finished".to_string()]);
+    }
+
+    #[tokio::test]
     async fn collect_events_builds_persisted_browser_events_with_payload_previews() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
@@ -1573,6 +1906,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_events_maps_browser_reasoning_to_typed_browser_live_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserAction session_id=browser-1 action_seq=7 kind=action".to_string(),
+        })
+        .await
+        .expect("send browser action");
+        tx.send(AgentEvent::Reasoning {
+            source: AgentEventSource::Root,
+            summary: "BrowserVerification session_id=browser-1 action_seq=7 status=ActionVerified"
+                .to_string(),
+        })
+        .await
+        .expect("send browser verification");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 2);
+        assert_eq!(result.persisted_events[0].kind, TaskEventKind::BrowserLive);
+        assert_eq!(result.persisted_events[0].payload["event_type"], "action");
+        assert_eq!(
+            result.persisted_events[0].payload["session_id"],
+            "browser-1"
+        );
+        assert_eq!(result.persisted_events[0].payload["action_seq"], 7);
+        assert_eq!(result.persisted_events[0].payload["action"], "action");
+        assert_eq!(result.persisted_events[1].kind, TaskEventKind::BrowserLive);
+        assert_eq!(
+            result.persisted_events[1].payload["event_type"],
+            "verification"
+        );
+        assert_eq!(
+            result.persisted_events[1].payload["status"],
+            "actionverified"
+        );
+    }
+
+    #[tokio::test]
     async fn collect_events_persists_web_crawler_display_payload_for_truncated_output() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
@@ -1586,9 +1972,8 @@ mod tests {
             "structured_payload": {
             "provider": "web_crawler",
             "backend": "crw_scrape",
-            "primary_backend": "webfetch_md",
-            "fallback_backend": "crw_scrape",
-            "fallback_reason": "webfetch http_status 403",
+            "render": "playwright",
+            "rendered_with": "playwright",
             "url": "https://arxiv.org/abs/2602.10604",
             "final_url": "https://arxiv.org/abs/2602.10604",
             "status_code": 200,
@@ -1637,6 +2022,8 @@ mod tests {
         let display = &tool_result.payload["display_payload"];
         assert_eq!(display["provider"], "web_crawler");
         assert_eq!(display["backend"], "crw_scrape");
+        assert_eq!(display["render"], "playwright");
+        assert_eq!(display["rendered_with"], "playwright");
         assert_eq!(display["final_url"], "https://arxiv.org/abs/2602.10604");
         assert_eq!(display["chars"], 6_009);
         assert!(
@@ -1645,6 +2032,58 @@ mod tests {
                 .expect("markdown display payload should be a string")
                 .starts_with("# Title")
         );
+    }
+
+    #[test]
+    fn browser_display_payload_preserves_screenshot_metadata() {
+        let output = serde_json::json!({
+            "status": "success",
+            "structured_payload": {
+                "session_id": "br_1",
+                "action_result": {
+                    "kind": "navigate",
+                    "status": "ok"
+                },
+                "post_observation": {
+                    "url": "https://example.test/",
+                    "title": "Example",
+                    "screenshot": {
+                        "artifact_uri": "artifact://browser/task/br_1/step-0001.jpg",
+                        "mime_type": "image/jpeg",
+                        "width": 1365,
+                        "height": 768
+                    },
+                    "network_summary": {
+                        "failed_count": 1,
+                        "request_count": 3
+                    },
+                    "console_summary": {
+                        "error_count": 2,
+                        "warning_count": 5
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let display = browser_display_payload("browser_execute", &output)
+            .expect("browser display payload should be extracted");
+
+        assert_eq!(
+            display["screenshot_uri"],
+            "artifact://browser/task/br_1/step-0001.jpg"
+        );
+        assert_eq!(display["screenshot_width"], 1365);
+        assert_eq!(display["screenshot_height"], 768);
+        assert_eq!(display["screenshot_mime_type"], "image/jpeg");
+        assert_eq!(display["url"], "https://example.test/");
+        assert_eq!(display["title"], "Example");
+        assert_eq!(display["action_kind"], "navigate");
+        assert_eq!(display["action_status"], "ok");
+        assert_eq!(display["network_failed"], 1);
+        assert_eq!(display["network_total"], 3);
+        assert_eq!(display["console_errors"], 2);
+        assert_eq!(display["console_warnings"], 5);
     }
 
     #[tokio::test]

@@ -929,10 +929,10 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "tool-sandbox-exec",
+        oxide_module_tool_sandbox_exec,
         any(
-            feature = "sandbox-backend-docker-direct",
-            feature = "sandbox-backend-sandboxd-client",
+            oxide_module_sandbox_backend_docker_direct,
+            oxide_module_sandbox_backend_sandboxd_client,
         )
     ))]
     #[test]
@@ -953,9 +953,9 @@ mod tests {
             .collect();
 
         let expected = vec![
-            #[cfg(feature = "sandbox-backend-docker-direct")]
+            #[cfg(oxide_module_sandbox_backend_docker_direct)]
             "sandbox-backend/docker-direct/exec",
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
             "sandbox-backend/sandboxd-client/exec",
         ];
 
@@ -963,35 +963,46 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "tool-sandbox-exec",
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client"
+        oxide_module_tool_sandbox_exec,
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client
     ))]
     #[test]
     fn enabled_sandbox_exec_fails_without_enabled_exec_backend() {
         let manifest =
             compiled_capability_manifest().expect("compiled modules must have unique IDs");
 
+        #[cfg(oxide_module_sandbox_daemon_sandboxd)]
+        let docker_direct_disabled = [
+            ("sandbox-backend/docker-direct", false),
+            ("sandbox-daemon/sandboxd", false),
+        ];
+        #[cfg(not(oxide_module_sandbox_daemon_sandboxd))]
+        let docker_direct_disabled = [("sandbox-backend/docker-direct", false)];
         manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/docker-direct", false),
-                ("sandbox-daemon/sandboxd", false),
-            ])
+            .enabled_manifest_from_configured_modules(docker_direct_disabled)
             .expect("sandboxd-client exec backend should satisfy sandbox exec");
         manifest
             .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
             .expect("docker-direct exec backend should satisfy sandbox exec");
 
+        let mut no_exec_backend = vec![
+            ("sandbox-backend/docker-direct", false),
+            ("sandbox-backend/sandboxd-client", false),
+        ];
+        #[cfg(oxide_module_sandbox_daemon_sandboxd)]
+        no_exec_backend.push(("sandbox-daemon/sandboxd", false));
+        #[cfg(oxide_module_tool_sandbox_fileops)]
+        no_exec_backend.push(("tool/sandbox-fileops", false));
+        #[cfg(oxide_module_tool_sandbox_recreate)]
+        no_exec_backend.push(("tool/sandbox-recreate", false));
+        #[cfg(oxide_module_tool_stack_logs)]
+        no_exec_backend.push(("tool/stack-logs", false));
+        #[cfg(oxide_module_tool_ytdlp)]
+        no_exec_backend.push(("tool/ytdlp", false));
+
         let error = manifest
-            .enabled_manifest_from_configured_modules([
-                ("sandbox-backend/docker-direct", false),
-                ("sandbox-backend/sandboxd-client", false),
-                ("sandbox-daemon/sandboxd", false),
-                ("tool/sandbox-fileops", false),
-                ("tool/sandbox-recreate", false),
-                ("tool/stack-logs", false),
-                ("tool/ytdlp", false),
-            ])
+            .enabled_manifest_from_configured_modules(no_exec_backend)
             .expect_err("sandbox exec tool must fail without an enabled exec backend");
 
         assert_eq!(
@@ -1007,10 +1018,10 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "tool-ytdlp",
+        oxide_module_tool_ytdlp,
         any(
-            feature = "sandbox-backend-docker-direct",
-            feature = "sandbox-backend-sandboxd-client",
+            oxide_module_sandbox_backend_docker_direct,
+            oxide_module_sandbox_backend_sandboxd_client,
         )
     ))]
     #[test]
@@ -1031,12 +1042,12 @@ mod tests {
             .collect();
 
         let mut expected = BTreeSet::new();
-        #[cfg(feature = "sandbox-backend-docker-direct")]
+        #[cfg(oxide_module_sandbox_backend_docker_direct)]
         {
             expected.insert("sandbox-backend/docker-direct/exec");
             expected.insert("sandbox-backend/docker-direct/fileops");
         }
-        #[cfg(feature = "sandbox-backend-sandboxd-client")]
+        #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
         {
             expected.insert("sandbox-backend/sandboxd-client/exec");
             expected.insert("sandbox-backend/sandboxd-client/fileops");

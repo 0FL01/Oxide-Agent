@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
     UploadLargeInputRequest, UserSettingsResponse,
 };
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, time::Duration};
 
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
@@ -21,17 +21,18 @@ use super::composer::{
     persist_default_effort, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
     task_input_limit_notice, task_input_too_long,
 };
+use super::lightbox::{Lightbox, LightboxContext, LightboxImage};
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
     agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
-    latest_editable_task_id, latest_task, remove_session_summary, session_detail_to_summary,
-    summary_to_detail, upsert_session_summary, upsert_task_summary,
+    browser_now_millis, latest_editable_task_id, latest_task, remove_session_summary,
+    session_detail_to_summary, summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
-use super::versions::group_task_versions;
+use super::versions::{group_task_versions, selected_visible_activity_task_ids};
 
 const TASK_EVENTS_INITIAL_LIMIT: usize = 100;
 const TASK_EVENTS_OLDER_LIMIT: usize = 500;
@@ -192,24 +193,6 @@ fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
         .map(|event| event.seq)
         .max()
         .unwrap_or_default()
-}
-
-fn latest_live_activity_task_id(
-    active_task: ReadSignal<Option<TaskDetail>>,
-    tasks: ReadSignal<Vec<TaskSummary>>,
-) -> Option<String> {
-    active_task
-        .get()
-        .filter(|task| task.status != TaskStatus::Completed)
-        .map(|task| task.task_id)
-        .or_else(|| {
-            tasks
-                .get()
-                .into_iter()
-                .max_by_key(|task| task.updated_at)
-                .filter(|task| task.status != TaskStatus::Completed)
-                .map(|task| task.task_id)
-        })
 }
 
 fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
@@ -545,6 +528,31 @@ fn SessionWorkspace(
     let (drawer_open, set_drawer_open) = signal(false);
     let (activity_task_id, set_activity_task_id) = signal(None::<String>);
 
+    // Lightbox overlay state — session-scoped, provided via context so any
+    // child component (e.g. BrowserToolCard) can open a full-screen image.
+    let (lightbox_image, set_lightbox_image) = signal(None::<LightboxImage>);
+    provide_context(LightboxContext {
+        image: lightbox_image,
+        set_image: set_lightbox_image,
+    });
+
+    // Shared wall-clock for all elapsed timers (task-card "Thinking for…"
+    // label and the Activity drawer). A single 1s interval drives every
+    // active-task timer so the UI ticks from the browser clock, not from
+    // SSE/DB `updated_at` updates that can stall between events.
+    let (elapsed_now_millis, set_elapsed_now_millis) =
+        signal(browser_now_millis().unwrap_or_default());
+    if let Ok(handle) = set_interval_with_handle(
+        move || {
+            let next = browser_now_millis()
+                .unwrap_or_else(|| elapsed_now_millis.get_untracked().saturating_add(1_000));
+            set_elapsed_now_millis.set(next);
+        },
+        Duration::from_secs(1),
+    ) {
+        on_cleanup(move || handle.clear());
+    }
+
     Effect::new(move |_| {
         if profiles_loaded.get() {
             return;
@@ -575,6 +583,7 @@ fn SessionWorkspace(
         set_activity_pages.set(HashMap::new());
         set_activity_task_id.set(None);
         set_drawer_open.set(false);
+        set_lightbox_image.set(None);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -656,10 +665,19 @@ fn SessionWorkspace(
                                     set_sessions,
                                 },
                             );
-                        } else if task_detail.status == TaskStatus::WaitingForUserInput {
-                            set_active_task.set(Some(task_detail));
                         } else {
-                            set_active_task.set(None);
+                            if task_detail.status == TaskStatus::WaitingForUserInput {
+                                set_active_task.set(Some(task_detail));
+                            } else {
+                                set_active_task.set(None);
+                            }
+                            // Hydrate persisted progress for non-streamed tasks so the
+                            // activity context card (Free/Flow/Prompt/Tools + health)
+                            // renders after reload, not only while streaming.
+                            if let Ok(response) = client.task_progress(&session_id, &task_id).await
+                            {
+                                set_progress.set(response.progress);
+                            }
                         }
                     } else {
                         // Empty session — clear signals
@@ -669,6 +687,7 @@ fn SessionWorkspace(
                         set_activity_pages.set(HashMap::new());
                         set_activity_task_id.set(None);
                         set_drawer_open.set(false);
+                        set_lightbox_image.set(None);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -869,6 +888,7 @@ fn SessionWorkspace(
         set_activity_pages.set(HashMap::new());
         set_activity_task_id.set(None);
         set_drawer_open.set(false);
+        set_lightbox_image.set(None);
         let session_id = session_id_for_submit.clone();
         let effort = selected_effort.get();
         spawn_ui(async move {
@@ -958,7 +978,7 @@ fn SessionWorkspace(
     };
 
     let session_id_for_cancel = session_id.clone();
-    let cancel_active = move |_| {
+    let cancel_active = Callback::new(move |_| {
         let Some(task) = active_task.get() else {
             return;
         };
@@ -992,7 +1012,7 @@ fn SessionWorkspace(
             }
             set_loading.set(false);
         });
-    };
+    });
 
     let session_id_for_cards = session_id.clone();
 
@@ -1053,8 +1073,10 @@ fn SessionWorkspace(
                                             <TaskCard
                                                 model=TaskCardModel {
                                                     session_id: session_id_for_cards.clone(),
-                                                    versions: group.versions,
+                                                    version_group_id: group.version_group_id.clone(),
+                                                    tasks,
                                                     editable_task_id: latest_editable_task_id.clone(),
+                                                    now_millis: elapsed_now_millis,
                                                 }
                                                 signals=TaskCardSignals {
                                                     events,
@@ -1064,12 +1086,6 @@ fn SessionWorkspace(
                                                     set_drawer_open,
                                                     activity_task_id,
                                                     set_activity_task_id,
-                                                    live_activity_task_id: Signal::derive(move || {
-                                                        latest_live_activity_task_id(
-                                                            active_task,
-                                                            tasks,
-                                                        )
-                                                    }),
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
                                                         set_progress,
@@ -1093,6 +1109,9 @@ fn SessionWorkspace(
                     <ActivityStatusChip
                         tasks=tasks
                         active_task=active_task
+                        visible_task_ids=Signal::derive(move || {
+                            selected_visible_activity_task_ids(&tasks.get(), &selected_versions.get())
+                        })
                         open=drawer_open
                         set_open=set_drawer_open
                         activity_task_id=activity_task_id
@@ -1220,7 +1239,7 @@ fn SessionWorkspace(
                                     class="btn-danger"
                                     type="button"
                                     style=move || if is_running() { "" } else { "display:none" }
-                                    on:click=cancel_active
+                                    on:click=move |ev| cancel_active.run(ev)
                                 >
                                     "Stop"
                                 </button>
@@ -1251,7 +1270,9 @@ fn SessionWorkspace(
                         .is_some_and(|state| state.loading)
                 })
                 load_older_events=load_older_activity
+                now_millis=elapsed_now_millis
             />
+            <Lightbox />
         </section>
     }
 }

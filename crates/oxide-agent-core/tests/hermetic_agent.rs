@@ -1,5 +1,6 @@
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
+#![cfg(oxide_module_llm_provider_opencode_go)]
 
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
@@ -29,7 +30,7 @@ impl LlmProvider for SuccessMock {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented".to_string()))
+        Err(LlmError::unknown("Not implemented".to_string()))
     }
 
     async fn analyze_image(
@@ -39,7 +40,7 @@ impl LlmProvider for SuccessMock {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("Not implemented".to_string()))
+        Err(LlmError::unknown("Not implemented".to_string()))
     }
 
     async fn chat_with_tools<'a>(
@@ -88,7 +89,7 @@ impl LlmProvider for RetrySuccessMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in retry test".to_string(),
         ))
     }
@@ -118,7 +119,7 @@ impl LlmProvider for RetrySuccessMock {
     ) -> Result<ChatResponse, LlmError> {
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
         if count == 0 {
-            Err(LlmError::ApiError("500 Internal Server Error".to_string()))
+            Err(LlmError::api_error_status(500, "500 Internal Server Error"))
         } else {
             Ok(ChatResponse {
                 content: Some("Success".to_string()),
@@ -170,7 +171,7 @@ impl LlmProvider for AlwaysFailMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in failure test".to_string(),
         ))
     }
@@ -199,7 +200,7 @@ impl LlmProvider for AlwaysFailMock {
         _request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
-        Err(LlmError::ApiError("500 Internal Server Error".to_string()))
+        Err(LlmError::api_error_status(500, "500 Internal Server Error"))
     }
 }
 

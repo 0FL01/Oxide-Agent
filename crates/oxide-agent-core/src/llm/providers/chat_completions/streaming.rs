@@ -3,6 +3,7 @@
 //! ChatGPT Responses/Codex streaming remains in `providers::chatgpt`; this
 //! module is only for OpenAI-compatible Chat Completions event schemas.
 
+#[cfg(test)]
 use super::profile::{ChatCompletionsProfile, ChatStreamingPolicy};
 use super::response::parse_usage;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
@@ -10,18 +11,6 @@ use crate::llm::support::sse;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use futures_util::StreamExt;
 use serde_json::Value;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ChatCompletionsStreamingPlan {
-    pub(crate) policy: ChatStreamingPolicy,
-}
-
-impl ChatCompletionsStreamingPlan {
-    #[must_use]
-    pub(crate) const fn new(policy: ChatStreamingPolicy) -> Self {
-        Self { policy }
-    }
-}
 
 #[derive(Default)]
 pub(crate) struct StreamingChatAccumulator {
@@ -51,7 +40,7 @@ pub(crate) async fn parse_streaming_chat_response(
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| LlmError::NetworkError(error.to_string()))?;
+        let chunk = chunk.map_err(LlmError::from_reqwest_error)?;
         pending_bytes.extend_from_slice(&chunk);
         if let Some(decoded) = decode_utf8_prefix(&mut pending_bytes)? {
             buffer.push_str(&decoded);
@@ -229,6 +218,7 @@ pub(crate) fn normalize_newlines_in_place(buffer: &mut String) {
     sse::normalize_newlines_in_place(buffer);
 }
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn should_stream(profile: ChatCompletionsProfile, native_json_mode: bool) -> bool {
     match profile.streaming {

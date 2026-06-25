@@ -2,6 +2,8 @@
 //!
 //! This module is intentionally separate from `agent::memory`, which remains
 //! hot/session context for active agent runs.
+//!
+//! Documentation: `docs/wiki-memory.md`
 
 /// Per-run read-through cache for deterministic wiki pages.
 pub mod cache;
@@ -22,7 +24,10 @@ pub mod store;
 
 pub use cache::{CachedWikiPage, WikiCacheMetrics, WikiFlushResult, WikiSessionCache};
 pub use config::WikiMemoryConfig;
-pub use context::{WikiContextAssembler, WikiContextAssemblerConfig, WikiRenderedContext};
+pub use context::{
+    WikiContextAssembler, WikiContextAssemblerConfig, WikiPromptContextProvider,
+    WikiRenderedContext,
+};
 pub use patch::{
     ValidatedWikiPatch, ValidatedWikiPatchOperation, WikiPatchOperation, WikiPatchSet,
     WikiPatchValidator, WikiPatchValidatorConfig,

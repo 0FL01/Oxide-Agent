@@ -13,7 +13,7 @@ async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
         .with(eq(77_i64), eq("-100777:240".to_string()))
         .times(1)
         .returning(|_, _| Ok(Some(binding(77, "-100777:240", "agent-a", 1))));
-    #[cfg(feature = "integration-ssh-mcp")]
+    #[cfg(oxide_module_integration_ssh_mcp)]
     mock.expect_get_topic_infra_config()
         .with(eq(77_i64), eq("-100777:240".to_string()))
         .times(1)

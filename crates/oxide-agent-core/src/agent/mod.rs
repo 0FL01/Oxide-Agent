@@ -56,11 +56,10 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactRequestContext,
-    CompactRunOutcome, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
-    CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend, CompactionController,
-    CompactionControllerError, CompactionPhase, CompactionReason, CompactionTrigger,
-    HotMemoryBudget, LocalLlmSummary,
+    AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactSummaryBackend,
+    CompactSummaryError, CompactSummaryRequest, CompactSummaryResult, CompactionBackend,
+    CompactionController, CompactionControllerError, CompactionPhase, CompactionReason,
+    CompactionTrigger, HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{
@@ -89,7 +88,6 @@ pub use profile::{
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
-pub use recovery::sanitize_xml_tags;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,

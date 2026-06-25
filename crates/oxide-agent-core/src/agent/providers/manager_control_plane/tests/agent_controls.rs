@@ -335,7 +335,7 @@ async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
     );
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 #[tokio::test]
 async fn topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() {
     let mut mock = crate::storage::MockStorageProvider::new();

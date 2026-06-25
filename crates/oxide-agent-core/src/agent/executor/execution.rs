@@ -6,10 +6,13 @@ use super::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
     AgentUserInput,
 };
+use crate::agent::compaction::{
+    AdmissionBudget, AdmissionDecision, ContextAdmission, PayloadDescriptor, PayloadKind,
+};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
-use crate::agent::prompt::create_agent_system_prompt;
+use crate::agent::prompt::{PromptContextBlock, PromptContextRequest, create_agent_system_prompt};
 use crate::agent::providers::TopicInfraPreflightReport;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
@@ -17,9 +20,8 @@ use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
 use crate::agent::wiki_memory::{
-    WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation, WikiPatchPlanner,
-    WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
-    wiki_context_id,
+    WikiPatchOperation, WikiPatchPlanner, WikiPatchSet, WikiPatchValidator,
+    WikiPatchValidatorConfig, WikiSessionCache, WikiStore, wiki_context_id,
 };
 use crate::config::{
     ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit,
@@ -229,6 +231,7 @@ impl AgentExecutor {
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
+            self.storage.clone(),
         );
         debug!(
             target: AGENT_LATENCY_TARGET,
@@ -237,11 +240,16 @@ impl AgentExecutor {
             "Dispatching agent runner"
         );
 
-        Ok(
-            run_with_timeout(&mut self.runner, &mut ctx, timeout_duration)
-                .await
-                .into(),
-        )
+        let outcome = run_with_timeout(&mut self.runner, &mut ctx, timeout_duration).await;
+
+        // RAII cleanup: close any browser sessions the agent left open.
+        // Runs on every outcome (success, timeout, cancel, error) to prevent
+        // Chromium process leaks at the sidecar.
+        if let Some(cleanup) = &prepared.browser_cleanup {
+            cleanup.close_all_sessions().await;
+        }
+
+        Ok(outcome.into())
     }
 
     fn apply_execution_transition(
@@ -287,8 +295,44 @@ impl AgentExecutor {
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         if let Some(user_input) = user_input {
             self.session.remember_task(task);
-            let user_message = AgentMessage::user_task(user_input.text_projection())
-                .with_user_attachments(user_input.attachments.clone());
+            let user_text = user_input.text_projection().to_string();
+
+            // Admission gate: evaluate user task before hot-memory mutation.
+            // At executor time we don't have route/system-prompt/tool-schema info,
+            // so we use memory.max_tokens() as the context window estimate with
+            // zero overhead — conservative (overestimates available space).
+            // The pre-LLM budget trigger re-checks with accurate numbers before
+            // the first LLM call.
+            let budget = AdmissionBudget {
+                rendered_tokens: self.session.memory.rendered_token_count(),
+                route_context_window: self.session.memory.max_tokens(),
+                system_prompt_tokens: 0,
+                tool_schema_tokens: 0,
+                hard_reserve: 8_192,
+            };
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::NewTask,
+                content: user_text.clone(),
+                source: None,
+                size_bytes: user_text.len(),
+            };
+            let user_message = match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => AgentMessage::user_task(user_text)
+                    .with_user_attachments(user_input.attachments.clone()),
+                AdmissionDecision::Manifest(spec) => {
+                    let mut msg = AgentMessage::user_task(spec.manifest_content.clone())
+                        .with_user_attachments(user_input.attachments.clone());
+                    msg.externalized_payload = Some(spec.externalized_payload);
+                    msg
+                }
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[User task withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    AgentMessage::user_task(placeholder)
+                }
+            };
             if let Some(context) = self
                 .session
                 .memory
@@ -424,8 +468,9 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let tool_runtime_registry =
-            Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
+        let (tool_runtime_registry, browser_cleanup) =
+            self.build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
+        let tool_runtime_registry = Arc::new(tool_runtime_registry);
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
@@ -460,13 +505,13 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let wiki_context = self.render_wiki_context_for_task(task).await;
+        let dynamic_context_blocks = self.build_dynamic_prompt_context_blocks(task).await;
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
-            wiki_context_available = wiki_context.is_some(),
-            wiki_context_chars = wiki_context.as_ref().map_or(0, String::len),
-            phase = "wiki_context_rendered",
+            dynamic_context_block_count = dynamic_context_blocks.len(),
+            dynamic_context_chars = dynamic_context_blocks.iter().map(|block| block.body.len()).sum::<usize>(),
+            phase = "dynamic_prompt_context_rendered",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -492,7 +537,7 @@ impl AgentExecutor {
             structured_output,
             &mut self.session,
             prompt_instructions.as_deref(),
-            wiki_context.as_deref(),
+            &dynamic_context_blocks,
         )
         .await;
         debug!(
@@ -564,7 +609,7 @@ impl AgentExecutor {
             provider = ?model.provider,
             tool_count = tools.len(),
             message_count = messages.len(),
-            wiki_context_available = wiki_context.is_some(),
+            dynamic_context_block_count = dynamic_context_blocks.len(),
             phase = "prepare_assembled",
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -589,37 +634,29 @@ impl AgentExecutor {
             .with_model_routes(model_routes)
             .with_search_limit(search_limit)
             .with_reasoning_effort(options.reasoning_effort()),
+            browser_cleanup,
         }
     }
 
-    async fn render_wiki_context_for_task(&self, task: &str) -> Option<String> {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            debug!("wiki memory store is not configured; skipping durable wiki context");
-            return None;
+    async fn build_dynamic_prompt_context_blocks(&self, task: &str) -> Vec<PromptContextBlock> {
+        let Some(provider) = self.dynamic_prompt_context_provider.as_ref() else {
+            debug!("dynamic prompt context provider is not configured; skipping dynamic context");
+            return Vec::new();
         };
         let scope = self.session.memory_scope();
-        let cache = Arc::new(WikiSessionCache::new(store));
         let memory_message_count = self.session.memory.get_messages().len();
-        let assembler = WikiContextAssembler::new(
-            cache,
-            WikiContextAssemblerConfig {
-                fast_skip_fresh_web_session: should_fast_skip_fresh_web_session_wiki_context(
-                    &scope.context_key,
-                    memory_message_count,
-                ),
-                ..WikiContextAssemblerConfig::default()
-            },
-        );
+        let request = PromptContextRequest {
+            user_id: scope.user_id,
+            context_key: &scope.context_key,
+            task,
+            memory_message_count,
+        };
 
-        match assembler
-            .assemble_for_context(scope.user_id, &scope.context_key, task)
-            .await
-        {
-            Ok(rendered) if !rendered.is_empty => Some(rendered.text),
-            Ok(_) => None,
+        match provider.build_blocks(request).await {
+            Ok(blocks) => blocks,
             Err(error) => {
-                warn!(%error, "wiki memory context assembly failed; continuing without durable wiki context");
-                None
+                warn!(%error, "dynamic prompt context assembly failed; continuing without dynamic context");
+                Vec::new()
             }
         }
     }
@@ -992,7 +1029,7 @@ fn effort_prompt_instructions(
             "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
             "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
             "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `web_crawler`, and `web_markdown`.\n",
-            "- For web-research sub-agents, include `web_crawler` when available for pages that may need rendered fallback; keep `web_markdown` as the lightweight fetch path.\n",
+            "- For web-research sub-agents, include `web_crawler` when available for JS-rendered pages (use render:\"lightpanda\" or render:\"playwright\"); keep `web_markdown` as the lightweight HTTP-only fetch path.\n",
             "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
             "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
             "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
@@ -1068,7 +1105,8 @@ fn build_wiki_memory_writer_user_prompt(job: &WikiMemoryFlushJob) -> String {
 
 fn parse_wiki_memory_writer_response(response: &str) -> Result<Vec<ToolDerivedMemoryDraft>> {
     let extraction: WikiMemoryWriterExtraction = serde_json::from_str(response).or_else(|_| {
-        extract_json_object(response)
+        crate::agent::recovery::extract_first_json(response)
+            .as_deref()
             .map_or_else(|| serde_json::from_str(response), serde_json::from_str)
     })?;
     let now = chrono::Utc::now();
@@ -1078,12 +1116,6 @@ fn parse_wiki_memory_writer_response(response: &str) -> Result<Vec<ToolDerivedMe
         .take(WIKI_MEMORY_WRITER_MAX_CANDIDATES)
         .filter_map(|candidate| wiki_memory_candidate_to_draft(candidate, now))
         .collect())
-}
-
-fn extract_json_object(response: &str) -> Option<&str> {
-    let start = response.find('{')?;
-    let end = response.rfind('}')?;
-    (start <= end).then_some(&response[start..=end])
 }
 
 fn wiki_memory_candidate_to_draft(
@@ -1302,18 +1334,9 @@ fn contains_secret_like_text(value: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-fn should_fast_skip_fresh_web_session_wiki_context(
-    context_key: &str,
-    memory_message_count: usize,
-) -> bool {
-    context_key.starts_with("web-session-") && memory_message_count <= 1
-}
-
 #[cfg(test)]
 mod wiki_memory_merge_tests {
-    use super::{
-        merge_existing_canonical_wiki_page, should_fast_skip_fresh_web_session_wiki_context,
-    };
+    use super::merge_existing_canonical_wiki_page;
 
     fn page(title: &str, body: &str) -> String {
         format!(
@@ -1343,21 +1366,5 @@ mod wiki_memory_merge_tests {
         let candidate = page("Deploy workflow", "Run smoke tests before deploy.");
 
         assert!(merge_existing_canonical_wiki_page(&existing, &candidate).is_none());
-    }
-
-    #[test]
-    fn fresh_web_session_wiki_context_skip_is_limited_to_first_message() {
-        assert!(should_fast_skip_fresh_web_session_wiki_context(
-            "web-session-abc123",
-            1
-        ));
-        assert!(!should_fast_skip_fresh_web_session_wiki_context(
-            "web-session-abc123",
-            2
-        ));
-        assert!(!should_fast_skip_fresh_web_session_wiki_context(
-            "telegram-topic",
-            1
-        ));
     }
 }

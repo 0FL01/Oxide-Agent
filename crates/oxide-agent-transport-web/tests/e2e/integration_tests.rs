@@ -4,8 +4,8 @@
 //!
 //!     cargo test e2e_connection_pool_latency -- --ignored --nocapture
 //!
-//! Requires one of: `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, or
-//! `OPENAI_BASE_PROVIDERS__1__API_KEY` for the `openai-base:zai` route.
+//! Requires one of: `OPENROUTER_API_KEY` or `OPENAI_BASE_PROVIDERS__1__API_KEY`
+//! for the `openai-base:zai` route.
 
 use oxide_agent_core::llm::{LlmClient, Message};
 use std::sync::Arc;
@@ -18,20 +18,16 @@ use std::time::Instant;
 ///
 /// Run with: cargo test e2e_connection_pool_latency -- --ignored --nocapture
 #[tokio::test]
-#[ignore = "Requires OPENROUTER_API_KEY, MISTRAL_API_KEY, or OPENAI_BASE_PROVIDERS__1__API_KEY environment variable"]
+#[ignore = "Requires OPENROUTER_API_KEY or OPENAI_BASE_PROVIDERS__1__API_KEY environment variable"]
 async fn e2e_connection_pool_latency() {
     use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 
     let (provider_name, model_id) = if std::env::var("OPENROUTER_API_KEY").is_ok() {
         ("openrouter", "openrouter/free")
-    } else if std::env::var("MISTRAL_API_KEY").is_ok() {
-        ("mistral", "labs-devstral-small-2512")
     } else if std::env::var("OPENAI_BASE_PROVIDERS__1__API_KEY").is_ok() {
         ("openai-base:zai", "glm-4.7")
     } else {
-        panic!(
-            "Neither OPENROUTER_API_KEY nor MISTRAL_API_KEY nor OPENAI_BASE_PROVIDERS__1__API_KEY is set"
-        );
+        panic!("Neither OPENROUTER_API_KEY nor OPENAI_BASE_PROVIDERS__1__API_KEY is set");
     };
 
     eprintln!("Testing connection pool with provider: {}", provider_name);
@@ -48,14 +44,6 @@ async fn e2e_connection_pool_latency() {
                 if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
                     s.modules.insert(
                         "llm-provider/openrouter".to_string(),
-                        ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
-                    );
-                }
-            }
-            "mistral" => {
-                if let Ok(api_key) = std::env::var("MISTRAL_API_KEY") {
-                    s.modules.insert(
-                        "llm-provider/mistral".to_string(),
                         ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
                     );
                 }

@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
 use oxide_agent_core::agent::progress::{FileDeliveryKind, FileDeliveryReceipt, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardMarkup, InputFile, MessageId, ParseMode};
 use tracing::warn;
@@ -18,6 +20,7 @@ pub struct TelegramAgentTransport {
     progress_msg_id: MessageId,
     message_thread_id: Option<teloxide::types::ThreadId>,
     progress_reply_markup: Option<InlineKeyboardMarkup>,
+    delivered_browser_artifacts: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Telegram transport that keeps agent-side progress events and file delivery working
@@ -26,6 +29,7 @@ pub struct SilentTelegramAgentTransport {
     bot: Bot,
     chat_id: ChatId,
     message_thread_id: Option<teloxide::types::ThreadId>,
+    delivered_browser_artifacts: Arc<Mutex<HashSet<String>>>,
 }
 
 impl TelegramAgentTransport {
@@ -47,6 +51,7 @@ impl TelegramAgentTransport {
             } else {
                 None
             },
+            delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -62,8 +67,47 @@ impl SilentTelegramAgentTransport {
             bot,
             chat_id,
             message_thread_id,
+            delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserArtifactDeliveryDecision {
+    Deliver,
+    SuppressLiveFrame,
+    SuppressDuplicateFinal,
+    SuppressSensitive,
+}
+
+fn browser_artifact_delivery_decision(
+    file_name: &str,
+    delivered_browser_artifacts: &Mutex<HashSet<String>>,
+) -> BrowserArtifactDeliveryDecision {
+    let normalized = file_name.replace('\\', "/").to_ascii_lowercase();
+    if !normalized.contains("browser/") && !normalized.starts_with("artifact://browser/") {
+        return BrowserArtifactDeliveryDecision::Deliver;
+    }
+    if normalized.contains("sensitive")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("credential")
+        || normalized.contains("token")
+    {
+        return BrowserArtifactDeliveryDecision::SuppressSensitive;
+    }
+    if normalized.contains("-live.") {
+        return BrowserArtifactDeliveryDecision::SuppressLiveFrame;
+    }
+    if normalized.contains("-final.") {
+        let mut delivered = delivered_browser_artifacts
+            .lock()
+            .expect("browser artifact delivery set mutex poisoned");
+        if !delivered.insert(normalized) {
+            return BrowserArtifactDeliveryDecision::SuppressDuplicateFinal;
+        }
+    }
+    BrowserArtifactDeliveryDecision::Deliver
 }
 
 fn progress_reply_markup_for_state(
@@ -102,6 +146,12 @@ impl AgentTransport for TelegramAgentTransport {
         file_name: &str,
         content: &[u8],
     ) -> Result<FileDeliveryReceipt> {
+        let decision =
+            browser_artifact_delivery_decision(file_name, &self.delivered_browser_artifacts);
+        if decision != BrowserArtifactDeliveryDecision::Deliver {
+            warn!(file_name = %file_name, decision = ?decision, "Suppressing browser artifact auto-delivery to Telegram");
+            return Ok(FileDeliveryReceipt::default());
+        }
         match mode {
             DeliveryMode::BestEffort => {
                 if let Err(e) = send_file_smart(
@@ -172,6 +222,12 @@ impl AgentTransport for SilentTelegramAgentTransport {
         file_name: &str,
         content: &[u8],
     ) -> Result<FileDeliveryReceipt> {
+        let decision =
+            browser_artifact_delivery_decision(file_name, &self.delivered_browser_artifacts);
+        if decision != BrowserArtifactDeliveryDecision::Deliver {
+            warn!(file_name = %file_name, decision = ?decision, "Suppressing browser artifact auto-delivery to Telegram");
+            return Ok(FileDeliveryReceipt::default());
+        }
         match mode {
             DeliveryMode::BestEffort => {
                 if let Err(e) = send_file_smart(
@@ -390,8 +446,13 @@ async fn send_file_smart(
 #[cfg(test)]
 mod tests {
     use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
+    use std::collections::HashSet;
+    use std::sync::Mutex;
 
-    use super::{NativeSendKind, progress_reply_markup_for_state, select_native_send_kind};
+    use super::{
+        BrowserArtifactDeliveryDecision, NativeSendKind, browser_artifact_delivery_decision,
+        progress_reply_markup_for_state, select_native_send_kind,
+    };
     use crate::bot::views::progress_inline_keyboard;
 
     #[test]
@@ -454,6 +515,45 @@ mod tests {
         assert_eq!(
             select_native_send_kind("speech.ogg", FileDeliveryKind::Document),
             NativeSendKind::Document
+        );
+    }
+
+    #[test]
+    fn browser_file_policy_delivers_final_artifact_once() {
+        let delivered = Mutex::new(HashSet::new());
+        let file_name = "artifact://browser/task/session/step-0004-final.jpg";
+
+        assert_eq!(
+            browser_artifact_delivery_decision(file_name, &delivered),
+            BrowserArtifactDeliveryDecision::Deliver
+        );
+        assert_eq!(
+            browser_artifact_delivery_decision(file_name, &delivered),
+            BrowserArtifactDeliveryDecision::SuppressDuplicateFinal
+        );
+    }
+
+    #[test]
+    fn browser_file_policy_suppresses_live_frames_and_sensitive_artifacts() {
+        let delivered = Mutex::new(HashSet::new());
+
+        assert_eq!(
+            browser_artifact_delivery_decision(
+                "artifact://browser/task/session/step-0004-live.jpg",
+                &delivered,
+            ),
+            BrowserArtifactDeliveryDecision::SuppressLiveFrame
+        );
+        assert_eq!(
+            browser_artifact_delivery_decision(
+                "artifact://browser/task/session/step-0004-final-sensitive.jpg",
+                &delivered,
+            ),
+            BrowserArtifactDeliveryDecision::SuppressSensitive
+        );
+        assert_eq!(
+            browser_artifact_delivery_decision("report.pdf", &delivered),
+            BrowserArtifactDeliveryDecision::Deliver
         );
     }
 }

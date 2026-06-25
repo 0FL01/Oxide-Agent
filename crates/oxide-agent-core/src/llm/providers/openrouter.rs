@@ -55,7 +55,6 @@ impl OpenRouterProvider {
                 http_client,
                 endpoint,
                 Some(api_key),
-                "",
                 ChatCompletionsProfile::openrouter(),
             ),
         }
@@ -133,7 +132,6 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
-            None,
         );
 
         let res_json = self.client.post_json(&body).await?;
@@ -228,7 +226,7 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             temperature,
-            json_mode: _,
+            json_mode,
             reasoning_effort: _,
         } = request;
         let body = chat_request::build_tool_body(
@@ -238,14 +236,13 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             temperature,
-            false,
+            json_mode,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
-            None,
         );
 
         let res_json = self.client.post_json(&body).await?;
 
-        chat_response::parse_chat_response(res_json, self.profile(), None)
+        chat_response::parse_chat_response(res_json, self.profile())
     }
 }
 
@@ -364,7 +361,9 @@ mod tests {
         let body = request_body(&request_rx.await.expect("request captured"));
         assert_eq!(body["provider"], json!({"require_parameters": true}));
         assert!(body.get("tool_choice").is_none());
-        assert!(body.get("response_format").is_none());
+        // json_mode=true with tools sets response_format (P0.5 probes
+        // confirm all ChatCompletions providers accept json_object + tools).
+        assert_eq!(body["response_format"], json!({"type": "json_object"}));
     }
 
     #[test]

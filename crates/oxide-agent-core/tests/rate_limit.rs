@@ -5,7 +5,10 @@
 //! 2. Retry-After headers are parsed correctly
 //! 3. Provider-specific rate limit info is extracted (OpenRouter X-RateLimit-Reset, ZAI flush time)
 
-#![cfg(all(feature = "llm-openrouter", feature = "llm-openai-base"))]
+#![cfg(all(
+    oxide_module_llm_provider_openrouter,
+    oxide_module_llm_provider_openai_base
+))]
 
 use oxide_agent_core::llm::http::parse_retry_after;
 use oxide_agent_core::llm::providers::openai_base::parse_zai_flush_time;

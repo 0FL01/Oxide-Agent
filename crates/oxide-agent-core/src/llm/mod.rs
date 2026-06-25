@@ -1,6 +1,8 @@
 //! LLM providers and client
 //!
 //! Provides a unified interface to agent-compatible LLM providers.
+//!
+//! Prompt cache hit details: `docs/tips/cache-hit.md`
 
 mod capabilities;
 mod client;
@@ -16,18 +18,18 @@ pub(crate) use capabilities::{
     provider_capabilities_for_model, provider_media_capabilities_for_model,
 };
 pub(crate) use client::InternalTextPurpose;
-pub use client::{DiscoveredLlmModel, LlmClient};
+pub use client::{DiscoveredLlmModel, DiscoveredModelSource, LlmClient};
 pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
+pub(crate) use support::backoff::is_transient_server_status;
 #[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-minimax",
-    feature = "llm-mistral",
-    feature = "llm-openai-base",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
+    oxide_module_llm_provider_openai_chatgpt,
+    oxide_module_llm_provider_anthropic,
+    oxide_module_llm_provider_openai_base,
+    oxide_module_llm_provider_opencode_go,
+    oxide_module_llm_provider_openrouter
 ))]
 pub use support::http;
 pub use types::{
@@ -115,11 +117,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_message_serialization_includes_wire_and_canonical_correlation_fields() {
+    fn tool_message_serialization_includes_canonical_correlation_field() {
         let message = Message::tool("call-1", "search", "result");
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_call_id"], json!("call-1"));
+        // tool_call_id is no longer serialized; correlation is the sole persisted identity.
+        assert!(value.get("tool_call_id").is_none() || value["tool_call_id"].is_null());
         assert_eq!(
             value["tool_call_correlation"]["invocation_id"],
             json!("call-1")
@@ -144,14 +147,22 @@ mod tests {
     }
 
     #[test]
-    fn assistant_tool_batch_serialization_includes_correlation_vector() {
+    fn assistant_tool_batch_serialization_includes_correlation_in_tool_calls() {
         let message =
             Message::assistant_with_tools("calling tools", vec![tool_call("call-1", "search")]);
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        // tool_call_correlations field removed; correlation lives in each ToolCall.
+        assert!(
+            value.get("tool_call_correlations").is_none()
+                || value["tool_call_correlations"].is_null()
+        );
+        // id is skip_serializing; correlation is the sole persisted identity.
+        assert!(
+            value["tool_calls"][0].get("id").is_none() || value["tool_calls"][0]["id"].is_null()
+        );
         assert_eq!(
-            value["tool_call_correlations"][0]["invocation_id"],
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
             json!("call-1")
         );
     }
@@ -166,7 +177,10 @@ mod tests {
         let value = serde_json::to_value(&message).expect("message serializes");
 
         assert_eq!(value["reasoning_content"], json!("thinking trace"));
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        assert_eq!(
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
+            json!("call-1")
+        );
     }
 
     #[test]
@@ -212,7 +226,6 @@ mod tests {
         });
         let message: Message = serde_json::from_value(value).expect("message deserializes");
 
-        assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
             Some(vec![ToolCallCorrelation::new("call-wire")])

@@ -213,11 +213,23 @@ MVP rule:
 
 ```text
 if OXIDE_SEARCH_PROBE_ENABLED=true:
-  TaskRunRequest::Execute -> run probe
+  TaskRunRequest::Execute -> run probe (if first_turn_only gate passes)
   TaskRunRequest::ResumeUserInput -> skip probe
 ```
 
-Без content heuristics.
+First-turn-only gate (`OXIDE_SEARCH_PROBE_FIRST_TURN_ONLY`, default `true`):
+
+```text
+if config.first_turn_only and session has prior main agent final message:
+  skip probe (return request unchanged)
+```
+
+Gate signal: `WebSessionManager::last_main_agent_final_message(session_id)` —
+reads in-memory registry executor memory (hydrated from durable storage after
+restart). Returns `None` on fresh sessions → first turn → probe runs. Returns
+`Some` after the first completed assistant response → subsequent turns → probe
+skipped. Works across container restarts because memory is persisted and
+hydrated on session create.
 
 Создание обычного task запускает `Execute`:
 
@@ -689,6 +701,11 @@ OXIDE_SEARCH_PROBE_FORWARD_TOOL_EVENTS=true
 OXIDE_SEARCH_PROBE_TOOL_ALLOWLIST=web_search,web_crawler
 
 OXIDE_SEARCH_PROBE_DOSSIER_MAX_CHARS=80000
+
+OXIDE_SEARCH_PROBE_FIRST_TURN_ONLY=true
+# When true, probe runs only on the first Execute in a session (no prior
+# main agent final message). Subsequent turns skip probe. Set false to
+# run probe on every Execute.
 ```
 
 `DOSSIER_MAX_CHARS` не для экономии токенов, а как safety guard против случайного raw transcript dump.
@@ -935,6 +952,9 @@ Minimum test set:
 10. Invalid probe final contract falls back to raw final response handoff.
 11. decision=stop prevents unnecessary later generations.
 12. main runtime system prompt path is not modified by search_probe module.
+13. first_turn_only=true skips probe when prior main agent final message exists.
+14. first_turn_only=true runs probe on fresh session (no prior message).
+15. first_turn_only=false runs probe even with prior final message.
 ```
 
 Explicitly do not add tests for deterministic query construction or exact/near-miss scoring, because that logic is not part of v2.

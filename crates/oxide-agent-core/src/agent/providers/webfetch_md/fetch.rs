@@ -16,9 +16,8 @@ use super::reddit::{
 };
 use super::url::{parse_web_url, reject_media_url, reject_unsafe_url};
 use super::{
-    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_OFFSET_CHARS,
-    MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECS,
-    MIN_OUTPUT_CHARS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
+    BROWSER_USER_AGENT, DEFAULT_TIMEOUT_SECS, MARKDOWN_ACCEPT_HEADER, MAX_RESPONSE_BYTES,
+    MAX_TIMEOUT_SECS, SIMPLE_BOT_USER_AGENT, WebFetchMdProvider, WebMarkdownArgs,
 };
 
 struct FetchResult {
@@ -28,13 +27,80 @@ struct FetchResult {
     text: String,
 }
 
+/// Fully fetched and converted Markdown document before any model-facing windowing.
+#[derive(Debug, Clone)]
+pub(crate) struct FetchedMarkdownDocument {
+    pub(crate) metadata: Vec<(String, String)>,
+    pub(crate) fetched_bytes: Option<usize>,
+    pub(crate) markdown: String,
+}
+
+impl FetchedMarkdownDocument {
+    fn new(
+        metadata: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+        fetched_bytes: Option<usize>,
+        markdown: String,
+    ) -> Self {
+        Self {
+            metadata: metadata
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+            fetched_bytes,
+            markdown,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FetchOptions<'a> {
+    timeout_secs: u64,
+    cancellation_token: Option<&'a CancellationToken>,
+}
+
 impl WebFetchMdProvider {
-    pub(crate) async fn fetch_markdown(
+    #[cfg(test)]
+    pub(crate) async fn fetch_and_render(
         &self,
         args: WebMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
-        let url = parse_web_url(&args.url)?;
+        let document = self
+            .fetch_markdown_document(args.clone(), cancellation_token)
+            .await?;
+        let output_window = super::resolve_output_window(
+            args.max_chars,
+            super::MAX_OUTPUT_CHARS,
+            super::MIN_OUTPUT_CHARS,
+            super::MAX_OUTPUT_CHARS_REQUEST,
+        );
+        let delivery = self
+            .store_markdown_window(
+                0,
+                args.url.as_deref().unwrap_or("").to_string(),
+                document,
+                output_window,
+            )
+            .await;
+        Ok(super::render_delivery_stdout(
+            super::TOOL_WEB_MARKDOWN,
+            &delivery,
+            None,
+        ))
+    }
+
+    pub(crate) async fn fetch_markdown_document(
+        &self,
+        args: WebMarkdownArgs,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<FetchedMarkdownDocument> {
+        let url_text = args
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .context("web_markdown requires url unless read is \"next\"")?;
+        let url = parse_web_url(url_text)?;
         reject_media_url(&url)?;
         reject_unsafe_url(&url)?;
 
@@ -42,11 +108,10 @@ impl WebFetchMdProvider {
             .timeout_secs
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
-        let output_window = resolve_output_window(&args);
 
         if let Some(source) = classify_known_source(&url) {
             match self
-                .fetch_known_markdown(&source, timeout_secs, output_window, cancellation_token)
+                .fetch_known_markdown(&source, timeout_secs, cancellation_token)
                 .await
             {
                 Ok(output) => return Ok(output),
@@ -72,17 +137,15 @@ impl WebFetchMdProvider {
                 .fetch_reddit_rss(&url, &rss_url, timeout_secs, cancellation_token)
                 .await
                 .context("reddit rss fast-path failed")?;
-            let windowed = window_chars(markdown.trim().to_string(), output_window);
-            return Ok(format_web_markdown_output(
-                &[
+            return Ok(FetchedMarkdownDocument::new(
+                [
                     ("URL", rss_url.as_str()),
                     ("Source-URL", url.as_str()),
                     ("Mode", "reddit_rss_fast_path"),
                     ("Content-Type", "text/plain"),
                 ],
                 Some(0),
-                output_window,
-                &windowed,
+                markdown.trim().to_string(),
             ));
         }
 
@@ -99,16 +162,13 @@ impl WebFetchMdProvider {
             fetched.text
         };
 
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
-
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -117,60 +177,59 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         reject_unsafe_url(source.fetch_url())?;
 
         match source {
             KnownMarkdownSource::CrateReadme { .. } => {
                 return self
-                    .fetch_crate_readme(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_crate_readme(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::PypiProject { .. } => {
                 return self
-                    .fetch_pypi_project(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_pypi_project(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GitHubGist { .. } => {
                 return self
-                    .fetch_github_gist(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_github_gist(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GitHubReadme { .. } => {
                 return self
-                    .fetch_github_readme(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_github_readme(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HuggingFaceBlog { .. } => {
                 return self
-                    .fetch_huggingface_blog(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_huggingface_blog(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HuggingFaceTree { .. } => {
                 return self
-                    .fetch_huggingface_tree(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_huggingface_tree(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HabrArticle { .. } => {
                 return self
-                    .fetch_habr_article(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_habr_article(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::HabrComments { .. } => {
                 return self
-                    .fetch_habr_comments(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_habr_comments(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GoogleDevSite { .. } => {
                 return self
-                    .fetch_google_devsite(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_google_devsite(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::GoogleBlog { .. } => {
                 return self
-                    .fetch_google_blog(source, timeout_secs, output_window, cancellation_token)
+                    .fetch_google_blog(source, timeout_secs, cancellation_token)
                     .await;
             }
             KnownMarkdownSource::DirectReadme { .. } => {}
@@ -189,18 +248,15 @@ impl WebFetchMdProvider {
             fetched.text
         };
 
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
-
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source.source_url().as_str()),
                 ("Mode", source.mode()),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -208,9 +264,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let (source_url, metadata_url, crate_name, requested_version, mode) =
             rust_packages::crate_readme_parts(source)?;
 
@@ -236,18 +291,17 @@ impl WebFetchMdProvider {
         } else {
             fetched.text
         };
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
-
-        Ok(rust_packages::render_readme(
-            source_url,
-            &fetched.final_url,
-            mode,
-            crate_name,
-            &version,
-            display_content_type(&fetched.content_type),
-            fetched.bytes_read,
-            output_window,
-            &windowed,
+        Ok(FetchedMarkdownDocument::new(
+            [
+                ("URL", fetched.final_url.as_str()),
+                ("Source-URL", source_url.as_str()),
+                ("Mode", mode),
+                ("Crate", crate_name),
+                ("Version", version.as_str()),
+                ("Content-Type", display_content_type(&fetched.content_type)),
+            ],
+            Some(fetched.bytes_read),
+            markdown.trim().to_string(),
         ))
     }
 
@@ -255,9 +309,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let (source_url, metadata_url, package_name, mode) = pypi::pypi_project_parts(source)?;
 
         reject_unsafe_url(metadata_url)?;
@@ -268,17 +321,39 @@ impl WebFetchMdProvider {
         reject_unsafe_url(&fetched.final_url)?;
 
         let metadata = pypi::parse_project_metadata(&fetched.text, package_name)?;
-        let windowed = window_chars(metadata.description.trim().to_string(), output_window);
+        let mut document_metadata = vec![
+            ("URL".to_string(), fetched.final_url.to_string()),
+            ("Source-URL".to_string(), source_url.to_string()),
+            ("Mode".to_string(), mode.to_string()),
+            ("Package".to_string(), metadata.name.clone()),
+            (
+                "Version".to_string(),
+                metadata.version.as_deref().unwrap_or("unknown").to_string(),
+            ),
+            (
+                "Description-Content-Type".to_string(),
+                metadata
+                    .description_content_type
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string(),
+            ),
+            (
+                "Content-Type".to_string(),
+                display_content_type(&fetched.content_type).to_string(),
+            ),
+        ];
+        if let Some(summary) = metadata.summary.filter(|summary| !summary.is_empty()) {
+            document_metadata.push(("Summary".to_string(), summary));
+        }
+        if let Some(project_url) = metadata.project_url.filter(|url| !url.is_empty()) {
+            document_metadata.push(("Project-URL".to_string(), project_url));
+        }
 
-        Ok(pypi::render_project(
-            source_url,
-            &fetched.final_url,
-            mode,
-            &metadata,
-            display_content_type(&fetched.content_type),
-            fetched.bytes_read,
-            output_window,
-            &windowed,
+        Ok(FetchedMarkdownDocument::new(
+            document_metadata,
+            Some(fetched.bytes_read),
+            metadata.description.trim().to_string(),
         ))
     }
 
@@ -286,9 +361,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let gist = github_gist::gist_parts(source)?;
 
         reject_unsafe_url(gist.api_url)?;
@@ -349,29 +423,31 @@ impl WebFetchMdProvider {
         }
 
         let content = rendered_files.join("\n\n");
-        let windowed = window_chars(content.trim().to_string(), output_window);
+        let mut document_metadata = vec![
+            ("URL".to_string(), metadata.final_url.to_string()),
+            ("Source-URL".to_string(), gist.source_url.to_string()),
+            ("Mode".to_string(), gist.mode.to_string()),
+            ("Owner".to_string(), gist.owner.to_string()),
+            ("Gist-ID".to_string(), gist.gist_id.to_string()),
+            ("Files".to_string(), file_names.join(", ")),
+        ];
+        if let Some(comment_id) = comment_id {
+            document_metadata.push(("Comment-ID".to_string(), comment_id));
+        }
 
-        Ok(github_gist::render_gist(github_gist::GistRender {
-            source_url: gist.source_url,
-            api_url: &metadata.final_url,
-            mode: gist.mode,
-            owner: gist.owner,
-            gist_id: gist.gist_id,
-            comment_id: comment_id.as_deref(),
-            files: &file_names,
-            bytes_read,
-            output_window,
-            windowed: &windowed,
-        }))
+        Ok(FetchedMarkdownDocument::new(
+            document_metadata,
+            Some(bytes_read),
+            content.trim().to_string(),
+        ))
     }
 
     async fn fetch_github_readme(
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::GitHubReadme {
             source_url,
             api_url,
@@ -403,11 +479,10 @@ impl WebFetchMdProvider {
         } else {
             fetched.text
         };
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
         let repo_label = format!("{owner}/{repo}");
 
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source_url.as_str()),
                 ("Mode", mode),
@@ -415,8 +490,7 @@ impl WebFetchMdProvider {
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(metadata.bytes_read + fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -424,9 +498,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::HuggingFaceBlog {
             source_url,
             fetch_url,
@@ -447,18 +520,16 @@ impl WebFetchMdProvider {
 
         let article_html = extract_huggingface_blog_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source_url.as_str()),
                 ("Mode", mode),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -466,9 +537,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::HuggingFaceTree {
             source_url,
             api_url,
@@ -488,18 +558,16 @@ impl WebFetchMdProvider {
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_huggingface_tree_json(&fetched.text, repo_id, revision, tree_path)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source_url.as_str()),
                 ("Mode", mode),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -507,9 +575,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::HabrArticle {
             source_url,
             api_url,
@@ -531,9 +598,10 @@ impl WebFetchMdProvider {
                 lang,
                 company,
                 mode,
-                timeout_secs,
-                output_window,
-                cancellation_token,
+                FetchOptions {
+                    timeout_secs,
+                    cancellation_token,
+                },
             )
             .await
         {
@@ -551,9 +619,10 @@ impl WebFetchMdProvider {
                     article_id,
                     lang,
                     company,
-                    timeout_secs,
-                    output_window,
-                    cancellation_token,
+                    FetchOptions {
+                        timeout_secs,
+                        cancellation_token,
+                    },
                 )
                 .await
                 .context("Habr article HTML fallback failed")
@@ -561,7 +630,6 @@ impl WebFetchMdProvider {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_article_json(
         &self,
         source_url: &Url,
@@ -570,40 +638,38 @@ impl WebFetchMdProvider {
         lang: &str,
         company: &Option<String>,
         mode: &'static str,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+        opts: FetchOptions<'_>,
+    ) -> Result<FetchedMarkdownDocument> {
         let fetched = self
-            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(api_url.clone(), opts.timeout_secs, opts.cancellation_token)
             .await
             .context("Habr article API fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_habr_article_json(&fetched.text, article_id)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
-            ("URL", fetched.final_url.as_str()),
-            ("Source-URL", source_url.as_str()),
-            ("Mode", mode),
-            ("Habr-Article-ID", article_id),
-            ("Habr-Lang", lang),
+            ("URL".to_string(), fetched.final_url.to_string()),
+            ("Source-URL".to_string(), source_url.to_string()),
+            ("Mode".to_string(), mode.to_string()),
+            ("Habr-Article-ID".to_string(), article_id.to_string()),
+            ("Habr-Lang".to_string(), lang.to_string()),
         ];
         if let Some(company) = company {
-            metadata.push(("Habr-Company", company.as_str()));
+            metadata.push(("Habr-Company".to_string(), company.clone()));
         }
-        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+        metadata.push((
+            "Content-Type".to_string(),
+            display_content_type(&fetched.content_type).to_string(),
+        ));
 
-        Ok(format_web_markdown_output(
-            &metadata,
+        Ok(FetchedMarkdownDocument::new(
+            metadata,
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_article_html_fallback(
         &self,
         source_url: &Url,
@@ -611,12 +677,14 @@ impl WebFetchMdProvider {
         article_id: &str,
         lang: &str,
         company: &Option<String>,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+        opts: FetchOptions<'_>,
+    ) -> Result<FetchedMarkdownDocument> {
         let fetched = self
-            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(
+                fallback_url.clone(),
+                opts.timeout_secs,
+                opts.cancellation_token,
+            )
             .await
             .context("Habr article page fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
@@ -626,25 +694,26 @@ impl WebFetchMdProvider {
 
         let article_html = extract_habr_article_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
-            ("URL", fetched.final_url.as_str()),
-            ("Source-URL", source_url.as_str()),
-            ("Mode", "habr_article_html_fallback"),
-            ("Habr-Article-ID", article_id),
-            ("Habr-Lang", lang),
+            ("URL".to_string(), fetched.final_url.to_string()),
+            ("Source-URL".to_string(), source_url.to_string()),
+            ("Mode".to_string(), "habr_article_html_fallback".to_string()),
+            ("Habr-Article-ID".to_string(), article_id.to_string()),
+            ("Habr-Lang".to_string(), lang.to_string()),
         ];
         if let Some(company) = company {
-            metadata.push(("Habr-Company", company.as_str()));
+            metadata.push(("Habr-Company".to_string(), company.clone()));
         }
-        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+        metadata.push((
+            "Content-Type".to_string(),
+            display_content_type(&fetched.content_type).to_string(),
+        ));
 
-        Ok(format_web_markdown_output(
-            &metadata,
+        Ok(FetchedMarkdownDocument::new(
+            metadata,
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -652,9 +721,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::HabrComments {
             source_url,
             api_url,
@@ -676,9 +744,10 @@ impl WebFetchMdProvider {
                 lang,
                 company,
                 mode,
-                timeout_secs,
-                output_window,
-                cancellation_token,
+                FetchOptions {
+                    timeout_secs,
+                    cancellation_token,
+                },
             )
             .await
         {
@@ -696,9 +765,10 @@ impl WebFetchMdProvider {
                     article_id,
                     lang,
                     company,
-                    timeout_secs,
-                    output_window,
-                    cancellation_token,
+                    FetchOptions {
+                        timeout_secs,
+                        cancellation_token,
+                    },
                 )
                 .await
                 .context("Habr comments HTML fallback failed")
@@ -706,7 +776,6 @@ impl WebFetchMdProvider {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fetch_habr_comments_json(
         &self,
         source_url: &Url,
@@ -715,36 +784,35 @@ impl WebFetchMdProvider {
         lang: &str,
         company: &Option<String>,
         mode: &'static str,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+        opts: FetchOptions<'_>,
+    ) -> Result<FetchedMarkdownDocument> {
         let fetched = self
-            .fetch_text(api_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(api_url.clone(), opts.timeout_secs, opts.cancellation_token)
             .await
             .context("Habr comments API fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
 
         let markdown = render_habr_comments_json(&fetched.text, article_id)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
-            ("URL", fetched.final_url.as_str()),
-            ("Source-URL", source_url.as_str()),
-            ("Mode", mode),
-            ("Habr-Article-ID", article_id),
-            ("Habr-Lang", lang),
+            ("URL".to_string(), fetched.final_url.to_string()),
+            ("Source-URL".to_string(), source_url.to_string()),
+            ("Mode".to_string(), mode.to_string()),
+            ("Habr-Article-ID".to_string(), article_id.to_string()),
+            ("Habr-Lang".to_string(), lang.to_string()),
         ];
         if let Some(company) = company {
-            metadata.push(("Habr-Company", company.as_str()));
+            metadata.push(("Habr-Company".to_string(), company.clone()));
         }
-        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+        metadata.push((
+            "Content-Type".to_string(),
+            display_content_type(&fetched.content_type).to_string(),
+        ));
 
-        Ok(format_web_markdown_output(
-            &metadata,
+        Ok(FetchedMarkdownDocument::new(
+            metadata,
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -755,12 +823,14 @@ impl WebFetchMdProvider {
         article_id: &str,
         lang: &str,
         company: &Option<String>,
-        timeout_secs: u64,
-        output_window: OutputWindow,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+        opts: FetchOptions<'_>,
+    ) -> Result<FetchedMarkdownDocument> {
         let fetched = self
-            .fetch_text(fallback_url.clone(), timeout_secs, cancellation_token)
+            .fetch_text(
+                fallback_url.clone(),
+                opts.timeout_secs,
+                opts.cancellation_token,
+            )
             .await
             .context("Habr comments page fetch failed")?;
         reject_unsafe_url(&fetched.final_url)?;
@@ -770,25 +840,29 @@ impl WebFetchMdProvider {
 
         let comments_html = extract_habr_comments_html(&fetched.text)?;
         let markdown = html_to_markdown(comments_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
         let mut metadata = vec![
-            ("URL", fetched.final_url.as_str()),
-            ("Source-URL", source_url.as_str()),
-            ("Mode", "habr_comments_html_fallback"),
-            ("Habr-Article-ID", article_id),
-            ("Habr-Lang", lang),
+            ("URL".to_string(), fetched.final_url.to_string()),
+            ("Source-URL".to_string(), source_url.to_string()),
+            (
+                "Mode".to_string(),
+                "habr_comments_html_fallback".to_string(),
+            ),
+            ("Habr-Article-ID".to_string(), article_id.to_string()),
+            ("Habr-Lang".to_string(), lang.to_string()),
         ];
         if let Some(company) = company {
-            metadata.push(("Habr-Company", company.as_str()));
+            metadata.push(("Habr-Company".to_string(), company.clone()));
         }
-        metadata.push(("Content-Type", display_content_type(&fetched.content_type)));
+        metadata.push((
+            "Content-Type".to_string(),
+            display_content_type(&fetched.content_type).to_string(),
+        ));
 
-        Ok(format_web_markdown_output(
-            &metadata,
+        Ok(FetchedMarkdownDocument::new(
+            metadata,
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -843,9 +917,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::GoogleDevSite {
             source_url,
             fetch_url,
@@ -871,18 +944,16 @@ impl WebFetchMdProvider {
 
         let article_html = extract_google_devsite_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source_url.as_str()),
                 ("Mode", mode),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -890,9 +961,8 @@ impl WebFetchMdProvider {
         &self,
         source: &KnownMarkdownSource,
         timeout_secs: u64,
-        output_window: OutputWindow,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<FetchedMarkdownDocument> {
         let KnownMarkdownSource::GoogleBlog {
             source_url,
             fetch_url,
@@ -918,18 +988,16 @@ impl WebFetchMdProvider {
 
         let article_html = extract_google_blog_html(&fetched.text)?;
         let markdown = html_to_markdown(article_html)?;
-        let windowed = window_chars(markdown.trim().to_string(), output_window);
 
-        Ok(format_web_markdown_output(
-            &[
+        Ok(FetchedMarkdownDocument::new(
+            [
                 ("URL", fetched.final_url.as_str()),
                 ("Source-URL", source_url.as_str()),
                 ("Mode", mode),
                 ("Content-Type", display_content_type(&fetched.content_type)),
             ],
             Some(fetched.bytes_read),
-            output_window,
-            &windowed,
+            markdown.trim().to_string(),
         ))
     }
 
@@ -1097,60 +1165,11 @@ impl WebFetchMdProvider {
     }
 }
 
-fn format_web_markdown_output(
-    metadata: &[(&str, &str)],
-    fetched_bytes: Option<usize>,
+pub(crate) fn window_markdown_document(
+    document: &FetchedMarkdownDocument,
     output_window: OutputWindow,
-    windowed: &WindowedOutput,
-) -> String {
-    let mut output = String::from("## Web Markdown\n\n");
-    for (key, value) in metadata {
-        output.push_str(key);
-        output.push_str(": ");
-        output.push_str(value);
-        output.push('\n');
-    }
-    if let Some(bytes) = fetched_bytes {
-        output.push_str("Fetched-Bytes: ");
-        output.push_str(&bytes.to_string());
-        output.push('\n');
-    }
-    output.push_str("Max-Chars: ");
-    output.push_str(&output_window.max_chars.to_string());
-    output.push('\n');
-    output.push_str("Offset-Chars: ");
-    output.push_str(&output_window.offset_chars.to_string());
-    output.push('\n');
-    output.push_str("Markdown-Chars: ");
-    output.push_str(&windowed.markdown_chars.to_string());
-    output.push('\n');
-    output.push_str("Returned-Chars: ");
-    output.push_str(&windowed.returned_chars.to_string());
-    output.push('\n');
-    output.push_str("Remaining-Chars: ");
-    output.push_str(&windowed.remaining_chars.to_string());
-    output.push('\n');
-    output.push_str("Next-Offset-Chars: ");
-    match windowed.next_offset_chars {
-        Some(offset) => output.push_str(&offset.to_string()),
-        None => output.push_str("none"),
-    }
-    output.push('\n');
-    output.push_str("Truncated: ");
-    output.push_str(if windowed.was_truncated { "yes" } else { "no" });
-    output.push_str("\n\n### Content\n\n");
-    output.push_str(&windowed.text);
-    output
-}
-
-fn resolve_output_window(args: &WebMarkdownArgs) -> OutputWindow {
-    OutputWindow {
-        max_chars: args
-            .max_chars
-            .unwrap_or(MAX_OUTPUT_CHARS)
-            .clamp(MIN_OUTPUT_CHARS, MAX_OUTPUT_CHARS_REQUEST),
-        offset_chars: args.offset_chars.unwrap_or(0).min(MAX_OFFSET_CHARS),
-    }
+) -> WindowedOutput {
+    window_chars(document.markdown.trim().to_string(), output_window)
 }
 
 fn github_readme_download_url(metadata_json: &str) -> Result<Url> {

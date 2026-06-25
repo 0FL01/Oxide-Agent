@@ -130,7 +130,7 @@ async fn check_state_and_redirect(
 }
 
 /// Supported commands for the bot
-#[derive(BotCommands, Clone)]
+#[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Supported commands:")]
 pub enum Command {
     /// Start the bot and show welcome message
@@ -491,7 +491,6 @@ pub async fn handle_text(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_menu_commands(
     bot: &Bot,
     msg: &Message,
@@ -847,7 +846,7 @@ pub async fn handle_document(
 
 #[cfg(test)]
 mod tests {
-    use super::should_default_to_agent_mode;
+    use super::{Command, should_default_to_agent_mode};
     use crate::config::{BotSettings, TelegramSettings};
     use oxide_agent_core::config::AgentSettings;
 
@@ -888,5 +887,23 @@ mod tests {
 
         let unconfigured = test_settings(None);
         assert!(!should_default_to_agent_mode(true, &unconfigured, 77));
+    }
+
+    #[test]
+    fn telegram_commands_do_not_expose_browser_start_or_control() {
+        let command_names = [
+            Command::Start,
+            Command::Help,
+            Command::Cancel,
+            Command::Clear,
+            Command::Healthcheck,
+            Command::Stats,
+        ]
+        .map(|command| format!("{command:?}").to_ascii_lowercase())
+        .join(" ");
+
+        assert!(!command_names.contains("browser"));
+        assert!(!command_names.contains("chrome"));
+        assert!(!command_names.contains("control"));
     }
 }

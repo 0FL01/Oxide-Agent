@@ -3,7 +3,6 @@ use reqwest::Url;
 use serde_json::Value;
 
 use super::KnownMarkdownSource;
-use crate::agent::providers::webfetch_md::convert::{OutputWindow, WindowedOutput};
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
     let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
@@ -65,67 +64,6 @@ pub(in crate::agent::providers::webfetch_md) fn parse_project_metadata(
         description_content_type: optional_str(info.get("description_content_type")),
         project_url: project_url(info),
     })
-}
-
-pub(in crate::agent::providers::webfetch_md) fn render_project(
-    source_url: &Url,
-    final_url: &Url,
-    mode: &str,
-    metadata: &PypiProjectMetadata,
-    content_type: &str,
-    bytes_read: usize,
-    output_window: OutputWindow,
-    windowed: &WindowedOutput,
-) -> String {
-    let version = metadata.version.as_deref().unwrap_or("unknown");
-    let content_kind = metadata
-        .description_content_type
-        .as_deref()
-        .unwrap_or("unknown");
-
-    let mut output = format!(
-        "## Web Markdown\n\nURL: {final_url}\nSource-URL: {source_url}\nMode: {mode}\nPackage: {}\nVersion: {version}\nDescription-Content-Type: {content_kind}\nContent-Type: {content_type}\nFetched-Bytes: {bytes_read}\nMax-Chars: {}\nOffset-Chars: {}\nMarkdown-Chars: {}\nReturned-Chars: {}\nRemaining-Chars: {}\nNext-Offset-Chars: {}\nTruncated: {}",
-        metadata.name,
-        output_window.max_chars,
-        output_window.offset_chars,
-        windowed.markdown_chars,
-        windowed.returned_chars,
-        windowed.remaining_chars,
-        next_offset_label(windowed),
-        truncated_label(windowed)
-    );
-
-    if let Some(summary) = metadata
-        .summary
-        .as_deref()
-        .filter(|summary| !summary.is_empty())
-    {
-        output.push_str("\nSummary: ");
-        output.push_str(summary);
-    }
-    if let Some(project_url) = metadata
-        .project_url
-        .as_deref()
-        .filter(|project_url| !project_url.is_empty())
-    {
-        output.push_str("\nProject-URL: ");
-        output.push_str(project_url);
-    }
-
-    output.push_str("\n\n### Content\n\n");
-    output.push_str(&windowed.text);
-    output
-}
-
-fn next_offset_label(windowed: &WindowedOutput) -> String {
-    windowed
-        .next_offset_chars
-        .map(|offset| offset.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn truncated_label(windowed: &WindowedOutput) -> &'static str {
-    if windowed.was_truncated { "yes" } else { "no" }
 }
 
 pub(in crate::agent::providers::webfetch_md) fn pypi_project_parts(

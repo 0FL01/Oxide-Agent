@@ -2,6 +2,8 @@
 //!
 //! This hook forces the agent to continue iterating if there are
 //! incomplete todos in the list, unless the remaining work is blocked on user input.
+//!
+//! Documentation: `docs/hooks/completion-check.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

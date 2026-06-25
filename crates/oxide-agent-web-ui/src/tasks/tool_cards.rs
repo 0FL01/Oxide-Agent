@@ -3,10 +3,40 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::PersistedTaskEvent;
 use serde_json::Value;
 
+use super::lightbox::{LightboxContext, LightboxImage};
 use super::payload::{
     field_i64, field_str, input_preview_field_str, input_preview_json, is_sub_agent_event,
     parse_output_json, payload_str_event, raw_output_preview, stream_text, sub_agent_event_name,
 };
+use super::state::{artifact_filename, artifact_image_url};
+
+const BROWSER_TOOL_SHOT_LINK_STYLE: &str = concat!(
+    "display:block;",
+    "position:relative;",
+    "width:100%;",
+    "height:0;",
+    "padding-top:56.25%;",
+    "min-width:0;",
+    "max-width:100%;",
+    "overflow:hidden;",
+    "margin-bottom:8px;",
+    "line-height:0;",
+    "background:var(--bg-panel);",
+    "border:1px solid var(--border-subtle);",
+    "border-radius:var(--radius-md);",
+);
+
+const BROWSER_TOOL_SHOT_IMAGE_STYLE: &str = concat!(
+    "display:block;",
+    "position:absolute;",
+    "inset:0;",
+    "width:100%;",
+    "height:100%;",
+    "max-width:100%;",
+    "max-height:100%;",
+    "object-fit:contain;",
+    "background:var(--bg-panel);",
+);
 
 // ── Tool Card (groups call + result) ─────────────────────────────────────
 
@@ -53,6 +83,11 @@ pub(super) fn ToolCard(
         }
         "write_todos" => {
             view! { <WriteTodosToolCard call=call result=result output=output_json /> }.into_any()
+        }
+        "browser_start" | "browser_observe" | "browser_execute" | "browser_extract"
+        | "browser_debug" | "browser_close" => {
+            view! { <BrowserToolCard name=tool_name call=call result=result output=output_json /> }
+                .into_any()
         }
         _ => {
             view! { <GenericToolCard name=tool_name call=call result=result output=output_json /> }
@@ -513,14 +548,14 @@ fn CrawlToolCard(
     let status_code = crawl
         .as_ref()
         .and_then(|v| v.get("status_code").and_then(Value::as_u64));
-    let markdown_kind = crawl.as_ref().and_then(|v| {
-        v.get("markdown_kind")
+    let render: Option<String> = crawl
+        .as_ref()
+        .and_then(|v| v.get("render").and_then(Value::as_str).map(String::from));
+    let rendered_with: Option<String> = crawl.as_ref().and_then(|v| {
+        v.get("rendered_with")
             .and_then(Value::as_str)
             .map(String::from)
     });
-    let fresh = crawl
-        .as_ref()
-        .and_then(|v| v.get("fresh").and_then(Value::as_bool));
     let truncated = crawl
         .as_ref()
         .and_then(|v| v.get("truncated").and_then(Value::as_bool))
@@ -590,6 +625,12 @@ fn CrawlToolCard(
     };
     let raw_output = raw_output_preview(result.as_ref());
 
+    // Pre-compute rendered_with display: show only when it differs from render.
+    let rendered_with_display = rendered_with
+        .as_deref()
+        .filter(|rw| render.as_deref() != Some(*rw))
+        .map(String::from);
+
     let mut header_metas = Vec::new();
     if let Some(duration) = duration_label {
         header_metas.push(tool_meta(duration));
@@ -616,8 +657,8 @@ fn CrawlToolCard(
                 .filter(|final_url| requested_url.as_deref() != Some(final_url.as_str()))
                 .map(|u| tool_query_row("Final URL", u))}
             {status_code.map(|code| tool_query_row("Status", code.to_string()))}
-            {markdown_kind.map(|kind| tool_query_row("Markdown", kind))}
-            {fresh.map(|fresh| tool_query_row("Fresh", if fresh { "yes" } else { "no" }.to_string()))}
+            {render.map(|r| tool_query_row("Render", r))}
+            {rendered_with_display.map(|rw| tool_query_row("Rendered With", rw))}
             {failure_label.clone().map(|label| tool_query_row("Error", label))}
             {failure_status_code.map(|code| tool_query_row("Status", code.to_string()))}
             {failure_message.map(|message| tool_pre_stream(Some("message"), message))}
@@ -960,6 +1001,146 @@ fn WriteTodosToolCard(
                 {raw_output.map(tool_raw_details)}
             </ToolDetails>
         })}
+    }
+}
+
+// ── Browser Tool Card (browser_start/observe/execute/extract/debug/close) ─
+
+#[component]
+fn BrowserToolCard(
+    name: String,
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
+
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
+    let icon = outcome.icon();
+
+    // Primary source: `display_payload` on the event payload — a compact,
+    // truncation-safe summary extracted by the web transport before
+    // `output_preview` is truncated. This is the only reliable source for
+    // browser tools because `output_preview` exceeds EVENT_PREVIEW_MAX_CHARS
+    // and becomes invalid JSON after truncation.
+    //
+    // Fallback: parse `output` (from `output_preview`) for older events that
+    // may not have `display_payload` yet, or when the output is small enough
+    // to not be truncated.
+    let display = result
+        .as_ref()
+        .and_then(|e| e.payload.get("display_payload"))
+        .filter(|v| v.is_object());
+
+    let (screenshot_uri, screenshot_width, screenshot_height, title, status_text) =
+        if let Some(dp) = display {
+            (
+                dp.get("screenshot_uri")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                dp.get("screenshot_width").and_then(Value::as_u64),
+                dp.get("screenshot_height").and_then(Value::as_u64),
+                dp.get("title").and_then(Value::as_str).map(String::from),
+                dp.get("status").and_then(Value::as_str).map(String::from),
+            )
+        } else {
+            // Fallback: parse from output JSON (works for small/untruncated events).
+            let payload = output
+                .as_ref()
+                .and_then(|v| v.get("structured_payload"))
+                .filter(|v| v.is_object())
+                .or(output.as_ref())
+                .filter(|v| v.is_object());
+            let observation = payload
+                .and_then(|p| {
+                    p.get("post_observation")
+                        .or_else(|| p.get("observation"))
+                        .filter(|v| v.is_object())
+                })
+                .or(payload);
+            (
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("artifact_uri"))
+                    .and_then(Value::as_str)
+                    .filter(|uri| !uri.contains("base64") && !uri.starts_with("data:"))
+                    .map(String::from),
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("width"))
+                    .and_then(Value::as_u64),
+                observation
+                    .and_then(|obs| obs.get("screenshot"))
+                    .and_then(|s| s.get("height"))
+                    .and_then(Value::as_u64),
+                observation
+                    .and_then(|obs| obs.get("title"))
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                output.as_ref().and_then(|v| field_str(v, "status")),
+            )
+        };
+
+    // Default open: running, failed, or has a screenshot (visual feedback).
+    let has_screenshot = screenshot_uri.is_some();
+    let default_open = is_running || !success || has_screenshot;
+
+    // Build header metas.
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if !success && let Some(status) = status_text {
+        header_metas.push(tool_meta_danger(status));
+    }
+
+    // Session/task ID for the artifact URL.
+    let session_id_for_artifact = call
+        .as_ref()
+        .or(result.as_ref())
+        .map(|e| e.session_id.clone());
+    let task_id_for_artifact = call.as_ref().or(result.as_ref()).map(|e| e.task_id.clone());
+
+    // Lightbox context — optional so the card degrades gracefully (native
+    // new-tab link) when the context is not provided (e.g. in tests).
+    let lightbox = use_context::<LightboxContext>();
+
+    view! {
+        {tool_card_header(icon, &name, header_metas)}
+        <ToolDetails open=default_open>
+            {move || {
+                screenshot_uri.as_ref().and_then(|uri| {
+                    let sid = session_id_for_artifact.as_deref()?;
+                    let tid = task_id_for_artifact.as_deref()?;
+                    let image_url = artifact_image_url(sid, tid, uri);
+                    let filename = artifact_filename(uri);
+                    let dimensions = screenshot_width.zip(screenshot_height);
+                    let alt = dimensions
+                        .map(|(width, height)| format!("Screenshot {filename} ({width}×{height})"))
+                        .unwrap_or_else(|| format!("Screenshot {filename}"));
+                    let lb_url = image_url.clone();
+                    let lb_alt = alt.clone();
+                    Some(view! {
+                        <a class="browser-tool-shot-link" style=BROWSER_TOOL_SHOT_LINK_STYLE
+                           href=image_url.clone() target="_blank" rel="noopener noreferrer"
+                           on:click=move |ev| {
+                               if let Some(lb) = lightbox {
+                                   ev.prevent_default();
+                                   lb.set_image.set(Some(LightboxImage {
+                                       url: lb_url.clone(),
+                                       alt: lb_alt.clone(),
+                                   }));
+                               }
+                           }>
+                            <img class="browser-tool-shot-image" style=BROWSER_TOOL_SHOT_IMAGE_STYLE src=image_url.clone() alt=alt />
+                        </a>
+                    }.into_any())
+                }).unwrap_or_else(|| ().into_any())
+            }}
+            {title.as_ref().map(|t| view! { <div class="browser-tool-title">{t.clone()}</div> })}
+        </ToolDetails>
     }
 }
 
@@ -1561,12 +1742,17 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
             }
             Some("web_crawler") => {
                 let host = payload.get("host").and_then(Value::as_str);
+                let url = payload.get("url").and_then(Value::as_str);
+                let render = payload.get("render").and_then(Value::as_str);
                 let status_code = payload.get("status_code").and_then(Value::as_i64);
 
                 Some(match error_kind {
                     "anti_bot" => host
                         .map(|host| format!("anti_bot at {host}"))
                         .unwrap_or_else(|| "anti_bot".to_string()),
+                    "render_provider_unavailable" => render
+                        .map(|r| format!("render:{r} unavailable"))
+                        .unwrap_or_else(|| "render unavailable".to_string()),
                     "crw_http_status" | "http_status" => status_code
                         .map(|code| format!("http_status {code}"))
                         .unwrap_or_else(|| "http_status".to_string()),
@@ -1581,7 +1767,10 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                     "network" => host
                         .map(|host| format!("network at {host}"))
                         .unwrap_or_else(|| "network".to_string()),
-                    other => other.to_string(),
+                    other => url
+                        .map(|url| format!("{other} at {url}"))
+                        .or_else(|| host.map(|host| format!("{other} at {host}")))
+                        .unwrap_or_else(|| other.to_string()),
                 })
             }
             _ => None,

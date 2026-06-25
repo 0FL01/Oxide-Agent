@@ -3,10 +3,13 @@ use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde_json::{Value, json};
-use std::time::Duration;
 
 use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
+use super::state::{
+    ActivityTiming, activity_elapsed_seconds, format_duration, latest_pinned_todos,
+    should_render_global_activity_chip,
+};
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
     tool_card_header_with_icon_class, tool_meta, tool_meta_danger, tool_pre_stream,
@@ -17,6 +20,7 @@ use super::tool_cards::{
 pub(super) fn ActivityStatusChip(
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
+    visible_task_ids: Signal<Vec<String>>,
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
     activity_task_id: ReadSignal<Option<String>>,
@@ -27,6 +31,10 @@ pub(super) fn ActivityStatusChip(
             let Some(status) = latest_activity_status(active_task, tasks) else {
                 return ().into_any();
             };
+            let task_id = latest_activity_task_id(active_task, tasks);
+            if !should_render_global_activity_chip(task_id.as_deref(), &visible_task_ids.get()) {
+                return ().into_any();
+            }
             if status == TaskStatus::Completed {
                 return ().into_any();
             }
@@ -45,7 +53,6 @@ pub(super) fn ActivityStatusChip(
                 TaskStatus::Interrupted => "Interrupted",
                 TaskStatus::Completed => "Completed",
             };
-            let task_id = latest_activity_task_id(active_task, tasks);
             view! {
                 <div class="status-wrap">
                     <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
@@ -61,14 +68,14 @@ pub(super) fn ActivityStatusChip(
 
 #[component]
 pub(super) fn ThinkingButton(
-    label: String,
+    label: Memo<String>,
     open: bool,
     on_click: Callback<leptos::ev::MouseEvent>,
 ) -> impl IntoView {
     view! {
         <button class=if open { "thinking-button open" } else { "thinking-button" } type="button" on:click=move |ev| on_click.run(ev)>
             <span class="dot"></span>
-            <span>{label}</span>
+            <span>{move || label.get()}</span>
             <span class="chevron">"›"</span>
         </button>
     }
@@ -103,27 +110,16 @@ pub(super) fn ActivityDrawer(
     has_older_events: Signal<bool>,
     loading_older_events: Signal<bool>,
     load_older_events: Callback<leptos::ev::MouseEvent>,
+    now_millis: ReadSignal<i64>,
 ) -> impl IntoView {
-    let (elapsed_now_millis, set_elapsed_now_millis) =
-        signal(browser_now_millis().unwrap_or_default());
     let (show_sub_agent_events, set_show_sub_agent_events) = signal(true);
-    if let Ok(handle) = set_interval_with_handle(
-        move || {
-            let next = browser_now_millis()
-                .unwrap_or_else(|| elapsed_now_millis.get_untracked().saturating_add(1_000));
-            set_elapsed_now_millis.set(next);
-        },
-        Duration::from_secs(1),
-    ) {
-        on_cleanup(move || handle.clear());
-    }
 
     view! {
         <aside class=move || if open.get() && activity_task_id.get().is_some() { "activity-drawer open" } else { "activity-drawer" }>
             <header class="activity-header">
                 <div class="activity-title-row">
                     <span class="activity-title">"Activity"</span>
-                    {move || activity_elapsed_label(activity_task_id, active_task, tasks, elapsed_now_millis).map(|elapsed| view! {
+                    {move || activity_elapsed_label(activity_task_id, active_task, tasks, now_millis).map(|elapsed| view! {
                         <span class="activity-title-separator">"·"</span>
                         <span class="activity-elapsed">{elapsed}</span>
                     })}
@@ -171,14 +167,7 @@ pub(super) fn ActivityDrawer(
                         .collect();
                     let task_is_terminal = activity_task_status(&task_id, active_task, tasks)
                         .is_some_and(|status| status.is_terminal());
-                    let live_owner = active_task
-                        .get()
-                        .is_some_and(|task| task.task_id == task_id);
-                    let todos = if live_owner {
-                        progress.get().and_then(|snapshot| snapshot.current_todos)
-                    } else {
-                        None
-                    };
+                    let todos = latest_pinned_todos(&task_events);
                     let items = group_activity_events(task_events, task_is_terminal);
                     if items.is_empty() && todos.is_none() {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
@@ -248,39 +237,6 @@ fn activity_task_status(
         })
 }
 
-#[derive(Clone, Copy)]
-struct ActivityTiming {
-    status: TaskStatus,
-    created_at_ms: i64,
-    started_at_ms: Option<i64>,
-    updated_at_ms: i64,
-    finished_at_ms: Option<i64>,
-}
-
-impl From<&TaskSummary> for ActivityTiming {
-    fn from(task: &TaskSummary) -> Self {
-        Self {
-            status: task.status,
-            created_at_ms: task.created_at.timestamp_millis(),
-            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
-            updated_at_ms: task.updated_at.timestamp_millis(),
-            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
-        }
-    }
-}
-
-impl From<&TaskDetail> for ActivityTiming {
-    fn from(task: &TaskDetail) -> Self {
-        Self {
-            status: task.status,
-            created_at_ms: task.created_at.timestamp_millis(),
-            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
-            updated_at_ms: task.updated_at.timestamp_millis(),
-            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
-        }
-    }
-}
-
 fn activity_elapsed_label(
     activity_task_id: ReadSignal<Option<String>>,
     active_task: ReadSignal<Option<TaskDetail>>,
@@ -300,52 +256,9 @@ fn activity_elapsed_label(
                 .map(|task| ActivityTiming::from(&task))
         })?;
     Some(format_duration(activity_elapsed_seconds(
-        timing, now_millis,
+        timing,
+        now_millis.get(),
     )))
-}
-
-fn activity_elapsed_seconds(timing: ActivityTiming, now_millis: ReadSignal<i64>) -> i64 {
-    let start_ms = timing.started_at_ms.unwrap_or(timing.created_at_ms);
-    let end_ms = if timing.status.is_terminal() {
-        timing.finished_at_ms.unwrap_or(timing.updated_at_ms)
-    } else {
-        now_millis.get().max(timing.updated_at_ms)
-    };
-    end_ms.saturating_sub(start_ms) / 1_000
-}
-
-fn browser_now_millis() -> Option<i64> {
-    let performance = web_sys::window()?.performance()?;
-    let millis = performance.time_origin() + performance.now();
-    millis.is_finite().then_some(millis.round() as i64)
-}
-
-pub(super) fn thought_label(task: &TaskSummary) -> String {
-    format!(
-        "Thought for {}",
-        format_duration(task_duration_seconds(task))
-    )
-}
-
-fn task_duration_seconds(task: &TaskSummary) -> i64 {
-    let start = task.started_at.as_ref().unwrap_or(&task.created_at);
-    let end = task.finished_at.as_ref().unwrap_or(&task.updated_at);
-    let seconds = end.signed_duration_since(start.to_owned()).num_seconds();
-    seconds.max(0)
-}
-
-fn format_duration(total_seconds: i64) -> String {
-    let seconds = total_seconds.max(0);
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let seconds = seconds % 60;
-    if hours > 0 {
-        return format!("{hours}h {minutes}m {seconds}s");
-    }
-    if minutes > 0 {
-        return format!("{minutes}m {seconds}s");
-    }
-    format!("{seconds}s")
 }
 
 enum ActivityItem {
@@ -617,6 +530,7 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
     matches!(
         kind,
         TaskEventKind::Reasoning
+            | TaskEventKind::BrowserLive
             | TaskEventKind::ToolCall
             | TaskEventKind::ToolResult
             | TaskEventKind::TodosUpdated
@@ -672,6 +586,7 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
         TaskEventKind::ToolResult => "tool result",
         TaskEventKind::TodosUpdated => "todos",
         TaskEventKind::Reasoning => "reasoning",
+        TaskEventKind::BrowserLive => "browser",
         TaskEventKind::Error => "error",
         TaskEventKind::Finished => "done",
         TaskEventKind::Cancelling => "cancelling",
@@ -725,6 +640,7 @@ fn event_body(event: &PersistedTaskEvent) -> Option<String> {
         TaskEventKind::ToolResult => payload_str_event(event, "output_preview"),
         TaskEventKind::TodosUpdated => None,
         TaskEventKind::Reasoning => payload_str_event(event, "summary"),
+        TaskEventKind::BrowserLive => serde_json::to_string_pretty(&event.payload).ok(),
         _ => serde_json::to_string_pretty(&event.payload).ok(),
     }
 }

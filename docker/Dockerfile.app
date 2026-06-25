@@ -9,7 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo install cargo-chef
+    cargo install cargo-chef && \
+    cargo install --version 0.21.14 trunk && \
+    cargo install --version 0.2.122 wasm-bindgen-cli
 
 FROM chef AS planner
 WORKDIR /app
@@ -53,9 +55,6 @@ RUN --mount=type=cache,target=/app/target \
     cp -R /app/migrations /runtime/migrations; \
     if [ "${BUILD_WEB_UI}" = "true" ]; then \
       rustup target add wasm32-unknown-unknown; \
-      TRUNK_VERSION="v0.21.14"; \
-      curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-        | tar xz -C /usr/local/cargo/bin trunk; \
       cd /app/crates/oxide-agent-web-ui; \
       env -u NO_COLOR trunk build --release; \
       cp -R /app/crates/oxide-agent-web-ui/dist/. /runtime/web/; \

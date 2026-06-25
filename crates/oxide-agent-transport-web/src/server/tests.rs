@@ -68,7 +68,7 @@ use super::{
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task, api_update_session};
 use crate::auth::{login_user, register_user};
 use crate::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
-use crate::session::WebSessionManager;
+use crate::session::{WebSessionManager, web_task_pre_run_memory_flow_id};
 
 #[derive(Clone, Default)]
 struct FakeSandboxControl {
@@ -367,7 +367,7 @@ impl LlmProvider for AutoTitleTestLlmProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("transcribe not implemented".to_string()))
+        Err(LlmError::unknown("transcribe not implemented".to_string()))
     }
 
     async fn analyze_image(
@@ -377,7 +377,7 @@ impl LlmProvider for AutoTitleTestLlmProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "analyze_image not implemented".to_string(),
         ))
     }
@@ -1846,6 +1846,263 @@ async fn api_download_task_file_hides_foreign_or_missing_files() {
 }
 
 #[tokio::test]
+async fn api_download_artifact_serves_owned_image_with_mime_type() {
+    use tower::Service as _;
+
+    let mut state = test_app_state();
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+    let task_id = "task-artifact".to_string();
+    state
+        .web_store
+        .save_task(task_record(
+            user.user_id,
+            &session_id,
+            &task_id,
+            ApiTaskStatus::Completed,
+            "Browser task",
+            now,
+        ))
+        .await
+        .expect("save task");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time after Unix epoch")
+        .as_nanos();
+    let artifact_dir = std::env::temp_dir().join(format!("oxide-artifact-test-{nonce}"));
+    state.artifact_dir = artifact_dir.clone();
+    let inner = artifact_dir.join("browser/task-1/session-1");
+    tokio::fs::create_dir_all(&inner)
+        .await
+        .expect("create artifact dirs");
+    let artifact_path = inner.join("step-0001-milestone.jpg");
+    tokio::fs::write(&artifact_path, b"fake-jpeg-bytes")
+        .await
+        .expect("write artifact file");
+
+    let mut app = super::build_router(state);
+    let response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("artifact request"),
+        )
+        .await
+        .expect("artifact response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::CONTENT_TYPE],
+        axum::http::HeaderValue::from_static("image/jpeg")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read artifact body");
+    assert_eq!(body.as_ref(), b"fake-jpeg-bytes");
+
+    let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+}
+
+#[tokio::test]
+async fn api_download_artifact_rejects_foreign_and_traversal() {
+    use tower::Service as _;
+
+    let mut state = test_app_state();
+    let now = chrono::Utc::now();
+    let owner = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register owner");
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register second user");
+    let (_, owner_session, owner_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login owner");
+    let (_, _, foreign_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login foreign user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&owner_token, Some(&owner_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+    let task_id = "task-artifact".to_string();
+    state
+        .web_store
+        .save_task(task_record(
+            owner.user_id,
+            &session_id,
+            &task_id,
+            ApiTaskStatus::Completed,
+            "Browser task",
+            now,
+        ))
+        .await
+        .expect("save task");
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time after Unix epoch")
+        .as_nanos();
+    let artifact_dir = std::env::temp_dir().join(format!("oxide-artifact-test-{nonce}"));
+    state.artifact_dir = artifact_dir.clone();
+    let inner = artifact_dir.join("browser/task-1/session-1");
+    tokio::fs::create_dir_all(&inner)
+        .await
+        .expect("create artifact dirs");
+    let artifact_path = inner.join("step-0001-milestone.jpg");
+    tokio::fs::write(&artifact_path, b"fake")
+        .await
+        .expect("write artifact file");
+
+    let mut app = super::build_router(state.clone());
+    let foreign_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={foreign_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("foreign artifact request"),
+        )
+        .await
+        .expect("foreign artifact response");
+    assert_eq!(foreign_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let traversal_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/../etc/passwd"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("traversal artifact request"),
+        )
+        .await
+        .expect("traversal artifact response");
+    assert_eq!(
+        traversal_response.status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+
+    let missing_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/missing.jpg"
+                ))
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("missing artifact request"),
+        )
+        .await
+        .expect("missing artifact response");
+    assert_eq!(missing_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let unauthenticated_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri(format!(
+                    "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/browser/task-1/session-1/step-0001-milestone.jpg"
+                ))
+                .body(axum::body::Body::empty())
+                .expect("unauthenticated artifact request"),
+        )
+        .await
+        .expect("unauthenticated artifact response");
+    assert_eq!(
+        unauthenticated_response.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
+
+    let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+}
+
+#[tokio::test]
 async fn api_create_session_prunes_orphan_web_sandboxes() {
     let (mut state, _) =
         test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
@@ -2281,7 +2538,11 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .expect("session exists");
     let original_context_key = original_session.context_key.clone();
     let agent_flow_id = original_session.agent_flow_id.clone();
-    let mut source_memory = AgentMemory::new(usize::MAX);
+    let mut pre_run_memory = AgentMemory::new(usize::MAX);
+    pre_run_memory.add_message(AgentMessage::user_task("Previous prompt"));
+    pre_run_memory.add_message(AgentMessage::assistant("Previous answer"));
+
+    let mut source_memory = pre_run_memory.clone();
     source_memory.add_message(AgentMessage::user_task("Original prompt"));
     source_memory.add_message(AgentMessage::assistant("Original answer"));
     state
@@ -2295,6 +2556,17 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         )
         .await
         .expect("save original flow memory");
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user_one.user_id,
+            original_context_key.clone(),
+            web_task_pre_run_memory_flow_id(&agent_flow_id, "task-completed"),
+            &pre_run_memory,
+        )
+        .await
+        .expect("save pre-run flow memory");
 
     let completed = task_record(
         user_one.user_id,
@@ -2349,15 +2621,39 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .load_agent_memory_for_flow(
             user_one.user_id,
             edited_session.context_key.clone(),
-            agent_flow_id,
+            agent_flow_id.clone(),
         )
         .await
         .expect("load branch flow memory")
-        .expect("branch memory should be copied from source context");
+        .expect("branch memory should be seeded from parent pre-run snapshot");
     let branch_messages = branch_memory.get_messages();
     assert!(branch_messages.len() >= 2);
-    assert_eq!(branch_messages[0].content, "Original prompt");
-    assert_eq!(branch_messages[1].content, "Original answer");
+    assert_eq!(branch_messages[0].content, "Previous prompt");
+    assert_eq!(branch_messages[1].content, "Previous answer");
+    assert!(branch_messages.iter().all(
+        |message| message.content != "Original prompt" && message.content != "Original answer"
+    ));
+
+    let version_pre_run_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            edited_session.context_key.clone(),
+            web_task_pre_run_memory_flow_id(&agent_flow_id, &versioned.task.task_id),
+        )
+        .await
+        .expect("load version pre-run memory")
+        .expect("version pre-run memory should be saved");
+    assert_eq!(version_pre_run_memory.get_messages().len(), 2);
+    assert_eq!(
+        version_pre_run_memory
+            .get_messages()
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Previous prompt", "Previous answer"]
+    );
     assert!(
         sandbox_control
             .list_user_sandboxes(user_one.user_id)
@@ -2537,6 +2833,17 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
         )
         .await
         .expect("save original memory");
+    state
+        .session_manager
+        .storage()
+        .save_agent_memory_for_flow(
+            user.user_id,
+            original_context_key.clone(),
+            web_task_pre_run_memory_flow_id(&flow_id, "task-completed"),
+            &memory,
+        )
+        .await
+        .expect("save original pre-run memory");
 
     let completed = task_record(
         user.user_id,
@@ -2552,7 +2859,7 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
         .await
         .expect("save completed task");
 
-    let axum::Json(_versioned) = api_create_task_version(
+    let axum::Json(versioned) = api_create_task_version(
         axum::extract::State(state.clone()),
         auth_headers(&token, Some(&auth_session.csrf_token)),
         axum::extract::Path((session_id.clone(), "task-completed".to_string())),
@@ -2605,6 +2912,23 @@ async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
                 .is_none(),
             "delete session should clear flow memory for context {context_key}"
         );
+
+        for task_id in ["task-completed", versioned.task.task_id.as_str()] {
+            assert!(
+                state
+                    .session_manager
+                    .storage()
+                    .load_agent_memory_for_flow(
+                        user.user_id,
+                        context_key.clone(),
+                        web_task_pre_run_memory_flow_id(&flow_id, task_id),
+                    )
+                    .await
+                    .expect("load pre-run memory")
+                    .is_none(),
+                "delete session should clear pre-run memory for context {context_key} task {task_id}"
+            );
+        }
     }
     let destroyed_names = sandbox_control
         .destroyed_scopes()
@@ -3215,6 +3539,12 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     .await
     .expect("create session");
     let session_id = created_session.session.session_id;
+    let created_session_record = state
+        .web_store
+        .load_session(user_one.user_id, &session_id)
+        .await
+        .expect("load created session")
+        .expect("created session exists");
 
     let axum::Json(created_task) = api_create_task(
         axum::extract::State(state.clone()),
@@ -3229,6 +3559,23 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     .await
     .expect("create task");
     let task_id = created_task.task.task_id;
+    let pre_run_memory = state
+        .session_manager
+        .storage()
+        .load_agent_memory_for_flow(
+            user_one.user_id,
+            created_session_record.context_key.clone(),
+            web_task_pre_run_memory_flow_id(&created_session_record.agent_flow_id, &task_id),
+        )
+        .await
+        .expect("load created task pre-run memory")
+        .expect("created task should persist pre-run memory");
+    assert!(
+        pre_run_memory
+            .get_messages()
+            .iter()
+            .all(|message| message.content != "Summarize this" && message.content != "ok")
+    );
 
     let completed = wait_for_task_status(
         &state,

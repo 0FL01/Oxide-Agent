@@ -213,7 +213,7 @@ async fn topic_infra_rollback_restores_previous_snapshot() {
     assert_eq!(parsed["audit_status"], "written");
 }
 
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 #[tokio::test]
 async fn private_secret_probe_reports_presence_without_exposing_content() {
     let mut mock = crate::storage::MockStorageProvider::new();

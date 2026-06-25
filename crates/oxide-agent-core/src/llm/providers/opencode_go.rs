@@ -164,7 +164,6 @@ impl OpenCodeGoProvider {
             http_client,
             api_base,
             Some(api_key),
-            "",
             profile.chat_completions_profile(),
         );
         Arc::clone(&model_catalog).spawn_background_refresh();
@@ -508,7 +507,7 @@ impl LlmProvider for OpenCodeGoProvider {
             log_response_summary(self.profile, request_kind, model_id, &parsed);
 
             parsed.content.ok_or_else(|| {
-                LlmError::ApiError(format!(
+                LlmError::api_error(format!(
                     "{} returned no text content for {request_kind}",
                     self.profile.display_name
                 ))
@@ -525,7 +524,7 @@ impl LlmProvider for OpenCodeGoProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(format!(
+        Err(LlmError::unknown(format!(
             "Audio transcription not supported by {}",
             self.profile.display_name
         )))
@@ -538,8 +537,20 @@ impl LlmProvider for OpenCodeGoProvider {
         system_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
+        self.analyze_image_with_usage(image_bytes, text_prompt, system_prompt, model_id)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    async fn analyze_image_with_usage(
+        &self,
+        image_bytes: Vec<u8>,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<(String, Option<crate::llm::TokenUsage>), LlmError> {
         if !discovery::supports_image_input_for_model_id(model_id) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "{} model '{}' is not approved for image input",
                 self.profile.display_name,
                 normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
@@ -554,7 +565,7 @@ impl LlmProvider for OpenCodeGoProvider {
                 build_image_analysis_body(&image_bytes, text_prompt, system_prompt, model_id),
             ),
             ModelProtocol::AnthropicMessages => {
-                return Err(LlmError::ApiError(format!(
+                return Err(LlmError::api_error(format!(
                     "{} image analysis requires OpenAI Chat Completions protocol for model '{}'",
                     self.profile.display_name,
                     normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
@@ -579,18 +590,31 @@ impl LlmProvider for OpenCodeGoProvider {
 
         let result = async {
             let response = self.chat_client.post_json(&body).await?;
-            let parsed = parse_chat_response(response)?;
+            let parsed = parse_chat_response(response.clone())?;
             log_response_summary(self.profile, request_kind, model_id, &parsed);
-
-            parsed.content.ok_or_else(|| {
-                LlmError::ApiError(format!(
+            let usage = parsed.usage.clone();
+            let text = parsed.content.ok_or_else(|| {
+                tracing::warn!(
+                    provider = self.profile.provider_id,
+                    request_kind,
+                    model = normalize_model_id_for_prefix(model_id, self.profile.model_prefix),
+                    raw_response = %response,
+                    "{} returned no text content for image analysis; raw response logged for diagnosis",
+                    self.profile.display_name
+                );
+                LlmError::EmptyResponse(format!(
                     "{} returned no text content for image analysis",
                     self.profile.display_name
                 ))
-            })
+            })?;
+            Ok::<(String, Option<crate::llm::TokenUsage>), LlmError>((text, usage))
         }
         .await;
-        self.throttle.record_result(&result);
+        let text_result = result
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .map_err(Clone::clone);
+        self.throttle.record_result(&text_result);
         result
     }
 
@@ -686,22 +710,12 @@ impl LlmProvider for OpenCodeGoProvider {
 fn opencode_go_should_throttle(error: &LlmError) -> bool {
     match error {
         LlmError::RateLimit { .. } | LlmError::EmptyResponse(_) | LlmError::JsonError(_) => true,
-        LlmError::NetworkError(message) => !message.to_ascii_lowercase().contains("builder"),
-        LlmError::ApiError(message) => {
-            let message = message.to_ascii_lowercase();
-            message.contains("429")
-                || message.contains("500")
-                || message.contains("internal server error")
-                || message.contains("502")
-                || message.contains("bad gateway")
-                || message.contains("503")
-                || message.contains("service unavailable")
-                || message.contains("504")
-                || message.contains("gateway timeout")
-                || message.contains("temporarily unavailable")
-                || message.contains("timeout")
-                || message.contains("overloaded")
-        }
+        LlmError::RequestBuilder(_) => false,
+        LlmError::NetworkError(_) => true,
+        LlmError::ApiError {
+            status: Some(status),
+            ..
+        } if *status == 429 || crate::llm::is_transient_server_status(*status) => true,
         _ => false,
     }
 }
@@ -732,7 +746,7 @@ fn derive_messages_api_base(api_base: &str) -> String {
 }
 
 fn unsupported_protocol_error(model_id: &str, profile: OpenCodeProviderProfile) -> LlmError {
-    LlmError::ApiError(format!(
+    LlmError::api_error(format!(
         "{} model '{}' has unknown wire protocol; configure modules.{}.protocol_overrides for this model",
         profile.display_name,
         normalize_model_id_for_prefix(model_id, profile.model_prefix),
@@ -778,6 +792,14 @@ fn log_request_summary(event: OpenCodeRequestLog<'_>) {
         temperature = event.temperature,
         request_body_bytes = json_body_len(event.body),
         "OpenCode request summary"
+    );
+
+    trace!(
+        provider = event.profile.provider_id,
+        request_kind = event.request_kind,
+        model = normalize_model_id_for_prefix(event.model_id, event.profile.model_prefix),
+        request_body = %event.body,
+        "OpenCode request body"
     );
 }
 
@@ -833,7 +855,6 @@ fn build_chat_completion_body(
         normalize_model_id(model_id),
         max_tokens,
         opencode_chat_request_options(model_id, None),
-        None,
     )
 }
 
@@ -874,7 +895,6 @@ fn build_tool_chat_body(
         temperature,
         json_mode,
         opencode_chat_request_options(model_id, reasoning_effort),
-        None,
     )
 }
 
@@ -889,7 +909,6 @@ fn prepare_structured_messages(
         history,
         chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::opencode_go())
             .with_native_image_parts(allow_native_image_parts),
-        None,
     )
 }
 
@@ -904,6 +923,8 @@ fn opencode_chat_request_options<'a>(
 ) -> chat_completions_request::ChatRequestOptions<'a> {
     chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::opencode_go())
         .with_native_image_parts(discovery::supports_image_input_for_model_id(model_id))
+        .with_native_image_parts_for_tool_results(false)
+        .with_non_empty_tool_result_content(true)
         .with_model_supports_reasoning(messages::response::is_reasoning_model(normalize_model_id(
             model_id,
         )))
@@ -912,16 +933,12 @@ fn opencode_chat_request_options<'a>(
 }
 
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
-    chat_completions_response::parse_chat_response(
-        response,
-        ChatCompletionsProfile::opencode_go(),
-        None,
-    )
+    chat_completions_response::parse_chat_response(response, ChatCompletionsProfile::opencode_go())
 }
 
 #[cfg(test)]
 fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
-    chat_completions_response::parse_tool_calls(value, ChatCompletionsProfile::opencode_go(), None)
+    chat_completions_response::parse_tool_calls(value, ChatCompletionsProfile::opencode_go())
 }
 
 #[cfg(test)]
@@ -946,6 +963,7 @@ mod tests {
         LlmError, LlmProvider, Message, MessageContentPart, ToolCall, ToolCallCorrelation,
         ToolCallFunction, ToolDefinition,
     };
+    use base64::Engine as _;
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -965,6 +983,21 @@ mod tests {
                 "required": ["path"]
             }),
         }
+    }
+
+    fn red_left_blue_right_png() -> Vec<u8> {
+        const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAIAAABdtOgoAAAAiElEQVR42u3RAQkAAAzDsPo3ves4BCqgkFave76/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgHZHSuHSU0/t5QAAAABJRU5ErkJggg==";
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG_BASE64)
+            .expect("embedded PNG decodes")
+    }
+
+    fn opencode_go_smoke_api_key() -> String {
+        std::env::var("OPENCODE_GO_API_KEY")
+            .or_else(|_| std::env::var("OPENCODE_API_KEY"))
+            .ok()
+            .filter(|value| !value.trim().is_empty() && value.trim() != "dummy")
+            .expect("set OPENCODE_GO_API_KEY or OPENCODE_API_KEY for MiMo vision smoke test")
     }
 
     async fn run_static_json_server(body: impl Into<String>, max_requests: usize) -> String {
@@ -1263,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn json_mode_with_tools_does_not_set_response_format() {
+    fn json_mode_with_tools_sets_response_format() {
         let tools = vec![read_file_tool()];
         let body = build_tool_chat_body(
             "system",
@@ -1276,7 +1309,8 @@ mod tests {
             None,
         );
 
-        assert!(body.get("response_format").is_none());
+        // P0.5 probes confirm json_object + tools is accepted by OpenCode Go.
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
     }
 
@@ -1322,6 +1356,11 @@ mod tests {
 
     #[test]
     fn tool_chat_body_serializes_user_image_parts_for_image_models_only() {
+        let mut mock = std::collections::HashMap::new();
+        mock.insert("mimo-v2.5".to_string(), true);
+        mock.insert("mimo-v2.5-pro".to_string(), false);
+        super::discovery::init_models_dev_catalog_for_tests(mock);
+
         let user = Message::user("What is written here?").with_user_content_parts(vec![
             MessageContentPart::image("image/png", b"png".to_vec()),
         ]);
@@ -1393,6 +1432,47 @@ mod tests {
         assert_eq!(
             text_only_body["messages"][1]["content"],
             json!("What is written here?")
+        );
+        assert_eq!(text_only_body["messages"][3]["content"], json!("contents"));
+        assert!(text_only_body["messages"][3]["content"].is_string());
+    }
+
+    #[tokio::test]
+    async fn smoke_opencode_go_mimo_v25_accepts_image_input() {
+        if !matches!(
+            std::env::var("RUN_OPENCODE_GO_MIMO_VISION_SMOKE").as_deref(),
+            Ok("1")
+        ) {
+            return;
+        }
+
+        // Initialize and populate Models.dev catalog for vision lookup
+        super::discovery::init_models_dev_catalog(reqwest::Client::new());
+        super::discovery::refresh_models_dev_catalog().await;
+
+        let api_key = opencode_go_smoke_api_key();
+        let api_base = std::env::var("OPENCODE_GO_API_BASE")
+            .unwrap_or_else(|_| "https://opencode.ai/zen/go/v1/chat/completions".to_string());
+        let provider = OpenCodeGoProvider::new(api_key, api_base);
+
+        let response = provider
+            .analyze_image(
+                red_left_blue_right_png(),
+                "Look at the image. What color is the left half, and what color is the right half? Answer in English using only the two color names and their positions.",
+                "You are validating whether an image input reached the model. Do not guess from the prompt; answer only from the visible image.",
+                "mimo-v2.5",
+            )
+            .await
+            .expect("OpenCode Go mimo-v2.5 should accept image_url data URL image input");
+
+        let normalized = response.to_ascii_lowercase();
+        assert!(
+            normalized.contains("red"),
+            "MiMo smoke response did not identify the red half: {response}"
+        );
+        assert!(
+            normalized.contains("blue"),
+            "MiMo smoke response did not identify the blue half: {response}"
         );
     }
 
@@ -1628,8 +1708,9 @@ mod tests {
     fn adaptive_throttle_recovers_concurrency_after_success_streak() {
         let throttle = OpenCodeGoAdaptiveThrottle::new(3);
         for _ in 0..3 {
-            throttle.record_result::<()>(&Err(LlmError::ApiError(
-                "500 Internal Server Error".to_string(),
+            throttle.record_result::<()>(&Err(LlmError::api_error_status(
+                500,
+                "500 Internal Server Error",
             )));
         }
 
@@ -1644,14 +1725,15 @@ mod tests {
 
     #[test]
     fn opencode_go_throttle_classifies_retryable_provider_errors_only() {
-        assert!(opencode_go_should_throttle(&LlmError::ApiError(
-            "500 Internal Server Error".to_string()
+        assert!(opencode_go_should_throttle(&LlmError::api_error_status(
+            500,
+            "500 Internal Server Error"
         )));
         assert!(opencode_go_should_throttle(&LlmError::NetworkError(
             "connection reset".to_string()
         )));
-        assert!(!opencode_go_should_throttle(&LlmError::ApiError(
-            "invalid API key".to_string()
+        assert!(!opencode_go_should_throttle(&LlmError::api_error(
+            "invalid API key"
         )));
     }
 }

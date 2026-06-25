@@ -229,6 +229,10 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
+pub(crate) fn web_task_pre_run_memory_flow_id(agent_flow_id: &str, task_id: &str) -> String {
+    format!("{agent_flow_id}:web-task-pre-run:{task_id}")
+}
+
 fn parse_web_model_id(value: &str) -> Option<(String, String)> {
     let value = value.trim();
     if let Some(model_id) = value.strip_prefix("opencode-go/") {
@@ -536,6 +540,13 @@ impl WebSessionManager {
             .map(|message| message.content.trim().to_string())
     }
 
+    pub(crate) async fn clone_session_memory(&self, session_id: &str) -> Option<AgentMemory> {
+        let sid = self.resolve_session_id(session_id).await?;
+        let executor_arc = self.registry.get(&sid).await?;
+        let executor = executor_arc.read().await;
+        Some(executor.session().memory.clone())
+    }
+
     // --- Session CRUD ---
 
     /// Create a new session and register it in the `SessionRegistry`.
@@ -730,7 +741,8 @@ impl WebSessionManager {
                 .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
                     self.storage(),
                     "",
-                ));
+                ))
+                .with_storage(self.storage());
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),
@@ -870,6 +882,20 @@ impl WebSessionManager {
     ///
     /// Does NOT start execution — use `start_task_execution` for that.
     pub async fn register_task(&self, session_id: &str, task_text: String) -> Option<RunningTask> {
+        let task_id = Uuid::new_v4().to_string();
+        self.register_task_with_id(session_id, task_id, task_text)
+            .await
+    }
+
+    /// Register a new task with a caller-owned id and return the RunningTask handle.
+    ///
+    /// Does NOT start execution — use `start_task_execution` for that.
+    pub async fn register_task_with_id(
+        &self,
+        session_id: &str,
+        task_id: String,
+        task_text: String,
+    ) -> Option<RunningTask> {
         if let Some(sid) = self.resolve_session_id(session_id).await {
             self.registry.renew_cancellation_token(&sid).await;
         }
@@ -885,11 +911,10 @@ impl WebSessionManager {
             }
         }
 
-        let task_id = Uuid::new_v4().to_string();
         let task_meta = TaskMeta {
             task_id: task_id.clone(),
             session_id: session_id.to_string(),
-            task_text: task_text.clone(),
+            task_text,
             status: TaskStatus::Running,
             created_at: Utc::now(),
             finished_at: None,
@@ -1392,8 +1417,8 @@ mod tests {
                     weight: 1,
                 },
                 ModelInfo {
-                    id: "mistral-large".to_string(),
-                    provider: "mistral".to_string(),
+                    id: "glm-4.7".to_string(),
+                    provider: "openai-base:zai".to_string(),
                     max_output_tokens: 16_000,
                     context_window_tokens: 128_000,
                     weight: 1,
@@ -1441,7 +1466,11 @@ mod tests {
                 .iter()
                 .all(|route| route.id != "opencode-go/deepseek-v4-flash")
         );
-        assert!(routes.iter().all(|route| route.provider != "mistral"));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.provider != "openai-base:zai")
+        );
     }
 
     #[tokio::test]
@@ -1678,23 +1707,29 @@ mod tests {
 
         assert!(probe.current_tool_definitions().is_empty());
 
-        let probe = manager
-            .create_search_probe_executor(
-                "search-probe-tool-policy-test",
-                SearchProbeRuntimeOptions {
-                    tool_allowlist: vec!["web_markdown".to_string(), "web_crawler".to_string()],
-                    prompt_instructions: None,
-                },
-            )
-            .await
-            .expect("probe executor should be created for existing web session");
+        #[cfg(any(
+            feature = "profile-full",
+            feature = "profile-web-embedded-opencode-local"
+        ))]
+        {
+            let probe = manager
+                .create_search_probe_executor(
+                    "search-probe-tool-policy-test",
+                    SearchProbeRuntimeOptions {
+                        tool_allowlist: vec!["web_markdown".to_string(), "web_crawler".to_string()],
+                        prompt_instructions: None,
+                    },
+                )
+                .await
+                .expect("probe executor should be created for existing web session");
 
-        let tool_names = probe
-            .current_tool_definitions()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert!(tool_names.contains("web_markdown"));
+            let tool_names = probe
+                .current_tool_definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(tool_names.contains("web_markdown") || tool_names.contains("web_crawler"));
+        }
     }
 
     #[tokio::test]

@@ -47,6 +47,30 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/brave-search"
       },
       {
+        "id": "tool/browser-close",
+        "module": "tool/browser-live"
+      },
+      {
+        "id": "tool/browser-debug",
+        "module": "tool/browser-live"
+      },
+      {
+        "id": "tool/browser-observe",
+        "module": "tool/browser-live"
+      },
+      {
+        "id": "tool/browser-save-screenshot",
+        "module": "tool/browser-live"
+      },
+      {
+        "id": "tool/browser-start",
+        "module": "tool/browser-live"
+      },
+      {
+        "id": "tool/browser-step",
+        "module": "tool/browser-live"
+      },
+      {
         "id": "tool/compression",
         "module": "tool/compression"
       },
@@ -173,7 +197,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           },
           {
             "default_value": null,
-            "description": "Behavioral profile for provider instance N: 'generic' (default), 'mistral', or 'zai'. Controls tool-call ID mapping, message layout, response parsing, temperatures, streaming, reasoning, and audio transcription.",
+            "description": "Behavioral profile for provider instance N: 'generic' (default) or 'zai'. Controls response parsing, temperatures, streaming, thinking, and structured-output model gating.",
             "env": "OPENAI_BASE_PROVIDERS__N__PROFILE",
             "name": "providers.N.profile",
             "secret": false,
@@ -367,6 +391,22 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "search",
         "provides": [
           "tool/brave-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-browser-live",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/browser-live",
+        "kind": "browser",
+        "provides": [
+          "tool/browser-close",
+          "tool/browser-debug",
+          "tool/browser-observe",
+          "tool/browser-save-screenshot",
+          "tool/browser-start",
+          "tool/browser-step"
         ],
         "requires": []
       },
@@ -598,6 +638,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/lifecycle",
       "storage/sqlx",
       "tool/brave-search",
+      "tool/browser-close",
+      "tool/browser-debug",
+      "tool/browser-observe",
+      "tool/browser-save-screenshot",
+      "tool/browser-start",
+      "tool/browser-step",
       "tool/compression",
       "tool/crw-scrape",
       "tool/crw-search",
@@ -626,6 +672,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client",
       "storage/sqlx",
       "tool/brave-search",
+      "tool/browser-live",
       "tool/compression",
       "tool/crw",
       "tool/delegation",
@@ -745,6 +792,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "tool/brave-search",
       "kind": "search",
       "cargo_feature": "tool-brave-search",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/browser-live",
+      "kind": "browser",
+      "cargo_feature": "tool-browser-live",
       "config_env": [],
       "requires_capabilities": []
     },

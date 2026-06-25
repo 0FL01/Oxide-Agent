@@ -1,7 +1,8 @@
 //! Anthropic-compatible Messages request body construction and conversion.
 
 use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
-use crate::llm::{Message, ToolDefinition};
+use crate::llm::support::media;
+use crate::llm::{Message, MessageContentPart, ToolDefinition};
 use serde_json::{Value, json};
 
 use super::MessagesProfile;
@@ -191,10 +192,41 @@ pub(crate) fn tool_result_block(message: &Message) -> Option<Value> {
         .encode_tool_result(message)
         .and_then(|result| result.into_anthropic())
         .map(|result| {
+            let mut blocks = Vec::new();
+            if !result.content.is_empty() {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": result.content,
+                }));
+            }
+            for part in &message.content_parts {
+                match part {
+                    MessageContentPart::Image { mime_type, bytes } if !bytes.is_empty() => {
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media::normalized_image_mime_type(mime_type, bytes),
+                                "data": media::base64_data(bytes),
+                            },
+                        }));
+                    }
+                    MessageContentPart::Image { .. } => {}
+                }
+            }
+            let content = if blocks.is_empty() {
+                json!("")
+            } else if blocks.len() == 1 && result.content.is_empty() {
+                // The original tool result was an empty string; preserve the empty string
+                // contract to avoid surprising downstream callers.
+                json!("")
+            } else {
+                json!(blocks)
+            };
             let mut block = json!({
                 "type": "tool_result",
                 "tool_use_id": result.tool_use_id,
-                "content": result.content,
+                "content": content,
             });
             if let Some(is_error) = result.is_error {
                 block["is_error"] = json!(is_error);
@@ -231,7 +263,7 @@ pub(crate) fn map_stop_reason(stop_reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{ToolCall, ToolCallCorrelation, ToolCallFunction};
+    use crate::llm::{MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction};
     use serde_json::json;
 
     #[test]
@@ -258,6 +290,36 @@ mod tests {
         assert_eq!(messages[0]["content"].as_array().expect("blocks").len(), 2);
         assert_eq!(messages[0]["content"][0]["tool_use_id"], json!("toolu-a"));
         assert_eq!(messages[0]["content"][1]["tool_use_id"], json!("toolu-b"));
+    }
+
+    #[test]
+    fn prepare_messages_includes_image_blocks_in_tool_results() {
+        let mut tool_message = Message::tool_with_correlation(
+            "invoke-a",
+            ToolCallCorrelation::new("invoke-a").with_provider_tool_call_id("toolu-a"),
+            "browser_observe",
+            "observed",
+        );
+        tool_message.content_parts = vec![MessageContentPart::image(
+            "image/png",
+            vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n'],
+        )];
+        let history = vec![tool_message];
+
+        let messages = prepare_messages(&history);
+
+        assert_eq!(messages.len(), 1);
+        let blocks = messages[0]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.len(), 1);
+        let inner = blocks[0]["content"]
+            .as_array()
+            .expect("tool result content");
+        assert_eq!(inner[0]["type"], json!("text"));
+        assert_eq!(inner[0]["text"], json!("observed"));
+        assert_eq!(inner[1]["type"], json!("image"));
+        assert_eq!(inner[1]["source"]["type"], json!("base64"));
+        assert_eq!(inner[1]["source"]["media_type"], json!("image/png"));
+        assert!(inner[1]["source"]["data"].as_str().is_some());
     }
 
     #[test]

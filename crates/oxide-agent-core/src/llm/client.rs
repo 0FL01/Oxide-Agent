@@ -13,14 +13,11 @@ use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    #[cfg(feature = "llm-opencode-go")]
-    opencode_go_model_catalog:
-        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
-    #[cfg(feature = "llm-opencode-go")]
-    opencode_zen_model_catalog:
-        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
-    #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-    openai_base_model_catalogs: Vec<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
+    /// Provider-specific discovered-model sources, registered at construction time.
+    ///
+    /// Always present so the struct shape is stable across all Cargo feature profiles;
+    /// the Vec is empty when no discovery-capable provider is compiled.
+    discovered_model_sources: Vec<(&'static str, Arc<dyn DiscoveredModelSource>)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -52,7 +49,7 @@ pub struct DiscoveredLlmModel {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for DiscoveredLlmModel {
     fn from(model: providers::opencode_go::discovery::DiscoveredOpenCodeGoModel) -> Self {
         Self {
@@ -72,6 +69,23 @@ impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for Disc
         }
     }
 }
+
+/// Source of discovered LLM models, abstracting provider-specific catalog types.
+///
+/// Implementations live behind feature gates in provider modules; the trait itself
+/// is always compiled so that [`LlmClient`] has a stable struct shape across profiles.
+#[async_trait::async_trait]
+pub trait DiscoveredModelSource: Send + Sync {
+    /// Returns currently discovered models (from cache or network).
+    async fn models(&self) -> Vec<DiscoveredLlmModel>;
+    /// Forces a network refresh and returns the updated model list.
+    async fn refresh(&self) -> Vec<DiscoveredLlmModel>;
+}
+
+/// Discovered-model source IDs used as registry keys inside [`LlmClient`].
+const SOURCE_ID_OPENCODE_GO: &str = "opencode-go";
+const SOURCE_ID_OPENCODE_ZEN: &str = "opencode-zen";
+const SOURCE_ID_OPENAI_BASE: &str = "openai-base";
 
 /// Internal plain-text completion use cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,32 +233,56 @@ impl LlmClient {
             _ => (None, None),
         };
         let media_model_name = media_model_id.clone();
-
         let providers = providers::build_configured_providers(settings);
-        #[cfg(feature = "llm-opencode-go")]
-        let opencode_go_model_catalog = providers::opencode_go::module::build_model_catalog(
-            settings,
-            support::http::create_http_client(),
-        );
-        #[cfg(feature = "llm-opencode-go")]
-        let opencode_zen_model_catalog = providers::opencode_go::module::build_zen_model_catalog(
-            settings,
-            support::http::create_http_client(),
-        );
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        let openai_base_model_catalogs = providers::openai_base::module::build_model_catalogs(
-            settings,
-            support::http::create_http_client(),
-        );
+
+        #[cfg_attr(
+            not(any(
+                oxide_module_llm_provider_opencode_go,
+                all(
+                    oxide_module_llm_provider_openai_base,
+                    oxide_module_llm_provider_opencode_go
+                )
+            )),
+            allow(unused_mut)
+        )]
+        let mut discovered_model_sources: Vec<(
+            &'static str,
+            Arc<dyn DiscoveredModelSource>,
+        )> = Vec::new();
+        #[cfg(oxide_module_llm_provider_opencode_go)]
+        {
+            providers::opencode_go::discovery::init_models_dev_catalog(
+                support::http::create_http_client(),
+            );
+            if let Some(catalog) = providers::opencode_go::module::build_model_catalog(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENCODE_GO, catalog));
+            }
+            if let Some(catalog) = providers::opencode_go::module::build_zen_model_catalog(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENCODE_ZEN, catalog));
+            }
+        }
+        #[cfg(all(
+            oxide_module_llm_provider_openai_base,
+            oxide_module_llm_provider_opencode_go
+        ))]
+        {
+            for catalog in providers::openai_base::module::build_model_catalogs(
+                settings,
+                support::http::create_http_client(),
+            ) {
+                discovered_model_sources.push((SOURCE_ID_OPENAI_BASE, catalog));
+            }
+        }
 
         Self {
             providers,
-            #[cfg(feature = "llm-opencode-go")]
-            opencode_go_model_catalog,
-            #[cfg(feature = "llm-opencode-go")]
-            opencode_zen_model_catalog,
-            #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-            openai_base_model_catalogs,
+            discovered_model_sources,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -281,132 +319,72 @@ impl LlmClient {
 
     /// Returns OpenCode Go discovered models when the provider is compiled and configured.
     pub async fn opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_go_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .models()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
+        Some(source.models().await)
     }
 
     /// Refreshes OpenCode Go discovered models when the provider is compiled and configured.
     pub async fn refresh_opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_go_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .refresh()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
+        Some(source.refresh().await)
     }
 
     /// Returns free OpenCode Zen discovered models when the provider is compiled and configured.
     pub async fn opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_zen_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .models()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
+        Some(source.models().await)
     }
 
     /// Refreshes free OpenCode Zen discovered models when the provider is compiled and configured.
     pub async fn refresh_opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(feature = "llm-opencode-go")]
-        {
-            let catalog = self.opencode_zen_model_catalog.as_ref()?;
-            return Some(
-                catalog
-                    .refresh()
-                    .await
-                    .into_iter()
-                    .map(DiscoveredLlmModel::from)
-                    .collect(),
-            );
-        }
-        #[cfg(not(feature = "llm-opencode-go"))]
-        {
-            None
-        }
+        let (_, source) = self
+            .discovered_model_sources
+            .iter()
+            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
+        Some(source.refresh().await)
     }
 
     /// Returns OpenAI Base discovered models when the provider is compiled and configured.
     pub async fn openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        {
-            if self.openai_base_model_catalogs.is_empty() {
-                return None;
-            }
-            let mut models = Vec::new();
-            for catalog in &self.openai_base_model_catalogs {
-                models.extend(
-                    catalog
-                        .models()
-                        .await
-                        .into_iter()
-                        .map(DiscoveredLlmModel::from),
-                );
-            }
-            Some(models)
+        let sources: Vec<_> = self
+            .discovered_model_sources
+            .iter()
+            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
+            .collect();
+        if sources.is_empty() {
+            return None;
         }
-        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
-        {
-            None
+        let mut models = Vec::new();
+        for (_, source) in sources {
+            models.extend(source.models().await);
         }
+        Some(models)
     }
 
     /// Refreshes OpenAI Base discovered models when the provider is compiled and configured.
     pub async fn refresh_openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        #[cfg(all(feature = "llm-openai-base", feature = "llm-opencode-go"))]
-        {
-            if self.openai_base_model_catalogs.is_empty() {
-                return None;
-            }
-            let mut models = Vec::new();
-            for catalog in &self.openai_base_model_catalogs {
-                models.extend(
-                    catalog
-                        .refresh()
-                        .await
-                        .into_iter()
-                        .map(DiscoveredLlmModel::from),
-                );
-            }
-            Some(models)
+        let sources: Vec<_> = self
+            .discovered_model_sources
+            .iter()
+            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
+            .collect();
+        if sources.is_empty() {
+            return None;
         }
-        #[cfg(not(all(feature = "llm-openai-base", feature = "llm-opencode-go")))]
-        {
-            None
+        let mut models = Vec::new();
+        for (_, source) in sources {
+            models.extend(source.refresh().await);
         }
+        Some(models)
     }
 
     /// Returns the provider for the given name
@@ -502,7 +480,10 @@ impl LlmClient {
             );
         }
 
-        result
+        result.map_err(|e| {
+            e.with_provider(&model_info.provider)
+                .with_model(&model_info.id)
+        })
     }
 
     /// Perform a single chat completion request with tool calling (no retry).
@@ -557,10 +538,12 @@ impl LlmClient {
         );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
-            )));
+            ))
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id));
         }
 
         support::history::validate_tool_history(&messages, capabilities)?;
@@ -642,10 +625,12 @@ impl LlmClient {
         );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
-            return Err(LlmError::ApiError(format!(
+            return Err(LlmError::api_error(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
-            )));
+            ))
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id));
         }
 
         support::history::validate_tool_history(&messages, capabilities)?;
@@ -721,14 +706,16 @@ impl LlmClient {
                         continue;
                     }
 
-                    return Err(e);
+                    return Err(e
+                        .with_provider(&model_info.provider)
+                        .with_model(&model_info.id));
                 }
             }
         }
 
-        Err(LlmError::ApiError(
-            "All retry attempts exhausted".to_string(),
-        ))
+        Err(LlmError::api_error("All retry attempts exhausted")
+            .with_provider(&model_info.provider)
+            .with_model(&model_info.id))
     }
 
     /// Maximum number of retry attempts for LLM calls.
@@ -873,7 +860,7 @@ impl LlmClient {
             .iter()
             .find(|(name, _)| name == model_name)
             .map(|(_, info)| info.clone())
-            .ok_or_else(|| LlmError::Unknown(format!("Model {model_name} not found")))
+            .ok_or_else(|| LlmError::unknown(format!("Model {model_name} not found")))
     }
 
     /// Execute an async operation with retry logic and exponential backoff.
@@ -920,9 +907,7 @@ impl LlmClient {
             }
         }
 
-        Err(LlmError::ApiError(
-            "All retry attempts exhausted".to_string(),
-        ))
+        Err(LlmError::api_error("All retry attempts exhausted"))
     }
 }
 
@@ -931,7 +916,7 @@ mod tests {
     use super::{InternalTextPurpose, LlmClient};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::MockLlmProvider;
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::llm::{ChatResponse, Message};
     use std::sync::Arc;
 
@@ -947,7 +932,7 @@ mod tests {
         settings
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
         let settings = with_provider_key(
@@ -971,70 +956,14 @@ mod tests {
         assert_eq!(route.provider, "openrouter");
     }
 
-    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
-    #[test]
-    fn media_resolver_rejects_media_route_when_modality_is_not_supported() {
-        let settings = with_provider_key(
-            with_provider_key(
-                AgentSettings {
-                    agent_model_id: Some("agent-openrouter".to_string()),
-                    agent_model_provider: Some("openrouter".to_string()),
-                    media_model_id: Some("media-mistral".to_string()),
-                    media_model_provider: Some("mistral".to_string()),
-                    ..AgentSettings::default()
-                },
-                "llm-provider/openrouter",
-                "test-openrouter-key",
-            ),
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        let error = llm
-            .resolve_media_model_for_image()
-            .expect_err("media route should not fall back to agent route");
-
-        assert!(matches!(
-            error,
-            crate::llm::LlmError::MissingConfig(message)
-                if message.contains("image understanding")
-        ));
-    }
-
-    #[cfg(feature = "llm-mistral")]
-    #[test]
-    fn media_resolver_allows_mistral_for_audio_stt_only() {
-        let settings = with_provider_key(
-            AgentSettings {
-                agent_model_id: Some("agent-mistral".to_string()),
-                agent_model_provider: Some("mistral".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                ..AgentSettings::default()
-            },
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        let audio_route = llm
-            .resolve_media_model_for_audio_stt()
-            .expect("mistral should support stt route");
-
-        assert_eq!(audio_route.id, "media-mistral");
-        assert_eq!(audio_route.provider, "mistral");
-        assert!(llm.resolve_media_model_for_video().is_err());
-    }
-
     #[test]
     fn media_resolver_rejects_unconfigured_provider_routes() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
+                media_model_id: Some("media-missing".to_string()),
+                media_model_provider: Some("missing-provider".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -1053,7 +982,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
     fn media_model_name_resolvers_return_selected_route_names() {
         let settings = with_provider_key(
@@ -1086,57 +1015,6 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
-    #[test]
-    fn media_name_resolver_does_not_fallback_to_agent_for_non_stt_modalities() {
-        let settings = with_provider_key(
-            with_provider_key(
-                AgentSettings {
-                    agent_model_id: Some("agent-openrouter".to_string()),
-                    agent_model_provider: Some("openrouter".to_string()),
-                    media_model_id: Some("media-mistral".to_string()),
-                    media_model_provider: Some("mistral".to_string()),
-                    ..AgentSettings::default()
-                },
-                "llm-provider/openrouter",
-                "test-openrouter-key",
-            ),
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        assert_eq!(
-            llm.resolve_media_model_name_for_audio_stt()
-                .expect("audio stt route"),
-            "media-mistral"
-        );
-        assert!(llm.resolve_media_model_name_for_image().is_err());
-        assert!(llm.resolve_media_model_name_for_video().is_err());
-    }
-
-    #[cfg(feature = "llm-mistral")]
-    #[test]
-    fn multimodal_availability_is_modality_specific() {
-        let settings = with_provider_key(
-            AgentSettings {
-                agent_model_id: Some("agent-mistral".to_string()),
-                agent_model_provider: Some("mistral".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                ..AgentSettings::default()
-            },
-            "llm-provider/mistral",
-            "test-mistral-key",
-        );
-
-        let llm = LlmClient::new(&settings);
-        assert!(llm.is_multimodal_available());
-        assert!(llm.is_audio_transcription_available());
-        assert!(!llm.is_image_understanding_available());
-        assert!(!llm.is_video_understanding_available());
-    }
-
     #[test]
     fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
         let settings = with_provider_key(
@@ -1166,7 +1044,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn llm_client_registers_opencode_go_when_key_present() {
         let settings = with_provider_key(
@@ -1189,7 +1067,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-opencode-go")]
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[test]
     fn llm_client_registers_opencode_zen_when_key_present() {
         let settings = with_provider_key(
@@ -1212,7 +1090,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn main_agent_tool_request_uses_configured_temperature() {
         let settings = with_provider_key(
@@ -1311,7 +1189,7 @@ mod tests {
         assert_eq!(response, "ok");
     }
 
-    #[cfg(feature = "llm-openrouter")]
+    #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
     async fn tool_requests_fold_system_history_into_prompt() {
         let settings = with_provider_key(

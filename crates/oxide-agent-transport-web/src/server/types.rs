@@ -9,10 +9,13 @@ use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope, sandbox_backend_available};
+use oxide_agent_core::storage::StorageProvider;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
-use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
+use oxide_agent_core::{config::AgentSettings, llm::LlmClient};
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::storage::SqlxLifeStorage;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
@@ -100,17 +103,24 @@ struct RuntimeWebSandboxControl {
 #[async_trait]
 impl WebSandboxControl for RuntimeWebSandboxControl {
     async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()> {
-        self.admin.destroy_scope(scope).await
+        self.admin
+            .destroy_scope(scope)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
-        self.admin.list_user_sandboxes(user_id).await
+        self.admin
+            .list_user_sandboxes(user_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool> {
         self.admin
             .delete_sandbox_by_name(user_id, container_name)
             .await
+            .map_err(anyhow::Error::from)
     }
 }
 
@@ -204,6 +214,13 @@ pub struct AppState {
     /// When `false`, the async auto-title worker is skipped (for tests with scripted LLM).
     pub auto_title_enabled: bool,
     large_input_attachments_supported: bool,
+    /// Local directory where agent tool artifacts (e.g., browser-live screenshots) are stored.
+    pub artifact_dir: PathBuf,
+    /// Durable storage handle for browser artifact BYTEA storage.
+    /// `Some` when `WebStoreKind::Sqlx`, `None` for in-memory/custom stores.
+    pub storage: Option<Arc<dyn StorageProvider>>,
+    #[cfg(feature = "storage-sqlx")]
+    pub life_storage: Option<Arc<SqlxLifeStorage>>,
 }
 
 impl AppState {
@@ -237,6 +254,7 @@ impl AppState {
             sandbox_control: default_web_sandbox_control(),
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
+            artifact_dir: Self::artifact_dir_from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
             auth_cache: Cache::builder()
                 .max_capacity(AUTH_CACHE_MAX_CAPACITY)
@@ -259,6 +277,9 @@ impl AppState {
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
             auto_title_enabled: true,
             large_input_attachments_supported: sandbox_backend_available(),
+            storage: None,
+            #[cfg(feature = "storage-sqlx")]
+            life_storage: None,
         }
     }
 
@@ -267,16 +288,32 @@ impl AppState {
         session_manager: Arc<WebSessionManager>,
         sqlx_storage: Arc<SqlxStorage>,
     ) -> Self {
-        Self::new_with_web_store_kind(
+        let storage_provider: Arc<dyn StorageProvider> =
+            Arc::clone(&sqlx_storage) as Arc<dyn StorageProvider>;
+        let life_storage = Arc::new(SqlxLifeStorage::new(sqlx_storage.pool().clone()));
+        let mut state = Self::new_with_web_store_kind(
             session_manager,
             Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
             WebStoreKind::Sqlx,
-        )
+        );
+        state.storage = Some(storage_provider);
+        state.life_storage = Some(life_storage);
+        state
     }
 
     #[must_use]
     pub const fn web_store_kind(&self) -> WebStoreKind {
         self.web_store_kind
+    }
+
+    fn artifact_dir_from_env() -> PathBuf {
+        std::env::var("OXIDE_WEB_ARTIFACT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(".oxide/tool-artifacts")
+            })
     }
 
     pub fn validate_web_store_for_startup(&self) -> Result<(), WebStartupError> {
@@ -314,6 +351,19 @@ impl AppState {
     #[must_use]
     pub(crate) fn sandbox_control(&self) -> Arc<dyn WebSandboxControl> {
         self.sandbox_control.clone()
+    }
+
+    /// Durable storage handle for browser artifacts. `None` when using
+    /// in-memory or custom stores (browser artifacts fall back to filesystem).
+    #[must_use]
+    pub fn storage(&self) -> Option<Arc<dyn StorageProvider>> {
+        self.storage.clone()
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    #[must_use]
+    pub fn life_storage(&self) -> Option<Arc<SqlxLifeStorage>> {
+        self.life_storage.clone()
     }
 
     #[must_use]

@@ -29,6 +29,12 @@ pub(crate) struct OpenAIBaseEndpointConfig {
     pub(crate) models_url: Option<String>,
     pub(crate) model_cache_ttl_secs: u64,
     pub(crate) profile: Option<String>,
+    /// Operator override for image input support on bare OpenAI-compatible
+    /// providers whose `/v1/models` endpoint does not expose modality metadata
+    /// (e.g. ZAI, aigate). `Some(true)` marks all models on this endpoint as
+    /// vision-capable; `None` leaves discovery to infer from metadata or
+    /// name-based fallback (safe default: text-only).
+    pub(crate) default_image_input: Option<bool>,
 }
 
 #[derive(Default)]
@@ -39,6 +45,7 @@ struct PartialOpenAIBaseEndpointConfig {
     models_url: Option<String>,
     model_cache_ttl_secs: Option<u64>,
     profile: Option<String>,
+    default_image_input: Option<bool>,
 }
 
 impl PartialOpenAIBaseEndpointConfig {
@@ -66,6 +73,7 @@ impl PartialOpenAIBaseEndpointConfig {
                     .unwrap_or(MODEL_CACHE_TTL_SECS_DEFAULT),
             ),
             profile: self.profile,
+            default_image_input: self.default_image_input,
         })
     }
 }
@@ -138,6 +146,9 @@ pub(crate) fn configured_endpoints() -> Vec<OpenAIBaseEndpointConfig> {
                 provider.model_cache_ttl_secs = value.parse::<u64>().ok();
             }
             "PROFILE" => provider.profile = Some(value),
+            "DEFAULT_IMAGE_INPUT" => {
+                provider.default_image_input = parse_bool_env(&value);
+            }
             _ => {}
         }
     }
@@ -160,6 +171,16 @@ fn normalize_provider_instance_name(name: &str) -> Option<String> {
     Some(name)
 }
 
+/// Parse a boolean environment variable value. Accepts `true`/`false`
+/// (case-insensitive) and `1`/`0`. Returns `None` for unrecognized values.
+fn parse_bool_env(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 /// Resolve a profile name string (from `OPENAI_BASE_PROVIDERS__N__PROFILE`)
 /// to the corresponding `OpenAICompatibleProfile`. Returns `generic()` for
 /// `None`, empty, `"generic"`, or any unrecognized value.
@@ -170,7 +191,6 @@ fn resolve_profile(profile: &Option<String>) -> OpenAICompatibleProfile {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("mistral") => OpenAICompatibleProfile::mistral(),
         Some("zai") => OpenAICompatibleProfile::zai(),
         _ => OpenAICompatibleProfile::generic(),
     }
@@ -188,7 +208,26 @@ fn profile_for_provider(provider_name: &str) -> OpenAICompatibleProfile {
         .unwrap_or_else(OpenAICompatibleProfile::generic)
 }
 
-#[cfg(feature = "llm-opencode-go")]
+/// Resolve image input support for a model route on an openai-base endpoint.
+///
+/// Looks up the endpoint by the provider instance name encoded in
+/// `provider_name` and returns its `default_image_input` override. Falls back
+/// to `false` (text-only) when the endpoint is not found or the operator did
+/// not set the override — the safe default for bare OpenAI-compatible
+/// providers whose `/v1/models` does not expose modality metadata.
+fn endpoint_image_input_for_provider(provider_name: &str) -> bool {
+    let Some(instance) = provider_instance_name(provider_name) else {
+        return false;
+    };
+
+    configured_endpoints()
+        .into_iter()
+        .find(|endpoint| endpoint.name == instance)
+        .and_then(|endpoint| endpoint.default_image_input)
+        .unwrap_or(false)
+}
+
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     value.clamp(
         crate::llm::providers::opencode_go::discovery::MIN_MODEL_DISCOVERY_TTL_SECS,
@@ -196,12 +235,12 @@ fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     )
 }
 
-#[cfg(not(feature = "llm-opencode-go"))]
+#[cfg(not(oxide_module_llm_provider_opencode_go))]
 const fn clamp_model_cache_ttl_secs(value: u64) -> u64 {
     value
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 pub(crate) fn build_model_catalogs(
     _settings: &AgentSettings,
     http_client: reqwest::Client,
@@ -222,7 +261,7 @@ pub(crate) fn build_model_catalogs(
         .collect()
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn openai_base_discovery_config(
     endpoint: &OpenAIBaseEndpointConfig,
 ) -> crate::llm::providers::opencode_go::discovery::OpenCodeGoDiscoveryConfig {
@@ -234,10 +273,11 @@ fn openai_base_discovery_config(
             .clone()
             .unwrap_or_else(|| models_url_from_api_base(&endpoint.api_base)),
         std::time::Duration::from_secs(endpoint.model_cache_ttl_secs),
+        endpoint.default_image_input,
     )
 }
 
-#[cfg(feature = "llm-opencode-go")]
+#[cfg(oxide_module_llm_provider_opencode_go)]
 fn models_url_from_api_base(api_base: &str) -> String {
     let chat_url = super::chat_completions_url(api_base);
     chat_url
@@ -314,7 +354,15 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
     }
 
     fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(false, true, false)
+        MediaCapabilities::new(false, false, false)
+    }
+
+    fn media_capabilities_for_model(
+        &self,
+        model_info: &crate::config::ModelInfo,
+    ) -> MediaCapabilities {
+        let supports_image = endpoint_image_input_for_provider(&model_info.provider);
+        MediaCapabilities::new(false, supports_image, false)
     }
 
     fn capabilities_for_model(
@@ -322,60 +370,6 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
         model_info: &crate::config::ModelInfo,
     ) -> ProviderCapabilities {
         profile_for_provider(&model_info.provider).capabilities_for_model(&model_info.id)
-    }
-}
-
-/// Backward-compatible Mistral route registration.
-///
-/// Creates an [`OpenAIBaseProvider`] with a Mistral-specific profile when
-/// `MISTRAL_API_KEY` is set. Module ID is `"llm-provider/mistral"`.
-#[cfg(feature = "llm-mistral")]
-pub(crate) struct MistralProviderModule;
-
-#[cfg(feature = "llm-mistral")]
-const MISTRAL_API_KEY_CONFIG_KEY: &str = "api_key";
-#[cfg(feature = "llm-mistral")]
-const MISTRAL_API_KEY_ENV: &str = "MISTRAL_API_KEY";
-#[cfg(feature = "llm-mistral")]
-const MISTRAL_API_BASE: &str = "https://api.mistral.ai/v1";
-
-#[cfg(feature = "llm-mistral")]
-impl LlmProviderModule for MistralProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/mistral"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["mistral"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings
-            .module_string_value_or_env(
-                self.provider_id(),
-                MISTRAL_API_KEY_CONFIG_KEY,
-                MISTRAL_API_KEY_ENV,
-            )
-            .map(|api_key| {
-                Arc::new(super::OpenAIBaseProvider::new_with_client_and_profile(
-                    Some(api_key),
-                    MISTRAL_API_BASE.to_string(),
-                    ctx.http_client.clone(),
-                    OpenAICompatibleProfile::mistral(),
-                )) as Arc<dyn LlmProvider>
-            })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
-    }
-
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(true, false, false)
     }
 }
 
@@ -394,14 +388,6 @@ mod tests {
         assert_eq!(
             resolve_profile(&Some("generic".to_string())),
             OpenAICompatibleProfile::generic()
-        );
-    }
-
-    #[test]
-    fn resolve_profile_mistral_string() {
-        assert_eq!(
-            resolve_profile(&Some("mistral".to_string())),
-            OpenAICompatibleProfile::mistral()
         );
     }
 
@@ -428,11 +414,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         test_set_env("OPENAI_BASE_PROVIDERS__0__NAME", "test-profile");
         test_set_env("OPENAI_BASE_PROVIDERS__0__API_BASE", "http://localhost/v1");
-        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "mistral");
+        test_set_env("OPENAI_BASE_PROVIDERS__0__PROFILE", "zai");
 
         let endpoints = configured_endpoints();
         assert_eq!(endpoints.len(), 1);
-        assert_eq!(endpoints[0].profile, Some("mistral".to_string()));
+        assert_eq!(endpoints[0].profile, Some("zai".to_string()));
 
         test_remove_env("OPENAI_BASE_PROVIDERS__0__NAME");
         test_remove_env("OPENAI_BASE_PROVIDERS__0__API_BASE");

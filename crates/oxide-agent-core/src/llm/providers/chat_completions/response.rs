@@ -1,62 +1,31 @@
 //! Response parsing for the shared Chat Completions wire path.
 
-use super::profile::{
-    ChatCompletionsProfile, ChatResponseContentPolicy, EmptyToolCallIdPolicy, RateLimitPolicy,
-};
+use super::profile::{ChatCompletionsProfile, ChatResponseContentPolicy, RateLimitPolicy};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use serde_json::Value;
 use tracing::debug;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ChatCompletionsResponsePlan {
-    pub(crate) profile: ChatCompletionsProfile,
-}
-
-impl ChatCompletionsResponsePlan {
-    #[must_use]
-    pub(crate) const fn new(profile: ChatCompletionsProfile) -> Self {
-        Self { profile }
-    }
-}
-
-pub(crate) trait ChatToolCallIdResolver {
-    fn original_tool_call_id(&self, provider_id: &str) -> String;
-    fn has_provider_tool_call_id(&self, provider_id: &str) -> bool;
-}
-
-#[cfg(feature = "llm-openai-base")]
-impl ChatToolCallIdResolver for crate::llm::providers::openai_base::ToolCallIdMapper {
-    fn original_tool_call_id(&self, provider_id: &str) -> String {
-        self.to_original(provider_id)
-    }
-
-    fn has_provider_tool_call_id(&self, provider_id: &str) -> bool {
-        self.has_mistral_id(provider_id)
-    }
-}
-
 pub(crate) fn parse_chat_response(
     response: Value,
     profile: ChatCompletionsProfile,
-    id_resolver: Option<&dyn ChatToolCallIdResolver>,
 ) -> Result<ChatResponse, LlmError> {
     if let Some(error) = extract_error_response(profile, &response) {
-        return Err(LlmError::ApiError(error));
+        return Err(LlmError::api_error(error));
     }
 
     let choice = response
         .get("choices")
         .and_then(|choices| choices.get(0))
         .ok_or_else(|| {
-            LlmError::ApiError(format!(
+            LlmError::api_error(format!(
                 "Missing choices[0] in {} response{}",
                 response_label(profile),
                 response_shape_suffix(&response)
             ))
         })?;
     let message = choice.get("message").ok_or_else(|| {
-        LlmError::ApiError(format!(
+        LlmError::api_error(format!(
             "Missing message in {} response",
             response_label(profile)
         ))
@@ -70,20 +39,20 @@ pub(crate) fn parse_chat_response(
                 .filter(|content| !content.is_empty())
                 .map(ToString::to_string);
             let reasoning_content = parse_reasoning_content(message);
-            let tool_calls = parse_message_tool_calls(message, profile, id_resolver)?;
+            let tool_calls = parse_message_tool_calls(message, profile)?;
             (content, reasoning_content, tool_calls)
         }
         ChatResponseContentPolicy::StringOrChunkArrayWithReasoning => {
             let (content, extracted_reasoning) = extract_message_content(message.get("content"));
             let reasoning_content =
                 extracted_reasoning.or_else(|| parse_reasoning_content(message));
-            let tool_calls = parse_message_tool_calls(message, profile, id_resolver)?;
+            let tool_calls = parse_message_tool_calls(message, profile)?;
             (content, reasoning_content, tool_calls)
         }
     };
 
     if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
-        return Err(LlmError::ApiError(format!(
+        return Err(LlmError::api_error(format!(
             "Empty {} response",
             response_label(profile)
         )));
@@ -108,7 +77,6 @@ pub(crate) fn parse_chat_response(
 pub(crate) fn parse_tool_calls(
     value: &Value,
     profile: ChatCompletionsProfile,
-    id_resolver: Option<&dyn ChatToolCallIdResolver>,
 ) -> Result<Vec<ToolCall>, LlmError> {
     let Some(array) = value.as_array() else {
         return Err(LlmError::JsonError(format!(
@@ -136,7 +104,7 @@ pub(crate) fn parse_tool_calls(
             .filter(|id| !id.is_empty());
 
         tool_calls.push(match provider_id {
-            Some(provider_id) => correlated_tool_call(provider_id, id_resolver, name, arguments),
+            Some(provider_id) => correlated_tool_call(provider_id, name, arguments),
             None => empty_id_tool_call(profile, index, name, arguments),
         });
     }
@@ -147,11 +115,10 @@ pub(crate) fn parse_tool_calls(
 fn parse_message_tool_calls(
     message: &Value,
     profile: ChatCompletionsProfile,
-    id_resolver: Option<&dyn ChatToolCallIdResolver>,
 ) -> Result<Vec<ToolCall>, LlmError> {
     match message.get("tool_calls") {
         Some(value) if value.is_null() => Ok(Vec::new()),
-        Some(value) if value.is_array() => parse_tool_calls(value, profile, id_resolver),
+        Some(value) if value.is_array() => parse_tool_calls(value, profile),
         Some(_) => Err(LlmError::JsonError(format!(
             "Invalid tool_calls format from {}",
             response_label(profile)
@@ -160,24 +127,7 @@ fn parse_message_tool_calls(
     }
 }
 
-fn correlated_tool_call(
-    provider_id: &str,
-    id_resolver: Option<&dyn ChatToolCallIdResolver>,
-    name: &str,
-    arguments: String,
-) -> ToolCall {
-    if let Some(resolver) = id_resolver
-        && resolver.has_provider_tool_call_id(provider_id)
-    {
-        return CHAT_LIKE_TOOL_PROFILE.inbound_tool_call(
-            resolver.original_tool_call_id(provider_id),
-            Some(provider_id),
-            None,
-            name.to_string(),
-            arguments,
-        );
-    }
-
+fn correlated_tool_call(provider_id: &str, name: &str, arguments: String) -> ToolCall {
     CHAT_LIKE_TOOL_PROFILE.inbound_provider_tool_call(
         provider_id,
         None,
@@ -192,20 +142,16 @@ fn empty_id_tool_call(
     name: &str,
     arguments: String,
 ) -> ToolCall {
-    match profile.empty_tool_call_id {
-        EmptyToolCallIdPolicy::Uncorrelated => {
-            debug!(
-                provider = profile.label,
-                tool_name = name,
-                tool_index = index,
-                "Chat Completions provider returned empty tool call ID"
-            );
-            CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
-        }
-    }
+    debug!(
+        provider = profile.label,
+        tool_name = name,
+        tool_index = index,
+        "Chat Completions provider returned empty tool call ID"
+    );
+    CHAT_LIKE_TOOL_PROFILE.inbound_uncorrelated_tool_call(name.to_string(), arguments)
 }
 
-pub(crate) fn normalize_tool_arguments(value: &Value) -> String {
+fn normalize_tool_arguments(value: &Value) -> String {
     match value {
         Value::String(raw) => normalize_tool_arguments_str(raw),
         other => serde_json::to_string(other).unwrap_or_default(),
@@ -311,10 +257,7 @@ pub(crate) fn parse_openrouter_rate_limit(body: &str) -> Option<u64> {
     (wait_secs > 0).then_some(wait_secs as u64)
 }
 
-pub(crate) fn extract_error_response(
-    profile: ChatCompletionsProfile,
-    response: &Value,
-) -> Option<String> {
+fn extract_error_response(profile: ChatCompletionsProfile, response: &Value) -> Option<String> {
     if profile.label != "opencode_go" {
         return None;
     }
@@ -485,7 +428,6 @@ fn response_label(profile: ChatCompletionsProfile) -> &'static str {
     match profile.label {
         "opencode_go" => "OpenCode Go",
         "openrouter" => "OpenRouter",
-        "mistral" => "OpenAI-compatible provider",
         "zai" => "OpenAI-compatible provider",
         _ => "OpenAI-compatible provider",
     }
@@ -496,22 +438,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    struct TestResolver;
-
-    impl ChatToolCallIdResolver for TestResolver {
-        fn original_tool_call_id(&self, provider_id: &str) -> String {
-            if provider_id == "abc123xyz" {
-                "call-original".to_string()
-            } else {
-                provider_id.to_string()
-            }
-        }
-
-        fn has_provider_tool_call_id(&self, provider_id: &str) -> bool {
-            provider_id == "abc123xyz"
-        }
-    }
-
     #[test]
     fn chat_completions_parse_tool_calls_preserves_wire_ids() {
         let calls = parse_tool_calls(
@@ -521,7 +447,6 @@ mod tests {
                 "function": {"name": "search", "arguments": {"q": "oxide"}}
             }]),
             ChatCompletionsProfile::generic(),
-            None,
         )
         .expect("tool calls parse");
 
@@ -539,7 +464,6 @@ mod tests {
                 "function": {"name": "search", "arguments": "{}"}
             }]),
             ChatCompletionsProfile::openrouter(),
-            None,
         )
         .expect("tool calls parse");
 
@@ -547,34 +471,6 @@ mod tests {
             calls[0].wire_tool_call_id(),
             calls[0].invocation_id().as_str()
         );
-    }
-
-    #[test]
-    fn chat_completions_parse_mistral_tool_call_reverse_maps_id() {
-        let parsed = parse_chat_response(
-            json!({
-                "choices": [{
-                    "message": {
-                        "content": null,
-                        "tool_calls": [{
-                            "id": "abc123xyz",
-                            "type": "function",
-                            "function": {"name": "search", "arguments": "{}"}
-                        }]
-                    },
-                    "finish_reason": "tool_calls"
-                }]
-            }),
-            ChatCompletionsProfile::mistral(),
-            Some(&TestResolver),
-        )
-        .expect("response parses");
-
-        assert_eq!(
-            parsed.tool_calls[0].invocation_id().as_str(),
-            "call-original"
-        );
-        assert_eq!(parsed.tool_calls[0].wire_tool_call_id(), "abc123xyz");
     }
 
     #[test]
@@ -593,7 +489,6 @@ mod tests {
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
             }),
             ChatCompletionsProfile::zai(),
-            None,
         )
         .expect("response parses");
 

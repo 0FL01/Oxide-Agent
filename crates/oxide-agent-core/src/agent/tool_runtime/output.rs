@@ -7,6 +7,80 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+/// Image attachment returned by a tool executor.
+///
+/// The actual bytes are either carried inline (`data`), persisted in Postgres
+/// (looked up via `artifact_uri`), or at the referenced sandbox path. When
+/// `data` is `Some`, the runner uses the bytes directly; when `None` but
+/// `artifact_uri` is `Some`, the runner loads from Postgres; when both are
+/// `None`, it reads from `sandbox_path` (filesystem fallback).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutputImageAttachment {
+    /// Original file name reported by the tool.
+    pub file_name: String,
+    /// Best-effort MIME type of the image.
+    pub mime_type: Option<String>,
+    /// File size in bytes.
+    pub size_bytes: u64,
+    /// Absolute sandbox path where the image is stored (filesystem fallback).
+    pub sandbox_path: String,
+    /// Canonical artifact URI for Postgres lookup (e.g.
+    /// `artifact://browser/{task}/{session}/step-0001-milestone.jpg`).
+    /// Set by browser tools so the runner can reload bytes from
+    /// `browser_artifacts` after inline `data` is lost on checkpoint.
+    pub artifact_uri: Option<String>,
+    /// Inline image bytes when available (e.g. from Postgres, not filesystem).
+    /// When `Some`, the runner uses these bytes directly instead of reading
+    /// from `sandbox_path`.
+    pub data: Option<Vec<u8>>,
+}
+
+impl ToolOutputImageAttachment {
+    /// Create an image attachment ref without retaining bytes (filesystem path).
+    #[must_use]
+    pub fn image(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
+            data: None,
+        }
+    }
+
+    /// Create an image attachment with inline bytes (no filesystem read needed).
+    #[must_use]
+    pub fn image_with_data(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
+            data: Some(data),
+        }
+    }
+
+    /// Set the artifact URI for Postgres-based image resolution.
+    #[must_use]
+    pub fn with_artifact_uri(mut self, uri: impl Into<String>) -> Self {
+        self.artifact_uri = Some(uri.into());
+        self
+    }
+}
+
 /// Required terminal states for a tool invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -246,6 +320,8 @@ pub struct ToolOutput {
     pub truncation: OutputTruncationMetadata,
     /// Artifact references for large/binary outputs.
     pub artifacts: Vec<ArtifactRef>,
+    /// Optional image attachment for vision-capable main-agent routes.
+    pub image_attachment: Option<ToolOutputImageAttachment>,
 }
 
 impl ToolOutput {
@@ -278,7 +354,15 @@ impl ToolOutput {
             ended_at,
             truncation,
             artifacts: Vec::new(),
+            image_attachment: None,
         }
+    }
+
+    /// Attach an image produced by the tool.
+    #[must_use]
+    pub fn with_image_attachment(mut self, attachment: ToolOutputImageAttachment) -> Self {
+        self.image_attachment = Some(attachment);
+        self
     }
 
     /// Attach a concise error message.
@@ -362,5 +446,44 @@ impl ToolOutput {
     /// Returns a serialization error if an attached payload cannot be encoded.
     pub fn encode_model_content(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.model_content_value())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolOutput, ToolOutputImageAttachment};
+    use crate::agent::tool_runtime::ToolName;
+
+    #[test]
+    fn tool_output_image_attachment_is_carried_without_bytes() {
+        let attachment = ToolOutputImageAttachment::image(
+            "screenshot.png",
+            Some("image/png".to_string()),
+            42,
+            "/workspace/uploads/screen.png",
+        );
+        let output = fake_output().with_image_attachment(attachment.clone());
+        assert_eq!(output.image_attachment, Some(attachment));
+    }
+
+    fn fake_output() -> ToolOutput {
+        use crate::agent::tool_runtime::{
+            OutputTruncationMetadata, ToolOutputIdentity, ToolOutputStatus,
+        };
+        use crate::llm::{InvocationId, ProviderToolCallId};
+        use chrono::Utc;
+        ToolOutput::terminal(
+            ToolOutputIdentity {
+                tool_call_id: crate::agent::tool_runtime::ToolCallId::from("call-1"),
+                provider_tool_call_id: Some(ProviderToolCallId::from("pcall-1")),
+                invocation_id: InvocationId::from("invoke-1"),
+                tool_name: ToolName::from("browser_observe"),
+                batch_index: 0,
+            },
+            ToolOutputStatus::Success,
+            Utc::now(),
+            Utc::now(),
+            OutputTruncationMetadata::new(1024, 1024, 2048),
+        )
     }
 }

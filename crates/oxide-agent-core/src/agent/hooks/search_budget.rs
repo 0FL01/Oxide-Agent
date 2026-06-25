@@ -1,6 +1,8 @@
 //! Search Budget Hook.
 //!
 //! Enforces a limit on the number of search tool calls per agent session.
+//!
+//! Documentation: `docs/hooks/search-budget.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

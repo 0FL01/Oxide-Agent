@@ -66,8 +66,8 @@ impl CrwClient {
 
     /// Scrape via CRW `POST /v1/scrape`.
     ///
-    /// Used internally by `web_crawler` fallback. No retry — the caller
-    /// already tried webfetch_md and expects a single attempt.
+    /// Used by `web_crawler` rendered modes (lightpanda/playwright).
+    /// No retry — the caller controls render mode and expects a single attempt.
     pub async fn scrape(&self, args: &CrwScrapeArgs) -> Result<CrwScrapeResponse, CrwError> {
         if args.url.trim().is_empty() {
             return Err(CrwError::InvalidUrl);

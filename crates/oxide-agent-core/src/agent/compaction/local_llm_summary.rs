@@ -49,6 +49,7 @@ impl CompactSummaryBackend for LocalLlmSummary {
         let user_message = build_local_compaction_user_message(
             request.task,
             request.previous_summary,
+            request.preserve_note,
             request.messages,
         );
         let summary_route = compact_summary_route(request.route);
@@ -154,6 +155,7 @@ mod tests {
                 route: &route,
                 messages: &messages,
                 previous_summary: None,
+                preserve_note: None,
             })
             .await
             .expect("summary succeeds");
@@ -198,6 +200,7 @@ mod tests {
                 route: &route,
                 messages: &messages,
                 previous_summary: None,
+                preserve_note: None,
             })
             .await
             .expect("summary retries and succeeds");
@@ -217,6 +220,7 @@ mod tests {
                 route: &route,
                 messages: &[],
                 previous_summary: None,
+                preserve_note: None,
             })
             .await
             .expect_err("empty output is rejected");

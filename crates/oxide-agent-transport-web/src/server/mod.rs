@@ -23,6 +23,7 @@ mod auth_helpers;
 mod auth_routes;
 mod auto_title;
 mod converters;
+mod life_routes;
 mod model_routes;
 mod router;
 mod search_probe;
@@ -44,6 +45,14 @@ pub(crate) use auth_routes::{
     api_bootstrap, api_change_password, api_login, api_logout, api_me, api_register,
 };
 use converters::*;
+pub(crate) use life_routes::{
+    api_activate_life_generation, api_create_life_link_token, api_forget_life_memory,
+    api_get_life_profile, api_get_life_state, api_list_life_events,
+    api_list_life_friction_patterns, api_list_life_generations, api_list_life_memories,
+    api_list_life_support_protocols, api_list_life_task_states, api_list_life_turns,
+    api_privacy_hard_wipe_life, api_soft_reset_life_generation, api_submit_life_input,
+    api_wipe_life_derived_generation, api_wipe_life_generation,
+};
 pub(crate) use model_routes::{
     api_list_model_routes, api_refresh_model_routes, canonical_model_selection,
     default_session_model_selection,
@@ -58,8 +67,9 @@ pub(crate) use session_routes::{
 };
 pub(crate) use settings_routes::{api_get_settings, api_update_settings, load_current_user_record};
 pub(crate) use task_routes::{
-    api_cancel_task, api_create_task, api_create_task_version, api_download_task_file,
-    api_get_task, api_get_task_events, api_get_task_progress, api_list_tasks, api_resume_task,
+    api_cancel_task, api_create_task, api_create_task_version, api_download_artifact,
+    api_download_task_file, api_get_task, api_get_task_events, api_get_task_progress,
+    api_list_tasks, api_resume_task,
 };
 #[cfg(test)]
 pub(crate) use task_routes::{

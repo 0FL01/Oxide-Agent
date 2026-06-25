@@ -132,25 +132,8 @@ pub fn parse_structured_output(
         }
     }
 
-    // Prose wrapper: if the response contains no JSON at all but looks like
-    // meaningful prose, wrap it as a structured final answer. This catches
-    // models that ignore structured output instructions and return plain text.
-    if !sanitized.contains('{')
-        && looks_like_prose(&sanitized)
-        && let Ok(escaped) = serde_json::to_string(&sanitized)
-    {
-        let wrapped = format!(
-            r#"{{"thought":"Model provided direct response","tool_call":null,"final_answer":{escaped},"awaiting_user_input":null}}"#
-        );
-        if let Ok(parsed) = try_parse_structured_output(&wrapped, tools) {
-            warn!(
-                raw_content = %crate::utils::truncate_str(trimmed, 200),
-                "Structured output: wrapped prose response as final_answer"
-            );
-            return Ok(parsed);
-        }
-    }
-
+    // Deterministic JSON extraction from noisy output (code fences, leading
+    // text).  These are lexer-level fixes, not semantic interpretation.
     for recovered in recovery_candidates(&sanitized) {
         match try_parse_structured_output(&recovered, tools) {
             Ok(parsed) => {
@@ -216,27 +199,6 @@ fn recovery_candidates(input: &str) -> Vec<String> {
     }
 
     candidates
-}
-
-/// Heuristic check: the text looks like meaningful prose rather than
-/// garbled output, code fragments, or incomplete JSON.
-fn looks_like_prose(text: &str) -> bool {
-    let trimmed = text.trim();
-
-    // Reject obvious non-prose: code fences, XML/HTML-like tags, system markers
-    if trimmed.starts_with("```") || trimmed.starts_with('<') || trimmed.starts_with("[SYSTEM:") {
-        return false;
-    }
-
-    // Require at least 24 non-whitespace characters and some alphabetic content
-    let non_ws_count = trimmed.chars().filter(|ch| !ch.is_whitespace()).count();
-    if non_ws_count < 24 || !trimmed.chars().any(char::is_alphabetic) {
-        return false;
-    }
-
-    // Reject if it looks structurally unfinished
-    let unfinished_tail = ['{', '[', ':', ',', '-'];
-    !unfinished_tail.iter().any(|tail| trimmed.ends_with(*tail))
 }
 
 fn validate_structured_output(
@@ -483,51 +445,6 @@ mod tests {
             result,
             Ok(parsed) if parsed.final_answer.as_deref() == Some("ok")
         ));
-    }
-
-    // --- Prose wrapper tests ---
-
-    #[test]
-    fn wraps_prose_as_final_answer() {
-        let raw = "Summary: This is a detailed answer about structured output handling. It contains enough text to pass the prose heuristic.";
-        let result = parse_structured_output(raw, &tools_fixture());
-        assert!(
-            result.is_ok(),
-            "Prose should be wrapped as structured output"
-        );
-        let parsed = result.expect("prose should parse as structured output");
-        assert!(
-            parsed
-                .final_answer
-                .as_deref()
-                .expect("final answer should be present")
-                .contains("Summary:")
-        );
-        assert!(parsed.tool_call.is_none());
-    }
-
-    #[test]
-    fn does_not_wrap_short_text() {
-        let raw = "Too short";
-        let result = parse_structured_output(raw, &tools_fixture());
-        assert!(result.is_err(), "Short text should not be wrapped");
-    }
-
-    #[test]
-    fn does_not_wrap_code_fence() {
-        let raw = "```python\nprint('hello')\n```";
-        let result = parse_structured_output(raw, &tools_fixture());
-        assert!(
-            result.is_err(),
-            "Code fences should not be wrapped as prose"
-        );
-    }
-
-    #[test]
-    fn does_not_wrap_json_with_brace() {
-        let raw = r#"{"broken": true"#; // contains '{' so prose wrapper skips
-        let result = parse_structured_output(raw, &tools_fixture());
-        assert!(result.is_err());
     }
 
     // --- Aggressive control char stripping tests ---

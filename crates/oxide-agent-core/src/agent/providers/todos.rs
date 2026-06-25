@@ -272,12 +272,11 @@ impl TodosProvider {
         let args: WriteTodosArgs = serde_json::from_str(arguments)?;
 
         // Convert to TodoItems with XML sanitization to prevent UI corruption
-        // LLM may include XML tags in task descriptions which would break formatting
         let items: Vec<TodoItem> = args
             .todos
             .into_iter()
             .map(|arg| TodoItem {
-                description: crate::agent::sanitize_xml_tags(&arg.description),
+                description: arg.description,
                 status: arg.status,
             })
             .collect();

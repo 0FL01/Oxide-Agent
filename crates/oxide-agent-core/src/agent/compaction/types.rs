@@ -3,11 +3,18 @@
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
-/// Stable marker for the new runtime/session-level compacted summary format.
-pub const OXIDE_COMPACTED_SUMMARY_PREFIX: &str = "[OXIDE_COMPACTED_SUMMARY_V1]";
-
 const WIKI_MEMORY_LOOKUP_TOOLS: &[&str] =
     &["wiki_memory_list", "wiki_memory_read", "wiki_memory_search"];
+
+const BROWSER_LIVE_TOOLS: &[&str] = &[
+    "browser_start",
+    "browser_observe",
+    "browser_execute",
+    "browser_extract",
+    "browser_debug",
+    "browser_close",
+    "browser_save_screenshot",
+];
 
 /// Return whether scoped durable wiki lookup tools are actually exposed to this run.
 #[must_use]
@@ -15,6 +22,18 @@ pub fn wiki_memory_lookup_available(tools: &[ToolDefinition]) -> bool {
     WIKI_MEMORY_LOOKUP_TOOLS
         .iter()
         .all(|required| tools.iter().any(|tool| tool.name == *required))
+}
+
+/// Return whether a tool name belongs to the Browser Live provider.
+#[must_use]
+pub fn is_browser_live_tool_name(tool_name: &str) -> bool {
+    BROWSER_LIVE_TOOLS.contains(&tool_name)
+}
+
+/// Return whether an optional tool name belongs to the Browser Live provider.
+#[must_use]
+pub fn is_browser_live_tool(tool_name: Option<&str>) -> bool {
+    tool_name.is_some_and(is_browser_live_tool_name)
 }
 
 /// Stable semantic kind for an entry stored in hot agent memory.
@@ -149,40 +168,6 @@ impl CompactionBackend {
     }
 }
 
-/// Minimal metadata embedded in the new compacted summary message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompactedSummaryMetadata {
-    /// Monotonic compacted-summary generation within the session.
-    pub generation: u32,
-    /// Runtime reason that requested compaction.
-    pub reason: CompactionReason,
-    /// Runtime phase where compaction happened.
-    pub phase: CompactionPhase,
-    /// Approximate hot-memory tokens before replacement.
-    pub token_before: usize,
-    /// Approximate hot-memory tokens after replacement.
-    pub token_after: usize,
-    /// Hot-memory item count before replacement.
-    pub history_items_before: usize,
-    /// Hot-memory item count after replacement.
-    pub history_items_after: usize,
-    /// Provider used for summary generation.
-    pub provider: String,
-    /// Model/route used for summary generation.
-    pub route: String,
-    /// Summary backend.
-    pub backend: CompactionBackend,
-    /// RFC3339 timestamp or caller-provided timestamp string.
-    pub created_at: String,
-    /// Whether a previous current-format compacted summary was detected.
-    pub previous_summary_detected: bool,
-    /// Whether history repair changed replacement output.
-    pub repair_applied: bool,
-    /// Whether scoped durable wiki lookup tools were exposed for the next model request.
-    #[serde(default)]
-    pub wiki_memory_lookup_available: bool,
-}
-
 /// Static policy knobs for the compaction subsystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionPolicy {
@@ -289,22 +274,30 @@ impl BudgetState {
     }
 }
 
-/// Token accounting grouped by hot-memory retention class.
+/// Token accounting for the hot-memory boundary.
+///
+/// Runtime context-window decisions use the model-facing rendered overlay, not
+/// the durable raw transcript. Raw counters are retained only as diagnostics
+/// for storage growth and retention-class visibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotMemoryBudget {
-    /// Total estimated tokens represented by the current hot memory.
-    pub total_tokens: usize,
-    /// Total messages represented in hot memory.
-    pub total_messages: usize,
-    /// Tokens belonging to pinned messages.
+    /// Estimated tokens in the model-facing rendered hot-memory messages.
+    pub rendered_tokens: usize,
+    /// Number of model-facing rendered hot-memory messages.
+    pub rendered_messages: usize,
+    /// Estimated tokens in the durable raw transcript before overlay rendering.
+    pub raw_tokens: usize,
+    /// Number of durable raw transcript messages before overlay rendering.
+    pub raw_messages: usize,
+    /// Raw tokens belonging to pinned messages.
     pub pinned_tokens: usize,
-    /// Tokens belonging to protected live messages.
+    /// Raw tokens belonging to protected live messages.
     pub protected_live_tokens: usize,
-    /// Tokens belonging to prunable artifact messages.
+    /// Raw tokens belonging to prunable artifact messages.
     pub prunable_artifact_tokens: usize,
-    /// Tokens belonging to compactable history messages.
+    /// Raw tokens belonging to compactable history messages.
     pub compactable_history_tokens: usize,
-    /// Tokens specifically attributed to runtime context messages.
+    /// Raw tokens specifically attributed to runtime context messages.
     pub runtime_context_tokens: usize,
 }
 
@@ -317,7 +310,8 @@ pub struct BudgetEstimate {
     pub system_prompt_tokens: usize,
     /// Estimated token count of serialized tool schemas.
     pub tool_schema_tokens: usize,
-    /// Estimated token count of the active hot memory.
+    /// Estimated token count of the active hot memory. Context-window decisions
+    /// use `hot_memory.rendered_tokens`; raw counters are diagnostic only.
     pub hot_memory: HotMemoryBudget,
     /// Output tokens pre-reserved from the input window. Kept for API compatibility; currently zero.
     pub reserved_output_tokens: usize,

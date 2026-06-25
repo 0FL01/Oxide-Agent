@@ -11,6 +11,10 @@ x-oxide-app-build: &oxide_app_build
     ENTRYPOINT_BINARY: oxide-agent-telegram-bot
     RUNTIME_APT_PACKAGES: openssh-client
 
+x-browser-sidecar-build: &browser_sidecar_build
+  context: .
+  dockerfile: docker/Dockerfile.browser-sidecar
+
 services:
   sandbox_image:
     build:
@@ -38,6 +42,10 @@ services:
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+      - BROWSER_AGENT_ENABLED=${BROWSER_AGENT_ENABLED:-false}
+      - BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
+      - BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}
+      - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
     volumes:
       - ./config:/app/config
       - sandboxd-run:/run/sandboxd
@@ -46,6 +54,8 @@ services:
       sandboxd:
         condition: service_healthy
       crw:
+        condition: service_healthy
+      browser-sidecar:
         condition: service_healthy
     logging:
       driver: json-file
@@ -84,6 +94,11 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  # CRW — external web crawler/scrape service (AGPL-3.0).
+  # Upstream: https://github.com/us/crw  •  Docs: https://docs.fastcrw.com
+  # Single-container: scrape/markdown only (no search, no JS rendering).
+  # For full-stack (SearXNG search + LightPanda JS), use *-local-services.yml overlays.
+  # Healthcheck uses bash /dev/tcp — the image (debian:bookworm-slim) has no wget/curl.
   crw:
     image: ${OXIDE_CRW_IMAGE:-ghcr.io/us/crw}
     container_name: crw
@@ -93,11 +108,38 @@ services:
     ports:
       - "127.0.0.1:${OXIDE_CRW_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || curl -fsS http://localhost:3000/health"]
+      test: ["CMD","bash","-c","exec 3<>/dev/tcp/127.0.0.1/3000; printf 'GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3; read -r s <&3; case \"$$s\" in *200*) exit 0;; *) exit 1;; esac"]
       interval: 5s
       timeout: 3s
       retries: 30
       start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  browser-sidecar:
+    build: *browser_sidecar_build
+    image: oxide-browser-sidecar:latest
+    container_name: oxide_browser_sidecar
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+      - BROWSER_AGENT_SIDECAR_TOKEN=${BROWSER_AGENT_SIDECAR_TOKEN:-}
+    ports:
+      - "127.0.0.1:${BROWSER_AGENT_SIDECAR_PORT:-8787}:8787"
+    shm_size: "1gb"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8787/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     logging:
       driver: json-file
       options:

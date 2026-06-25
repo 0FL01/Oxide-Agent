@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.94-slim-trixie AS chef
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-chef
+
+FROM chef AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+WORKDIR /app
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo chef cook --release -p oxide-browser-sidecar --recipe-path recipe.json
+
+COPY . .
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    set -eux; \
+    cargo build --release -p oxide-browser-sidecar; \
+    mkdir -p /runtime/bin; \
+    cp /app/target/release/oxide-browser-sidecar /runtime/bin/
+
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    chromium \
+    curl \
+    libssl3 \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10002 browser \
+    && useradd --system --uid 10002 --gid 10002 --create-home --home-dir /home/browser browser \
+    && chown -R browser:browser /home/browser
+
+# Download ad blocking filter lists (EasyList + EasyPrivacy).
+# ADBLOCK_ENABLED is NOT set here — ad blocking is opt-in (set in runtime env).
+RUN mkdir -p /opt/adblock \
+    && curl -fsSL https://easylist.to/easylist/easylist.txt -o /opt/adblock/easylist.txt \
+    && curl -fsSL https://easylist.to/easylist/easyprivacy.txt -o /opt/adblock/easyprivacy.txt \
+    && chown -R browser:browser /opt/adblock
+
+# Consent-O-Matic rules (203 CMP variants) for cookie consent banner
+# auto-dismissal. Merged from all individual rule files in the
+# Consent-O-Matic repository — the monolithic Rules.json is outdated and
+# missing key variants (e.g. onetrust_banner with full SAVE_CONSENT).
+# Enabled by default via CONSENT_AUTO_DISMISS.
+COPY docker/consent-rules.json /opt/consent/rules.json
+RUN chown -R browser:browser /opt/consent
+
+COPY --from=builder /runtime/bin/oxide-browser-sidecar /usr/local/bin/oxide-browser-sidecar
+
+ENV BROWSER_AGENT_SIDECAR_BIND=0.0.0.0:8787 \
+    CHROMIUM_BIN=/usr/bin/chromium \
+    ADBLOCK_FILTERS=/opt/adblock/easylist.txt,/opt/adblock/easyprivacy.txt \
+    CONSENT_FILTERS=/opt/consent/rules.json
+
+USER browser
+WORKDIR /home/browser
+
+EXPOSE 8787
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/oxide-browser-sidecar"]

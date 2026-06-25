@@ -259,7 +259,10 @@ impl SileroTtsProvider {
             .ok_or_else(|| anyhow::anyhow!("Sandbox fileops is not configured for Silero TTS"))?;
 
         ensure_parent_dir(exec, path).await?;
-        fileops.write_file(path, content).await
+        fileops
+            .write_file(path, content)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     /// Execute Russian text-to-speech synthesis and send to user.

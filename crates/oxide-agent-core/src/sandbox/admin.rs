@@ -1,10 +1,10 @@
 //! Sandbox administration backend facade.
 
+use super::error::SandboxError;
 use super::{
     SandboxAdmin, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxContainerRecord,
     SandboxManager, SandboxScope,
 };
-use anyhow::Result;
 use async_trait::async_trait;
 
 const SANDBOX_ADMIN_BACKEND_ID: SandboxBackendId = SandboxBackendId::new("sandbox/admin-runtime");
@@ -39,12 +39,15 @@ impl SandboxBackend for SandboxAdminRuntime {
 
 #[async_trait]
 impl SandboxAdmin for SandboxAdminRuntime {
-    async fn destroy_scope(&self, scope: SandboxScope) -> Result<()> {
+    async fn destroy_scope(&self, scope: SandboxScope) -> Result<(), SandboxError> {
         let mut sandbox = SandboxManager::new(scope).await?;
         sandbox.destroy().await
     }
 
-    async fn list_user_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
+    async fn list_user_sandboxes(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError> {
         SandboxManager::list_user_sandboxes(user_id).await
     }
 
@@ -52,19 +55,29 @@ impl SandboxAdmin for SandboxAdminRuntime {
         &self,
         user_id: i64,
         container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>> {
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError> {
         SandboxManager::inspect_sandbox_by_name(user_id, container_name).await
     }
 
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    async fn ensure_scope_sandbox(
+        &self,
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         SandboxManager::ensure_scope_sandbox(scope).await
     }
 
-    async fn recreate_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
+    async fn recreate_scope_sandbox(
+        &self,
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError> {
         SandboxManager::recreate_scope_sandbox(scope).await
     }
 
-    async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> Result<bool> {
+    async fn delete_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool, SandboxError> {
         SandboxManager::delete_sandbox_by_name(user_id, container_name).await
     }
 }

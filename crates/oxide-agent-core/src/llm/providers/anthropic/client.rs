@@ -54,7 +54,7 @@ impl LlmProvider for AnthropicProvider {
 
         response
             .content
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()))
+            .ok_or_else(|| LlmError::api_error("Empty response"))
     }
 
     async fn transcribe_audio(
@@ -63,7 +63,7 @@ impl LlmProvider for AnthropicProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Not implemented for Anthropic provider".to_string(),
         ))
     }
@@ -75,7 +75,7 @@ impl LlmProvider for AnthropicProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "Not implemented for Anthropic provider".to_string(),
         ))
     }

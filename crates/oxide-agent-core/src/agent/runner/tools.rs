@@ -2,13 +2,16 @@
 
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
-use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
+use crate::agent::compaction::{
+    AdmissionBudget, AdmissionDecision, CompactionPhase, CompactionReason, CompactionTrigger,
+    ContextAdmission, EngineCompactionRequest, EngineCompactionResult, PayloadDescriptor,
+    PayloadKind, count_tokens_cached,
+};
 use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
-use crate::agent::memory::AgentMessage;
+use crate::agent::memory::{AgentMessage, AgentMessageAttachment};
 use crate::agent::progress::{AgentEvent, AgentEventSource};
-use crate::agent::providers::TOOL_COMPRESS;
-use crate::agent::recovery::sanitize_xml_tags;
+use crate::agent::providers::{CompressRequest, CompressResult, TOOL_COMPRESS};
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
     ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallRuntime,
@@ -18,8 +21,8 @@ use crate::agent::tool_runtime::{
 use crate::config::ModelInfo;
 
 use crate::llm::{
-    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol,
-    ToolTransport,
+    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+    ToolProtocol, ToolTransport,
 };
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -291,8 +294,8 @@ impl AgentRunner {
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
         let Some(tx) = ctx.progress_tx else { return };
-        let sanitized_name = sanitize_xml_tags(&tool_call.function.name);
-        let sanitized_args = sanitize_xml_tags(&tool_call.function.arguments);
+        let name = tool_call.function.name.clone();
+        let args = tool_call.function.arguments.clone();
         let command_preview = if tool_call.function.name == "execute_command" {
             Self::extract_command_preview(&tool_call.function.arguments)
         } else {
@@ -302,8 +305,8 @@ impl AgentRunner {
             .send(AgentEvent::ToolCall {
                 id: tool_call.invocation_id().into_inner(),
                 source: AgentEventSource::Root,
-                name: sanitized_name,
-                input: sanitized_args,
+                name,
+                input: args,
                 command_preview,
             })
             .await;
@@ -348,7 +351,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         output: ToolOutput,
-        content: String,
+        mut content: String,
     ) {
         let tool_name = output.tool_name.as_str().to_string();
         if let Some(tx) = ctx.progress_tx {
@@ -356,7 +359,7 @@ impl AgentRunner {
                 .send(AgentEvent::ToolResult {
                     id: output.invocation_id.as_str().to_string(),
                     source: AgentEventSource::Root,
-                    name: sanitize_xml_tags(&tool_name),
+                    name: tool_name.clone(),
                     output: content.clone(),
                     success: output.success,
                 })
@@ -364,13 +367,15 @@ impl AgentRunner {
         }
 
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
+
+        // Apply compress tool results through the compaction engine.
+        // The tool executor parses LLM args into a CompressRequest (returned
+        // as structured_payload); the runner applies the checkpoint through the
+        // compaction controller so Oxide owns safe range selection.
         if output.success && tool_name == TOOL_COMPRESS {
-            let memory = ctx.agent.memory();
-            let threshold = memory.max_tokens() / 100
-                * CompactionPolicy::default().compact_threshold_percent as usize;
-            if memory.token_count() >= threshold {
-                state.request_manual_compaction();
-            }
+            content =
+                Self::apply_compress_checkpoint(ctx, state, output.structured_payload.as_ref())
+                    .await;
         }
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
@@ -378,17 +383,44 @@ impl AgentRunner {
             .with_protocol(ToolProtocol::ChatLike)
             .with_transport(ToolTransport::ClientRoundTrip);
         let failure_summary = summarize_tool_failure_content(&tool_name, &content);
-        let memory_content = failure_summary
-            .as_ref()
-            .map(|summary| summary.content.as_str())
-            .unwrap_or(content.as_str());
+
+        // Admission gate: evaluate tool output before hot-memory mutation.
+        // Skip when failure_summary already pruned the content (it's already bounded).
+        let (model_content, externalized_payload) = if let Some(summary) = &failure_summary {
+            (summary.content.clone(), None)
+        } else {
+            let budget = Self::compute_admission_budget(ctx);
+            let descriptor = PayloadDescriptor {
+                kind: PayloadKind::ToolOutput {
+                    tool_name: tool_name.clone(),
+                },
+                content: content.clone(),
+                source: None,
+                size_bytes: content.len(),
+            };
+            match ContextAdmission::evaluate(&descriptor, &budget) {
+                AdmissionDecision::Inline => (content.clone(), None),
+                AdmissionDecision::Manifest(spec) => (
+                    spec.manifest_content.clone(),
+                    Some(spec.externalized_payload),
+                ),
+                AdmissionDecision::ControlledPause(blocker) => {
+                    let placeholder = format!(
+                        "[Tool output withheld — context budget exceeded]\n{}",
+                        blocker.reason()
+                    );
+                    (placeholder, None)
+                }
+            }
+        };
+
         ctx.messages.push(Message::tool_with_correlation(
             output.invocation_id.as_str(),
             correlation.clone(),
             &tool_name,
-            memory_content,
+            &model_content,
         ));
-        let memory_message = if let Some(summary) = failure_summary {
+        let mut memory_message = if let Some(summary) = failure_summary {
             AgentMessage::pruned_tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
@@ -398,14 +430,153 @@ impl AgentRunner {
                 None,
             )
         } else {
-            AgentMessage::tool_with_correlation(
+            let mut msg = AgentMessage::tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
                 &tool_name,
-                &content,
-            )
+                &model_content,
+            );
+            msg.externalized_payload = externalized_payload;
+            msg
         };
+        if let Some(image) = output.image_attachment {
+            let mut attachment = if let Some(data) = image.data {
+                AgentMessageAttachment::image_with_data(
+                    image.file_name,
+                    image.mime_type,
+                    image.size_bytes,
+                    image.sandbox_path,
+                    data,
+                )
+            } else {
+                AgentMessageAttachment::image(
+                    image.file_name,
+                    image.mime_type,
+                    image.size_bytes,
+                    image.sandbox_path,
+                )
+            };
+            if let Some(uri) = image.artifact_uri {
+                attachment = attachment.with_artifact_uri(uri);
+            }
+            memory_message.attachments.push(attachment);
+        }
         ctx.agent.memory_mut().add_message(memory_message);
+    }
+
+    /// Apply a parsed compress checkpoint through the compaction controller.
+    ///
+    /// The tool executor is a pure parser — it cannot access `AgentMemory`.
+    /// The runner owns runtime context and asks the controller to select a safe
+    /// old-middle range. The LLM never supplies message refs or block refs.
+    async fn apply_compress_checkpoint(
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        payload: Option<&serde_json::Value>,
+    ) -> String {
+        let Some(payload) = payload else {
+            return CompressResult::internal_error("Compress tool returned no structured payload")
+                .to_json()
+                .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+        };
+
+        let request: CompressRequest = match serde_json::from_value(payload.clone()) {
+            Ok(req) => req,
+            Err(e) => {
+                return CompressResult::internal_error(format!(
+                    "Failed to parse compress request: {e}"
+                ))
+                .to_json()
+                .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+            }
+        };
+
+        let Some(controller) = ctx.compaction_controller else {
+            return CompressResult::failed(
+                &request,
+                "compaction_unavailable",
+                "No compaction controller is configured for this runner",
+            )
+            .to_json()
+            .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+        };
+
+        let Some(route) = current_execution_model_route(ctx) else {
+            return CompressResult::failed(
+                &request,
+                "route_unavailable",
+                "No active model route is available for checkpoint compression",
+            )
+            .to_json()
+            .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string());
+        };
+
+        let result = controller
+            .compact_via_engine_with_guidance(EngineCompactionRequest {
+                memory: ctx.agent.memory_mut(),
+                route: &route,
+                task: ctx.task,
+                tools: ctx.tools,
+                system_prompt: ctx.system_prompt,
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::MidTurn,
+                force: request.reason.force_compaction(),
+                preserve_note: Some(&request.preserve),
+            })
+            .await;
+
+        let result = match result {
+            Ok(EngineCompactionResult::Applied(outcome)) => {
+                ctx.agent.persist_memory_checkpoint_background();
+                state.compaction_count = state.compaction_count.saturating_add(1);
+                CompressResult::applied(&request, &outcome)
+            }
+            Ok(EngineCompactionResult::Skipped(skipped)) => {
+                CompressResult::skipped(&request, &skipped)
+            }
+            Err(error) => CompressResult::failed(&request, "compression_error", error.to_string()),
+        };
+
+        result
+            .to_json()
+            .unwrap_or_else(|_| r#"{"compressed": false}"#.to_string())
+    }
+
+    /// Compute the admission budget from the current runner context.
+    ///
+    /// This is used by the tool-output admission gate to decide whether a
+    /// tool result can enter hot memory inline or must be externalized.
+    /// Uses the route's `context_window_tokens` (the real provider constraint)
+    /// rather than `memory.max_tokens()` (which may be set artificially small
+    /// for compaction threshold testing).
+    pub(super) fn compute_admission_budget(ctx: &AgentRunnerContext<'_>) -> AdmissionBudget {
+        let memory = ctx.agent.memory();
+        let route_context_window = ctx
+            .config
+            .model_routes
+            .first()
+            .map(|route| route.context_window_tokens as usize)
+            .unwrap_or_else(|| memory.max_tokens());
+        AdmissionBudget {
+            rendered_tokens: memory.rendered_token_count(),
+            route_context_window,
+            system_prompt_tokens: count_tokens_cached(ctx.system_prompt),
+            tool_schema_tokens: Self::estimate_tool_schema_tokens(ctx.tools),
+            hard_reserve: ctx.config.model_max_output_tokens as usize,
+        }
+    }
+
+    /// Estimate token overhead from tool definitions (name + description + parameters schema).
+    fn estimate_tool_schema_tokens(tools: &[ToolDefinition]) -> usize {
+        tools.iter().fold(0, |acc, tool| {
+            let param_tokens = serde_json::to_string(&tool.parameters)
+                .ok()
+                .as_deref()
+                .map_or(0, count_tokens_cached);
+            acc.saturating_add(count_tokens_cached(&tool.name))
+                .saturating_add(count_tokens_cached(&tool.description))
+                .saturating_add(param_tokens)
+        })
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {
@@ -423,7 +594,10 @@ impl AgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::compaction::AgentMessageKind;
+    use crate::agent::compaction::{
+        AgentMessageKind, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+        CompactSummaryResult, CompactionController,
+    };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::hooks::SearchBudgetHook;
     use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
@@ -450,6 +624,24 @@ mod tests {
     }
     struct CountingSearchRuntimeExecutor {
         executions: Arc<AtomicUsize>,
+    }
+    struct StaticSummaryBackend;
+
+    #[async_trait]
+    impl CompactSummaryBackend for StaticSummaryBackend {
+        async fn summarize(
+            &self,
+            request: CompactSummaryRequest<'_>,
+        ) -> Result<CompactSummaryResult, CompactSummaryError> {
+            Ok(CompactSummaryResult {
+                summary_text: format!(
+                    "static summary; preserve_note={}",
+                    request.preserve_note.unwrap_or("none")
+                ),
+                provider: request.route.provider.clone(),
+                route: request.route.id.clone(),
+            })
+        }
     }
 
     #[async_trait]
@@ -651,6 +843,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -697,7 +890,13 @@ mod tests {
             "structured tool-call envelopes must not be replayed as assistant prose"
         );
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-read-1"));
+        assert_eq!(
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-read-1")
+        );
         assert_eq!(memory[1].tool_name.as_deref(), Some("read_file"));
         assert!(memory[1].content.contains("\"status\":\"success\""));
         assert_eq!(
@@ -747,6 +946,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -793,10 +993,22 @@ mod tests {
         assert_eq!(memory.len(), 3);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-search-1"));
+        assert_eq!(
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-search-1")
+        );
         assert!(memory[1].content.contains("\"status\":\"success\""));
         assert_eq!(memory[2].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[2].tool_call_id.as_deref(), Some("invoke-search-2"));
+        assert_eq!(
+            memory[2]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-search-2")
+        );
         assert!(memory[2].content.contains("\"status\":\"failure\""));
         assert!(memory[2].content.contains("Search budget exceeded (2/1)"));
     }
@@ -835,6 +1047,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -918,6 +1131,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1011,6 +1225,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1103,6 +1318,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1145,7 +1361,13 @@ mod tests {
         assert_eq!(memory.len(), 2);
         let tool_result = &memory[1];
         assert_eq!(tool_result.kind, AgentMessageKind::ToolResult);
-        assert_eq!(tool_result.tool_call_id.as_deref(), Some("invoke-web-1"));
+        assert_eq!(
+            tool_result
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
+            Some("invoke-web-1")
+        );
         assert_eq!(
             tool_result
                 .tool_call_correlation
@@ -1161,7 +1383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_output_requests_manual_compaction() {
+    async fn typed_runtime_compress_free_context_applies_auto_selection() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1180,12 +1402,27 @@ mod tests {
             .expect("runtime executor registers");
         let tools = runtime_registry.specs();
         let runtime_registry = Arc::new(runtime_registry);
+        let compaction_controller = CompactionController::new(Arc::new(StaticSummaryBackend));
 
-        let mut session = EphemeralSession::new(30);
-        // Fill memory above the 85% compaction threshold (30 * 85% = 25 tokens).
-        session.memory_mut().add_message(AgentMessage::user_task(
-            "padding task to push token count above the eighty-five percent compaction threshold of the thirty token max window for the compress budget guard test",
-        ));
+        let mut session = EphemeralSession::new(10000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Task description"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_turn(format!(
+                "OLD MIDDLE SHOULD BE COMPRESSED {}",
+                "large ".repeat(6_000)
+            )));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_turn("RECENT TAIL 1"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_turn("RECENT TAIL 2"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_turn("RECENT TAIL 3"));
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
@@ -1199,10 +1436,11 @@ mod tests {
             task_id: "runtime-compress-test",
             messages: &mut messages,
             agent: &mut session,
-            compaction_controller: None,
+            compaction_controller: Some(&compaction_controller),
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1214,11 +1452,15 @@ mod tests {
                 }]),
         };
         let mut state = RunState::new();
+        let compress_args = r#"{
+            "reason": "free_context",
+            "preserve": "Decision: compress keeps range selection inside Oxide."
+        }"#;
         let tool_call = ToolCall::new(
             "invoke-compress-1",
             ToolCallFunction {
                 name: TOOL_COMPRESS.to_string(),
-                arguments: "{}".to_string(),
+                arguments: compress_args.to_string(),
             },
             false,
         )
@@ -1241,19 +1483,44 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        assert!(state.force_manual_compaction);
+        // Old manual compaction trigger must NOT be set.
+        assert!(!state.force_manual_compaction);
+        assert_eq!(state.compaction_count, 1);
+        // Controller/engine must have created an active block.
+        assert!(ctx.agent.memory().compaction_state().has_active_blocks());
+        assert!(
+            ctx.agent
+                .memory()
+                .compaction_state()
+                .previous_block_summary_text()
+                .expect("active block summary")
+                .contains("compress keeps range selection inside Oxide")
+        );
+        // Tool result in memory must show compression success.
         let memory = ctx.agent.memory().get_messages();
-        // 1 padding user_task + 1 compress tool result = 2 (user_task was added in setup).
-        assert!(memory.len() >= 2);
         let compress_result = memory
             .iter()
             .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
         let compress_result = compress_result.expect("compress tool result should be present");
-        assert!(compress_result.content.contains("scheduled"));
+        assert!(
+            compress_result.content.contains(r#""compressed": true"#),
+            "compress result must show compressed=true, got: {}",
+            compress_result.content
+        );
+        assert!(
+            compress_result.content.contains("b1"),
+            "compress result must mention block b1, got: {}",
+            compress_result.content
+        );
+        assert!(
+            compress_result
+                .content
+                .contains("pinned_prefix_and_recent_tail")
+        );
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_skips_when_below_budget_threshold() {
+    async fn typed_runtime_compress_checkpoint_skip_records_preserve_note() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1272,42 +1539,50 @@ mod tests {
             .expect("runtime executor registers");
         let tools = runtime_registry.specs();
         let runtime_registry = Arc::new(runtime_registry);
+        let compaction_controller = CompactionController::new(Arc::new(StaticSummaryBackend));
 
-        // Large context window, no messages — well below the 85% threshold.
         let mut session = EphemeralSession::new(10000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Task"));
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "compress below threshold",
+            task: "compress checkpoint skip",
             system_prompt: "system prompt",
             date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "compress-guard-test",
+            task_id: "compress-checkpoint-skip-test",
             messages: &mut messages,
             agent: &mut session,
-            compaction_controller: None,
+            compaction_controller: Some(&compaction_controller),
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
-                    context_window_tokens: 8192,
+                    context_window_tokens: 20_000,
                     weight: 1,
                 }]),
         };
         let mut state = RunState::new();
+        let compress_args = r#"{
+            "reason": "checkpoint",
+            "preserve": "Checkpoint note survives even when context is not hot."
+        }"#;
         let tool_call = ToolCall::new(
             "invoke-compress-1",
             ToolCallFunction {
                 name: TOOL_COMPRESS.to_string(),
-                arguments: "{}".to_string(),
+                arguments: compress_args.to_string(),
             },
             false,
         )
@@ -1330,8 +1605,34 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        // Budget guard should have prevented compaction.
         assert!(!state.force_manual_compaction);
+        assert_eq!(state.compaction_count, 0);
+        // No blocks should be created because checkpoint is below the threshold.
+        assert!(!ctx.agent.memory().compaction_state().has_active_blocks());
+        // Tool result must record the checkpoint note for later compaction/memory ingestion.
+        let memory = ctx.agent.memory().get_messages();
+        let compress_result = memory
+            .iter()
+            .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
+        let compress_result = compress_result.expect("compress tool result should be present");
+        assert!(
+            compress_result.content.contains(r#""compressed": false"#),
+            "compress result must show compressed=false, got: {}",
+            compress_result.content
+        );
+        assert!(
+            compress_result
+                .content
+                .contains(r#""checkpoint_recorded": true"#),
+            "compress result must record checkpoint, got: {}",
+            compress_result.content
+        );
+        assert!(compress_result.content.contains("Checkpoint note survives"));
+        assert!(
+            compress_result
+                .content
+                .contains("Context is within budget threshold")
+        );
     }
 
     #[tokio::test]
@@ -1373,6 +1674,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1428,7 +1730,10 @@ mod tests {
             let expected_invocation_id = format!("invoke-read-{value}");
             assert_eq!(message.kind, AgentMessageKind::ToolResult);
             assert_eq!(
-                message.tool_call_id.as_deref(),
+                message
+                    .tool_call_correlation
+                    .as_ref()
+                    .map(|c| c.invocation_id.as_str()),
                 Some(expected_invocation_id.as_str())
             );
             assert!(
@@ -1472,6 +1777,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openrouter")
                 .with_model_routes(vec![ModelInfo {
@@ -1551,6 +1857,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openai-base:local")
                 .with_model_routes(vec![ModelInfo {
@@ -1594,9 +1901,137 @@ mod tests {
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
         assert_eq!(
-            memory[1].tool_call_id.as_deref(),
+            memory[1]
+                .tool_call_correlation
+                .as_ref()
+                .map(|c| c.invocation_id.as_str()),
             Some("invoke-read-openai-base")
         );
         assert!(memory[1].content.contains("runtime-ok"));
+    }
+
+    struct ScreenshotRuntimeExecutor;
+
+    #[async_trait]
+    impl ToolExecutor for ScreenshotRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("browser_observe")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "browser_observe".to_string(),
+                description: "observe browser".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+                .success(&invocation, "observed", "")
+                .with_image_attachment(
+                    crate::agent::tool_runtime::ToolOutputImageAttachment::image(
+                        "screenshot.png",
+                        Some("image/png".to_string()),
+                        3,
+                        "/workspace/uploads/screenshot.png",
+                    ),
+                );
+            Ok(output)
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_tool_output_image_attachment_is_recorded_in_memory() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(ScreenshotRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "screenshot attachment",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-screenshot-attachment-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "call-screenshot-1",
+            ToolCallFunction {
+                name: "browser_observe".to_string(),
+                arguments: r#"{"session_id":"sess-1"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-screenshot-1")
+                .with_provider_tool_call_id("call-screenshot-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(""),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        let result_message = memory
+            .iter()
+            .find(|m| m.tool_name.as_deref() == Some("browser_observe"))
+            .expect("browser_observe result should be in memory");
+        assert_eq!(result_message.attachments.len(), 1);
+        assert_eq!(
+            result_message.attachments[0].sandbox_path,
+            "/workspace/uploads/screenshot.png"
+        );
+        assert_eq!(result_message.attachments[0].file_name, "screenshot.png");
+        assert_eq!(
+            result_message.attachments[0].mime_type.as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(result_message.attachments[0].size_bytes, 3);
     }
 }

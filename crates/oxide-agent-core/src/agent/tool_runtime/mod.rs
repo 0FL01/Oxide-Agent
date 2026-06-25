@@ -26,70 +26,71 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
-#[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdModuleContext;
-#[cfg(feature = "tool-agents-md")]
+#[cfg(oxide_module_tool_agents_md)]
 pub use modules::AgentsMdToolModule;
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 pub use modules::BraveSearchToolModule;
-#[cfg(feature = "tool-compression")]
+pub use modules::BrowserLiveModuleContext;
+#[cfg(oxide_module_tool_browser_live)]
+pub use modules::BrowserLiveToolModule;
+pub use modules::BrowserSessionCleanup;
+#[cfg(oxide_module_tool_compression)]
 pub use modules::CompressionToolModule;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_crw)]
 pub use modules::CrwSearchToolModule;
-#[cfg(feature = "tool-delegation")]
+#[cfg(oxide_module_tool_delegation)]
 pub use modules::DelegationToolModule;
-#[cfg(feature = "tool-file-delivery")]
+#[cfg(oxide_module_tool_file_delivery)]
 pub use modules::FileDeliveryToolModule;
-#[cfg(feature = "integration-mcp-jira")]
+#[cfg(oxide_module_integration_mcp_jira)]
 pub use modules::JiraMcpToolModule;
-#[cfg(feature = "tool-tts-kokoro")]
+#[cfg(oxide_module_tool_tts_kokoro)]
 pub use modules::KokoroTtsToolModule;
-#[cfg(feature = "manager-control-plane")]
 pub use modules::ManagerControlPlaneModuleContext;
-#[cfg(feature = "manager-control-plane")]
+#[cfg(oxide_module_manager_control_plane)]
 pub use modules::ManagerControlPlaneToolModule;
-#[cfg(feature = "integration-mcp-mattermost")]
+#[cfg(oxide_module_integration_mcp_mattermost)]
 pub use modules::MattermostMcpToolModule;
-#[cfg(feature = "tool-media-audio")]
+#[cfg(oxide_module_tool_media_audio)]
 pub use modules::MediaAudioToolModule;
-#[cfg(feature = "tool-media-image")]
+#[cfg(oxide_module_tool_media_image)]
 pub use modules::MediaImageToolModule;
-#[cfg(feature = "tool-media-video")]
+#[cfg(oxide_module_tool_media_video)]
 pub use modules::MediaVideoToolModule;
-#[cfg(feature = "tool-reminder")]
+#[cfg(oxide_module_tool_reminder)]
 pub use modules::ReminderToolModule;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 pub use modules::SandboxExecToolModule;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 pub use modules::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-sandbox-recreate")]
+#[cfg(oxide_module_tool_sandbox_recreate)]
 pub use modules::SandboxRecreateToolModule;
-#[cfg(feature = "tool-tts-silero")]
+#[cfg(oxide_module_tool_tts_silero)]
 pub use modules::SileroTtsToolModule;
-#[cfg(feature = "integration-ssh-mcp")]
 pub use modules::SshMcpModuleContext;
-#[cfg(feature = "integration-ssh-mcp")]
+#[cfg(oxide_module_integration_ssh_mcp)]
 pub use modules::SshMcpToolModule;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 pub use modules::StackLogsToolModule;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 pub use modules::TavilyToolModule;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 pub use modules::TodosToolModule;
 pub use modules::ToolModuleContextParts;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub use modules::WebCrawlerToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 pub use modules::WebFetchMdToolModule;
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 pub use modules::WikiMemoryToolModule;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 pub use modules::YtdlpToolModule;
 pub use modules::{ToolModule, ToolModuleContext};
 pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,
-    ToolOutput, ToolOutputIdentity, ToolOutputStatus,
+    ToolOutput, ToolOutputIdentity, ToolOutputImageAttachment, ToolOutputStatus,
 };
 pub use process::ProcessManager;
 pub use provider_opencode_go::{

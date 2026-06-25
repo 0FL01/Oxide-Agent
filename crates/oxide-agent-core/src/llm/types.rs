@@ -42,8 +42,10 @@ pub struct Message {
     /// Optional reasoning/thinking content required by some thinking-mode chat providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    /// Provider-facing tool call id echoed by chat-like providers.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Legacy provider-facing tool call id retained for backward-compatible
+    /// deserialization of old checkpoints. New serialization omits this field;
+    /// `tool_call_correlation` is the sole persisted source of truth.
+    #[serde(skip_serializing)]
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,9 +56,6 @@ pub struct Message {
     /// Tool calls made by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Canonical correlation metadata for assistant tool call batches.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
 }
 
 impl Message {
@@ -72,7 +71,6 @@ impl Message {
             tool_call_correlation: None,
             name: None,
             tool_calls: None,
-            tool_call_correlations: None,
         }
     }
 
@@ -88,7 +86,6 @@ impl Message {
             tool_call_correlation: None,
             name: None,
             tool_calls: None,
-            tool_call_correlations: None,
         }
     }
 
@@ -105,8 +102,6 @@ impl Message {
         reasoning_content: Option<String>,
         tool_calls: Vec<ToolCall>,
     ) -> Self {
-        let tool_call_correlations = (!tool_calls.is_empty())
-            .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
@@ -116,7 +111,6 @@ impl Message {
             tool_call_correlation: None,
             name: None,
             tool_calls: Some(tool_calls),
-            tool_call_correlations,
         }
     }
 
@@ -134,7 +128,7 @@ impl Message {
     /// Create a new tool response message with explicit canonical correlation metadata.
     #[must_use]
     pub fn tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: &str,
@@ -144,11 +138,10 @@ impl Message {
             content: content.to_string(),
             content_parts: Vec::new(),
             reasoning_content: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
         }
     }
 
@@ -164,7 +157,6 @@ impl Message {
             tool_call_correlation: None,
             name: None,
             tool_calls: None,
-            tool_call_correlations: None,
         }
     }
 
@@ -177,16 +169,13 @@ impl Message {
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
+    ///
+    /// Derives from each `ToolCall`'s own correlation. Since `ToolCall::new()`
+    /// always seeds the correlation, this never needs a separate stored vector.
     #[must_use]
     pub fn resolved_tool_call_correlations(&self) -> Option<Vec<ToolCallCorrelation>> {
         let tool_calls = self.tool_calls.as_ref()?;
-        let derived: Vec<ToolCallCorrelation> =
-            tool_calls.iter().map(ToolCall::correlation).collect();
-
-        match &self.tool_call_correlations {
-            Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
-            _ => Some(derived),
-        }
+        Some(tool_calls.iter().map(ToolCall::correlation).collect())
     }
 
     /// Return the stable text projection used by text-only providers and memory logic.
@@ -242,7 +231,10 @@ pub struct ToolDefinition {
 /// Tool call from LLM response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Runtime invocation identifier for the tool call.
+    /// Legacy runtime invocation identifier retained for backward-compatible
+    /// deserialization of old checkpoints. New serialization omits this field;
+    /// `tool_call_correlation` is the sole persisted source of truth.
+    #[serde(default, skip_serializing)]
     pub id: String,
     /// Canonical correlation metadata for provider-specific tool transports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,12 +248,17 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    /// Build a tool call with an invocation id and no provider-specific correlation metadata.
+    /// Build a tool call with an invocation id and canonical correlation metadata.
+    ///
+    /// The correlation is seeded from the invocation id so that `invocation_id()`,
+    /// `wire_tool_call_id()`, and `correlation()` always return from the stored
+    /// correlation without lazy derivation.
     #[must_use]
     pub fn new(id: impl Into<String>, function: ToolCallFunction, is_recovered: bool) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
-            tool_call_correlation: None,
+            tool_call_correlation: Some(ToolCallCorrelation::new(id.clone())),
+            id,
             function,
             is_recovered,
         }

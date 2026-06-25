@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(any(oxide_module_llm_provider_opencode_go, oxide_module_tool_wiki_memory)),
+    allow(dead_code)
+)]
+
 use super::*;
 use crate::agent::{AgentExecutionEffort, AgentExecutionOptions};
 
@@ -185,7 +190,7 @@ fn execution_options_reasoning_override_wins_over_runtime_effort() {
     assert_eq!(options.effort, AgentExecutionEffort::Heavy);
 }
 
-#[cfg(feature = "tool-wiki-memory")]
+#[cfg(oxide_module_tool_wiki_memory)]
 #[test]
 fn executor_exposes_wiki_memory_tools_when_store_configured() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -200,6 +205,7 @@ fn executor_exposes_wiki_memory_tools_when_store_configured() {
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_delete"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn new_task_clears_stale_todos_before_completion_check() {
     let mut executor = build_executor_with_mock_response(
@@ -223,6 +229,7 @@ async fn new_task_clears_stale_todos_before_completion_check() {
     assert!(executor.session().memory.todos.items.is_empty());
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
     let mut executor = build_executor_with_mock_response(
@@ -253,6 +260,7 @@ async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
     assert!(!messages[boundary_index].content.contains("1779802440"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
@@ -296,14 +304,14 @@ async fn executor_injects_configured_wiki_memory_context() {
     provider
         .expect_complete_internal_text()
         .returning(|_, _, _, _, _| {
-            Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
+            Err(crate::llm::LlmError::unknown("Not implemented".to_string()))
         });
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
@@ -325,6 +333,7 @@ async fn manual_compaction_uses_current_compaction_controller() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
+        agent_model_context_window_tokens: Some(100),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
@@ -337,35 +346,49 @@ async fn manual_compaction_uses_current_compaction_controller() {
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
     executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor.session_mut().memory.set_max_tokens(100);
     executor
         .session_mut()
         .memory
         .add_message(crate::agent::memory::AgentMessage::user_task(
             "Ship compaction",
         ));
+    // Add enough old messages to create a compressible range.
+    // Using large content to exceed the tail target budget.
+    for i in 0..5 {
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user_turn(format!(
+                "old {i}: {}",
+                "x".repeat(200)
+            )));
+    }
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::summary(
-            "[COMPACTION_SUMMARY]\nOld summary",
-        ));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 1"));
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 2"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 3"));
 
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
-    let outcome = executor
+    executor
         .compact_current_context(Some(progress_tx))
         .await
         .expect("manual compaction succeeds");
@@ -382,24 +405,32 @@ async fn manual_compaction_uses_current_compaction_controller() {
         });
     }
 
-    assert_eq!(outcome.metadata.generation, 1);
-    assert_eq!(outcome.metadata.provider, "opencode-go");
-    assert_eq!(outcome.metadata.route, "deepseek-v4-flash");
-    assert!(outcome.replacement.history_items_after <= outcome.replacement.history_items_before);
-    let messages = executor.session().memory.get_messages();
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message
-                .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
-            .count(),
-        1
-    );
+    // New system: block created in CompactionState, raw memory preserved.
     assert!(
-        messages
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "compaction should have created an active block"
+    );
+    // Raw messages are preserved (not replaced).
+    assert!(
+        executor
+            .session()
+            .memory
+            .get_messages()
             .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]"))
+            .any(|m| m.content.contains("old 0:")),
+        "raw memory should be preserved"
+    );
+    // Rendered context should be smaller (block summary replaces old messages).
+    let rendered = executor.session().memory.rendered_messages();
+    assert!(
+        rendered
+            .iter()
+            .any(|m| m.content.contains("Compressed conversation section")),
+        "rendered context should contain block summary"
     );
     assert_eq!(event_names, vec!["runtime_started", "runtime_completed"]);
 }
@@ -409,6 +440,7 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
+        agent_model_context_window_tokens: Some(100),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
@@ -421,28 +453,46 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
     );
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
     executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor.session_mut().memory.set_max_tokens(100);
     executor
         .session_mut()
         .memory
         .add_message(crate::agent::memory::AgentMessage::user_task(
             "Ship compaction",
         ));
+    // Add enough old messages for first compaction.
+    for i in 0..5 {
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user_turn(format!(
+                "old {i}: {}",
+                "x".repeat(200)
+            )));
+    }
     executor
         .session_mut()
         .memory
-        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 1"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 2"));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue 3"));
 
-    let mut outcome_generations = Vec::new();
     let mut event_generations = Vec::new();
     for turn in [
         "after first compact",
@@ -450,11 +500,10 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
         "after third compact",
     ] {
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
-        let outcome = executor
+        executor
             .compact_current_context(Some(progress_tx))
             .await
             .expect("manual compaction succeeds");
-        outcome_generations.push(outcome.metadata.generation);
 
         while let Some(event) = progress_rx.recv().await {
             if let crate::agent::progress::AgentEvent::RuntimeCompactionCompleted {
@@ -466,31 +515,30 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
             }
         }
 
-        executor
-            .session_mut()
-            .memory
-            .add_message(crate::agent::memory::AgentMessage::user(turn));
+        // Add more large messages for the next compaction.
+        for i in 0..3 {
+            executor.session_mut().memory.add_message(
+                crate::agent::memory::AgentMessage::user_turn(format!(
+                    "{turn} extra {i}: {}",
+                    "y".repeat(200)
+                )),
+            );
+        }
     }
 
-    assert_eq!(outcome_generations, vec![1, 2, 3]);
+    // Block refs are monotonic (b1, b2, b3).
     assert_eq!(event_generations, vec![1, 2, 3]);
-    let messages = executor.session().memory.get_messages();
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message
-                .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
-            .count(),
-        1
-    );
     assert!(
-        messages
-            .iter()
-            .any(|message| message.content.contains("generation: 3"))
+        executor
+            .session()
+            .memory
+            .compaction_state()
+            .has_active_blocks(),
+        "should have active blocks after repeated compaction"
     );
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -530,6 +578,7 @@ async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     assert!(log.contains("post-run wiki memory candidate capture"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_prefers_contentful_final_answer_for_explicit_remember() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -556,6 +605,7 @@ async fn executor_prefers_contentful_final_answer_for_explicit_remember() {
     assert!(!page_entry.contains("# explicit-remember\n\nRemember this: my lucky number"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -585,6 +635,7 @@ async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
     assert!(page_entry.contains("перед деплоем запускать smoke tests"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn executor_spawns_wiki_memory_flush_without_blocking_completed_result() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -621,6 +672,7 @@ async fn executor_spawns_wiki_memory_flush_without_blocking_completed_result() {
     assert!(page_entry.contains("background wiki flush must not block completion"));
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn background_writer_extracts_previous_message_for_empty_remember_payload() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -663,10 +715,10 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
         });
     provider
         .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
-        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
     llm.register_provider("opencode-go".to_string(), Arc::new(provider));
@@ -723,6 +775,7 @@ fn executor_timeout_check_uses_configured_value_and_ignores_idle_sessions() {
     assert!(!executor.is_timed_out());
 }
 
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test]
 async fn execute_new_task_remembers_task_and_appends_single_user_task() {
     let mut executor = build_executor_with_mock_response(
@@ -745,4 +798,69 @@ async fn execute_new_task_remembers_task_and_appends_single_user_task() {
         .filter(|message| message.kind == crate::agent::compaction::AgentMessageKind::UserTask)
         .count();
     assert_eq!(user_task_count, 1);
+}
+
+#[cfg(oxide_module_llm_provider_opencode_go)]
+#[tokio::test]
+async fn new_task_admission_inline_for_normal_input() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#,
+    );
+    executor.session_mut().memory.set_max_tokens(5000);
+
+    let result = executor.execute("Ship the feature", None).await;
+    assert!(result.is_ok());
+
+    let user_task_msg = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .find(|m| m.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .expect("UserTask message should exist");
+
+    // Inline: content is the raw text, no externalized payload.
+    assert_eq!(user_task_msg.content, "Ship the feature");
+    assert!(user_task_msg.externalized_payload.is_none());
+}
+
+#[cfg(oxide_module_llm_provider_opencode_go)]
+#[tokio::test]
+async fn new_task_admission_manifest_for_oversized_input() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#,
+    );
+    // inline_threshold = max(2000, 5000/4) = 2000 tokens.
+    // A ~12000-char varied-text string is ~3000 tokens → Manifest.
+    executor.session_mut().memory.set_max_tokens(5000);
+
+    let huge_task = "The quick brown fox jumps over the lazy dog. ".repeat(300);
+
+    let result = executor.execute(&huge_task, None).await;
+    assert!(result.is_ok());
+
+    let user_task_msg = executor
+        .session()
+        .memory
+        .get_messages()
+        .iter()
+        .find(|m| m.kind == crate::agent::compaction::AgentMessageKind::UserTask)
+        .expect("UserTask message should exist");
+
+    // Manifest: content is bounded with manifest header, not the full raw text.
+    assert!(user_task_msg.content.contains("[Externalized content"));
+    // Manifest is ~1500 chars (head+tail preview + metadata); raw is ~13200 chars.
+    assert!(user_task_msg.content.len() < huge_task.len() / 2);
+
+    // Lossless raw content preserved in externalized_payload.
+    assert!(user_task_msg.externalized_payload.is_some());
+    let payload = user_task_msg
+        .externalized_payload
+        .as_ref()
+        .expect("manifest payload should be attached");
+    let raw = payload
+        .inline_fallback
+        .as_ref()
+        .expect("inline_fallback should be set");
+    assert!(raw.contains(&huge_task));
 }

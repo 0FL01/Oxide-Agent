@@ -18,8 +18,9 @@ use crate::agent::runner::{
 };
 use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
-    OutputNormalizer, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
-    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolExecutor,
+    ToolInvocation, ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
+    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
     AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
@@ -41,34 +42,37 @@ use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "tool-brave-search")]
+#[cfg(oxide_module_tool_brave_search)]
 use crate::agent::tool_runtime::BraveSearchToolModule;
-#[cfg(feature = "tool-crw")]
+#[cfg(oxide_module_tool_browser_live)]
+use crate::agent::tool_runtime::BrowserLiveToolModule;
+#[cfg(oxide_module_tool_crw)]
 use crate::agent::tool_runtime::CrwSearchToolModule;
-#[cfg(feature = "tool-sandbox-exec")]
+#[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
-#[cfg(feature = "tool-sandbox-fileops")]
+#[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-tavily")]
+#[cfg(oxide_module_tool_tavily)]
 use crate::agent::tool_runtime::TavilyToolModule;
-#[cfg(feature = "tool-todos")]
+#[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-brave-search",
-    feature = "tool-crw",
-    feature = "tool-tavily",
-    feature = "tool-todos",
-    feature = "tool-webfetch-md",
-    feature = "tool-ytdlp"
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_brave_search,
+    oxide_module_tool_browser_live,
+    oxide_module_tool_crw,
+    oxide_module_tool_tavily,
+    oxide_module_tool_todos,
+    oxide_module_tool_webfetch_md,
+    oxide_module_tool_ytdlp
 ))]
 use crate::agent::tool_runtime::ToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebCrawlerToolModule;
-#[cfg(feature = "tool-webfetch-md")]
+#[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
-#[cfg(feature = "tool-ytdlp")]
+#[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::tool_runtime::YtdlpToolModule;
 use tokio::sync::Semaphore;
 
@@ -170,15 +174,17 @@ pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
     #[cfg_attr(
         not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-ytdlp",
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_ytdlp,
         )),
         allow(dead_code)
     )]
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
+    browser_live_context: Option<BrowserLiveModuleContext>,
+    inherited_model: Option<crate::config::ModelInfo>,
     jobs: Arc<SubAgentJobStore>,
 }
 
@@ -204,6 +210,7 @@ struct PreparedSubAgentExecution {
     compaction_controller: CompactionController,
     progress_tx: Option<mpsc::Sender<AgentEvent>>,
     progress_relay_task: Option<JoinHandle<()>>,
+    browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -563,6 +570,8 @@ impl DelegationProvider {
             sandbox_scope: sandbox_scope.into(),
             settings,
             topic_agents_md_context: None,
+            browser_live_context: None,
+            inherited_model: None,
             jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
     }
@@ -583,6 +592,23 @@ impl DelegationProvider {
                 topic_id,
             });
         }
+        self
+    }
+
+    /// Inherit the parent's browser-live context so sub-agents can use
+    /// browser tools with the parent's artifact storage scope.
+    #[cfg(oxide_module_tool_browser_live)]
+    #[must_use]
+    pub fn with_browser_live_context(mut self, ctx: Option<BrowserLiveModuleContext>) -> Self {
+        self.browser_live_context = ctx;
+        self
+    }
+
+    /// Inherit the parent session's effective model so sub-agents use it when
+    /// no explicit sub-agent model is configured.
+    #[must_use]
+    pub fn with_inherited_model(mut self, model: Option<crate::config::ModelInfo>) -> Self {
+        self.inherited_model = model;
         self
     }
 
@@ -694,58 +720,87 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .collect()
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
         memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Vec<Arc<dyn ToolExecutor>> {
+    ) -> (
+        Vec<Arc<dyn ToolExecutor>>,
+        Option<Arc<dyn BrowserSessionCleanup>>,
+    ) {
         let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
         let module_ctx =
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
         #[cfg(not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-brave-search",
-            feature = "tool-crw",
-            feature = "tool-tavily",
-            feature = "tool-todos",
-            feature = "tool-webfetch-md",
-            feature = "tool-ytdlp"
+            oxide_module_tool_sandbox_exec,
+            oxide_module_tool_sandbox_fileops,
+            oxide_module_tool_brave_search,
+            oxide_module_tool_browser_live,
+            oxide_module_tool_crw,
+            oxide_module_tool_tavily,
+            oxide_module_tool_todos,
+            oxide_module_tool_webfetch_md,
+            oxide_module_tool_ytdlp
         )))]
         let _ = (&module_ctx, &mut executors);
 
-        #[cfg(feature = "tool-todos")]
+        #[cfg(oxide_module_tool_todos)]
         self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-sandbox-exec")]
+        #[cfg(oxide_module_tool_sandbox_exec)]
         self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-sandbox-fileops")]
+        #[cfg(oxide_module_tool_sandbox_fileops)]
         self.push_sub_agent_tool_module(&mut executors, &SandboxFileOpsToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-ytdlp")]
+        #[cfg(oxide_module_tool_ytdlp)]
         self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.push_sub_agent_tool_module(&mut executors, &WebCrawlerToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-webfetch-md")]
+        #[cfg(oxide_module_tool_webfetch_md)]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-tavily")]
+        #[cfg(oxide_module_tool_tavily)]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-brave-search")]
+        #[cfg(oxide_module_tool_brave_search)]
         self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-crw")]
+        #[cfg(oxide_module_tool_crw)]
         self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
+
+        #[cfg(oxide_module_tool_browser_live)]
+        let browser_cleanup = self.push_sub_agent_browser_module(&mut executors, &module_ctx);
+
+        #[cfg(not(oxide_module_tool_browser_live))]
+        let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
 
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
-        executors
+        (executors, browser_cleanup)
+    }
+
+    /// Register browser-live tools for a sub-agent and return the shared
+    /// provider `Arc` for RAII cleanup.
+    #[cfg(oxide_module_tool_browser_live)]
+    fn push_sub_agent_browser_module(
+        &self,
+        executors: &mut Vec<Arc<dyn ToolExecutor>>,
+        ctx: &ToolModuleContext,
+    ) -> Option<Arc<dyn BrowserSessionCleanup>> {
+        let module = BrowserLiveToolModule;
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            return None;
+        }
+        let provider = module.shared_provider(ctx)?;
+        executors.extend(provider.tool_runtime_executors());
+        Some(provider)
     }
 
     fn build_sub_agent_tool_module_context(
@@ -766,31 +821,27 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             sandbox_runtime,
             llm_client: Arc::clone(&self.llm_client),
             settings: Arc::clone(&self.settings),
-            #[cfg(feature = "tool-agents-md")]
             agents_md_context: None,
-            #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: None,
-            #[cfg(feature = "integration-ssh-mcp")]
             ssh_mcp_context: None,
-            #[cfg(feature = "tool-reminder")]
+            browser_live_context: self.browser_live_context.clone(),
             reminder_context: None,
-            #[cfg(feature = "tool-wiki-memory")]
             wiki_memory_store: None,
-            #[cfg(feature = "tool-wiki-memory")]
             memory_scope: _memory_scope,
             progress_tx: progress_tx.cloned(),
+            inherited_model: None,
         })
     }
 
     #[cfg(any(
-        feature = "tool-sandbox-exec",
-        feature = "tool-sandbox-fileops",
-        feature = "tool-brave-search",
-        feature = "tool-crw",
-        feature = "tool-tavily",
-        feature = "tool-todos",
-        feature = "tool-webfetch-md",
-        feature = "tool-ytdlp"
+        oxide_module_tool_sandbox_exec,
+        oxide_module_tool_sandbox_fileops,
+        oxide_module_tool_brave_search,
+        oxide_module_tool_crw,
+        oxide_module_tool_tavily,
+        oxide_module_tool_todos,
+        oxide_module_tool_webfetch_md,
+        oxide_module_tool_ytdlp
     ))]
     fn push_sub_agent_tool_module<M>(
         &self,
@@ -809,17 +860,17 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
-        #[cfg(not(feature = "tool-tavily"))]
+        #[cfg(not(oxide_module_tool_tavily))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(not(feature = "tool-brave-search"))]
+        #[cfg(not(oxide_module_tool_brave_search))]
         if crate::config::is_brave_search_enabled() {
             warn!("Brave Search enabled but feature not compiled in");
         }
 
-        #[cfg(not(feature = "tool-crw"))]
+        #[cfg(not(oxide_module_tool_crw))]
         if crate::config::is_crw_enabled() {
             warn!("CRW enabled but feature not compiled in");
         }
@@ -1006,7 +1057,26 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         }
     }
 
-    fn build_sub_agent_runner_config(&self, model: &crate::config::ModelInfo) -> AgentRunnerConfig {
+    /// Resolve sub-agent model routes with priority:
+    /// 1. Explicit sub-agent config (env/config)
+    /// 2. Inherited parent session model (e.g. web UI selection)
+    /// 3. Global agent routes fallback
+    fn resolve_sub_agent_model_routes(&self) -> Vec<crate::config::ModelInfo> {
+        let explicit = self.settings.explicit_sub_agent_model_routes();
+        if !explicit.is_empty() {
+            return explicit;
+        }
+        if let Some(inherited) = self.inherited_model.clone() {
+            return vec![inherited];
+        }
+        self.settings.get_configured_agent_model_routes()
+    }
+
+    fn build_sub_agent_runner_config(
+        &self,
+        model: &crate::config::ModelInfo,
+        model_routes: Vec<crate::config::ModelInfo>,
+    ) -> AgentRunnerConfig {
         AgentRunnerConfig::new(
             model.id.clone(),
             get_sub_agent_max_iterations(),
@@ -1015,7 +1085,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             model.max_output_tokens,
         )
         .with_model_provider(model.provider.clone())
-        .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
+        .with_model_routes(model_routes)
         .with_sub_agent(true)
     }
 
@@ -1035,12 +1105,14 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let task_uuid = Uuid::new_v4();
         let task_id = format!("sub-{task_uuid}");
         let name = self.unique_sub_agent_display_name(task_uuid, reserved_names);
-        let model_routes = self.settings.get_configured_sub_agent_model_routes();
+        let model_routes = self.resolve_sub_agent_model_routes();
         let model = model_routes
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_sub_agent_model());
-        let sub_agent_context_budget = self.settings.get_sub_agent_internal_context_budget_tokens();
+        let sub_agent_context_budget = self
+            .settings
+            .sub_agent_internal_context_budget_for_model(&model);
         let topic_agents_md = self.load_topic_agents_md().await?;
         let sub_session = Self::build_sub_agent_session(
             task.as_str(),
@@ -1051,7 +1123,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
             spawn_sub_agent_progress_relay(progress_tx, task_id.clone(), name.clone());
-        let executors = self.build_sub_agent_tool_runtime_executors(
+        let (executors, browser_cleanup) = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
             AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
             sub_agent_progress_tx.as_ref(),
@@ -1083,10 +1155,11 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             todos_arc,
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
-            runner_config: self.build_sub_agent_runner_config(&model),
+            runner_config: self.build_sub_agent_runner_config(&model, model_routes),
             compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
+            browser_cleanup,
         })
     }
 
@@ -1375,6 +1448,13 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let status = Self::status_for_timed_run_result(&outcome);
         Self::finish_sub_agent_progress_relay(&mut prepared).await;
 
+        // RAII cleanup: close any browser sessions the sub-agent left open.
+        // Runs on every outcome (success, timeout, cancel, error) to prevent
+        // Chromium process leaks at the sidecar.
+        if let Some(cleanup) = &prepared.browser_cleanup {
+            cleanup.close_all_sessions().await;
+        }
+
         let output = Self::shape_sub_agent_terminal_output_for_settings(
             &settings,
             outcome,
@@ -1574,7 +1654,9 @@ fn summarize_recent_messages(memory: &AgentMemory) -> Vec<serde_json::Value> {
             "content": content,
             "reasoning": reasoning,
             "tool_name": message.tool_name.as_deref(),
-            "tool_call_id": message.tool_call_id.as_deref(),
+            "tool_call_id": message
+                .resolved_tool_call_correlation()
+                .map(|c| c.invocation_id.into_inner()),
         }));
     }
     items.reverse();
@@ -1610,7 +1692,7 @@ mod tests {
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
     };
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{InvocationId, LlmClient};
     use crate::storage::MockStorageProvider;
     use chrono::Utc;
@@ -2073,6 +2155,7 @@ mod tests {
         assert!(parent_rx.recv().await.is_none());
     }
 
+    #[cfg(oxide_module_tool_todos)]
     #[tokio::test]
     async fn prepare_sub_agent_execution_applies_sub_agent_budget_policy() {
         let settings = Arc::new(AgentSettings {
@@ -2118,6 +2201,7 @@ mod tests {
         assert!(ctx.tool_runtime_registry.is_some());
     }
 
+    #[cfg(oxide_module_tool_todos)]
     #[tokio::test]
     async fn prepare_sub_agent_execution_inherits_topic_agents_md() {
         let mut storage = MockStorageProvider::new();
@@ -2209,7 +2293,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
+        let (executors, _browser_cleanup) =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
@@ -2225,7 +2309,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
+        let (executors, _browser_cleanup) =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
@@ -2236,9 +2320,9 @@ mod tests {
         assert!(!tools.contains("upload_file"));
         assert!(!tools.contains("recreate_sandbox"));
 
-        #[cfg(feature = "tool-sandbox-exec")]
+        #[cfg(oxide_module_tool_sandbox_exec)]
         assert!(tools.contains("execute_command"));
-        #[cfg(feature = "tool-sandbox-fileops")]
+        #[cfg(oxide_module_tool_sandbox_fileops)]
         for tool in ["write_file", "read_file", "apply_file_edit", "list_files"] {
             assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
         }
@@ -2297,6 +2381,77 @@ mod tests {
         assert!(report.contains(r#""status": "timeout""#));
         assert!(report.contains("Sub-agent hard timed out after 75 seconds"));
         assert!(report.contains(r#""timeout_secs": 45"#));
+    }
+
+    #[test]
+    fn sub_agent_inherits_parent_model_when_no_explicit_sub_agent_config() {
+        let settings = Arc::new(AgentSettings::default());
+        let inherited = ModelInfo {
+            id: "opencode-go/mimo-v2.5".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 8192,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_inherited_model(Some(inherited));
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/mimo-v2.5");
+        assert_eq!(routes[0].context_window_tokens, 128_000);
+    }
+
+    #[test]
+    fn sub_agent_explicit_config_overrides_inherited_parent_model() {
+        let explicit = ModelInfo {
+            id: "opencode-go/sub-model".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 64_000,
+            weight: 1,
+        };
+        let settings = Arc::new(AgentSettings {
+            sub_agent_model_routes: Some(vec![explicit]),
+            ..AgentSettings::default()
+        });
+        let inherited = ModelInfo {
+            id: "opencode-go/mimo-v2.5".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 8192,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
+                .with_inherited_model(Some(inherited));
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/sub-model");
+    }
+
+    #[test]
+    fn sub_agent_falls_back_to_agent_routes_without_inherited_model() {
+        let agent_route = ModelInfo {
+            id: "opencode-go/deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 64_000,
+            weight: 1,
+        };
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![agent_route]),
+            ..AgentSettings::default()
+        });
+        // No inherited model — simulates Telegram or a session without override.
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+
+        let routes = provider.resolve_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

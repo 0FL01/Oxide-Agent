@@ -10,6 +10,10 @@
 
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
+#![cfg_attr(
+    not(oxide_module_llm_provider_opencode_go),
+    allow(dead_code, unused_imports)
+)]
 //! This error comes from reqwest when `response.json().await` fails, typically when:
 //! - Server returns HTML error page instead of JSON
 //! - Server returns empty or malformed body
@@ -54,7 +58,7 @@ impl LlmProvider for JsonDecodeRetryMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
+        Err(LlmError::unknown(
             "unexpected internal text call in json decode test".to_string(),
         ))
     }
@@ -97,6 +101,7 @@ impl LlmProvider for JsonDecodeRetryMock {
 }
 
 /// Test that JSON decoding errors are detected and retried
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
@@ -149,6 +154,7 @@ async fn test_json_decoding_error_retried_on_failure() {
 }
 
 /// Test that JSON decoding errors eventually succeed after retry
+#[cfg(oxide_module_llm_provider_opencode_go)]
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {
@@ -228,7 +234,7 @@ async fn test_json_error_distinguished_from_network_error() {
     // Verify that JSON errors are different from Network errors
     let json_error = LlmError::JsonError("error decoding response body".to_string());
     let network_error = LlmError::NetworkError("connection refused".to_string());
-    let api_error = LlmError::ApiError("500 Internal Server Error".to_string());
+    let api_error = LlmError::api_error_status(500, "500 Internal Server Error");
 
     // All should have different Display representations
     let json_str = json_error.to_string();

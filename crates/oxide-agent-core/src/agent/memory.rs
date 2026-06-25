@@ -4,15 +4,14 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRetention,
-    OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
+    AgentMessageKind, ArchiveRef, CompactionRenderer, CompactionRetention, CompactionState,
+    RenderPolicy, count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
-use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
+use crate::agent::recovery::repair_agent_message_history_runtime;
+use crate::llm::{Message, TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
@@ -42,7 +41,10 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
-    /// Provider-facing tool call id echoed by chat-like providers.
+    /// Legacy provider-facing tool call id retained for backward-compatible
+    /// deserialization of old checkpoints. New serialization omits this field;
+    /// `tool_call_correlation` is the sole persisted source of truth.
+    #[serde(skip_serializing)]
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
     #[serde(default)]
@@ -51,9 +53,6 @@ pub struct AgentMessage {
     pub tool_name: Option<String>,
     /// Tool calls made by assistant
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Canonical correlation metadata for assistant tool call batches.
-    #[serde(default)]
-    pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
     /// Safe persisted refs for user-provided attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AgentMessageAttachment>,
@@ -67,8 +66,9 @@ pub struct AgentMessage {
 
 /// Safe persisted reference to an attachment associated with a user message.
 ///
-/// Raw bytes are intentionally absent; provider-native media parts are resolved
-/// transiently from `sandbox_path` immediately before an LLM request.
+/// Raw bytes are intentionally absent from persistence; provider-native media
+/// parts are resolved transiently from `sandbox_path` or inline `data`
+/// immediately before an LLM request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentMessageAttachment {
@@ -83,6 +83,19 @@ pub struct AgentMessageAttachment {
     pub size_bytes: u64,
     /// Absolute sandbox path where the upload was staged.
     pub sandbox_path: String,
+    /// Canonical artifact URI for Postgres lookup (e.g.
+    /// `artifact://browser/{task}/{session}/step-0001-milestone.jpg`).
+    /// Serialized and persisted in checkpoints so the runner can reload
+    /// image bytes from `browser_artifacts` after inline `data` is lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_uri: Option<String>,
+    /// Inline image bytes when available from the tool (e.g. browser screenshots
+    /// stored in Postgres, not on filesystem). Transient: not serialized,
+    /// not persisted. After deserialization this is always `None`, and the
+    /// runner resolves bytes from Postgres via `artifact_uri` or falls back
+    /// to reading from `sandbox_path`.
+    #[serde(skip, default)]
+    pub data: Option<Vec<u8>>,
 }
 
 impl AgentMessageAttachment {
@@ -100,7 +113,38 @@ impl AgentMessageAttachment {
             mime_type,
             size_bytes,
             sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
+            data: None,
         }
+    }
+
+    /// Create an image attachment with inline bytes (no filesystem read needed).
+    #[must_use]
+    pub fn image_with_data(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            kind: AgentMessageAttachmentKind::Image,
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+            artifact_uri: None,
+            data: Some(data),
+        }
+    }
+
+    /// Set the artifact URI for Postgres-based image resolution.
+    /// Used by browser tools to link the attachment to its `browser_artifacts`
+    /// row so the runner can reload bytes after checkpoint save/load.
+    #[must_use]
+    pub fn with_artifact_uri(mut self, uri: impl Into<String>) -> Self {
+        self.artifact_uri = Some(uri.into());
+        self
     }
 }
 
@@ -142,29 +186,6 @@ pub struct PrunedArtifact {
     pub archive_ref: Option<ArchiveRef>,
 }
 
-/// Outcome of an atomic compacted-history replacement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactedHistoryReplacementOutcome {
-    /// Approximate token count before replacement.
-    pub token_before: usize,
-    /// Approximate token count after replacement.
-    pub token_after: usize,
-    /// Message count before replacement.
-    pub history_items_before: usize,
-    /// Message count after replacement.
-    pub history_items_after: usize,
-    /// Validation repair result. Normal replacement requires `applied == false`.
-    pub repair_outcome: HistoryRepairOutcome,
-}
-
-/// Error that prevents compacted-history replacement before mutation.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum CompactedHistoryReplacementError {
-    /// Replacement would require runtime history repair, so the builder is unsafe.
-    #[error("compacted history replacement failed tool-history validation")]
-    InvalidToolHistory(HistoryRepairOutcome),
-}
-
 /// Role of a message sender in agent memory
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
@@ -196,7 +217,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -223,7 +244,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -247,7 +268,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -266,7 +287,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -285,7 +306,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -304,7 +325,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -326,7 +347,7 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -345,7 +366,7 @@ impl AgentMessage {
 
     /// Create a new tool response message with explicit canonical correlation metadata.
     pub fn tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: &str,
@@ -356,11 +377,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -385,7 +406,7 @@ impl AgentMessage {
 
     /// Create a tool result placeholder with explicit canonical correlation metadata.
     pub fn externalized_tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: impl Into<String>,
@@ -397,11 +418,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
@@ -428,7 +449,7 @@ impl AgentMessage {
 
     /// Create a pruned tool result placeholder with explicit canonical correlation metadata.
     pub fn pruned_tool_with_correlation(
-        tool_call_id: &str,
+        _tool_call_id: &str,
         tool_call_correlation: ToolCallCorrelation,
         name: &str,
         content: impl Into<String>,
@@ -441,11 +462,11 @@ impl AgentMessage {
             content: content.into(),
             created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
-            tool_call_id: Some(tool_call_id.to_string()),
+            tool_call_id: None,
             tool_call_correlation: Some(tool_call_correlation),
             tool_name: Some(name.to_string()),
             tool_calls: None,
-            tool_call_correlations: None,
+
             attachments: Vec::new(),
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
@@ -463,8 +484,6 @@ impl AgentMessage {
         reasoning: Option<String>,
         tool_calls: Vec<ToolCall>,
     ) -> Self {
-        let tool_call_correlations = (!tool_calls.is_empty())
-            .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
@@ -475,7 +494,6 @@ impl AgentMessage {
             tool_call_correlation: None,
             tool_name: None,
             tool_calls: Some(tool_calls),
-            tool_call_correlations,
             attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
@@ -495,28 +513,6 @@ impl AgentMessage {
         Self {
             kind: AgentMessageKind::Summary,
             ..Self::system_context(content)
-        }
-    }
-
-    /// Create a Codex-style runtime compacted summary message.
-    pub fn compacted_summary(
-        summary_text: impl AsRef<str>,
-        metadata: &CompactedSummaryMetadata,
-    ) -> Self {
-        Self {
-            kind: AgentMessageKind::Summary,
-            role: MessageRole::System,
-            content: format_compacted_summary(summary_text.as_ref(), metadata),
-            created_at_unix: Some(current_timestamp_unix_secs()),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            attachments: Vec::new(),
-            externalized_payload: None,
-            pruned_artifact: None,
         }
     }
 
@@ -560,16 +556,13 @@ impl AgentMessage {
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
+    ///
+    /// Derives from each `ToolCall`'s own correlation. Since `ToolCall::new()`
+    /// always seeds the correlation, this never needs a separate stored vector.
     #[must_use]
     pub fn resolved_tool_call_correlations(&self) -> Option<Vec<ToolCallCorrelation>> {
         let tool_calls = self.tool_calls.as_ref()?;
-        let derived: Vec<ToolCallCorrelation> =
-            tool_calls.iter().map(ToolCall::correlation).collect();
-
-        match &self.tool_call_correlations {
-            Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
-            _ => Some(derived),
-        }
+        Some(tool_calls.iter().map(ToolCall::correlation).collect())
     }
 
     /// Return the stable text projection used by compaction and text-only providers.
@@ -599,6 +592,18 @@ impl AgentMessage {
             &[]
         }
     }
+
+    /// Return safe attachment refs for messages that may carry native image parts.
+    ///
+    /// User turns and tool result messages can both include image attachments for
+    /// vision-capable routes.
+    #[must_use]
+    pub fn native_image_attachments(&self) -> &[AgentMessageAttachment] {
+        match self.role {
+            MessageRole::User | MessageRole::Tool => &self.attachments,
+            _ => &[],
+        }
+    }
 }
 
 /// Agent memory for the active hot context window
@@ -613,6 +618,11 @@ pub struct AgentMemory {
     /// Last request-scoped token usage reported by the LLM API.
     #[serde(default)]
     last_api_usage: Option<TokenUsage>,
+    /// Compaction overlay state — tracks blocks, refs, and strategy decisions.
+    /// The renderer uses this to produce compacted model-facing context.
+    /// Old checkpoints without this field deserialize to `CompactionState::default()`.
+    #[serde(default)]
+    compaction_state: CompactionState,
 }
 
 impl AgentMemory {
@@ -625,6 +635,7 @@ impl AgentMemory {
             token_count: 0,
             max_tokens,
             last_api_usage: None,
+            compaction_state: CompactionState::default(),
         }
     }
 
@@ -771,44 +782,16 @@ impl AgentMemory {
         self.todos.clear();
         self.token_count = 0;
         self.last_api_usage = None;
+        self.compaction_state = CompactionState::default();
     }
 
     /// Replace hot memory messages and recalculate token accounting.
     pub fn replace_messages(&mut self, messages: Vec<AgentMessage>) {
         self.messages = messages;
         self.last_api_usage = None;
+        self.compaction_state = CompactionState::default();
         self.recalculate_token_count();
         self.repair_history_after_mutation("replace_messages");
-    }
-
-    /// Atomically replace hot memory with prevalidated compacted history.
-    ///
-    /// Unlike `replace_messages`, this method validates the replacement before
-    /// mutation and rejects histories that would need tool-call repair.
-    pub fn replace_compacted_history(
-        &mut self,
-        messages: Vec<AgentMessage>,
-    ) -> Result<CompactedHistoryReplacementOutcome, CompactedHistoryReplacementError> {
-        let token_before = self.token_count;
-        let history_items_before = self.messages.len();
-        let (validated, repair_outcome) = repair_agent_message_history_runtime(&messages);
-        if repair_outcome.applied || validated.len() != messages.len() {
-            return Err(CompactedHistoryReplacementError::InvalidToolHistory(
-                repair_outcome,
-            ));
-        }
-
-        self.messages = messages;
-        self.last_api_usage = None;
-        self.recalculate_token_count();
-
-        Ok(CompactedHistoryReplacementOutcome {
-            token_before,
-            token_after: self.token_count,
-            history_items_before,
-            history_items_after: self.messages.len(),
-            repair_outcome,
-        })
     }
 
     fn repair_history_after_mutation(&mut self, boundary: &'static str) {
@@ -820,6 +803,11 @@ impl AgentMemory {
         self.messages = repaired_messages;
         self.recalculate_token_count();
         self.last_api_usage = None;
+        // Repair may drop messages from the middle (orphaned tool results),
+        // which shifts indices and invalidates any compaction block ranges.
+        // Reset compaction state to a clean slate — blocks will be recomputed
+        // by the engine on the next compaction trigger.
+        self.compaction_state = CompactionState::default();
         warn!(
             boundary,
             dropped_tool_results = outcome.dropped_tool_results,
@@ -857,6 +845,67 @@ impl AgentMemory {
         }
         let percent = (self.token_count * 100) / self.max_tokens;
         u8::try_from(percent.min(100)).unwrap_or(100)
+    }
+
+    // ── Compaction overlay: rendered context boundary ──
+
+    /// Render the model-facing `Vec<Message>` from raw transcript + compaction state.
+    ///
+    /// This is the single boundary through which the runner sends messages to LLM
+    /// providers. When `CompactionState` is empty, output is identical to the
+    /// base `AgentMessage` → `Message` conversion (identity rendering).
+    #[must_use]
+    pub fn rendered_messages(&self) -> Vec<Message> {
+        CompactionRenderer::render(
+            &self.messages,
+            &self.compaction_state,
+            &RenderPolicy::default(),
+        )
+    }
+
+    /// Estimated token count of the rendered model context.
+    ///
+    /// When `CompactionState` is empty, this equals `token_count()` because
+    /// the renderer is identity. When active blocks exist, this counts tokens
+    /// from the rendered output (which replaces covered messages with block
+    /// summaries), and may be smaller than the raw transcript.
+    #[must_use]
+    pub fn rendered_token_count(&self) -> usize {
+        let rendered = self.rendered_messages();
+        rendered
+            .iter()
+            .map(|msg| {
+                let mut tokens = crate::agent::compaction::count_tokens_cached(&msg.content);
+                if let Some(reasoning) = &msg.reasoning_content {
+                    tokens = tokens
+                        .saturating_add(crate::agent::compaction::count_tokens_cached(reasoning));
+                }
+                tokens
+            })
+            .sum()
+    }
+
+    /// Number of items in the rendered model context.
+    ///
+    /// When `CompactionState` is empty, this equals `get_messages().len()`.
+    /// When active blocks exist, covered messages are replaced by synthetic
+    /// summary messages, so this may differ from the raw message count.
+    #[must_use]
+    pub fn rendered_item_count(&self) -> usize {
+        self.rendered_messages().len()
+    }
+
+    /// Read-only access to compaction overlay state.
+    #[must_use]
+    pub const fn compaction_state(&self) -> &CompactionState {
+        &self.compaction_state
+    }
+
+    /// Mutable access to compaction overlay state.
+    ///
+    /// Only the `CompactionEngine` (future) should mutate this.
+    pub fn compaction_state_mut(&mut self) -> &mut CompactionState {
+        &mut self.compaction_state
     }
 }
 
@@ -897,42 +946,6 @@ fn format_duration_part(value: i64, unit: &str) -> String {
     format!("{value} {unit}{suffix}")
 }
 
-fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
-    let guidance = compacted_summary_guidance(metadata.wiki_memory_lookup_available);
-    let wiki_metadata_line = if metadata.wiki_memory_lookup_available {
-        "wiki_memory_lookup_available: true\n"
-    } else {
-        ""
-    };
-    // Only `generation` and `wiki_memory_lookup_available` are kept in prompt-visible text.
-    // `generation` is required by `previous_generation()` in controller.rs to chain
-    // compaction generations correctly. `wiki_memory_lookup_available` affects the model's
-    // tool-use decisions. All other metadata (reason, phase, provider, route, token counts,
-    // created_at, etc.) is purely diagnostic and is already logged via
-    // `log_runtime_compaction_success` (runtime_compaction.rs).
-    // Keeping them out of the prompt prevents cache-busting on every compaction round.
-    format!(
-        "{prefix}\n\
-generation: {generation}\n\
-{wiki_metadata_line}\n\
-{guidance}\n\n\
-{summary}",
-        prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
-        generation = metadata.generation,
-        wiki_metadata_line = wiki_metadata_line,
-        guidance = guidance,
-        summary = summary_text.trim(),
-    )
-}
-
-fn compacted_summary_guidance(wiki_memory_lookup_available: bool) -> &'static str {
-    if wiki_memory_lookup_available {
-        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages. If a missing durable fact, preference, decision, procedure, or project detail matters, use wiki_memory_search, wiki_memory_read, or wiki_memory_list before guessing. Wiki Memory is durable background, not a full transcript."
-    } else {
-        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
-    }
-}
-
 impl AgentMessage {
     #[must_use]
     fn is_topic_agents_md(&self) -> bool {
@@ -969,6 +982,91 @@ mod tests {
         let message = AgentMessage::user_task("Ship temporal context");
 
         assert!(message.created_at_unix.is_some());
+    }
+
+    #[test]
+    fn compaction_state_defaults_on_new() {
+        let memory = AgentMemory::new(4096);
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_clear() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("test"));
+        memory.clear();
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_replace_messages() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("original"));
+        memory.replace_messages(vec![AgentMessage::user_task("replaced")]);
+        assert!(memory.compaction_state().is_empty());
+    }
+
+    #[test]
+    fn compaction_state_resets_on_repair() {
+        // When repair removes an orphaned tool result from the middle,
+        // compaction state must be reset because block index ranges become invalid.
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task"));
+        memory.add_message(AgentMessage::assistant_with_tools(
+            "calling tool",
+            vec![tool_call("call-1", "search")],
+        ));
+        memory.add_message(AgentMessage::tool("call-1", "search", "result"));
+
+        // Make compaction state non-default by allocating a block id.
+        memory.compaction_state_mut().allocate_block_id();
+        assert!(!memory.compaction_state().is_empty());
+
+        // Add an orphaned tool result — triggers repair which drops it
+        // and resets compaction_state.
+        memory.add_message(AgentMessage::tool("orphan", "read_file", "orphan result"));
+
+        assert!(memory.compaction_state().is_empty());
+        // Orphan should have been dropped by repair.
+        assert_eq!(memory.get_messages().len(), 3);
+    }
+
+    #[test]
+    fn old_json_without_compaction_state_deserializes() {
+        // Simulates old checkpoint JSON without compaction_state field.
+        // serde(default) should produce CompactionState::default().
+        let old_json = json!({
+            "messages": [{"kind": "UserTask", "role": "User", "content": "hello"}],
+            "todos": {"items": []},
+            "token_count": 10,
+            "max_tokens": 4096
+        });
+        let memory: AgentMemory =
+            serde_json::from_value(old_json).expect("old JSON must deserialize");
+        assert!(memory.compaction_state().is_empty());
+        assert_eq!(memory.get_messages().len(), 1);
+    }
+
+    #[test]
+    fn rendered_messages_identity_for_empty_state() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task"));
+        memory.add_message(AgentMessage::assistant("response"));
+
+        // rendered_messages should produce same count and content as raw
+        let rendered = memory.rendered_messages();
+        assert_eq!(rendered.len(), memory.get_messages().len());
+        for (r, raw) in rendered.iter().zip(memory.get_messages().iter()) {
+            assert_eq!(r.content, raw.content);
+        }
+    }
+
+    #[test]
+    fn rendered_token_count_equals_token_count_for_empty_state() {
+        let mut memory = AgentMemory::new(4096);
+        memory.add_message(AgentMessage::user_task("task with some tokens"));
+        memory.add_message(AgentMessage::assistant("response with more tokens"));
+        assert_eq!(memory.rendered_token_count(), memory.token_count());
     }
 
     #[test]
@@ -1025,10 +1123,13 @@ mod tests {
         );
         let user =
             AgentMessage::user_turn("See attached").with_user_attachments(vec![attachment.clone()]);
-        let assistant =
-            AgentMessage::assistant("No media here").with_user_attachments(vec![attachment]);
+        let assistant = AgentMessage::assistant("No media here")
+            .with_user_attachments(vec![attachment.clone()]);
+        let mut tool = AgentMessage::tool("call-1", "describe_image_file", "result");
+        tool.attachments.push(attachment);
 
         assert!(assistant.attachments.is_empty());
+        assert_eq!(tool.native_image_attachments(), tool.attachments.as_slice());
 
         let value = serde_json::to_value(&user).expect("message serializes");
         assert_eq!(value["attachments"][0]["kind"], json!("image"));
@@ -1038,6 +1139,46 @@ mod tests {
         );
         assert!(value["attachments"][0].get("bytes").is_none());
         assert!(value["attachments"][0].get("base64").is_none());
+    }
+
+    #[test]
+    fn attachment_artifact_uri_survives_checkpoint_roundtrip() {
+        let uri = "artifact://browser/task-1/br-abc/step-0001-milestone.jpg";
+        let attachment = AgentMessageAttachment::image_with_data(
+            "step-0001-milestone.jpg",
+            Some("image/jpeg".to_string()),
+            120_000,
+            "/workspace/.oxide/tool-artifacts/browser/task-1/br-abc/step-0001-milestone.jpg",
+            vec![0xFF, 0xD8, 0xFF, 0xE0],
+        )
+        .with_artifact_uri(uri);
+
+        let mut tool = AgentMessage::tool("call-1", "browser_observe", "result");
+        tool.attachments.push(attachment);
+
+        // Serialize → simulate checkpoint persist (data is #[serde(skip)])
+        let serialized = serde_json::to_vec(&tool).expect("message serializes");
+        let restored: AgentMessage =
+            serde_json::from_slice(&serialized).expect("message deserializes");
+
+        let restored_attachment = &restored.attachments[0];
+        // artifact_uri survives the roundtrip
+        assert_eq!(restored_attachment.artifact_uri.as_deref(), Some(uri));
+        // data is lost (#[serde(skip)]) — this is expected, runner resolves via artifact_uri
+        assert!(restored_attachment.data.is_none());
+    }
+
+    #[test]
+    fn attachment_without_artifact_uri_serializes_cleanly() {
+        let attachment = AgentMessageAttachment::image(
+            "screen.jpg",
+            Some("image/jpeg".to_string()),
+            128,
+            "/workspace/uploads/screen.jpg",
+        );
+        let value = serde_json::to_value(&attachment).expect("serializes");
+        // artifact_uri should be absent (skip_serializing_if = Option::is_none)
+        assert!(value.get("artifact_uri").is_none() || value["artifact_uri"].is_null());
     }
 
     #[test]
@@ -1200,50 +1341,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_compacted_history_replaces_valid_history_atomically() {
-        let mut memory = AgentMemory::new(100_000);
-        memory.add_message(AgentMessage::user("Before"));
-        let token_before = memory.token_count();
-
-        let outcome = memory
-            .replace_compacted_history(vec![
-                AgentMessage::summary("[OXIDE_COMPACTED_SUMMARY_V1]\nsummary"),
-                AgentMessage::user("After"),
-            ])
-            .expect("valid compacted history replaces memory");
-
-        assert_eq!(outcome.token_before, token_before);
-        assert_eq!(outcome.history_items_before, 1);
-        assert_eq!(outcome.history_items_after, 2);
-        assert!(!outcome.repair_outcome.applied);
-        assert_eq!(memory.get_messages()[1].content, "After");
-        assert!(memory.token_count() > 0);
-    }
-
-    #[test]
-    fn replace_compacted_history_rejects_invalid_history_without_mutation() {
-        let mut memory = AgentMemory::new(100_000);
-        memory.add_message(AgentMessage::user("Before"));
-        let token_before = memory.token_count();
-
-        let err = memory
-            .replace_compacted_history(vec![AgentMessage::tool(
-                "call-orphan",
-                "search",
-                "orphan result",
-            )])
-            .expect_err("orphan tool result is rejected");
-
-        assert!(matches!(
-            err,
-            CompactedHistoryReplacementError::InvalidToolHistory(_)
-        ));
-        assert_eq!(memory.get_messages().len(), 1);
-        assert_eq!(memory.get_messages()[0].content, "Before");
-        assert_eq!(memory.token_count(), token_before);
-    }
-
-    #[test]
     fn test_topic_agents_md_detection() {
         let mut memory = AgentMemory::new(100_000);
         assert!(!memory.has_topic_agents_md());
@@ -1305,65 +1402,13 @@ mod tests {
         assert_eq!(summary.retention(), CompactionRetention::Pinned);
     }
 
-    fn compacted_summary_metadata(wiki_memory_lookup_available: bool) -> CompactedSummaryMetadata {
-        CompactedSummaryMetadata {
-            generation: 1,
-            reason: crate::agent::compaction::CompactionReason::Manual,
-            phase: crate::agent::compaction::CompactionPhase::Manual,
-            token_before: 100,
-            token_after: 10,
-            history_items_before: 3,
-            history_items_after: 1,
-            provider: "mock".to_string(),
-            route: "mock-model".to_string(),
-            backend: crate::agent::compaction::CompactionBackend::LocalLlmSummary,
-            created_at: "2026-05-21T20:10:00+03:00".to_string(),
-            previous_summary_detected: false,
-            repair_applied: false,
-            wiki_memory_lookup_available,
-        }
-    }
-
-    #[test]
-    fn compacted_summary_guidance_mentions_wiki_when_lookup_tools_available() {
-        let summary = AgentMessage::compacted_summary(
-            "Current state and next steps.",
-            &compacted_summary_metadata(true),
-        );
-
-        assert!(summary.content.contains("Agent Mode hot context compacted"));
-        assert!(
-            summary
-                .content
-                .contains("wiki_memory_lookup_available: true")
-        );
-        assert!(summary.content.contains("wiki_memory_search"));
-        assert!(
-            summary
-                .content
-                .contains("Wiki Memory is durable background, not a full transcript.")
-        );
-    }
-
-    #[test]
-    fn compacted_summary_fallback_guidance_does_not_mention_wiki() {
-        let summary = AgentMessage::compacted_summary(
-            "Current state and next steps.",
-            &compacted_summary_metadata(false),
-        );
-
-        assert!(summary.content.contains(
-            "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
-        ));
-        assert!(!summary.content.to_ascii_lowercase().contains("wiki"));
-    }
-
     #[test]
     fn test_tool_message_serialization_includes_canonical_correlation_fields() {
         let message = AgentMessage::tool("call-1", "execute_command", "stdout");
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_call_id"], json!("call-1"));
+        // tool_call_id is no longer serialized; correlation is the sole persisted identity.
+        assert!(value.get("tool_call_id").is_none() || value["tool_call_id"].is_null());
         assert_eq!(
             value["tool_call_correlation"]["invocation_id"],
             json!("call-1")
@@ -1400,9 +1445,12 @@ mod tests {
         );
         let value = serde_json::to_value(&message).expect("message serializes");
 
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        // id is skip_serializing; correlation is the sole persisted identity.
+        assert!(
+            value["tool_calls"][0].get("id").is_none() || value["tool_calls"][0]["id"].is_null()
+        );
         assert_eq!(
-            value["tool_call_correlations"][0]["invocation_id"],
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
             json!("call-1")
         );
     }
@@ -1417,7 +1465,10 @@ mod tests {
         let value = serde_json::to_value(&message).expect("message serializes");
 
         assert_eq!(value["reasoning"], json!("thinking trace"));
-        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+        assert_eq!(
+            value["tool_calls"][0]["tool_call_correlation"]["invocation_id"],
+            json!("call-1")
+        );
     }
 
     #[test]
@@ -1442,7 +1493,6 @@ mod tests {
         });
         let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
-        assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
             Some(vec![ToolCallCorrelation::new("call-wire")])
@@ -1470,122 +1520,6 @@ mod tests {
                 .get_messages()
                 .iter()
                 .any(|message| message.content.starts_with("[Previous context compressed]"))
-        );
-    }
-
-    /// Compacted summary must not contain volatile metadata (timestamps, provider,
-    /// route, token counts) that changes between compaction rounds and busts the
-    /// prompt cache. Only `wiki_memory_lookup_available` is kept for tool-use
-    /// decisions. Full metadata is logged via `log_runtime_compaction_success`.
-    #[test]
-    fn compacted_summary_excludes_volatile_metadata() {
-        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
-
-        let metadata = CompactedSummaryMetadata {
-            generation: 3,
-            reason: CompactionReason::PreTurn,
-            phase: CompactionPhase::PreSampling,
-            token_before: 99_876,
-            token_after: 12_345,
-            history_items_before: 87,
-            history_items_after: 23,
-            provider: "openrouter".to_string(),
-            route: "anthropic/claude-sonnet-4".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-06-01T14:32:17.849032+00:00".to_string(),
-            previous_summary_detected: true,
-            repair_applied: false,
-            wiki_memory_lookup_available: true,
-        };
-
-        let summary = format_compacted_summary(
-            "The user asked to deploy the service. Three containers are running.",
-            &metadata,
-        );
-
-        assert!(summary.starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX));
-        assert!(summary.contains("generation: 3"));
-        assert!(summary.contains("wiki_memory_lookup_available: true"));
-        assert!(summary.contains("Agent Mode hot context compacted"));
-        assert!(summary.contains("deploy the service"));
-
-        // Volatile fields must NOT appear in prompt-visible text.
-        assert!(!summary.contains("reason:"));
-        assert!(!summary.contains("phase:"));
-        assert!(!summary.contains("provider:"));
-        assert!(!summary.contains("route:"));
-        assert!(!summary.contains("backend:"));
-        assert!(!summary.contains("token_before:"));
-        assert!(!summary.contains("token_after:"));
-        assert!(!summary.contains("history_items_before:"));
-        assert!(!summary.contains("history_items_after:"));
-        assert!(!summary.contains("created_at:"));
-        assert!(!summary.contains("previous_summary_detected:"));
-        assert!(!summary.contains("repair_applied:"));
-        assert!(!summary.contains("2026-06-01"));
-        assert!(!summary.contains("openrouter"));
-        assert!(!summary.contains("99_876"));
-    }
-
-    /// Two summaries with different metadata but same semantic text produce
-    /// nearly identical prompt-visible content — `generation` is the only
-    /// metadata field that differs (it is required for compaction chain).
-    #[test]
-    fn compacted_summary_differs_only_in_generation_across_metadata() {
-        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
-
-        let metadata_a = CompactedSummaryMetadata {
-            generation: 1,
-            reason: CompactionReason::Manual,
-            phase: CompactionPhase::Manual,
-            token_before: 50_000,
-            token_after: 10_000,
-            history_items_before: 40,
-            history_items_after: 15,
-            provider: "opencode-go".to_string(),
-            route: "deepseek-v4-flash".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-01-01T00:00:00+00:00".to_string(),
-            previous_summary_detected: false,
-            repair_applied: false,
-            wiki_memory_lookup_available: false,
-        };
-
-        let metadata_b = CompactedSummaryMetadata {
-            generation: 5,
-            reason: CompactionReason::ContextLimit,
-            phase: CompactionPhase::MidTurn,
-            token_before: 120_000,
-            token_after: 30_000,
-            history_items_before: 100,
-            history_items_after: 40,
-            provider: "openrouter".to_string(),
-            route: "anthropic/claude-sonnet-4".to_string(),
-            backend: CompactionBackend::LocalLlmSummary,
-            created_at: "2026-12-31T23:59:59+00:00".to_string(),
-            previous_summary_detected: true,
-            repair_applied: true,
-            wiki_memory_lookup_available: false,
-        };
-
-        let summary_a = format_compacted_summary("Same semantic content.", &metadata_a);
-        let summary_b = format_compacted_summary("Same semantic content.", &metadata_b);
-
-        // Only the generation line differs.
-        assert!(summary_a.contains("generation: 1"));
-        assert!(summary_b.contains("generation: 5"));
-
-        // Stripping the generation line makes them identical.
-        let strip_gen = |s: &str| -> String {
-            s.lines()
-                .filter(|line| !line.starts_with("generation:"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        assert_eq!(
-            strip_gen(&summary_a),
-            strip_gen(&summary_b),
-            "summaries with identical semantic text must differ only in generation"
         );
     }
 }

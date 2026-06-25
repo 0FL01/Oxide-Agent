@@ -1,7 +1,13 @@
 use super::CachedWikiPage;
 use super::cache::WikiSessionCache;
 use super::scope::wiki_context_id;
+use super::store::WikiStore;
+use crate::agent::prompt::{
+    DynamicPromptContextProvider, PromptContextBlock, PromptContextRequest, PromptContextResult,
+    PromptContextSemantics,
+};
 use crate::storage::StorageError;
+use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,6 +55,52 @@ pub struct WikiRenderedContext {
     pub loaded_keys: Vec<String>,
     /// Whether no durable wiki page content was available.
     pub is_empty: bool,
+}
+
+/// Dynamic prompt context provider that preserves ordinary chat-mode wiki memory behavior.
+pub struct WikiPromptContextProvider {
+    store: WikiStore,
+}
+
+impl WikiPromptContextProvider {
+    /// Create a dynamic context provider backed by the durable wiki store.
+    #[must_use]
+    pub const fn new(store: WikiStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl DynamicPromptContextProvider for WikiPromptContextProvider {
+    async fn build_blocks(
+        &self,
+        request: PromptContextRequest<'_>,
+    ) -> PromptContextResult<Vec<PromptContextBlock>> {
+        let cache = Arc::new(WikiSessionCache::new(self.store.clone()));
+        let assembler = WikiContextAssembler::new(
+            cache,
+            WikiContextAssemblerConfig {
+                fast_skip_fresh_web_session: should_fast_skip_fresh_web_session_wiki_context(
+                    request.context_key,
+                    request.memory_message_count,
+                ),
+                ..WikiContextAssemblerConfig::default()
+            },
+        );
+        let rendered = assembler
+            .assemble_for_context(request.user_id, request.context_key, request.task)
+            .await?;
+
+        if rendered.is_empty {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![PromptContextBlock::new(
+                "wiki_memory",
+                rendered.text,
+                PromptContextSemantics::EvidenceOnly,
+            )])
+        }
+    }
 }
 
 /// Builds bounded prompt context from deterministic wiki indexes and selected pages.
@@ -545,6 +597,13 @@ fn is_web_session_context(context_key: &str) -> bool {
     context_key.starts_with("web-session-")
 }
 
+pub(crate) fn should_fast_skip_fresh_web_session_wiki_context(
+    context_key: &str,
+    memory_message_count: usize,
+) -> bool {
+    is_web_session_context(context_key) && memory_message_count <= 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,12 +634,17 @@ mod tests {
         }
     }
 
+    fn test_prefix(label: &str) -> String {
+        format!("wiki-context-{label}-{}", uuid::Uuid::new_v4())
+    }
+
     #[tokio::test]
     async fn assembler_bootstraps_missing_indexes_without_writes() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = test_prefix("bootstrap");
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler =
             WikiContextAssembler::new(Arc::clone(&cache), WikiContextAssemblerConfig::default());
@@ -599,30 +663,32 @@ mod tests {
     async fn assembler_loads_overview_and_matching_topic_page() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("load");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n\n## Topic pages\n\n- [deploy-runbook](pages/deploy-runbook.md)\n  - tags: deploy, rollback\n  - summary: Deployment rollback procedure.\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nProject uses staged deploys.".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md"),
             "# Deploy Runbook\n\nRollback with compose pull previous image.".to_string(),
         );
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler = WikiContextAssembler::new(cache, WikiContextAssemblerConfig::default());
 
         let rendered = assembler
-            .assemble_for_context(42, "topic", "How do we rollback deploy?")
+            .assemble_for_context(42, &context_key, "How do we rollback deploy?")
             .await
             .expect("assembly should succeed");
 
@@ -636,32 +702,34 @@ mod tests {
     async fn assembler_reuses_cache_on_repeated_assembly() {
         crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("cache");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
                 .to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nCached fact.".to_string(),
         );
         let store_backend = Arc::clone(&backend);
-        let store = WikiStore::new(store_backend, "prod");
+        let store = WikiStore::new(store_backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler =
             WikiContextAssembler::new(Arc::clone(&cache), WikiContextAssemblerConfig::default());
 
         assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("first assembly should succeed");
         assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("second assembly should succeed");
 
@@ -672,21 +740,23 @@ mod tests {
     #[tokio::test]
     async fn assembler_respects_render_budget() {
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let context_id = wiki_context_id(42, "topic");
+        let prefix = test_prefix("budget");
+        let context_key = format!("topic-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
         backend.objects.lock().await.insert(
-            "prod/wiki/v1/global/index.md".to_string(),
+            format!("{prefix}/wiki/v1/global/index.md"),
             "# Wiki Index\n".to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/index.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
                 .to_string(),
         );
         backend.objects.lock().await.insert(
-            format!("prod/wiki/v1/contexts/{context_id}/overview.md"),
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
             "# Overview\n\nThis content is too large for the configured budget.".to_string(),
         );
-        let store = WikiStore::new(backend, "prod");
+        let store = WikiStore::new(backend, prefix);
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler = WikiContextAssembler::new(
             cache,
@@ -698,7 +768,7 @@ mod tests {
         );
 
         let rendered = assembler
-            .assemble_for_context(42, "topic", "facts")
+            .assemble_for_context(42, &context_key, "facts")
             .await
             .expect("assembly should succeed");
 
@@ -751,5 +821,61 @@ mod tests {
 
         assert!(rendered.is_empty);
         assert!(backend.get_keys.lock().await.is_empty());
+    }
+
+    #[test]
+    fn fresh_web_session_wiki_context_skip_is_limited_to_first_message() {
+        assert!(should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            1
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            2
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "telegram-topic",
+            1
+        ));
+    }
+
+    #[tokio::test]
+    async fn wiki_prompt_context_provider_returns_evidence_block() {
+        crate::agent::wiki_memory::cache::invalidate_shared_caches_for_tests().await;
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = test_prefix("provider");
+        let context_key = "project-alpha".to_string();
+        let context_id = wiki_context_id(42, &context_key);
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/global/index.md"),
+            "# Wiki Index\n".to_string(),
+        );
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/contexts/{context_id}/index.md"),
+            "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - project facts\n"
+                .to_string(),
+        );
+        backend.objects.lock().await.insert(
+            format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md"),
+            "# Project Overview\n\nPostgres remains source of truth.".to_string(),
+        );
+
+        let store_backend: Arc<dyn WikiObjectBackend> = backend;
+        let provider = WikiPromptContextProvider::new(WikiStore::new(store_backend, prefix));
+        let blocks = provider
+            .build_blocks(PromptContextRequest {
+                user_id: 42,
+                context_key: &context_key,
+                task: "source of truth",
+                memory_message_count: 2,
+            })
+            .await
+            .expect("wiki prompt context provider should build one evidence block");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].name, "wiki_memory");
+        assert_eq!(blocks[0].semantics, PromptContextSemantics::EvidenceOnly);
+        assert!(blocks[0].body.contains("Durable Wiki Memory"));
+        assert!(blocks[0].body.contains("Postgres remains source of truth"));
     }
 }

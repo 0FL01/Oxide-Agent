@@ -201,6 +201,14 @@ impl LlmProviderModule for OpenCodeZenProviderModule {
     fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
         self.capabilities()
     }
+
+    fn media_capabilities_for_model(&self, model_info: &ModelInfo) -> MediaCapabilities {
+        MediaCapabilities::new(
+            false,
+            super::discovery::supports_image_input_for_model_id(&model_info.id),
+            false,
+        )
+    }
 }
 
 fn configured_api_key(

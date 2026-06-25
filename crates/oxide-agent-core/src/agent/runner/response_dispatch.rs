@@ -6,8 +6,8 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::loop_detection::LoopDetectionOutcome;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
-use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
 use anyhow::{Result, anyhow};
@@ -78,14 +78,9 @@ impl AgentRunner {
             let final_answer =
                 final_answer.unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
-            if self.content_loop_detected(final_answer.as_str()).await {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        state,
-                        crate::agent::loop_detection::LoopType::ContentLoop,
-                    )
-                    .await);
+            let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+            if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+                return self.handle_loop_outcome(ctx, state, content_outcome).await;
             }
 
             let input = FinalResponseInput {
@@ -96,14 +91,9 @@ impl AgentRunner {
             return self.handle_final_response(ctx, state, input).await;
         }
 
-        if self.tool_loop_detected(&tool_calls).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ToolCallLoop,
-                )
-                .await);
+        let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+        if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
         if ctx.tool_runtime_registry.is_none() {
@@ -126,16 +116,11 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
-        let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
+        let tool_calls = std::mem::take(&mut response.tool_calls);
 
-        if self.tool_loop_detected(&tool_calls).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ToolCallLoop,
-                )
-                .await);
+        let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+        if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
         if ctx.tool_runtime_registry.is_some() {
@@ -196,14 +181,9 @@ impl AgentRunner {
                 let final_answer = final_answer
                     .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
-                if self.content_loop_detected(final_answer.as_str()).await {
-                    return Err(self
-                        .loop_detected_error(
-                            ctx,
-                            state,
-                            crate::agent::loop_detection::LoopType::ContentLoop,
-                        )
-                        .await);
+                let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+                if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+                    return self.handle_loop_outcome(ctx, state, content_outcome).await;
                 }
 
                 let input = FinalResponseInput {
@@ -214,14 +194,9 @@ impl AgentRunner {
                 return self.handle_final_response(ctx, state, input).await;
             }
 
-            if self.tool_loop_detected(&tool_calls).await {
-                return Err(self
-                    .loop_detected_error(
-                        ctx,
-                        state,
-                        crate::agent::loop_detection::LoopType::ToolCallLoop,
-                    )
-                    .await);
+            let tool_outcome = self.tool_loop_outcome(&tool_calls).await;
+            if !matches!(tool_outcome, LoopDetectionOutcome::NoLoop) {
+                return self.handle_loop_outcome(ctx, state, tool_outcome).await;
             }
 
             return self
@@ -241,14 +216,9 @@ impl AgentRunner {
             raw_output.clone()
         };
 
-        if self.content_loop_detected(final_answer.as_str()).await {
-            return Err(self
-                .loop_detected_error(
-                    ctx,
-                    state,
-                    crate::agent::loop_detection::LoopType::ContentLoop,
-                )
-                .await);
+        let content_outcome = self.content_loop_outcome(final_answer.as_str()).await;
+        if !matches!(content_outcome, LoopDetectionOutcome::NoLoop) {
+            return self.handle_loop_outcome(ctx, state, content_outcome).await;
         }
 
         let input = FinalResponseInput {
@@ -316,11 +286,23 @@ impl AgentRunner {
             .unwrap_or(true);
 
         if content_empty && response.tool_calls.is_empty() {
-            warn!(
-                model = %ctx.config.model_name,
-                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
-                "Model returned empty content"
-            );
+            if let Some(reasoning) = response.reasoning_content.take()
+                && !reasoning.trim().is_empty()
+            {
+                warn!(
+                    model = %ctx.config.model_name,
+                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    reasoning_len = reasoning.len(),
+                    "Model returned empty content with non-empty reasoning; promoting reasoning to content"
+                );
+                response.content = Some(reasoning);
+            } else {
+                warn!(
+                    model = %ctx.config.model_name,
+                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    "Model returned empty content"
+                );
+            }
         }
     }
 }
@@ -332,6 +314,11 @@ fn should_parse_unstructured_structured_output_fallback(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(
+        not(oxide_module_llm_provider_opencode_go),
+        allow(dead_code, unused_imports)
+    )]
+
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -345,6 +332,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
     async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
         let llm_client = build_llm_client_for_provider(
@@ -376,6 +364,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("unstructured-model".to_string(), 1, 1, 30, 256),
         };
 
@@ -430,6 +419,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("llm-provider/opencode-go"),
         };
@@ -500,6 +490,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
         let mut response = ChatResponse {
@@ -521,5 +512,102 @@ mod tests {
 
         assert_eq!(ctx.agent.memory().token_count(), estimated_tokens);
         assert_eq!(ctx.agent.memory().api_token_count(), Some(9_512));
+    }
+
+    #[tokio::test]
+    async fn preprocess_promotes_reasoning_to_content_when_content_empty() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "test reasoning promotion",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "reasoning-promotion",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 1, 1, 30, 256),
+        };
+        let mut response = ChatResponse {
+            content: None,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("The full answer is here in reasoning".to_string()),
+            usage: None,
+        };
+
+        runner
+            .preprocess_llm_response(&mut response, &mut ctx)
+            .await;
+
+        assert_eq!(
+            response.content.as_deref(),
+            Some("The full answer is here in reasoning")
+        );
+        assert!(response.reasoning_content.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_llm_response_uses_reasoning_as_final_answer_when_content_empty() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Find laptops"));
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Find laptops",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "reasoning-as-answer",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            storage: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go"),
+        };
+        let mut state = RunState::new();
+        let response = ChatResponse {
+            content: None,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("5 laptops found: ThinkPad, Dell, HP, Asus, Acer".to_string()),
+            usage: None,
+        };
+
+        let result = runner
+            .handle_llm_response(response, &mut ctx, &mut state)
+            .await
+            .expect("runner succeeds");
+
+        match result {
+            Some(AgentRunResult::Final(answer)) => {
+                assert_eq!(answer, "5 laptops found: ThinkPad, Dell, HP, Asus, Acer");
+            }
+            _ => panic!("expected Final with reasoning content, got non-Final result"),
+        }
     }
 }

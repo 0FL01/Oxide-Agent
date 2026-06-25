@@ -17,11 +17,6 @@
 ### Хуки саб-агентов
 - [**SubAgentSafetyHook**](sub-agent-safety.md) - ограничения и блокировка инструментов
 
-### Саб-агенты
-- [**Обзор саб-агентов**](sub-agents/index.md) - жизненный цикл и отличия от main agent
-- [**Механизм делегирования**](sub-agents/delegation.md) - `spawn_sub_agents`, `wait_sub_agents`, `cancel_sub_agents`
-- [**EphemeralSession**](sub-agents/ephemeral-session.md) - изолированная сессия саб-агента
-
 ### Примеры
 - [**Практические примеры**](examples.md) - кастомные хуки, последовательность выполнения, отладка
 
@@ -35,8 +30,8 @@
 | `AGENT_SEARCH_LIMIT` | 10 | Лимит поисковых запросов |
 | `AGENT_MAX_TOKENS` | 200,000 | Макс. токенов в памяти (main agent) |
 | `AGENT_MAX_ITERATIONS` | 200 | Макс. итераций (main agent, env override) |
-| `AGENT_TIMEOUT_SECS` | 600 | Тайм-аут агента (10 минут) |
-| `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций (sub-agent, env override) |
+| `AGENT_TIMEOUT_SECS` | 1800 | Тайм-аут агента (30 минут) |
+| `SUB_AGENT_MAX_ITERATIONS` | 2000 | Макс. итераций (sub-agent, env override) |
 | sub-agent context budget | inherited | Наследует budget основного агента, если не задан explicit override |
 
 ## Карта хуков по агентам
@@ -44,13 +39,18 @@
 ### Main Agent (оркестратор)
 ```
 ✅ CompletionCheckHook
-✅ SearchBudgetHook
-✅ TimeoutReportHook
+✅ HotContextHealthHook
+✅ RetrievalAdvisorHook (gated by HookAccessPolicy)
+✅ EpisodicExtractHook (gated by HookAccessPolicy)
+✅ SearchBudgetHook (policy-controlled)
+✅ ToolAccessPolicyHook
+✅ TimeoutReportHook (policy-controlled)
 ```
 
 ### Sub-Agent (рабочий)
 ```
 ✅ CompletionCheckHook
+✅ HotContextHealthHook
 ✅ SubAgentSafetyHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook

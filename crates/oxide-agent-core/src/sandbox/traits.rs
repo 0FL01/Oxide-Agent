@@ -1,13 +1,13 @@
 //! Narrow sandbox backend capability traits.
 
 use super::ExecResult;
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 use super::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
+use super::error::SandboxError;
 use super::{SandboxContainerRecord, SandboxScope};
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,8 +112,8 @@ pub struct SandboxApplyFileEditResult {
 /// Internal result of applying a sandbox text edit to in-memory bytes.
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -126,8 +126,8 @@ pub(crate) struct SandboxAppliedFileEdit {
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -136,7 +136,7 @@ pub(crate) fn apply_sandbox_file_edit(
     current: &[u8],
     edit: &SandboxFileEdit,
     read_guard: Option<&SandboxEditReadGuard>,
-) -> Result<SandboxAppliedFileEdit> {
+) -> Result<SandboxAppliedFileEdit, SandboxError> {
     let previous_sha256 = sha256_hex(current);
 
     if !current.is_empty() {
@@ -164,8 +164,8 @@ pub(crate) fn apply_sandbox_file_edit(
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -175,8 +175,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -185,25 +185,22 @@ fn validate_edit_read_guard(
     current_sha256: &str,
     current_bytes: usize,
     read_guard: Option<&SandboxEditReadGuard>,
-) -> Result<()> {
+) -> Result<(), SandboxError> {
     if current_bytes == 0 {
         return Ok(());
     }
 
     let read_guard = read_guard.ok_or_else(|| {
-        anyhow::anyhow!(
+        SandboxError::ReadGuardMismatch(format!(
             "file must be read with read_file before apply_file_edit; empty files are exempt: {path}"
-        )
+        ))
     })?;
 
     if read_guard.sha256 != current_sha256 {
-        anyhow::bail!(
+        return Err(SandboxError::ReadGuardMismatch(format!(
             "file changed after last read; call read_file again before editing: {path} (last_read_sha256={}, current_sha256={}, last_read_bytes={}, current_bytes={})",
-            read_guard.sha256,
-            current_sha256,
-            read_guard.bytes,
-            current_bytes
-        );
+            read_guard.sha256, current_sha256, read_guard.bytes, current_bytes
+        )));
     }
 
     Ok(())
@@ -211,43 +208,52 @@ fn validate_edit_read_guard(
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
-fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
+fn apply_exact_text_edit(
+    current: &[u8],
+    edit: &SandboxFileEdit,
+) -> Result<(Vec<u8>, usize), SandboxError> {
     if bytes_look_binary(current) {
-        anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
+        return Err(SandboxError::InvalidEdit(
+            "apply_file_edit only supports text files; binary content was detected".to_string(),
+        ));
     }
 
-    let current_text = str::from_utf8(current)
-        .map_err(|error| anyhow::anyhow!("apply_file_edit only supports UTF-8 text: {error}"))?;
+    let current_text = str::from_utf8(current).map_err(|error| {
+        SandboxError::InvalidEdit(format!("apply_file_edit only supports UTF-8 text: {error}"))
+    })?;
 
     if edit.expected_replacements == 0 {
-        anyhow::bail!("expected_replacements must be greater than zero");
+        return Err(SandboxError::InvalidEdit(
+            "expected_replacements must be greater than zero".to_string(),
+        ));
     }
 
     if edit.search.is_empty() {
         if current.is_empty() {
             if edit.expected_replacements != 1 {
-                anyhow::bail!(
+                return Err(SandboxError::InvalidEdit(format!(
                     "expected {} replacements, found 1 for empty-file insert; file was not modified",
                     edit.expected_replacements
-                );
+                )));
             }
             return Ok((edit.replace.as_bytes().to_vec(), 1));
         }
-        anyhow::bail!("search must not be empty for non-empty files");
+        return Err(SandboxError::InvalidEdit(
+            "search must not be empty for non-empty files".to_string(),
+        ));
     }
 
     let replacements = current_text.matches(&edit.search).count();
     if replacements != edit.expected_replacements {
-        anyhow::bail!(
+        return Err(SandboxError::InvalidEdit(format!(
             "expected {} replacements, found {}; file was not modified",
-            edit.expected_replacements,
-            replacements
-        );
+            edit.expected_replacements, replacements
+        )));
     }
 
     Ok((
@@ -260,8 +266,8 @@ fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<
 
 #[cfg_attr(
     not(any(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client",
+        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
 )]
@@ -292,82 +298,95 @@ pub trait SandboxExec: SandboxBackend {
         &self,
         command: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<ExecResult>;
+    ) -> Result<ExecResult, SandboxError>;
 }
 
 /// Sandbox file operation capability.
 #[async_trait]
 pub trait SandboxFileOps: SandboxBackend {
     /// Write bytes to a file in the current sandbox scope.
-    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()>;
+    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), SandboxError>;
 
     /// Read bytes from a file in the current sandbox scope.
-    async fn read_file(&self, path: &str) -> Result<Vec<u8>>;
+    async fn read_file(&self, path: &str) -> Result<Vec<u8>, SandboxError>;
 
     /// Return file size in bytes without reading the whole file.
     async fn file_size_bytes(
         &self,
         path: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<u64>;
+    ) -> Result<u64, SandboxError>;
 
     /// List files below a path in the current sandbox scope.
-    async fn list_files(&self, path: &str) -> Result<SandboxFileListing>;
+    async fn list_files(&self, path: &str) -> Result<SandboxFileListing, SandboxError>;
 
     /// Apply a targeted text edit to a file in the current sandbox scope.
     async fn apply_file_edit(
         &self,
         path: &str,
         edit: SandboxFileEdit,
-    ) -> Result<SandboxApplyFileEditResult>;
+    ) -> Result<SandboxApplyFileEditResult, SandboxError>;
 }
 
 /// Sandbox lifecycle capability.
 #[async_trait]
 pub trait SandboxLifecycle: SandboxBackend {
     /// Recreate the current sandbox scope.
-    async fn recreate(&self) -> Result<()>;
+    async fn recreate(&self) -> Result<(), SandboxError>;
 }
 
 /// Sandbox inventory and lifecycle administration capability.
 #[async_trait]
 pub trait SandboxAdmin: SandboxBackend {
     /// Destroy sandbox resources for a logical scope.
-    async fn destroy_scope(&self, scope: SandboxScope) -> Result<()>;
+    async fn destroy_scope(&self, scope: SandboxScope) -> Result<(), SandboxError>;
 
     /// List all sandbox instances owned by a user.
-    async fn list_user_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>>;
+    async fn list_user_sandboxes(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<SandboxContainerRecord>, SandboxError>;
 
     /// Inspect a user-owned sandbox instance by backend instance name.
     async fn inspect_sandbox_by_name(
         &self,
         user_id: i64,
         container_name: &str,
-    ) -> Result<Option<SandboxContainerRecord>>;
+    ) -> Result<Option<SandboxContainerRecord>, SandboxError>;
 
     /// Ensure a sandbox exists for a logical scope.
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+    async fn ensure_scope_sandbox(
+        &self,
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError>;
 
     /// Recreate the sandbox for a logical scope.
-    async fn recreate_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+    async fn recreate_scope_sandbox(
+        &self,
+        scope: SandboxScope,
+    ) -> Result<SandboxContainerRecord, SandboxError>;
 
     /// Delete a user-owned sandbox by backend instance name.
-    async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> Result<bool>;
+    async fn delete_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<bool, SandboxError>;
 }
 
 /// Sandbox diagnostics capability.
-#[cfg(feature = "tool-stack-logs")]
+#[cfg(oxide_module_tool_stack_logs)]
 #[async_trait]
 pub trait SandboxDiagnostics: SandboxBackend {
     /// List compose-stack log sources available to the diagnostics backend.
     async fn list_stack_log_sources(
         &self,
         request: StackLogsListSourcesRequest,
-    ) -> Result<StackLogsListSourcesResponse>;
+    ) -> Result<StackLogsListSourcesResponse, SandboxError>;
 
     /// Fetch bounded compose-stack logs from the diagnostics backend.
     async fn fetch_stack_logs(
         &self,
         request: StackLogsFetchRequest,
-    ) -> Result<StackLogsFetchResponse>;
+    ) -> Result<StackLogsFetchResponse, SandboxError>;
 }

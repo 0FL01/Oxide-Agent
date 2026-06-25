@@ -17,7 +17,6 @@ pub(super) fn prepare_structured_messages(
         history,
         ChatRequestOptions::new(ChatCompletionsProfile::openrouter())
             .with_native_image_parts(false),
-        None,
     )
 }
 
@@ -27,7 +26,7 @@ pub(super) fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<serde_json::Va
 }
 
 pub(super) fn parse_tool_calls(value: &serde_json::Value) -> Result<Vec<ToolCall>, LlmError> {
-    chat_response::parse_tool_calls(value, ChatCompletionsProfile::openrouter(), None)
+    chat_response::parse_tool_calls(value, ChatCompletionsProfile::openrouter())
 }
 
 #[cfg(test)]

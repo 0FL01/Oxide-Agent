@@ -62,10 +62,10 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
         .returning(move |_, _, _, _, _| Ok(response_text.to_string()));
 
     mock.expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
 
     mock.expect_analyze_image()
-        .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
 
     mock
 }

@@ -1,4 +1,6 @@
 //! Agent-native memory behavior hooks.
+//!
+//! Documentation: `docs/hooks/overview.md`
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};

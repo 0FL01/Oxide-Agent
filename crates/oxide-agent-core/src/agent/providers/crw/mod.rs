@@ -1,7 +1,7 @@
 //! CRW web research provider.
 //!
 //! Provides `web_search` backed by CRW `POST /v1/search` and a scrape
-//! client used by `web_crawler` fallback via CRW `POST /v1/scrape`.
+//! client used by `web_crawler` rendered modes via CRW `POST /v1/scrape`.
 //! Transient HTTP errors are retried automatically with exponential backoff.
 
 /// CRW HTTP client for search and scrape endpoints.

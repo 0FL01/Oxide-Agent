@@ -26,7 +26,7 @@ impl AgentRunner {
         let budget = estimate_request_budget(&policy, &request, ctx.agent);
 
         TokenSnapshot {
-            hot_memory_tokens: budget.hot_memory.total_tokens,
+            hot_memory_tokens: budget.hot_memory.rendered_tokens,
             system_prompt_tokens: budget.system_prompt_tokens,
             tool_schema_tokens: budget.tool_schema_tokens,
             total_input_tokens: budget.total_input_tokens,
@@ -91,7 +91,7 @@ impl AgentRunner {
     }
 
     pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
-        *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
+        *ctx.messages = ctx.agent.memory().rendered_messages();
     }
 }
 
@@ -129,6 +129,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
 
