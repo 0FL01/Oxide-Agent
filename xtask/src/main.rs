@@ -12,7 +12,6 @@ const PROFILE_ORDER: &[&str] = &[
     "full",
     "embedded-opencode-local",
     "web-embedded-opencode-local",
-    "search-only",
 ];
 
 const FORWARDING_CRATES: &[(&str, &str)] = &[

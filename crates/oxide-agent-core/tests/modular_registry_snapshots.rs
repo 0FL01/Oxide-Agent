@@ -1,7 +1,6 @@
 #![cfg(any(
     feature = "profile-embedded-opencode-local",
     feature = "profile-web-embedded-opencode-local",
-    feature = "profile-search-only",
     feature = "profile-full",
 ))]
 
@@ -402,21 +401,6 @@ fn assert_tool_availability_contract(
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
         }
-        "profile-search-only" => {
-            assert!(
-                enabled_module_ids.contains("tool/tavily"),
-                "search-only profile must compile and enable Tavily search capabilities"
-            );
-            assert_present_capabilities(
-                &enabled_capability_ids,
-                &["tool/tavily-search", "tool/tavily-extract"],
-                profile,
-            );
-            assert_present_tools(&tool_names, &["web_markdown"], profile);
-            assert_absent_tool_prefix(&tool_names, "jira_", profile);
-            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
-            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
-        }
         _ => {}
     }
 }
@@ -546,7 +530,6 @@ fn assert_absent_tool_prefix(tool_names: &BTreeSet<&str>, prefix: &str, context:
 fn compiled_profile_label() -> &'static str {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
         + cfg!(feature = "profile-web-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -557,8 +540,6 @@ fn compiled_profile_label() -> &'static str {
         "profile-embedded-opencode-local"
     } else if cfg!(feature = "profile-web-embedded-opencode-local") {
         "profile-web-embedded-opencode-local"
-    } else if cfg!(feature = "profile-search-only") {
-        "profile-search-only"
     } else {
         "profile-full"
     }

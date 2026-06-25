@@ -683,7 +683,6 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | `profile-full` | Full production deployment | All features |
 | `profile-embedded-opencode-local` | Telegram + local OpenCode | transport-telegram, storage-sqlx, llm-opencode-go, docker + sandboxd |
 | `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd, Browser Live tools |
-| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/brave-search/crw capability features |
 
 ### Atomic Features (selection)
 

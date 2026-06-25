@@ -35,7 +35,6 @@ profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-sqlx",
 ]
-profile-search-only = ["oxide-agent-core/profile-search-only", "storage-sqlx"]
 storage-sqlx = ["oxide-agent-core/storage-sqlx", "dep:oxide-agent-life"]
 
 [dev-dependencies]

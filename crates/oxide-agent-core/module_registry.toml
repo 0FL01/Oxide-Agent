@@ -7,7 +7,7 @@ id = "transport/telegram"
 cargo_feature = "transport-telegram"
 kind = "Transport"
 provides = ["transport/telegram"]
-profiles = ["full", "embedded-opencode-local", "search-only"]
+profiles = ["full", "embedded-opencode-local"]
 
 [[modules]]
 id = "transport/web"
@@ -21,7 +21,7 @@ id = "storage/sqlx"
 cargo_feature = "storage-sqlx"
 kind = "StorageBackend"
 provides = ["storage/sqlx"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "llm-provider/openai-chatgpt"
@@ -50,7 +50,7 @@ id = "llm-provider/opencode-go"
 cargo_feature = "llm-opencode-go"
 kind = "LlmProvider"
 provides = ["llm-provider/opencode-go"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "llm-provider/opencode-zen"
@@ -113,7 +113,7 @@ id = "tool/webfetch-md"
 cargo_feature = "tool-webfetch-md"
 kind = "Search"
 provides = ["tool/webfetch-md"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "tool/web-crawler"
@@ -127,21 +127,21 @@ id = "tool/tavily"
 cargo_feature = "tool-tavily"
 kind = "Search"
 provides = ["tool/tavily-search", "tool/tavily-extract"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "tool/brave-search"
 cargo_feature = "tool-brave-search"
 kind = "Search"
 provides = ["tool/brave-search"]
-profiles = ["full", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "tool/crw"
 cargo_feature = "tool-crw"
 kind = "Search"
 provides = ["tool/crw-search", "tool/crw-scrape"]
-profiles = ["full", "web-embedded-opencode-local", "search-only"]
+profiles = ["full", "web-embedded-opencode-local"]
 
 [[modules]]
 id = "tool/browser-live"

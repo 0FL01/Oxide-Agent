@@ -156,15 +156,6 @@ profile-web-embedded-opencode-local = [
     "tool-media-video",
     "sandbox-backend-sandboxd-client"
 ]
-profile-search-only = [
-    "transport-telegram",
-    "storage-sqlx",
-    "llm-opencode-go",
-    "tool-webfetch-md",
-    "tool-tavily",
-    "tool-brave-search",
-    "tool-crw"
-]
 # END OXIDE-REGISTRY: profiles
 
 # Transports
