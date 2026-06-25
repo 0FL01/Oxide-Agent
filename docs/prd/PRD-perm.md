@@ -1,8 +1,10 @@
 # PRD: `Permanent Life Mode` для Oxide Agent
 
-Статус: `local implementation complete; live Engram adapter blocked on V5 external verification`
+Статус: `local implementation complete; migration parked; live Engram adapter blocked on V5 external verification`
 
 Implementation status: see `docs/goals/2026-06-24-permanent-life-memory.md`; local implementation is complete and verified; live Engram adapter remains blocked on V5 raw API response evidence.
+
+Migration `0010_life_mode.sql` is parked as `0010_life_mode.sql.pending` until life mode runtime (worker, curator, Engram adapter, web UI) is ready. Rename back to `.sql` and restart to activate.
 
 Дата: `2026-06-20`
 
