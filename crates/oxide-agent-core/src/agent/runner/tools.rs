@@ -374,7 +374,7 @@ impl AgentRunner {
         // compaction controller so Oxide owns safe range selection.
         if output.success && tool_name == TOOL_COMPRESS {
             content =
-                Self::apply_compress_v2_checkpoint(ctx, state, output.structured_payload.as_ref())
+                Self::apply_compress_checkpoint(ctx, state, output.structured_payload.as_ref())
                     .await;
         }
 
@@ -464,12 +464,12 @@ impl AgentRunner {
         ctx.agent.memory_mut().add_message(memory_message);
     }
 
-    /// Apply a parsed v2 compress checkpoint through the compaction controller.
+    /// Apply a parsed compress checkpoint through the compaction controller.
     ///
     /// The tool executor is a pure parser — it cannot access `AgentMemory`.
     /// The runner owns runtime context and asks the controller to select a safe
     /// old-middle range. The LLM never supplies message refs or block refs.
-    async fn apply_compress_v2_checkpoint(
+    async fn apply_compress_checkpoint(
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         payload: Option<&serde_json::Value>,
@@ -1383,7 +1383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_v2_free_context_applies_auto_selection() {
+    async fn typed_runtime_compress_free_context_applies_auto_selection() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1426,7 +1426,7 @@ mod tests {
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "compress v2 through runtime",
+            task: "compress through runtime",
             system_prompt: "system prompt",
             date_suffix: "",
             tools: &tools,
@@ -1454,7 +1454,7 @@ mod tests {
         let mut state = RunState::new();
         let compress_args = r#"{
             "reason": "free_context",
-            "preserve": "Decision: compress v2 keeps range selection inside Oxide."
+            "preserve": "Decision: compress keeps range selection inside Oxide."
         }"#;
         let tool_call = ToolCall::new(
             "invoke-compress-1",
@@ -1494,7 +1494,7 @@ mod tests {
                 .compaction_state()
                 .previous_block_summary_text()
                 .expect("active block summary")
-                .contains("compress v2 keeps range selection inside Oxide")
+                .contains("compress keeps range selection inside Oxide")
         );
         // Tool result in memory must show compression success.
         let memory = ctx.agent.memory().get_messages();
@@ -1520,7 +1520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_runtime_compress_v2_checkpoint_skip_records_preserve_note() {
+    async fn typed_runtime_compress_checkpoint_skip_records_preserve_note() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -1548,14 +1548,14 @@ mod tests {
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "compress v2 checkpoint skip",
+            task: "compress checkpoint skip",
             system_prompt: "system prompt",
             date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "compress-v2-checkpoint-skip-test",
+            task_id: "compress-checkpoint-skip-test",
             messages: &mut messages,
             agent: &mut session,
             compaction_controller: Some(&compaction_controller),

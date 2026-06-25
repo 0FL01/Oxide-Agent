@@ -153,7 +153,7 @@ impl CompactionController {
 
     /// Run engine-based compaction with optional agent checkpoint guidance.
     ///
-    /// The guidance is used by the v2 `compress` tool. It does not affect range
+    /// The guidance is used by the `compress` tool. It does not affect range
     /// selection: the controller still owns safe old-middle selection and the
     /// engine still validates tool-batch/block invariants. Guidance only affects
     /// summary content and is appended deterministically to the committed block

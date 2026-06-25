@@ -1,6 +1,6 @@
 //! Agent-facing `compress` tool provider.
 //!
-//! V2 contract: the LLM does **not** choose message refs, ranges, block refs, or
+//! The LLM does **not** choose message refs, ranges, block refs, or
 //! nesting. It only records a checkpoint intent and the facts that must be
 //! preserved. The runner applies the request through the runtime compaction
 //! controller, which owns safe old-middle selection and delegates all invariant
@@ -114,10 +114,10 @@ pub struct CompressResult {
     /// Rendered item count after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_items_after: Option<usize>,
-    /// Human-readable area compressed by v2.
+    /// Human-readable area compressed by Oxide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compressed_area: Option<String>,
-    /// Human-readable area kept visible by v2.
+    /// Human-readable area kept visible by Oxide.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kept: Option<String>,
     /// Structured skip reason when no block was committed.
@@ -132,7 +132,7 @@ pub struct CompressResult {
 }
 
 impl CompressResult {
-    /// Build a result for an applied v2 checkpoint compression.
+    /// Build a result for an applied checkpoint compression.
     #[must_use]
     pub fn applied(request: &CompressRequest, outcome: &EngineCompactionOutcome) -> Self {
         Self {
@@ -315,14 +315,14 @@ fn compress_tool_schema() -> Value {
 
 // ── Argument parser ───────────────────────────────────────────────────
 
-/// Parse the compress tool arguments into a typed v2 checkpoint request.
+/// Parse the compress tool arguments into a typed checkpoint request.
 ///
 /// This is a pure function — no memory access, no side effects. It deliberately
 /// rejects the v1 `ranges`/`messages` contract so LLMs cannot keep using manual
 /// boundary selection.
 fn parse_compress_arguments(arguments: &str) -> Result<CompressRequest> {
     if arguments.trim().is_empty() {
-        return Err(anyhow!("compress v2 requires a `preserve` string"));
+        return Err(anyhow!("compress requires a `preserve` string"));
     }
 
     let value: Value = serde_json::from_str(arguments)?;
@@ -333,7 +333,7 @@ fn parse_compress_arguments(arguments: &str) -> Result<CompressRequest> {
     for key in obj.keys() {
         if key != "reason" && key != "preserve" {
             return Err(anyhow!(
-                "unknown compress v2 field `{key}`; use only `reason` and `preserve`"
+                "unknown compress field `{key}`; use only `reason` and `preserve`"
             ));
         }
     }
@@ -341,16 +341,16 @@ fn parse_compress_arguments(arguments: &str) -> Result<CompressRequest> {
     let preserve = obj
         .get("preserve")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("compress v2 requires `preserve` as a string"))?
+        .ok_or_else(|| anyhow!("compress requires `preserve` as a string"))?
         .trim()
         .to_string();
     if preserve.is_empty() {
-        return Err(anyhow!("compress v2 `preserve` must not be empty"));
+        return Err(anyhow!("compress `preserve` must not be empty"));
     }
     let preserve_chars = preserve.chars().count();
     if preserve_chars > MAX_PRESERVE_CHARS {
         return Err(anyhow!(
-            "compress v2 `preserve` is too long ({preserve_chars} chars, max {MAX_PRESERVE_CHARS})"
+            "compress `preserve` is too long ({preserve_chars} chars, max {MAX_PRESERVE_CHARS})"
         ));
     }
 
@@ -358,7 +358,7 @@ fn parse_compress_arguments(arguments: &str) -> Result<CompressRequest> {
         Some(value) => parse_reason(
             value
                 .as_str()
-                .ok_or_else(|| anyhow!("compress v2 `reason` must be a string"))?,
+                .ok_or_else(|| anyhow!("compress `reason` must be a string"))?,
         )?,
         None => CompressReason::default(),
     };
@@ -372,7 +372,7 @@ fn parse_reason(value: &str) -> Result<CompressReason> {
         "free_context" => Ok(CompressReason::FreeContext),
         "before_long_task" => Ok(CompressReason::BeforeLongTask),
         other => Err(anyhow!(
-            "unsupported compress v2 reason `{other}`; expected checkpoint, free_context, or before_long_task"
+            "unsupported compress reason `{other}`; expected checkpoint, free_context, or before_long_task"
         )),
     }
 }
@@ -426,8 +426,8 @@ fn compression_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     if error.downcast_ref::<serde_json::Error>().is_some()
         || message.contains("requires")
         || message.contains("must")
-        || message.contains("unknown compress v2 field")
-        || message.contains("unsupported compress v2 reason")
+        || message.contains("unknown compress field")
+        || message.contains("unsupported compress reason")
         || message.contains("too long")
     {
         ToolRuntimeError::InvalidArguments(message)
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_tool_spec_is_v2_checkpoint_contract() {
+    fn compress_tool_spec_is_checkpoint_contract() {
         let provider = Arc::new(CompressionProvider::new());
         let executors = provider.tool_runtime_executors();
         let spec = executors[0].spec();
@@ -518,7 +518,7 @@ mod tests {
         let request = parse_compress_arguments(
             r#"{"preserve":"Closed RECON: receiver owns compression range selection."}"#,
         )
-        .expect("valid v2 checkpoint parses");
+        .expect("valid checkpoint parses");
 
         assert_eq!(request.reason, CompressReason::Checkpoint);
         assert_eq!(
@@ -578,7 +578,7 @@ mod tests {
             result
                 .expect_err("v1 ranges rejected")
                 .to_string()
-                .contains("unknown compress v2 field `ranges`")
+                .contains("unknown compress field `ranges`")
         );
     }
 
