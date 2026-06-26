@@ -1,14 +1,4 @@
-# Compaction Redesign — As-Built Architecture
-
-Date: 2026-06-26
-Status: As-built architecture (Phases 0–8 complete)
-Goal doc: `docs/goals/2026-06-22-compaction-dcp-redesign.md` (Status: complete — full audit trail G1–G14, Q1–Q6, V1–V3, N1–N2)
-
-This document was originally a Phase 0 verification skeleton (2026-06-22).
-The redesign has since been fully implemented across 8 phases. This revision
-records the **as-built** architecture with verified paths, line numbers,
-signatures, and tests — replacing all future-tense target language with
-verified facts from the current codebase.
+# Compaction Architecture
 
 ## 0. As-Built Module Map
 

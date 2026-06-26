@@ -248,14 +248,14 @@ Out of scope:
   - Acceptance: no workaround that merely validates/synchronizes old destructive replacement behavior; architecture makes transcript loss and id hallucination impossible by contract.
   - Evidence required: design doc section mapping old failure classes to new impossible states; code review checklist before implementation.
   - Status: verified
-  - Evidence collected: `docs/compaction-redesign.md` §6 maps old failure classes (destructive replacement, id hallucination, string-match overflow detection) to new impossible states (raw preservation, renderer-owned refs, typed `ContextOverflow` variant). Component boundary diagram shows `CompactionEngine` as only mutation authority for `CompactionState`; raw messages never touched by compaction.
+  - Evidence collected: `docs/compaction-architecture.md` §6 maps old failure classes (destructive replacement, id hallucination, string-match overflow detection) to new impossible states (raw preservation, renderer-owned refs, typed `ContextOverflow` variant). Component boundary diagram shows `CompactionEngine` as only mutation authority for `CompactionState`; raw messages never touched by compaction.
 
 - Q2: П0.5 verification precedes code touching external/uncontrolled contracts.
   - Source: AGENTS.md П0.5.
   - Acceptance: before storage/schema/provider-contract changes, verification skeleton records commands/queries and actual observed outputs.
   - Evidence required: checked-in or goal-doc-linked verification notes for SQLx serialization/backward compatibility and provider-render constraints.
   - Status: verified
-  - Evidence collected: `docs/compaction-redesign.md` §1-5 records verified facts from actual code inspection: `AgentMemory` serialization path (`serde_json::to_value` → JSONB column, `#[serde(default)]` safe for new fields), `LlmError` typed enum (no context-overflow variant exists; `llm_error_suggests_context_overflow` uses substring matching — П0 violation confirmed), `AgentEvent` compaction variants and transport mappings, tool history repair contract (runtime policy preserves terminal open batch; block boundaries must not split tool-call/result pairs), runner→provider boundary (`refresh_messages_from_memory` is the render insertion point).
+  - Evidence collected: `docs/compaction-architecture.md` §1-5 records verified facts from actual code inspection: `AgentMemory` serialization path (`serde_json::to_value` → JSONB column, `#[serde(default)]` safe for new fields), `LlmError` typed enum (no context-overflow variant exists; `llm_error_suggests_context_overflow` uses substring matching — П0 violation confirmed), `AgentEvent` compaction variants and transport mappings, tool history repair contract (runtime policy preserves terminal open batch; block boundaries must not split tool-call/result pairs), runner→provider boundary (`refresh_messages_from_memory` is the render insertion point).
 
 - Q3: П0.6 blast radius is checked after each implementation checkpoint.
   - Source: AGENTS.md П0.6.
@@ -269,14 +269,14 @@ Out of scope:
   - Acceptance: implementation is original Rust design using concepts only; no copied TS code or prompt text verbatim unless license decision is explicitly made.
   - Evidence required: diff review; decisions log records conceptual reimplementation.
   - Status: verified
-  - Evidence collected: `docs/compaction-redesign.md` §6 describes original Rust architecture with no DCP code import. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts."
+  - Evidence collected: `docs/compaction-architecture.md` §6 describes original Rust architecture with no DCP code import. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts."
 
 - Q5: Repository invariants remain intact.
   - Source: AGENTS.md architecture invariants.
   - Acceptance: core/runtime stay transport-agnostic; teloxide remains transport-only; module registry remains source of truth; no new crates/services without verified need.
   - Evidence required: Cargo diff review, dependency grep, module-registry check if module/profile changes occur.
   - Status: verified
-  - Evidence collected: `docs/compaction-redesign.md` §1 confirms storage facade changes not required (JSONB column already stores full struct). Architecture adds types to `oxide-agent-core` only. No new crates, services, queues, or transports needed. Transport-agnostic: compaction engine/renderer live in core; transport event mapping changes are payload-only.
+  - Evidence collected: `docs/compaction-architecture.md` §1 confirms storage facade changes not required (JSONB column already stores full struct). Architecture adds types to `oxide-agent-core` only. No new crates, services, queues, or transports needed. Transport-agnostic: compaction engine/renderer live in core; transport event mapping changes are payload-only.
 
 - Q6: Runtime mine safety preserves progress without treating untrusted content as instructions.
   - Source: User question about agent hitting a "mine" while reading a file.
@@ -308,7 +308,7 @@ Out of scope:
   - Must preserve: Rust-native implementation and licensing safety.
   - Evidence required: diff review.
   - Status: verified
-  - Evidence collected: All new code is original Rust. No TypeScript files imported, no DCP source copied. `.donor/opencode-dynamic-context-pruning/` is conceptual reference only — not in `crates/` dependency tree. `docs/compaction-redesign.md` §6 documents original Rust architecture. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts." Grep confirms zero imports from `.donor/` in `crates/`.
+  - Evidence collected: All new code is original Rust. No TypeScript files imported, no DCP source copied. `.donor/opencode-dynamic-context-pruning/` is conceptual reference only — not in `crates/` dependency tree. `docs/compaction-architecture.md` §6 documents original Rust architecture. Decisions log records "DCP as conceptual donor only" and "replace DCP regex placeholder summaries with structured summary parts." Grep confirms zero imports from `.donor/` in `crates/`.
 
 - N2: Do not redesign unrelated subsystems.
   - Must preserve: wiki memory, browser live, sandbox, manager control plane, and LLM providers except compaction integration points.
@@ -323,7 +323,7 @@ Out of scope:
 - Audit IDs: Q1, Q2, Q4, Q5
 - Expected changes:
   - Finalize this goal doc after user review.
-  - Create/update `docs/compaction-redesign.md` with verified current contracts and target architecture.
+  - Create/update `docs/compaction-architecture.md` with verified current contracts and target architecture.
   - Record П0.5 checks for storage serialization, rendered provider history validity, and existing event consumers.
 - Validation:
   - Documentation review only.
@@ -492,7 +492,7 @@ Out of scope:
   - Next: review emergency phase ordering and decide exact artifact/retrieval contract during Phase 0.
 
 - 2026-06-22 01:00: Phase 0 verification skeleton complete.
-  - Changed: added `docs/compaction-redesign.md` with verified contracts for storage serialization, provider error types, event consumers, tool history repair, and runner→provider boundary.
+  - Changed: added `docs/compaction-architecture.md` with verified contracts for storage serialization, provider error types, event consumers, tool history repair, and runner→provider boundary.
   - Evidence: inspected `memory.rs:662-673` (AgentMemory struct), `storage/sqlx/mod.rs:165-200` (serialization path), `llm/error.rs:5-59` (LlmError enum), `llm/support/backoff.rs:64-119` (error classification), `progress.rs:207-279` (AgentEvent variants), `recovery.rs:38-43` (repair policy), `runner/types.rs:128-165` (AgentRunnerContext), `runner/mod.rs:101-124` (convert_memory_to_messages), `runner/token_snapshots.rs:93-95` (refresh_messages_from_memory), `llm_calls.rs:923-936` (substring matching overflow detection).
   - Commands: targeted file reads of 10 key source files.
   - Audit IDs updated: Q1, Q2, Q4, Q5 verified.
@@ -604,7 +604,7 @@ Out of scope:
   - `crates/oxide-agent-core/src/agent/executor/execution.rs` — new-task admission
   - `crates/oxide-agent-transport-web/tests/e2e/compaction_regression_tests.rs` — migrated to new contract
   - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` — return type update
-  - `docs/compaction-redesign.md` — verified contracts and target architecture
+  - `docs/compaction-architecture.md` — verified contracts and target architecture
   - `docs/goals/2026-06-22-compaction-dcp-redesign.md` — this goal doc
 - Remaining gaps: None. All audit items verified with current evidence.
   - Note: `cargo clippy --workspace --no-default-features --features profile-full --all-targets` has 70 pre-existing `unwrap_used` errors in `tool_runtime/modules.rs` (web-crawler commits, not compaction work).
