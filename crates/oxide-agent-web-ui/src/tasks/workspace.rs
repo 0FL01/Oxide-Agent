@@ -834,7 +834,6 @@ fn Workspace(
                 class=("welcome-mode", move || {
                     tasks.get().is_empty() && (!loading.get() || session_id.get().is_none())
                 })
-                class:loading=move || loading.get()
             >
                 // Agent results — task cards with output
                 <div class="results-panel">

@@ -9,22 +9,6 @@
   padding: var(--space-5);
   min-height: 0;
   background: var(--bg-root);
-  transition: opacity 0.15s ease-out;
-}
-
-/* Dim the panel during loading (session switch, first message) */
-.chat-wrapper.loading .results-panel {
-  opacity: 0.5;
-}
-
-/* Task cards fade in on appearance (first message, session switch) */
-@keyframes task-card-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.task-card {
-  animation: task-card-fade-in 0.2s ease-out;
 }
 
 /* === SESSION WORKSPACE === */

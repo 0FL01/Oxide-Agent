@@ -113,10 +113,10 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
     });
 
     Effect::new(move |_| {
-        if let Some(view) = selected.get() {
-            if !editing.get() {
-                set_draft.set(view.task.input_markdown.clone());
-            }
+        if let Some(view) = selected.get()
+            && !editing.get()
+        {
+            set_draft.set(view.task.input_markdown.clone());
         }
     });
 
@@ -190,8 +190,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             });
             let previous_task = view.previous_task;
             let next_task = view.next_task;
-            let can_select_previous = previous_task.is_some();
-            let can_select_next = next_task.is_some();
 
             view! {
                 <article class=card_class>
