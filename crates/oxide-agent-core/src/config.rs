@@ -98,6 +98,10 @@ pub struct AgentSettings {
     #[serde(default)]
     pub sub_agent_model_routes: Option<Vec<ModelInfo>>,
 
+    /// Master switch for the entire wiki memory subsystem (tools, prompt
+    /// context injection, memory hooks). Defaults to `true` when unset.
+    pub wiki_memory_enabled: Option<bool>,
+
     /// Enable asynchronous LLM-assisted Wiki Memory writer after completed runs.
     pub wiki_memory_writer_enabled: Option<bool>,
     /// Dedicated Wiki Memory writer model ID override.
@@ -1093,6 +1097,13 @@ impl AgentSettings {
         } else {
             Vec::new()
         }
+    }
+
+    /// Determine whether the wiki memory subsystem is enabled (master switch).
+    /// Defaults to `true` when unset, preserving existing behavior.
+    #[must_use]
+    pub fn is_wiki_memory_enabled(&self) -> bool {
+        self.wiki_memory_enabled.unwrap_or(true)
     }
 
     /// Determine whether LLM-assisted background Wiki Memory writing is enabled.

@@ -41,8 +41,10 @@ impl AgentExecutor {
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(HotContextHealthHook::new()));
-        runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
-        runner.register_hook(Box::new(EpisodicExtractHook::new()));
+        if settings.is_wiki_memory_enabled() {
+            runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
+            runner.register_hook(Box::new(EpisodicExtractHook::new()));
+        }
         Self::register_policy_controlled_hook(
             &mut runner,
             SearchBudgetHook::new(get_agent_search_limit()),

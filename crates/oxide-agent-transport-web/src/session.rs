@@ -738,11 +738,12 @@ impl WebSessionManager {
         // 4. Create executor only after the session is fully hydrated.
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
-                .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
-                    self.storage(),
-                    "",
-                ))
                 .with_storage(self.storage());
+        if self.agent_settings.is_wiki_memory_enabled() {
+            executor = executor.with_wiki_memory_store(
+                oxide_agent_core::agent::WikiStore::from_storage_provider(self.storage(), ""),
+            );
+        }
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),

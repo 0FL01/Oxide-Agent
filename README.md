@@ -219,6 +219,8 @@ TAVILY_API_KEY=...
 # OXIDE_CRW_API_TOKEN=...
 # CRW backs `web_search` and the rendered fallback path of `web_crawler`.
 
+# Wiki Memory (master switch, defaults to true)
+# WIKI_MEMORY_ENABLED=true
 # Wiki Memory Writer (background, optional LLM-assisted)
 # WIKI_MEMORY_WRITER_ENABLED=true
 # WIKI_MEMORY_WRITER_MODEL_ID="google/gemini-3-flash-preview"
@@ -439,8 +441,9 @@ Persistent SQLx/Postgres-backed memory pages with deterministic storage and opti
 - **Storage:** Deterministic Markdown pages persisted as SQL rows keyed by `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`
 - **Background Planner:** Optionally uses LLM to extract structured memory after agent completion
 - **Tools:** `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents)
+- **Master Switch:** `WIKI_MEMORY_ENABLED=false` disables the entire subsystem (tools, prompt context injection, memory hooks). Defaults to `true`.
 - **Writer:** Enable with `WIKI_MEMORY_WRITER_ENABLED=true`; configure extraction model via `WIKI_MEMORY_WRITER_MODEL_ID` / `WIKI_MEMORY_WRITER_MODEL_PROVIDER`
-- **Memory Hooks:** `episodic_extract` and `retrieval_advisor` activate when wiki memory writer is enabled
+- **Memory Hooks:** `episodic_extract` and `retrieval_advisor` activate when `WIKI_MEMORY_ENABLED=true`
 
 Details: `docs/wiki-memory.md`
 
@@ -496,8 +499,8 @@ Extensible architecture for personalizing agent behavior:
 - **Sub-Agent Safety** - ensures safe execution environments for delegated tasks
 - **Search Budget** - limits search tool calls (10 per session)
 - **Timeout Report** - provides detailed timeout reporting
-- **Episodic Extract** - wiki memory extraction (active when writer enabled)
-- **Retrieval Advisor** - wiki memory retrieval (active when writer enabled)
+- **Episodic Extract** - wiki memory extraction (active when wiki memory enabled)
+- **Retrieval Advisor** - wiki memory retrieval (active when wiki memory enabled)
 
 **Manageable Hooks:** `search_budget`, `timeout_report`, `retrieval_advisor`, `episodic_extract`
 

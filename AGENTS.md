@@ -80,7 +80,7 @@ Default branch: `main`.
 - Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
 
 ### Hooks and sub-agents
-- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) are registered unconditionally but gated internally by `HookAccessPolicy` flags; sub-agents are short-circuited. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
+- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) are registered only when `WIKI_MEMORY_ENABLED` is true (default) and gated internally by `HookAccessPolicy` flags; sub-agents are short-circuited. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
 - Loop detection has content, tool-sequence, and LLM layers; do not bypass in runner changes.
 - Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`. Browser tools available via `allowed_tools` whitelist with RAII cleanup on run end.
 - Do not reintroduce embedding-selected skills.
