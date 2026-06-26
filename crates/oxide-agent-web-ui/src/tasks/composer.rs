@@ -20,7 +20,7 @@ pub(super) fn AgentProfileSelect(
     profiles: ReadSignal<Vec<AgentProfileView>>,
     selected_profile: ReadSignal<String>,
     disabled: Signal<bool>,
-    include_default: bool,
+    include_default: Signal<bool>,
     on_change: Callback<leptos::ev::Event>,
 ) -> impl IntoView {
     view! {
@@ -30,7 +30,7 @@ pub(super) fn AgentProfileSelect(
             disabled=move || disabled.get()
             on:change=move |ev| on_change.run(ev)
         >
-            {include_default.then(|| view! {
+            {move || include_default.get().then(|| view! {
                 <option value=PROFILE_VALUE_DEFAULT>"Default profile"</option>
             })}
             {move || selected_profile_missing_option(profiles, selected_profile)}

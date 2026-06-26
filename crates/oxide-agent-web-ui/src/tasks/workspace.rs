@@ -1,7 +1,6 @@
 use crate::api::{ApiClient, ApiClientError};
 use crate::auth::use_auth;
 use crate::components::ErrorBanner;
-use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
 use futures_util::join;
 use leptos::{html, prelude::*};
@@ -203,299 +202,32 @@ fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
 
 #[component]
 pub fn TaskConsole(
-    route: AppRoute,
+    session_id: Memo<Option<String>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
-    match route {
-        AppRoute::Session(session_id) => view! {
-            <SessionWorkspace
-                session_id=session_id
-                events=events
-                progress=progress
-                set_events=set_events
-                set_progress=set_progress
-                set_sessions=set_sessions
-            />
-        }
-        .into_any(),
-        _ => view! {
-            <WelcomeView set_sessions=set_sessions />
-        }
-        .into_any(),
-    }
-}
-
-#[component]
-fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView {
-    let auth = use_auth();
-    let (input, set_input) = signal(String::new());
-    let (loading, set_loading) = signal(false);
-    let (error, set_error) = signal(None::<String>);
-    let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
-    let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
-    let (drag_active, set_drag_active) = signal(false);
-    let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
-    let (profiles_loaded, set_profiles_loaded) = signal(false);
-    let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
-    let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
-    let (effort_touched, set_effort_touched) = signal(false);
-    let textarea_ref = NodeRef::<html::Textarea>::new();
-
-    Effect::new(move |_| {
-        if profiles_loaded.get() {
-            return;
-        }
-        set_profiles_loaded.set(true);
-        spawn_ui(async move {
-            let client = auth.client();
-            let (settings, loaded_profiles) = load_settings_profiles(&client).await;
-            if let Some(settings) = settings {
-                apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
-            }
-            if let Some(loaded_profiles) = loaded_profiles {
-                set_profiles.set(loaded_profiles);
-            }
-        });
-    });
-
-    let submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        let text = input.get();
-        let files = pending_files.get();
-        if !can_submit_input(&text, &files) {
-            return;
-        }
-        let auth_state = auth.auth.get();
-        let max_task_input_chars = auth_state.max_task_input_chars;
-        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
-        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
-            if let Some((message, _)) = task_input_limit_notice(
-                &text,
-                max_task_input_chars,
-                large_input_attachments_supported,
-            ) {
-                set_error.set(Some(message));
-            }
-            return;
-        }
-        set_loading.set(true);
-        set_error.set(None);
-        let agent_profile_selection = agent_profile_selection_from_value(&selected_profile.get());
-        let effort = selected_effort.get();
-        spawn_ui(async move {
-            let client = auth.client();
-            // 1. Create session
-            let session_id = match client
-                .create_session(&CreateSessionRequest {
-                    model_selection: None,
-                    agent_profile_selection,
-                })
-                .await
-            {
-                Ok(resp) => {
-                    let session_id = resp.session.session_id.clone();
-                    upsert_session_summary(set_sessions, resp.session);
-                    session_id
-                }
-                Err(e) => {
-                    set_error.set(Some(e.to_string()));
-                    set_loading.set(false);
-                    return;
-                }
-            };
-            let (task_input, attachments) = match prepare_task_input(
-                &client,
-                &session_id,
-                text,
-                &files,
-                max_task_input_chars,
-                large_input_attachments_supported,
-            )
-            .await
-            {
-                Ok(payload) => payload,
-                Err(error) => {
-                    let _ = client.delete_session(&session_id).await;
-                    remove_session_summary(set_sessions, &session_id);
-                    set_error.set(Some(error));
-                    set_loading.set(false);
-                    return;
-                }
-            };
-            // 2. Create task with the user's message
-            match client
-                .create_task(
-                    &session_id,
-                    &CreateTaskRequest {
-                        input_markdown: task_input,
-                        attachments,
-                        effort: Some(effort),
-                    },
-                )
-                .await
-            {
-                Ok(_) => {
-                    set_input.set(String::new());
-                    reset_composer_textarea_height(textarea_ref);
-                    set_pending_files.set(Vec::new());
-                    navigate(&format!("/app/session/{session_id}"));
-                }
-                Err(e) => {
-                    let _ = client.delete_session(&session_id).await;
-                    remove_session_summary(set_sessions, &session_id);
-                    set_error.set(Some(e.to_string()));
-                    set_loading.set(false);
-                }
-            }
-        });
-    };
-
     view! {
-        <ErrorBanner message=error />
-        <section class="welcome-view">
-            <div class="welcome-view-content">
-                <svg
-                    width="40"
-                    height="40"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    class="welcome-view-icon"
-                >
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                <h2 class="welcome-view-title">"What can I help you with?"</h2>
-                <p class="welcome-view-text">"Send a message to start a new agent session."</p>
-                <form class="welcome-view-composer" on:submit=submit>
-                    <div
-                        class="composer-inner"
-                        class:drag-active=drag_active
-                        on:dragenter=move |ev| {
-                            handle_composer_drag(&ev, set_drag_active, true);
-                        }
-                        on:dragover=move |ev| {
-                            handle_composer_drag(&ev, set_drag_active, true);
-                        }
-                        on:dragleave=move |ev| {
-                            handle_composer_drag(&ev, set_drag_active, false);
-                        }
-                        on:drop=move |ev| {
-                            handle_composer_drop(
-                                &ev,
-                                set_drag_active,
-                                next_pending_file_id,
-                                set_next_pending_file_id,
-                                set_pending_files,
-                            );
-                        }
-                    >
-                        <textarea
-                            node_ref=textarea_ref
-                            placeholder="Message Oxide Agent…"
-                            prop:value=input
-                            disabled=loading
-                            on:input=move |ev| {
-                                handle_composer_input(&ev, set_input);
-                            }
-                            on:paste=move |ev| {
-                                handle_composer_paste(
-                                    &ev,
-                                    next_pending_file_id,
-                                    set_next_pending_file_id,
-                                    set_pending_files,
-                                );
-                            }
-                            on:keydown=move |ev| {
-                                submit_parent_form_on_ctrl_enter(&ev);
-                            }
-                        />
-                        <PendingAttachmentList
-                            attachments=pending_files
-                            set_attachments=set_pending_files
-                        />
-                        {move || {
-                            let auth_state = auth.auth.get();
-                            task_input_limit_notice(
-                                &input.get(),
-                                auth_state.max_task_input_chars,
-                                auth_state.large_input_attachments_supported,
-                            )
-                            .map(|(message, is_error)| {
-                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
-                            })
-                        }}
-                        <div class="composer-footer">
-                            <div class="composer-actions" class:btn-hidden=move || {
-                                let auth_state = auth.auth.get();
-                                let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
-                                    && !auth_state.large_input_attachments_supported;
-                                !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
-                            }>
-                                <AgentProfileSelect
-                                    profiles=profiles
-                                    selected_profile=selected_profile
-                                    disabled=Signal::derive(move || loading.get())
-                                    include_default=true
-                                    on_change=Callback::new(move |ev| {
-                                        set_selected_profile.set(event_target_value(&ev));
-                                    })
-                                />
-                                <AgentEffortSelect
-                                    selected_effort=selected_effort
-                                    disabled=Signal::derive(move || loading.get())
-                                    on_change=Callback::new(move |ev| {
-                                        let effort = agent_effort_from_value(&event_target_value(&ev));
-                                        set_effort_touched.set(true);
-                                        set_selected_effort.set(effort);
-                                        persist_default_effort(auth, effort, set_error);
-                                    })
-                                />
-                                <label class="button secondary composer-attach-button">
-                                    <input
-                                        class="composer-file-input"
-                                        type="file"
-                                        multiple
-                                        disabled=loading
-                                        on:change=move |ev| {
-                                            append_pending_browser_files(
-                                                next_pending_file_id,
-                                                set_next_pending_file_id,
-                                                set_pending_files,
-                                                browser_files_from_input_event(&ev),
-                                            );
-                                        }
-                                    />
-                                    "Attach"
-                                </label>
-                                <button
-                                    type="submit"
-                                    disabled=move || {
-                                        let auth_state = auth.auth.get();
-                                        let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
-                                            && !auth_state.large_input_attachments_supported;
-                                        loading.get() || !can_submit_input(&input.get(), &pending_files.get()) || input_blocked
-                                    }
-                                    class="btn-primary"
-                                >
-                                    "Send"
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </form>
-            </div>
-        </section>
+        <Workspace
+            session_id=session_id
+            events=events
+            progress=progress
+            set_events=set_events
+            set_progress=set_progress
+            set_sessions=set_sessions
+        />
     }
 }
 
+/// Unified workspace that handles both welcome mode (no session selected)
+/// and chat mode (session with tasks).  The `session_id` Memo drives
+/// `load_all` reactively — switching from `None` to `Some(id)` or between
+/// different session IDs re-fetches without recreating the component.
 #[component]
-fn SessionWorkspace(
-    session_id: String,
+fn Workspace(
+    session_id: Memo<Option<String>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
@@ -513,14 +245,13 @@ fn SessionWorkspace(
     let (loading, set_loading) = signal(false);
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
     let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
-    let (loaded, set_loaded) = signal(false);
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
     let (drag_active, set_drag_active) = signal(false);
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (profiles_loaded, set_profiles_loaded) = signal(false);
-    let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
+    let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
     let (effort_touched, set_effort_touched) = signal(false);
     let textarea_ref = NodeRef::<html::Textarea>::new();
@@ -553,6 +284,7 @@ fn SessionWorkspace(
         on_cleanup(move || handle.clear());
     }
 
+    // Load settings + profiles once on mount.
     Effect::new(move |_| {
         if profiles_loaded.get() {
             return;
@@ -570,11 +302,14 @@ fn SessionWorkspace(
         });
     });
 
-    let session_id_for_load = session_id.clone();
-    let load_all = move || {
+    // `load_all` — fetches session + tasks for the given session ID.
+    // Discards stale results if the user has navigated to a different session
+    // while the fetch was in flight.
+    let load_all = move |sid: String| {
         set_loading.set(true);
         set_error.set(None);
-        // Clear stale state before loading
+        // Clear stale state before loading (but NOT tasks — pre-populated
+        // data from a just-submitted first message should stay visible).
         set_events.set(Vec::new());
         set_progress.set(None);
         set_active_task.set(None);
@@ -584,13 +319,17 @@ fn SessionWorkspace(
         set_activity_task_id.set(None);
         set_drawer_open.set(false);
         set_lightbox_image.set(None);
-        let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
             let (session_result, tasks_result) = join!(
-                client.get_session(&session_id),
-                client.list_tasks_page(&session_id, TASKS_PAGE_LIMIT, 0)
+                client.get_session(&sid),
+                client.list_tasks_page(&sid, TASKS_PAGE_LIMIT, 0)
             );
+
+            // Discard stale results if the user navigated to a different session.
+            if session_id.get_untracked().as_deref() != Some(sid.as_str()) {
+                return;
+            }
 
             match session_result {
                 Ok(response) => {
@@ -618,10 +357,10 @@ fn SessionWorkspace(
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
-                        let task_detail = summary_to_detail(&session_id, &task);
+                        let task_detail = summary_to_detail(&sid, &task);
                         let initial_last_seq = match load_latest_task_events(
                             &client,
-                            &session_id,
+                            &sid,
                             &task_id,
                             task.last_event_seq,
                         )
@@ -651,7 +390,7 @@ fn SessionWorkspace(
                             set_active_task.set(Some(task_detail));
                             start_task_stream(
                                 client.clone(),
-                                session_id.clone(),
+                                sid.clone(),
                                 task_id.clone(),
                                 initial_last_seq,
                                 StreamUiSignals {
@@ -674,8 +413,7 @@ fn SessionWorkspace(
                             // Hydrate persisted progress for non-streamed tasks so the
                             // activity context card (Free/Flow/Prompt/Tools + health)
                             // renders after reload, not only while streaming.
-                            if let Ok(response) = client.task_progress(&session_id, &task_id).await
-                            {
+                            if let Ok(response) = client.task_progress(&sid, &task_id).await {
                                 set_progress.set(response.progress);
                             }
                         }
@@ -696,21 +434,43 @@ fn SessionWorkspace(
         });
     };
 
-    let session_id_for_load_older = session_id.clone();
+    // Reactive load trigger — fires when `session_id` changes.
+    // `None` → welcome mode (clear chat state); `Some(id)` → load_all.
+    Effect::new(move |_| {
+        let sid = session_id.get();
+        if let Some(id) = sid {
+            load_all(id);
+        } else {
+            // Welcome mode — clear all chat state
+            set_tasks.set(Vec::new());
+            set_events.set(Vec::new());
+            set_progress.set(None);
+            set_active_task.set(None);
+            set_streaming_task_id.set(None);
+            set_selected_versions.set(HashMap::new());
+            set_activity_pages.set(HashMap::new());
+            set_activity_task_id.set(None);
+            set_drawer_open.set(false);
+            set_lightbox_image.set(None);
+            set_loading.set(false);
+            // Reset profile to welcome default
+            set_selected_profile.set(PROFILE_VALUE_DEFAULT.to_string());
+        }
+    });
+
     let load_older_tasks = Callback::new(move |_| {
+        let Some(sid) = session_id.get() else {
+            return;
+        };
         if loading_older_tasks.get_untracked() || !tasks_has_more.get_untracked() {
             return;
         }
         set_loading_older_tasks.set(true);
         set_error.set(None);
-        let session_id = session_id_for_load_older.clone();
         let offset = tasks_next_offset.get_untracked();
         spawn_ui(async move {
             let client = auth.client();
-            match client
-                .list_tasks_page(&session_id, TASKS_PAGE_LIMIT, offset)
-                .await
-            {
+            match client.list_tasks_page(&sid, TASKS_PAGE_LIMIT, offset).await {
                 Ok(response) => {
                     set_tasks.update(|items| merge_task_summaries(items, response.tasks));
                     set_tasks_has_more.set(response.has_more);
@@ -722,8 +482,10 @@ fn SessionWorkspace(
         });
     });
 
-    let session_id_for_load_older_activity = session_id.clone();
     let load_older_activity = Callback::new(move |_| {
+        let Some(sid) = session_id.get() else {
+            return;
+        };
         let Some(task_id) = activity_task_id.get_untracked() else {
             return;
         };
@@ -735,6 +497,7 @@ fn SessionWorkspace(
         if page_state.loading || !page_state.has_more {
             return;
         }
+
         let before_seq = page_state.before_seq;
         if before_seq == 0 {
             set_activity_pages.update(|items| {
@@ -747,11 +510,10 @@ fn SessionWorkspace(
             items.entry(task_id.clone()).or_default().loading = true;
         });
         set_error.set(None);
-        let session_id = session_id_for_load_older_activity.clone();
         spawn_ui(async move {
             let client = auth.client();
             match client
-                .task_events_before_page(&session_id, &task_id, before_seq, TASK_EVENTS_OLDER_LIMIT)
+                .task_events_before_page(&sid, &task_id, before_seq, TASK_EVENTS_OLDER_LIMIT)
                 .await
             {
                 Ok(response) => {
@@ -775,92 +537,54 @@ fn SessionWorkspace(
         });
     });
 
-    let session_id_for_activity_load = session_id.clone();
-    Effect::new(move |_| {
-        if !drawer_open.get() {
-            return;
-        }
-        let Some(task_id) = activity_task_id.get() else {
-            return;
-        };
-        if activity_pages.get().contains_key(&task_id) {
-            return;
-        }
-        let Some(task) = tasks.get().into_iter().find(|task| task.task_id == task_id) else {
-            return;
-        };
-
-        set_activity_pages.update(|items| {
-            items.entry(task_id.clone()).or_default().loading = true;
-        });
-        let session_id = session_id_for_activity_load.clone();
-        spawn_ui(async move {
-            let client = auth.client();
-            match load_latest_task_events(&client, &session_id, &task_id, task.last_event_seq).await
-            {
-                Ok(response) => {
-                    set_activity_pages.update(|items| {
-                        items.insert(
-                            task_id.clone(),
-                            ActivityPageState {
-                                before_seq: response.first_seq,
-                                has_more: response.has_more,
-                                loading: false,
-                            },
-                        );
-                    });
-                    merge_task_events(set_events, response.events);
-                }
-                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
-            }
-            set_activity_pages.update(|items| {
-                items.entry(task_id).or_default().loading = false;
-            });
-        });
-    });
-
-    Effect::new(move |_| {
-        if !loaded.get() {
-            set_loaded.set(true);
-            load_all();
-        }
-    });
-
-    let session_id_for_submit = session_id.clone();
-    let session_id_for_profile = session_id.clone();
-    let update_profile = move |ev: leptos::ev::Event| {
+    // Profile change handler — in welcome mode just updates the signal;
+    // in chat mode also persists to the server.
+    let on_profile_change = Callback::new(move |ev: leptos::ev::Event| {
         let value = event_target_value(&ev);
         set_selected_profile.set(value.clone());
-        let session_id = session_id_for_profile.clone();
-        set_error.set(None);
-        spawn_ui(async move {
-            let request = UpdateSessionProfileRequest {
-                agent_profile_id: profile_value_to_id(&value),
-            };
-            match auth
-                .client()
-                .update_session_profile(&session_id, &request)
-                .await
-            {
-                Ok(response) => {
-                    set_selected_profile.set(
-                        response
-                            .session
-                            .agent_profile_id
-                            .clone()
-                            .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
-                    );
-                    upsert_session_summary(
-                        set_sessions,
-                        session_detail_to_summary(response.session),
-                    );
+        if let Some(sid) = session_id.get() {
+            set_error.set(None);
+            spawn_ui(async move {
+                let client = auth.client();
+                let request = UpdateSessionProfileRequest {
+                    agent_profile_id: profile_value_to_id(&value),
+                };
+                match client.update_session_profile(&sid, &request).await {
+                    Ok(response) => {
+                        set_selected_profile.set(
+                            response
+                                .session
+                                .agent_profile_id
+                                .clone()
+                                .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
+                        );
+                        upsert_session_summary(
+                            set_sessions,
+                            session_detail_to_summary(response.session),
+                        );
+                    }
+                    Err(error) => set_error.set(Some(error.to_string())),
                 }
-                Err(error) => set_error.set(Some(error.to_string())),
-            }
-        });
+            });
+        }
+    });
+
+    let is_waiting = move || {
+        active_task
+            .get()
+            .is_some_and(|task| task.status == TaskStatus::WaitingForUserInput)
     };
 
-    let submit_task = move |ev: leptos::ev::SubmitEvent| {
+    let is_running = move || {
+        active_task
+            .get()
+            .is_some_and(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
+    };
+
+    // Unified submit handler — branches on `session_id`:
+    // `None`  → welcome flow: create session + task, pre-populate, navigate.
+    // `Some`  → chat flow: create/resume task, start stream.
+    let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let text = input.get();
         let files = pending_files.get();
@@ -882,112 +606,197 @@ fn SessionWorkspace(
         }
         set_loading.set(true);
         set_error.set(None);
-        // Clear stale activity for the new task
-        set_events.set(Vec::new());
-        set_progress.set(None);
-        set_activity_pages.set(HashMap::new());
-        set_activity_task_id.set(None);
-        set_drawer_open.set(false);
-        set_lightbox_image.set(None);
-        let session_id = session_id_for_submit.clone();
         let effort = selected_effort.get();
-        spawn_ui(async move {
-            let client = auth.client();
-            let (task_input, attachments) = match prepare_task_input(
-                &client,
-                &session_id,
-                text,
-                &files,
-                max_task_input_chars,
-                large_input_attachments_supported,
-            )
-            .await
-            {
-                Ok(payload) => payload,
-                Err(error) => {
-                    set_error.set(Some(error));
-                    set_loading.set(false);
-                    return;
-                }
-            };
-            let resume_task_id = active_task
-                .get()
-                .filter(|task| task.status == TaskStatus::WaitingForUserInput)
-                .map(|task| task.task_id);
-            let result = match resume_task_id.as_deref() {
-                Some(task_id) => client
-                    .resume_task(
-                        &session_id,
-                        task_id,
-                        &ResumeTaskRequest {
-                            input_markdown: task_input,
-                            attachments,
-                            effort: Some(effort),
-                        },
-                    )
-                    .await
-                    .map(|response| response.task),
-                _ => client
-                    .create_task(
-                        &session_id,
-                        &CreateTaskRequest {
-                            input_markdown: task_input,
-                            attachments,
-                            effort: Some(effort),
-                        },
-                    )
-                    .await
-                    .map(|response| response.task),
-            };
 
-            match result {
-                Ok(task) => {
-                    set_input.set(String::new());
-                    reset_composer_textarea_height(textarea_ref);
-                    set_pending_files.set(Vec::new());
-                    set_active_task.set(Some(summary_to_detail(&session_id, &task)));
-                    set_selected_versions.update(|items| {
-                        items.insert(
-                            task.effective_version_group_id().to_string(),
-                            task.task_id.clone(),
-                        );
-                    });
-                    start_task_stream(
-                        client,
-                        session_id.clone(),
-                        task.task_id.clone(),
-                        0,
-                        StreamUiSignals {
-                            set_events,
-                            set_progress,
-                            set_active_task,
-                            set_tasks,
-                            set_error,
-                            streaming_task_id,
-                            set_streaming_task_id,
-                            set_sessions,
-                        },
-                    );
-                    let task_summary = task.clone();
-                    set_tasks.update(|items| upsert_task_summary(items, task_summary));
-                }
-                Err(error) => set_error.set(Some(error.to_string())),
+        match session_id.get() {
+            // ── Welcome flow ──────────────────────────────────────────
+            None => {
+                let agent_profile_selection =
+                    agent_profile_selection_from_value(&selected_profile.get());
+                spawn_ui(async move {
+                    let client = auth.client();
+                    // 1. Create session
+                    let session_id = match client
+                        .create_session(&CreateSessionRequest {
+                            model_selection: None,
+                            agent_profile_selection,
+                        })
+                        .await
+                    {
+                        Ok(resp) => {
+                            let id = resp.session.session_id.clone();
+                            upsert_session_summary(set_sessions, resp.session);
+                            id
+                        }
+                        Err(e) => {
+                            set_error.set(Some(e.to_string()));
+                            set_loading.set(false);
+                            return;
+                        }
+                    };
+                    // 2. Prepare task input (uploads, large-input handling)
+                    let (task_input, attachments) = match prepare_task_input(
+                        &client,
+                        &session_id,
+                        text,
+                        &files,
+                        max_task_input_chars,
+                        large_input_attachments_supported,
+                    )
+                    .await
+                    {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            let _ = client.delete_session(&session_id).await;
+                            remove_session_summary(set_sessions, &session_id);
+                            set_error.set(Some(error));
+                            set_loading.set(false);
+                            return;
+                        }
+                    };
+                    // 3. Create task and pre-populate so the card appears immediately
+                    match client
+                        .create_task(
+                            &session_id,
+                            &CreateTaskRequest {
+                                input_markdown: task_input,
+                                attachments,
+                                effort: Some(effort),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            let task = response.task;
+                            set_input.set(String::new());
+                            reset_composer_textarea_height(textarea_ref);
+                            set_pending_files.set(Vec::new());
+                            // Pre-populate tasks + active_task so the card
+                            // is visible during load_all's fetch.
+                            set_active_task.set(Some(summary_to_detail(&session_id, &task)));
+                            set_tasks.update(|items| upsert_task_summary(items, task));
+                            // Navigate — triggers load_all via the Effect.
+                            // load_all will manage `loading` state.
+                            navigate(&format!("/app/session/{session_id}"));
+                        }
+                        Err(e) => {
+                            let _ = client.delete_session(&session_id).await;
+                            remove_session_summary(set_sessions, &session_id);
+                            set_error.set(Some(e.to_string()));
+                            set_loading.set(false);
+                        }
+                    }
+                });
             }
-            set_loading.set(false);
-        });
+            // ── Chat flow ─────────────────────────────────────────────
+            Some(sid) => {
+                // Clear stale activity for the new task
+                set_events.set(Vec::new());
+                set_progress.set(None);
+                set_activity_pages.set(HashMap::new());
+                set_activity_task_id.set(None);
+                set_drawer_open.set(false);
+                set_lightbox_image.set(None);
+                spawn_ui(async move {
+                    let client = auth.client();
+                    let (task_input, attachments) = match prepare_task_input(
+                        &client,
+                        &sid,
+                        text,
+                        &files,
+                        max_task_input_chars,
+                        large_input_attachments_supported,
+                    )
+                    .await
+                    {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            set_error.set(Some(error));
+                            set_loading.set(false);
+                            return;
+                        }
+                    };
+                    let resume_task_id = active_task
+                        .get()
+                        .filter(|task| task.status == TaskStatus::WaitingForUserInput)
+                        .map(|task| task.task_id);
+                    let result = match resume_task_id.as_deref() {
+                        Some(task_id) => client
+                            .resume_task(
+                                &sid,
+                                task_id,
+                                &ResumeTaskRequest {
+                                    input_markdown: task_input,
+                                    attachments,
+                                    effort: Some(effort),
+                                },
+                            )
+                            .await
+                            .map(|response| response.task),
+                        _ => client
+                            .create_task(
+                                &sid,
+                                &CreateTaskRequest {
+                                    input_markdown: task_input,
+                                    attachments,
+                                    effort: Some(effort),
+                                },
+                            )
+                            .await
+                            .map(|response| response.task),
+                    };
+
+                    match result {
+                        Ok(task) => {
+                            set_input.set(String::new());
+                            reset_composer_textarea_height(textarea_ref);
+                            set_pending_files.set(Vec::new());
+                            set_active_task.set(Some(summary_to_detail(&sid, &task)));
+                            set_selected_versions.update(|items| {
+                                items.insert(
+                                    task.effective_version_group_id().to_string(),
+                                    task.task_id.clone(),
+                                );
+                            });
+                            start_task_stream(
+                                client,
+                                sid.clone(),
+                                task.task_id.clone(),
+                                0,
+                                StreamUiSignals {
+                                    set_events,
+                                    set_progress,
+                                    set_active_task,
+                                    set_tasks,
+                                    set_error,
+                                    streaming_task_id,
+                                    set_streaming_task_id,
+                                    set_sessions,
+                                },
+                            );
+                            let task_summary = task.clone();
+                            set_tasks.update(|items| upsert_task_summary(items, task_summary));
+                        }
+                        Err(error) => set_error.set(Some(task_submit_error_message(&error))),
+                    }
+                    set_loading.set(false);
+                });
+            }
+        }
     };
 
-    let session_id_for_cancel = session_id.clone();
     let cancel_active = Callback::new(move |_| {
         let Some(task) = active_task.get() else {
             return;
         };
+        let Some(sid) = session_id.get() else {
+            return;
+        };
         set_loading.set(true);
         set_error.set(None);
-        let session_id = session_id_for_cancel.clone();
         spawn_ui(async move {
             let client = auth.client();
-            match client.cancel_task(&session_id, &task.task_id).await {
+            match client.cancel_task(&sid, &task.task_id).await {
                 Ok(_) => {
                     let task_id = task.task_id.clone();
                     set_active_task.set(None);
@@ -1001,7 +810,7 @@ fn SessionWorkspace(
                             }
                         }
                     });
-                    if let Ok(response) = client.get_session(&session_id).await {
+                    if let Ok(response) = client.get_session(&sid).await {
                         upsert_session_summary(
                             set_sessions,
                             session_detail_to_summary(response.session),
@@ -1014,32 +823,23 @@ fn SessionWorkspace(
         });
     });
 
-    let session_id_for_cards = session_id.clone();
+    let include_default_profile = Signal::derive(move || session_id.get().is_none());
 
-    let is_waiting = move || {
-        active_task
-            .get()
-            .is_some_and(|task| task.status == TaskStatus::WaitingForUserInput)
-    };
-
-    let is_running = move || {
-        active_task
-            .get()
-            .is_some_and(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
-    };
+    let session_id_for_cards = session_id;
 
     view! {
         <ErrorBanner message=error />
         <section class="session-workspace">
             <div class="chat-wrapper"
-                class=("welcome-mode", move || tasks.get().is_empty() && !loading.get())
+                class=("welcome-mode", move || {
+                    tasks.get().is_empty() && (!loading.get() || session_id.get().is_none())
+                })
+                class:loading=move || loading.get()
             >
                 // Agent results — task cards with output
                 <div class="results-panel">
                     {move || {
-                        if loading.get() && tasks.get().is_empty() {
-                            view! { <div class="empty-state">"Loading..."</div> }.into_any()
-                        } else if tasks.get().is_empty() {
+                        if tasks.get().is_empty() {
                             view! {
                                 <div class="empty-state">
                                     <div class="empty-state-title">"What can I help you with?"</div>
@@ -1047,11 +847,10 @@ fn SessionWorkspace(
                                         "Send a message to start a new agent session."
                                     </div>
                                 </div>
-                            }
-                            .into_any()
+                            }.into_any()
                         } else {
-                            let latest_editable_task_id = latest_editable_task_id(&tasks.get());
-                            let session_id_for_cards = session_id_for_cards.clone();
+                            let latest_editable = latest_editable_task_id(&tasks.get());
+                            let sid_for_cards = session_id_for_cards.get().unwrap_or_default();
                             view! {
                                 {move || tasks_has_more.get().then(|| view! {
                                     <div class="load-older-tasks">
@@ -1072,10 +871,10 @@ fn SessionWorkspace(
                                         view! {
                                             <TaskCard
                                                 model=TaskCardModel {
-                                                    session_id: session_id_for_cards.clone(),
+                                                    session_id: sid_for_cards.clone(),
                                                     version_group_id: group.version_group_id.clone(),
                                                     tasks,
-                                                    editable_task_id: latest_editable_task_id.clone(),
+                                                    editable_task_id: latest_editable.clone(),
                                                     now_millis: elapsed_now_millis,
                                                 }
                                                 signals=TaskCardSignals {
@@ -1121,7 +920,7 @@ fn SessionWorkspace(
                 </div>
 
                 // Prompt input
-                <form class="composer" on:submit=submit_task>
+                <form class="composer" on:submit=submit>
                     <ComposerNotice active_task=active_task />
                     <div
                         class="composer-inner"
@@ -1149,7 +948,7 @@ fn SessionWorkspace(
                             node_ref=textarea_ref
                             placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
                             prop:value=input
-                            disabled=is_running
+                            disabled=move || loading.get() || is_running()
                             on:input=move |ev| {
                                 handle_composer_input(&ev, set_input);
                             }
@@ -1191,8 +990,8 @@ fn SessionWorkspace(
                                     profiles=profiles
                                     selected_profile=selected_profile
                                     disabled=Signal::derive(move || loading.get() || is_running() || is_waiting())
-                                    include_default=false
-                                    on_change=Callback::new(update_profile)
+                                    include_default=include_default_profile
+                                    on_change=on_profile_change
                                 />
                                 <AgentEffortSelect
                                     selected_effort=selected_effort

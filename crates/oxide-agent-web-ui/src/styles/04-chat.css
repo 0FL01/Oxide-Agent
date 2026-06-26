@@ -9,6 +9,22 @@
   padding: var(--space-5);
   min-height: 0;
   background: var(--bg-root);
+  transition: opacity 0.15s ease-out;
+}
+
+/* Dim the panel during loading (session switch, first message) */
+.chat-wrapper.loading .results-panel {
+  opacity: 0.5;
+}
+
+/* Task cards fade in on appearance (first message, session switch) */
+@keyframes task-card-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.task-card {
+  animation: task-card-fade-in 0.2s ease-out;
 }
 
 /* === SESSION WORKSPACE === */
@@ -105,15 +121,6 @@
   border-radius: 0;
 }
 
-.empty-state::before {
-  content: '\231B';
-  font-size: 28px;
-  color: var(--text-faint);
-  opacity: 0.5;
-  margin-bottom: var(--space-3);
-  line-height: 1;
-}
-
 .empty-state-title {
   font-size: 13px;
   font-weight: 500;
@@ -161,16 +168,6 @@
   min-height: 0;
 }
 
-.chat-wrapper.welcome-mode .results-panel::before {
-  content: "";
-  width: 40px;
-  height: 40px;
-  border: 2px solid var(--faint);
-  border-radius: 10px;
-  opacity: 0.6;
-  margin-bottom: 12px;
-}
-
 .chat-wrapper.welcome-mode .empty-state-title {
   font-size: 22px;
 }
@@ -208,15 +205,6 @@
   justify-items: center;
   gap: 8px;
   text-align: center;
-}
-
-.results-panel > .empty-state::before {
-  content: "";
-  width: 40px;
-  height: 40px;
-  border: 2px solid var(--faint);
-  border-radius: 10px;
-  opacity: 0.7;
 }
 
 .load-older-tasks {
@@ -525,47 +513,6 @@
 
 .empty-state {
   color: var(--muted);
-}
-
-/* Welcome view — shown when no session is selected */
-.welcome-view {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 20px;
-}
-
-.welcome-view-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  width: min(800px, calc(100% - 40px));
-  max-width: 800px;
-}
-
-.welcome-view-icon {
-  color: var(--faint);
-  margin-bottom: 12px;
-}
-
-.welcome-view-title {
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--fg);
-  letter-spacing: -0.01em;
-}
-
-.welcome-view-text {
-  font-size: 14px;
-  color: var(--muted);
-  margin-bottom: 24px;
-}
-
-.welcome-view-composer {
-  width: 100%;
 }
 
 /* === EDIT INPUT === */

@@ -14,7 +14,7 @@ struct DeleteTarget {
 
 #[component]
 pub fn SessionSidebar(
-    selected: Option<String>,
+    selected: Memo<Option<String>>,
     sessions: ReadSignal<Vec<SessionSummary>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
@@ -81,12 +81,11 @@ pub fn SessionSidebar(
             .unwrap_or_default()
     });
 
-    let selected_for_confirm = selected.clone();
     let on_confirm = Callback::new(move |_| {
         let target = confirm_target.get();
         set_confirm_target.set(None);
         if let Some(target) = target {
-            let active = selected_for_confirm.as_ref() == Some(&target.id);
+            let active = selected.get().as_ref() == Some(&target.id);
             let session_id = target.id;
             set_error.set(None);
             spawn_ui(async move {
@@ -151,16 +150,16 @@ pub fn SessionSidebar(
                         .into_any()
                     } else {
                         let filtered = filtered_sessions();
-                        let selected_clone = selected.clone();
                         view! {
                             <ul class="session-list">
                                 <For
                                     each=move || filtered.clone()
                                     key=|session| session.session_id.clone()
                                     children=move |session| {
-                                        let active = selected_clone
-                                            .as_ref()
-                                            == Some(&session.session_id);
+                                        let session_id = session.session_id.clone();
+                                        let active = Signal::derive(move || {
+                                            selected.get().as_deref() == Some(session_id.as_str())
+                                        });
                                         view! {
                                             <SessionItem
                                                 session=session
@@ -194,14 +193,9 @@ pub fn SessionSidebar(
 #[component]
 fn SessionItem(
     session: SessionSummary,
-    active: bool,
+    active: Signal<bool>,
     set_confirm_target: WriteSignal<Option<DeleteTarget>>,
 ) -> impl IntoView {
-    let item_class = if active {
-        "session-item active"
-    } else {
-        "session-item"
-    };
     let session_id = session.session_id.clone();
     let session_title = display_session_title(&session);
 
@@ -226,7 +220,10 @@ fn SessionItem(
 
     view! {
         <li class="session-list-item">
-            <a class=item_class href=format!("/app/session/{}", session.session_id)>
+            <a
+                class=move || if active.get() { "session-item active" } else { "session-item" }
+                href=format!("/app/session/{}", session.session_id)
+            >
                 <span class=format!("session-status-dot {}", status_class)></span>
                 <span class="session-copy">
                     <span class="session-id">{display_session_title(&session)}</span>

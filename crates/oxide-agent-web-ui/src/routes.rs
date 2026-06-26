@@ -1,3 +1,12 @@
+use leptos::prelude::WriteSignal;
+
+/// Reactive routing context — provided by `App`, consumed by `navigate()`
+/// to update the current route without a full page reload.
+#[derive(Clone)]
+pub struct RouteContext {
+    pub set_route: WriteSignal<AppRoute>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppRoute {
     Login,

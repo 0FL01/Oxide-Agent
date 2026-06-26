@@ -5,17 +5,29 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, SessionSummary};
 
 #[component]
-pub fn AppLayout(route: AppRoute) -> impl IntoView {
+pub fn AppLayout(route: ReadSignal<AppRoute>) -> impl IntoView {
     let (events, set_events) = signal(Vec::<PersistedTaskEvent>::new());
     let (progress, set_progress) = signal(None::<ProgressSnapshot>);
     let (sessions, set_sessions) = signal(Vec::<SessionSummary>::new());
 
+    // Derive `session_id` reactively from the route signal.
+    // `App → Session(id)` changes this from `None` to `Some(id)` without
+    // recreating `AppLayout` or any of its children.
+    let session_id = Memo::new(move |_| match route.get() {
+        AppRoute::Session(id) => Some(id),
+        _ => None,
+    });
+
     view! {
         <div class="app-layout">
-            <SessionSidebar selected=selected_session_id(&route) sessions=sessions set_sessions=set_sessions />
+            <SessionSidebar
+                selected=session_id
+                sessions=sessions
+                set_sessions=set_sessions
+            />
             <main class="workspace-main">
                 <TaskConsole
-                    route=route
+                    session_id=session_id
                     events=events
                     progress=progress
                     set_events=set_events
@@ -33,12 +45,5 @@ pub fn ErrorBanner(message: ReadSignal<Option<String>>) -> impl IntoView {
         {move || {
             message.get().map(|text| view! { <div class="error-banner">{text}</div> })
         }}
-    }
-}
-
-fn selected_session_id(route: &AppRoute) -> Option<String> {
-    match route {
-        AppRoute::Session(session_id) => Some(session_id.clone()),
-        _ => None,
     }
 }
