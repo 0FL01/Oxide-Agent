@@ -659,7 +659,7 @@ tests/                          # Integration and functional tests
 docs/                           # Documentation
 ├── wiki-memory.md              # Wiki memory system
 ├── silero-tts-api.md           # Silero TTS integration
-├── stack-logs-stage0.md        # Stack logs tool
+├── stack-logs.md               # Stack logs tool
 ├── context-window-tracking.md  # Token budget management
 ├── tips/cache-hit.md           # Prompt cache optimization
 ├── hooks/                      # Hooks system documentation (9 files)

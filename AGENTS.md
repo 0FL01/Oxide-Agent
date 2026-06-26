@@ -184,7 +184,7 @@ feat(sources): add bybit proof of reserves source
 - `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.
-- `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.
+- `docs/stack-logs.md` - stack logs tool: Docker Compose log access.
 - `docs/deploy.md` - concise deploy guide, optional external services, local service overlays, operations.
 - `docs/browser-live.md` - Browser Live agent: sidecar setup, REST/CDP contract, actions, security model.
 - `README.md` - product overview and user-facing setup notes.
