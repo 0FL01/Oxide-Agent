@@ -37,7 +37,7 @@ None. The plan was reviewed and approved by the user before goal creation.
 - Public exports: `WebFetchMdProvider` (struct + `new()`, `Default`, `tool_runtime_executors()`), re-exported at `providers/mod.rs:111`.
 - External references: `tool_runtime/modules.rs` (line 728-730) registers the provider; `manager_control_plane/agent_controls.rs` has string literal `"webfetch_md"`. None import internal types. Zero blast radius outside `providers/mod.rs`.
 - Validation: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core -- webfetch`.
-- Existing convention: `manager_control_plane/`, `crawl4ai_markdown/`, `brave_search/`, `silero_tts/`, `duckduckgo/`, `searxng/` are already directory-modules inside `providers/`.
+- Existing convention: `manager_control_plane/`, legacy crawl/search providers, `silero_tts/`, `duckduckgo/`, and `searxng/` are already directory-modules inside `providers/`.
 - Test infrastructure: ~478 lines of tests inside `#[cfg(test)] mod tests` at line 834. Covers: runtime executor, HTML conversion, URL validation, SSRF, anti-bot detection, truncation, structured failure payload, Reddit RSS parsing/rendering.
 
 ## Completion Audit

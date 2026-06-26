@@ -37,7 +37,7 @@ None. The plan was reviewed and approved by the user before goal creation.
 - Public exports: `Crawl4AiMarkdownProvider` (struct + `new()`, `tool_runtime_executors()`), re-exported at `providers/mod.rs:64-65`.
 - External references: 12 files reference `"crawl4ai_markdown"` as a string constant; none import internal types. Zero blast radius outside `providers/mod.rs`.
 - Validation: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core -- crawl4ai`.
-- Existing convention: `manager_control_plane/` is already a directory-module inside `providers/`; `brave_search/`, `silero_tts/`, `duckduckgo/`, `searxng/` are also directory-modules.
+- Existing convention: `manager_control_plane/` is already a directory-module inside `providers/`; legacy search providers, `silero_tts/`, `duckduckgo/`, and `searxng/` are also directory-modules.
 - Test infrastructure: 12 tests inside `#[cfg(test)] mod tests` at line 1322. Mock HTTP server, `runtime_invocation` helper, assertion-heavy integration tests.
 
 ## Completion Audit

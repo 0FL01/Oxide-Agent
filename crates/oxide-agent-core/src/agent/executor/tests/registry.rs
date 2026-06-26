@@ -772,10 +772,7 @@ fn typed_runtime_registry_skips_disabled_delegation_module() {
 fn clear_web_search_registry_env() {
     for key in [
         "TAVILY_API_KEY",
-        "TAVILY_ENABLED",
         "BRAVE_SEARCH_API_KEY",
-        "BRAVE_SEARCH_ENABLED",
-        "OXIDE_CRW_ENABLED",
         "OXIDE_CRW_BASE_URL",
         "OXIDE_CRW_API_TOKEN",
     ] {

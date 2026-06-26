@@ -54,7 +54,7 @@ None. User approved continuing RECON-cleanup as a separate phase.
   - Evidence collected: 2026-06-08 Checkpoint 1 changed active README provider text to YOLO full-permission mode. `rg -n "approval flow" README.md` returned no matches.
 
 - G3: Profile TOMLs list compiled Brave Search module where corresponding Cargo profiles compile it
-  - Source: RECON profile TOML drift for `tool-brave-search`.
+- Source: RECON profile TOML drift for a retired indexed-search feature.
   - Acceptance: `profiles/full.toml`, `profiles/embedded-opencode-local.toml`, `profiles/search-only.toml`, and `profiles/host-bwrap.toml` include `"tool/brave-search" = { enabled = true }`.
   - Evidence required: targeted `rg`/diff review and profile check command pass.
   - Status: verified

@@ -8,9 +8,9 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::config::{
-    get_brave_search_api_key, get_brave_search_country, get_brave_search_lang,
-    get_brave_search_max_concurrent, get_brave_search_min_delay_ms, get_brave_search_safesearch,
-    get_brave_search_timeout, get_brave_search_ui_lang, get_crw_api_token, get_crw_base_url,
+    get_brave_backend_api_key, get_brave_backend_country, get_brave_backend_lang,
+    get_brave_backend_max_concurrent, get_brave_backend_min_delay_ms, get_brave_backend_safesearch,
+    get_brave_backend_timeout, get_brave_backend_ui_lang, get_crw_api_token, get_crw_base_url,
     get_crw_timeout_secs, get_tavily_api_key,
 };
 use crate::llm::ToolDefinition;
@@ -1032,10 +1032,10 @@ struct BraveRateLimiter {
 
 impl BraveSearchBackend {
     fn from_env() -> Result<Option<Self>, WebSearchError> {
-        let Some(api_key) = get_brave_search_api_key() else {
+        let Some(api_key) = get_brave_backend_api_key() else {
             return Ok(None);
         };
-        let timeout = Duration::from_secs(get_brave_search_timeout());
+        let timeout = Duration::from_secs(get_brave_backend_timeout());
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
@@ -1045,14 +1045,14 @@ impl BraveSearchBackend {
             endpoint: BRAVE_WEB_SEARCH_ENDPOINT.to_string(),
             client,
             limiter: Arc::new(BraveRateLimiter {
-                semaphore: Semaphore::new(get_brave_search_max_concurrent().max(1)),
-                min_delay: Duration::from_millis(get_brave_search_min_delay_ms()),
+                semaphore: Semaphore::new(get_brave_backend_max_concurrent().max(1)),
+                min_delay: Duration::from_millis(get_brave_backend_min_delay_ms()),
                 last_started: Mutex::new(None),
             }),
-            default_country: get_brave_search_country(),
-            default_search_lang: get_brave_search_lang(),
-            default_ui_lang: get_brave_search_ui_lang(),
-            default_safesearch: get_brave_search_safesearch(),
+            default_country: get_brave_backend_country(),
+            default_search_lang: get_brave_backend_lang(),
+            default_ui_lang: get_brave_backend_ui_lang(),
+            default_safesearch: get_brave_backend_safesearch(),
         }))
     }
 

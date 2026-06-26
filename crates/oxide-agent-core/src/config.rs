@@ -2037,9 +2037,7 @@ mod tests {
     fn clear_web_search_env() {
         for key in [
             "TAVILY_API_KEY",
-            "TAVILY_ENABLED",
             "BRAVE_SEARCH_API_KEY",
-            "BRAVE_SEARCH_ENABLED",
             "BRAVE_SEARCH_TIMEOUT_SECS",
             "BRAVE_SEARCH_COUNTRY",
             "BRAVE_SEARCH_LANG",
@@ -2047,7 +2045,6 @@ mod tests {
             "BRAVE_SEARCH_SAFESEARCH",
             "BRAVE_SEARCH_MAX_CONCURRENT",
             "BRAVE_SEARCH_MIN_DELAY_MS",
-            "OXIDE_CRW_ENABLED",
             "OXIDE_CRW_BASE_URL",
             "OXIDE_CRW_API_TOKEN",
             "OXIDE_CRW_TIMEOUT_SECS",
@@ -2063,67 +2060,59 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_web_search_env();
 
-        test_set_env("TAVILY_ENABLED", "true");
         assert_eq!(get_tavily_api_key(), None);
 
         test_set_env("TAVILY_API_KEY", " tavily-key ");
         assert_eq!(get_tavily_api_key().as_deref(), Some("tavily-key"));
 
-        test_set_env("TAVILY_ENABLED", "false");
-        assert_eq!(get_tavily_api_key().as_deref(), Some("tavily-key"));
-
         clear_web_search_env();
     }
 
     #[test]
-    fn brave_search_configured_only_by_api_key_presence() {
+    fn brave_backend_configured_only_by_api_key_presence() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_web_search_env();
 
-        test_set_env("BRAVE_SEARCH_ENABLED", "true");
-        assert_eq!(get_brave_search_api_key(), None);
+        assert_eq!(get_brave_backend_api_key(), None);
 
         test_set_env("BRAVE_SEARCH_API_KEY", " brave-key ");
-        assert_eq!(get_brave_search_api_key().as_deref(), Some("brave-key"));
-
-        test_set_env("BRAVE_SEARCH_ENABLED", "false");
-        assert_eq!(get_brave_search_api_key().as_deref(), Some("brave-key"));
+        assert_eq!(get_brave_backend_api_key().as_deref(), Some("brave-key"));
 
         clear_web_search_env();
     }
 
     #[test]
-    fn brave_search_config_uses_defaults_when_env_missing() {
+    fn brave_backend_config_uses_defaults_when_env_missing() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_web_search_env();
 
         assert_eq!(
-            get_brave_search_timeout(),
+            get_brave_backend_timeout(),
             BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS
         );
-        assert_eq!(get_brave_search_country(), BRAVE_SEARCH_DEFAULT_COUNTRY);
-        assert_eq!(get_brave_search_lang(), BRAVE_SEARCH_DEFAULT_LANG);
-        assert_eq!(get_brave_search_ui_lang(), BRAVE_SEARCH_DEFAULT_UI_LANG);
+        assert_eq!(get_brave_backend_country(), BRAVE_SEARCH_DEFAULT_COUNTRY);
+        assert_eq!(get_brave_backend_lang(), BRAVE_SEARCH_DEFAULT_LANG);
+        assert_eq!(get_brave_backend_ui_lang(), BRAVE_SEARCH_DEFAULT_UI_LANG);
         assert_eq!(
-            get_brave_search_safesearch(),
+            get_brave_backend_safesearch(),
             BRAVE_SEARCH_DEFAULT_SAFESEARCH
         );
         assert_eq!(
-            get_brave_search_max_concurrent(),
+            get_brave_backend_max_concurrent(),
             BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT
         );
         assert_eq!(
-            get_brave_search_min_delay_ms(),
+            get_brave_backend_min_delay_ms(),
             BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS
         );
     }
 
     #[test]
-    fn brave_search_config_parses_non_empty_env_values() {
+    fn brave_backend_config_parses_non_empty_env_values() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2137,25 +2126,24 @@ mod tests {
         test_set_env("BRAVE_SEARCH_MAX_CONCURRENT", "2");
         test_set_env("BRAVE_SEARCH_MIN_DELAY_MS", "500");
 
-        assert_eq!(get_brave_search_timeout(), 7);
-        assert_eq!(get_brave_search_country(), "DE");
-        assert_eq!(get_brave_search_lang(), "de");
-        assert_eq!(get_brave_search_ui_lang(), "de-DE");
-        assert_eq!(get_brave_search_safesearch(), "strict");
-        assert_eq!(get_brave_search_max_concurrent(), 2);
-        assert_eq!(get_brave_search_min_delay_ms(), 500);
+        assert_eq!(get_brave_backend_timeout(), 7);
+        assert_eq!(get_brave_backend_country(), "DE");
+        assert_eq!(get_brave_backend_lang(), "de");
+        assert_eq!(get_brave_backend_ui_lang(), "de-DE");
+        assert_eq!(get_brave_backend_safesearch(), "strict");
+        assert_eq!(get_brave_backend_max_concurrent(), 2);
+        assert_eq!(get_brave_backend_min_delay_ms(), 500);
 
         clear_web_search_env();
     }
 
     #[test]
-    fn crw_base_url_has_no_default_and_enabled_flag_has_no_effect() {
+    fn crw_base_url_has_no_default() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_web_search_env();
 
-        test_set_env("OXIDE_CRW_ENABLED", "true");
         assert_eq!(get_crw_base_url(), None);
         assert!(!is_crw_configured());
 
@@ -2502,7 +2490,7 @@ pub fn get_tavily_api_key() -> Option<String> {
 ///
 /// Environment variable: `BRAVE_SEARCH_API_KEY`
 #[must_use]
-pub fn get_brave_search_api_key() -> Option<String> {
+pub fn get_brave_backend_api_key() -> Option<String> {
     non_empty_env("BRAVE_SEARCH_API_KEY")
 }
 
@@ -2510,7 +2498,7 @@ pub fn get_brave_search_api_key() -> Option<String> {
 ///
 /// Environment variable: `BRAVE_SEARCH_TIMEOUT_SECS`
 #[must_use]
-pub fn get_brave_search_timeout() -> u64 {
+pub fn get_brave_backend_timeout() -> u64 {
     parse_env_u64("BRAVE_SEARCH_TIMEOUT_SECS").unwrap_or(BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS)
 }
 
@@ -2518,7 +2506,7 @@ pub fn get_brave_search_timeout() -> u64 {
 ///
 /// Environment variable: `BRAVE_SEARCH_COUNTRY`
 #[must_use]
-pub fn get_brave_search_country() -> String {
+pub fn get_brave_backend_country() -> String {
     std::env::var("BRAVE_SEARCH_COUNTRY")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2530,7 +2518,7 @@ pub fn get_brave_search_country() -> String {
 ///
 /// Environment variable: `BRAVE_SEARCH_LANG`
 #[must_use]
-pub fn get_brave_search_lang() -> String {
+pub fn get_brave_backend_lang() -> String {
     std::env::var("BRAVE_SEARCH_LANG")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2542,7 +2530,7 @@ pub fn get_brave_search_lang() -> String {
 ///
 /// Environment variable: `BRAVE_SEARCH_UI_LANG`
 #[must_use]
-pub fn get_brave_search_ui_lang() -> String {
+pub fn get_brave_backend_ui_lang() -> String {
     std::env::var("BRAVE_SEARCH_UI_LANG")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2554,7 +2542,7 @@ pub fn get_brave_search_ui_lang() -> String {
 ///
 /// Environment variable: `BRAVE_SEARCH_SAFESEARCH`
 #[must_use]
-pub fn get_brave_search_safesearch() -> String {
+pub fn get_brave_backend_safesearch() -> String {
     std::env::var("BRAVE_SEARCH_SAFESEARCH")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2566,7 +2554,7 @@ pub fn get_brave_search_safesearch() -> String {
 ///
 /// Environment variable: `BRAVE_SEARCH_MAX_CONCURRENT`
 #[must_use]
-pub fn get_brave_search_max_concurrent() -> usize {
+pub fn get_brave_backend_max_concurrent() -> usize {
     parse_env_usize("BRAVE_SEARCH_MAX_CONCURRENT")
         .filter(|value| *value > 0)
         .unwrap_or(BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT)
@@ -2576,7 +2564,7 @@ pub fn get_brave_search_max_concurrent() -> usize {
 ///
 /// Environment variable: `BRAVE_SEARCH_MIN_DELAY_MS`
 #[must_use]
-pub fn get_brave_search_min_delay_ms() -> u64 {
+pub fn get_brave_backend_min_delay_ms() -> u64 {
     parse_env_u64("BRAVE_SEARCH_MIN_DELAY_MS").unwrap_or(BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS)
 }
 
@@ -2617,7 +2605,7 @@ pub fn is_crw_configured() -> bool {
 /// Determine whether any indexed-search backend is configured.
 #[must_use]
 pub fn is_web_search_configured() -> bool {
-    get_tavily_api_key().is_some() || get_brave_search_api_key().is_some() || is_crw_configured()
+    get_tavily_api_key().is_some() || get_brave_backend_api_key().is_some() || is_crw_configured()
 }
 
 /// Determine whether split URL-to-Markdown tools should be merged into `web_crawler`.

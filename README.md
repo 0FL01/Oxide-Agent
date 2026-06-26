@@ -311,9 +311,8 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 <summary>Tool Providers</summary>
 
 ### Web Search and Extraction
-- **Brave Search Provider** (`tool-brave-search`) - primary indexed web discovery when `BRAVE_SEARCH_API_KEY` is configured
-- **Tavily Provider** (`tool-tavily`) - web search and data extraction
-- **[CRW Provider](https://github.com/us/crw)** (`tool-crw`) - self-hosted `web_search` and rendered scrape fallback for `web_crawler`
+- **Web Search Provider** (`tool-web-search`) - unified indexed web discovery through configured CRW, Tavily, and Brave backends
+- **[CRW Scrape Client](https://github.com/us/crw)** (`tool-crw`) - self-hosted rendered scrape backend for `web_crawler`
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
@@ -589,8 +588,8 @@ crates/
 │       │   │   ├── ssh_mcp.rs            # SSH infrastructure
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
-│       │   │   ├── brave_search/         # Brave Search API
-│       │   │   ├── crw/                 # CRW search/scrape REST client
+│       │   │   ├── web_search.rs         # Unified indexed search
+│       │   │   ├── crw/                  # CRW scrape REST client
 │       │   │   ├── tts/                  # Kokoro TTS
 │       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
@@ -691,7 +690,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Category | Features |
 |----------|----------|
 | **LLM Providers** | `llm-chatgpt`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
-| **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
+| **Search Tools** | `tool-web-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backend** | `sandbox-backend-sandboxd-client` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
