@@ -1,8 +1,16 @@
 use crate::auth::use_auth;
 use crate::components::ErrorBanner;
+use crate::confirm_dialog::ConfirmDialog;
 use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::SessionSummary;
+
+/// Pending deletion target — the session the user is about to delete.
+#[derive(Clone)]
+struct DeleteTarget {
+    id: String,
+    title: String,
+}
 
 #[component]
 pub fn SessionSidebar(
@@ -15,6 +23,7 @@ pub fn SessionSidebar(
     let (loading, set_loading) = signal(false);
     let (loaded, set_loaded) = signal(false);
     let (search, set_search) = signal(String::new());
+    let (confirm_target, set_confirm_target) = signal(None::<DeleteTarget>);
 
     let load_sessions = move || {
         set_loading.set(true);
@@ -58,6 +67,47 @@ pub fn SessionSidebar(
             })
             .collect::<Vec<_>>()
     };
+
+    let confirm_title = Signal::derive(move || {
+        confirm_target
+            .get()
+            .map(|t| t.title.clone())
+            .unwrap_or_default()
+    });
+    let confirm_message = Signal::derive(move || {
+        confirm_target
+            .get()
+            .map(|t| format!("\"{}\" will be permanently deleted.", t.title))
+            .unwrap_or_default()
+    });
+
+    let selected_for_confirm = selected.clone();
+    let on_confirm = Callback::new(move |_| {
+        let target = confirm_target.get();
+        set_confirm_target.set(None);
+        if let Some(target) = target {
+            let active = selected_for_confirm.as_ref() == Some(&target.id);
+            let session_id = target.id;
+            set_error.set(None);
+            spawn_ui(async move {
+                match auth.client().delete_session(&session_id).await {
+                    Ok(_) => {
+                        set_sessions.update(|items| {
+                            items.retain(|item| item.session_id != session_id);
+                        });
+                        if active {
+                            navigate("/app");
+                        }
+                    }
+                    Err(error) => set_error.set(Some(error.to_string())),
+                }
+            });
+        }
+    });
+
+    let on_cancel = Callback::new(move |_| {
+        set_confirm_target.set(None);
+    });
 
     view! {
         <aside class="sidebar">
@@ -115,8 +165,7 @@ pub fn SessionSidebar(
                                             <SessionItem
                                                 session=session
                                                 active=active
-                                                set_sessions=set_sessions
-                                                set_error=set_error
+                                                set_confirm_target=set_confirm_target
                                             />
                                         }
                                     }
@@ -131,6 +180,14 @@ pub fn SessionSidebar(
                 <a href="/settings">"Settings"</a>
             </div>
         </aside>
+        <ConfirmDialog
+            open=Signal::derive(move || confirm_target.get().is_some())
+            title=confirm_title
+            message=confirm_message
+            confirm_label="Delete".to_string()
+            on_confirm=on_confirm
+            on_cancel=on_cancel
+        />
     }
 }
 
@@ -138,18 +195,15 @@ pub fn SessionSidebar(
 fn SessionItem(
     session: SessionSummary,
     active: bool,
-    set_sessions: WriteSignal<Vec<SessionSummary>>,
-    set_error: WriteSignal<Option<String>>,
+    set_confirm_target: WriteSignal<Option<DeleteTarget>>,
 ) -> impl IntoView {
-    let auth = use_auth();
     let item_class = if active {
         "session-item active"
     } else {
         "session-item"
     };
     let session_id = session.session_id.clone();
-    let session_title = session.title.clone();
-    let (deleting, set_deleting) = signal(false);
+    let session_title = display_session_title(&session);
 
     // Determine status dot class from last task status
     let status_class = match session.last_task_status {
@@ -161,29 +215,13 @@ fn SessionItem(
         _ => "idle",
     };
 
-    let delete_session = move |ev: leptos::ev::MouseEvent| {
+    let request_delete = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
-        if !confirm_delete_session(&session_title) {
-            return;
-        }
-        set_deleting.set(true);
-        set_error.set(None);
-        let session_id = session_id.clone();
-        spawn_ui(async move {
-            match auth.client().delete_session(&session_id).await {
-                Ok(_) => {
-                    set_sessions.update(|items| {
-                        items.retain(|item| item.session_id != session_id);
-                    });
-                    if active {
-                        navigate("/app");
-                    }
-                }
-                Err(error) => set_error.set(Some(error.to_string())),
-            }
-            set_deleting.set(false);
-        });
+        set_confirm_target.set(Some(DeleteTarget {
+            id: session_id.clone(),
+            title: session_title.clone(),
+        }));
     };
 
     view! {
@@ -198,8 +236,7 @@ fn SessionItem(
                 class="session-delete-button"
                 type="button"
                 title="Delete session"
-                disabled=deleting
-                on:click=delete_session
+                on:click=request_delete
             >
                 "Del"
             </button>
@@ -266,24 +303,5 @@ mod tests {
         assert!(looks_like_timestamp_title("2026-05-29 20:53:47.208618014"));
         assert!(looks_like_timestamp_title("2026-05-29T20:53:47Z"));
         assert!(!looks_like_timestamp_title("Cloud storage limits"));
-    }
-}
-
-fn confirm_delete_session(title: &str) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        web_sys::window()
-            .and_then(|window| {
-                window
-                    .confirm_with_message(&format!("Delete session \"{title}\"?"))
-                    .ok()
-            })
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = title;
-        true
     }
 }
