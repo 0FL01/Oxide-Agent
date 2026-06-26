@@ -148,7 +148,7 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 
 ### Infrastructure
 *   **Docker** - run the default code sandbox (`agent-sandbox:latest`)
-*   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
+*   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose
 *   **Tavily API** - optional web search provider (`TAVILY_API_KEY`)
 *   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`)
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
@@ -691,7 +691,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | **LLM Providers** | `llm-chatgpt`, `llm-minimax`, `llm-openai-base`, `llm-opencode-go`, `llm-openrouter` |
 | **Search Tools** | `tool-tavily`, `tool-brave-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
-| **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client` |
+| **Sandbox Backend** | `sandbox-backend-sandboxd-client` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
 | **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |
@@ -737,7 +737,7 @@ page. Full setup details and warnings are in
 - **teloxide** (0.17) - Telegram Bot API with macros and handlers
 - **tokio** (1.52) - asynchronous runtime
 - **sqlx-postgres/sqlx-core** (0.8) - PostgreSQL durable storage
-- **bollard** (0.20) - Docker API for sandbox management
+- **bollard** (0.20) - Docker API for sandbox daemon (`sandbox-daemon` feature only)
 - **leptos** (0.8) - Web interface frontend (CSR)
 - **axum** (0.7) - Web interface HTTP API
 - **reqwest** (0.12/0.13) - HTTP client with multipart and streaming support

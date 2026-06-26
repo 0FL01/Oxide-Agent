@@ -1,6 +1,5 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
-assertion_line: 120
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -14,26 +13,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "llm-provider/opencode-zen",
         "module": "llm-provider/opencode-zen"
-      },
-      {
-        "id": "sandbox-backend/docker-direct",
-        "module": "sandbox-backend/docker-direct"
-      },
-      {
-        "id": "sandbox-backend/docker-direct/diagnostics",
-        "module": "sandbox-backend/docker-direct"
-      },
-      {
-        "id": "sandbox-backend/docker-direct/exec",
-        "module": "sandbox-backend/docker-direct"
-      },
-      {
-        "id": "sandbox-backend/docker-direct/fileops",
-        "module": "sandbox-backend/docker-direct"
-      },
-      {
-        "id": "sandbox-backend/docker-direct/lifecycle",
-        "module": "sandbox-backend/docker-direct"
       },
       {
         "id": "sandbox-backend/sandboxd-client",
@@ -238,21 +217,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "sandbox-backend-docker-direct",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "sandbox-backend/docker-direct",
-        "kind": "sandbox-backend",
-        "provides": [
-          "sandbox-backend/docker-direct",
-          "sandbox-backend/docker-direct/diagnostics",
-          "sandbox-backend/docker-direct/exec",
-          "sandbox-backend/docker-direct/fileops",
-          "sandbox-backend/docker-direct/lifecycle"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "sandbox-backend-sandboxd-client",
         "config_properties": [],
         "conflicts": [],
@@ -419,7 +383,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/exec",
               "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
@@ -439,7 +402,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/fileops",
               "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
@@ -458,7 +420,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/lifecycle",
               "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"
@@ -537,11 +498,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "capabilities": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/docker-direct",
-      "sandbox-backend/docker-direct/diagnostics",
-      "sandbox-backend/docker-direct/exec",
-      "sandbox-backend/docker-direct/fileops",
-      "sandbox-backend/docker-direct/lifecycle",
       "sandbox-backend/sandboxd-client",
       "sandbox-backend/sandboxd-client/diagnostics",
       "sandbox-backend/sandboxd-client/exec",
@@ -570,7 +526,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "modules": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "storage/sqlx",
       "tool/agents-md",
@@ -625,7 +580,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
-    "sandbox-backend/docker-direct",
     "sandbox-backend/sandboxd-client"
   ],
   "external_service_requirements": [
@@ -653,13 +607,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
         "OPENCODE_ZEN_MODELS_URL"
       ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "sandbox-backend/docker-direct",
-      "kind": "sandbox-backend",
-      "cargo_feature": "sandbox-backend-docker-direct",
-      "config_env": [],
       "requires_capabilities": []
     },
     {

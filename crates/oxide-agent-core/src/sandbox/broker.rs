@@ -3,25 +3,25 @@
 use super::error::SandboxError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use tracing::{info, warn};
 
 use crate::config::get_sandboxd_socket;
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 use super::manager::DockerSandboxManager;
 use super::manager::{ExecResult, SandboxContainerRecord};
 use super::scope::SandboxScope;
@@ -641,13 +641,13 @@ impl SandboxBrokerClient {
     }
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 pub struct SandboxBrokerServer {
     listener: UnixListener,
     socket_path: PathBuf,
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 impl SandboxBrokerServer {
     pub async fn bind(socket_path: impl AsRef<Path>) -> Result<Self, SandboxError> {
         let socket_path = socket_path.as_ref().to_path_buf();
@@ -693,7 +693,7 @@ impl SandboxBrokerServer {
     }
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_connection(mut stream: UnixStream) -> Result<(), SandboxError> {
     let request: SandboxBrokerRequest = read_frame(&mut stream).await?;
     let response = handle_request(request, &mut stream).await?;
@@ -703,7 +703,7 @@ async fn handle_connection(mut stream: UnixStream) -> Result<(), SandboxError> {
     Ok(())
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn docker_manager(
     scope: SandboxScope,
     image_name: String,
@@ -711,7 +711,7 @@ async fn docker_manager(
     DockerSandboxManager::new_with_image(scope, image_name).await
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 fn response_from_result<T>(
     result: Result<T, SandboxError>,
     map: impl FnOnce(T) -> SandboxBrokerResponse,
@@ -722,7 +722,7 @@ fn response_from_result<T>(
     }
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -736,7 +736,7 @@ async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> Sandb
     })
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_write_file(
     scope: SandboxScope,
     image_name: String,
@@ -757,7 +757,7 @@ async fn handle_write_file(
     })
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_read_file(
     scope: SandboxScope,
     image_name: String,
@@ -771,7 +771,7 @@ async fn handle_read_file(
     response_from_result(manager.read_file(&path).await, SandboxBrokerResponse::Bytes)
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_upload_file(
     scope: SandboxScope,
     image_name: String,
@@ -792,7 +792,7 @@ async fn handle_upload_file(
     })
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_download_file(
     scope: SandboxScope,
     image_name: String,
@@ -813,7 +813,7 @@ async fn handle_download_file(
     )
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -823,7 +823,7 @@ async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> San
     response_from_result(manager.get_uploads_size().await, SandboxBrokerResponse::U64)
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_cleanup_old_downloads(
     scope: SandboxScope,
     image_name: String,
@@ -839,7 +839,7 @@ async fn handle_cleanup_old_downloads(
     )
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -849,7 +849,7 @@ async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBroke
     response_from_result(manager.destroy().await, |_| SandboxBrokerResponse::Unit)
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -859,7 +859,7 @@ async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrok
     response_from_result(manager.recreate().await, |_| SandboxBrokerResponse::Unit)
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_file_size_bytes(
     scope: SandboxScope,
     image_name: String,
@@ -876,7 +876,7 @@ async fn handle_file_size_bytes(
     )
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_exec_command(
     scope: SandboxScope,
     image_name: String,
@@ -912,7 +912,7 @@ async fn handle_exec_command(
     Ok(Some(response))
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn handle_request(
     request: SandboxBrokerRequest,
     stream: &mut UnixStream,
@@ -1004,7 +1004,7 @@ async fn handle_request(
     Ok(Some(response))
 }
 
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 async fn wait_for_peer_disconnect(stream: &mut UnixStream) -> Result<(), SandboxError> {
     let mut buf = [0_u8; 1];
     let read = stream.read(&mut buf).await?;
@@ -1043,7 +1043,7 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T, S
 
 #[cfg(test)]
 mod tests {
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use super::SandboxError;
     use super::{
         ResolvedStackLogsSelector, SandboxBrokerRequest, SandboxBrokerResponse, StackLogCursor,
@@ -1051,16 +1051,16 @@ mod tests {
         StackLogsFetchResponse, StackLogsListSourcesRequest, StackLogsListSourcesResponse,
         StackLogsSelector, StackLogsWindow,
     };
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use super::{SandboxBrokerClient, SandboxBrokerServer};
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use crate::config::get_sandbox_image;
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use crate::sandbox::scope::SandboxScope;
     use chrono::{TimeZone, Utc};
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use std::path::PathBuf;
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn utc_ts(
@@ -1076,7 +1076,7 @@ mod tests {
             .expect("valid UTC timestamp")
     }
 
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1085,7 +1085,7 @@ mod tests {
         std::env::temp_dir().join(format!("oxide-agent-{test_name}-{nonce}.sock"))
     }
 
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     fn unique_scope(test_name: &str) -> SandboxScope {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     #[ignore = "Requires Docker daemon"]
     async fn broker_download_file_roundtrip_reads_existing_container_file()
     -> Result<(), SandboxError> {
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     #[ignore = "Requires Docker daemon"]
     async fn broker_write_file_roundtrip_persists_to_existing_container() -> Result<(), SandboxError>
     {
@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     #[ignore = "Requires Docker daemon"]
     async fn broker_upload_file_roundtrip_persists_to_existing_container()
     -> Result<(), SandboxError> {

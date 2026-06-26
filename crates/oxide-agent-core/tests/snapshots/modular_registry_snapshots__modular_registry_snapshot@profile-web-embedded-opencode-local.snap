@@ -1,6 +1,5 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
-assertion_line: 120
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -508,7 +507,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/exec",
               "sandbox-backend/sandboxd-client/exec"
             ],
             "kind": "any-of"
@@ -528,7 +526,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/fileops",
               "sandbox-backend/sandboxd-client/fileops"
             ],
             "kind": "any-of"
@@ -547,7 +544,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": [
           {
             "capabilities": [
-              "sandbox-backend/docker-direct/lifecycle",
               "sandbox-backend/sandboxd-client/lifecycle"
             ],
             "kind": "any-of"

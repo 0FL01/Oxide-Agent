@@ -112,7 +112,7 @@ pub struct SandboxApplyFileEditResult {
 /// Internal result of applying a sandbox text edit to in-memory bytes.
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
@@ -126,7 +126,7 @@ pub(crate) struct SandboxAppliedFileEdit {
 
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
@@ -164,7 +164,7 @@ pub(crate) fn apply_sandbox_file_edit(
 
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
@@ -175,7 +175,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
@@ -208,7 +208,7 @@ fn validate_edit_read_guard(
 
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)
@@ -266,7 +266,7 @@ fn apply_exact_text_edit(
 
 #[cfg_attr(
     not(any(
-        oxide_module_sandbox_backend_docker_direct,
+        oxide_module_sandbox_daemon_sandboxd,
         oxide_module_sandbox_backend_sandboxd_client,
     )),
     allow(dead_code)

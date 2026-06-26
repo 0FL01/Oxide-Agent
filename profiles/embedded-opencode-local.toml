@@ -3,7 +3,6 @@ cargo_features = ["profile-embedded-opencode-local"]
 
 [modules]
 "llm-provider/opencode-go" = { enabled = true }
-"sandbox-backend/docker-direct" = { enabled = true }
 "sandbox-backend/sandboxd-client" = { enabled = true }
 "storage/sqlx" = { enabled = true }
 "tool/agents-md" = { enabled = true }

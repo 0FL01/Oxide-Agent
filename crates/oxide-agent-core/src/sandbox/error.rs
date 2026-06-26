@@ -50,7 +50,7 @@ pub enum SandboxError {
     ReadGuardMismatch(String),
 
     /// Docker daemon error (connection, API, container operations).
-    #[cfg(oxide_module_sandbox_backend_docker_direct)]
+    #[cfg(oxide_module_sandbox_daemon_sandboxd)]
     #[error("Docker error: {0}")]
     Docker(#[from] bollard::errors::Error),
 

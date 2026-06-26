@@ -928,13 +928,7 @@ mod tests {
             .expect("disabling the conflicting module should resolve the conflict");
     }
 
-    #[cfg(all(
-        oxide_module_tool_sandbox_exec,
-        any(
-            oxide_module_sandbox_backend_docker_direct,
-            oxide_module_sandbox_backend_sandboxd_client,
-        )
-    ))]
+    #[cfg(oxide_module_tool_sandbox_exec)]
     #[test]
     fn compiled_sandbox_exec_declares_exec_backend_requirement() {
         let manifest =
@@ -952,19 +946,13 @@ mod tests {
             .map(|capability| capability.as_str())
             .collect();
 
-        let expected = vec![
-            #[cfg(oxide_module_sandbox_backend_docker_direct)]
-            "sandbox-backend/docker-direct/exec",
-            #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
-            "sandbox-backend/sandboxd-client/exec",
-        ];
+        let expected = vec!["sandbox-backend/sandboxd-client/exec"];
 
         assert_eq!(requirement_options, expected);
     }
 
     #[cfg(all(
         oxide_module_tool_sandbox_exec,
-        oxide_module_sandbox_backend_docker_direct,
         oxide_module_sandbox_backend_sandboxd_client
     ))]
     #[test]
@@ -973,23 +961,14 @@ mod tests {
             compiled_capability_manifest().expect("compiled modules must have unique IDs");
 
         #[cfg(oxide_module_sandbox_daemon_sandboxd)]
-        let docker_direct_disabled = [
-            ("sandbox-backend/docker-direct", false),
-            ("sandbox-daemon/sandboxd", false),
-        ];
+        let daemon_disabled = [("sandbox-daemon/sandboxd", false)];
         #[cfg(not(oxide_module_sandbox_daemon_sandboxd))]
-        let docker_direct_disabled = [("sandbox-backend/docker-direct", false)];
+        let daemon_disabled: [(&str, bool); 0] = [];
         manifest
-            .enabled_manifest_from_configured_modules(docker_direct_disabled)
+            .enabled_manifest_from_configured_modules(daemon_disabled)
             .expect("sandboxd-client exec backend should satisfy sandbox exec");
-        manifest
-            .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
-            .expect("docker-direct exec backend should satisfy sandbox exec");
 
-        let mut no_exec_backend = vec![
-            ("sandbox-backend/docker-direct", false),
-            ("sandbox-backend/sandboxd-client", false),
-        ];
+        let mut no_exec_backend = vec![("sandbox-backend/sandboxd-client", false)];
         #[cfg(oxide_module_sandbox_daemon_sandboxd)]
         no_exec_backend.push(("sandbox-daemon/sandboxd", false));
         #[cfg(oxide_module_tool_sandbox_fileops)]
@@ -1009,21 +988,12 @@ mod tests {
             error,
             ManifestError::UnsatisfiedEnabledCapabilityRequirement {
                 module: ModuleId::new("tool/sandbox-exec"),
-                capabilities: vec![
-                    CapabilityId::new("sandbox-backend/docker-direct/exec"),
-                    CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
-                ],
+                capabilities: vec![CapabilityId::new("sandbox-backend/sandboxd-client/exec"),],
             }
         );
     }
 
-    #[cfg(all(
-        oxide_module_tool_ytdlp,
-        any(
-            oxide_module_sandbox_backend_docker_direct,
-            oxide_module_sandbox_backend_sandboxd_client,
-        )
-    ))]
+    #[cfg(oxide_module_tool_ytdlp)]
     #[test]
     fn compiled_ytdlp_declares_exec_and_fileops_backend_requirements() {
         let manifest =
@@ -1042,16 +1012,8 @@ mod tests {
             .collect();
 
         let mut expected = BTreeSet::new();
-        #[cfg(oxide_module_sandbox_backend_docker_direct)]
-        {
-            expected.insert("sandbox-backend/docker-direct/exec");
-            expected.insert("sandbox-backend/docker-direct/fileops");
-        }
-        #[cfg(oxide_module_sandbox_backend_sandboxd_client)]
-        {
-            expected.insert("sandbox-backend/sandboxd-client/exec");
-            expected.insert("sandbox-backend/sandboxd-client/fileops");
-        }
+        expected.insert("sandbox-backend/sandboxd-client/exec");
+        expected.insert("sandbox-backend/sandboxd-client/fileops");
 
         assert_eq!(requirement_options, expected);
     }

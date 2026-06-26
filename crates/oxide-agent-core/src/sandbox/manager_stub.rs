@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 fn unavailable() -> SandboxError {
     SandboxError::BackendNotCompiled(
-        "sandbox support is not compiled; enable sandbox-backend-docker-direct or sandbox-daemon",
+        "sandbox support is not compiled; enable sandbox-backend-sandboxd-client",
     )
 }
 

@@ -332,11 +332,11 @@ fn assert_tool_availability_contract(
                     enabled_module_ids.contains("transport/telegram"),
                     "embedded-opencode-local profile must enable the Telegram transport"
                 );
-                assert!(
-                    enabled_module_ids.contains("sandbox-backend/docker-direct"),
-                    "embedded-opencode-local profile must enable the direct Docker sandbox backend"
-                );
             }
+            assert!(
+                enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
+                "{profile} must enable the sandboxd client backend"
+            );
             assert_present_capabilities(
                 &enabled_capability_ids,
                 &[
@@ -354,27 +354,15 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
-            if profile == "profile-web-embedded-opencode-local" {
-                assert_present_capabilities(
-                    &enabled_capability_ids,
-                    &[
-                        "sandbox-backend/sandboxd-client/exec",
-                        "sandbox-backend/sandboxd-client/fileops",
-                        "sandbox-backend/sandboxd-client/lifecycle",
-                    ],
-                    profile,
-                );
-            } else {
-                assert_present_capabilities(
-                    &enabled_capability_ids,
-                    &[
-                        "sandbox-backend/docker-direct/exec",
-                        "sandbox-backend/docker-direct/fileops",
-                        "sandbox-backend/docker-direct/lifecycle",
-                    ],
-                    profile,
-                );
-            }
+            assert_present_capabilities(
+                &enabled_capability_ids,
+                &[
+                    "sandbox-backend/sandboxd-client/exec",
+                    "sandbox-backend/sandboxd-client/fileops",
+                    "sandbox-backend/sandboxd-client/lifecycle",
+                ],
+                profile,
+            );
             assert_present_tools(
                 &tool_names,
                 &[

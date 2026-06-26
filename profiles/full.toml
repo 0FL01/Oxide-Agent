@@ -12,7 +12,6 @@ cargo_features = ["profile-full"]
 "llm-provider/opencode-zen" = { enabled = true }
 "llm-provider/openrouter" = { enabled = true }
 "manager/control-plane" = { enabled = true }
-"sandbox-backend/docker-direct" = { enabled = true }
 "sandbox-backend/sandboxd-client" = { enabled = true }
 "sandbox-daemon/sandboxd" = { enabled = true }
 "storage/sqlx" = { enabled = true }

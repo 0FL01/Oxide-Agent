@@ -102,7 +102,6 @@ profile-full = [
     "tool-tts-kokoro",
     "tool-tts-silero",
     "tool-stack-logs",
-    "sandbox-backend-docker-direct",
     "sandbox-backend-sandboxd-client",
     "sandbox-daemon",
     "integration-mcp-jira",
@@ -129,7 +128,6 @@ profile-embedded-opencode-local = [
     "tool-media-audio",
     "tool-media-image",
     "tool-media-video",
-    "sandbox-backend-docker-direct",
     "sandbox-backend-sandboxd-client"
 ]
 profile-web-embedded-opencode-local = [
@@ -195,19 +193,18 @@ tool-media-video = ["http-client"]
 tool-ytdlp = []
 tool-tts-kokoro = ["http-client"]
 tool-tts-silero = ["http-client"]
-tool-stack-logs = ["sandbox-backend-docker-direct"]
+tool-stack-logs = ["sandbox-backend-sandboxd-client"]
 
 # Sandbox and integrations
-sandbox-backend-docker-direct = [
+sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
+sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
+sandbox-daemon = [
     "dep:bollard",
     "dep:tar",
     "dep:bytes",
     "dep:http-body-util",
-    "sandbox-broker-protocol",
+    "sandbox-backend-sandboxd-client",
 ]
-sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
-sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
-sandbox-daemon = ["sandbox-backend-docker-direct"]
 integration-mcp-jira = ["dep:rmcp"]
 integration-mcp-mattermost = ["dep:rmcp"]
 integration-ssh-mcp = ["dep:rmcp"]

@@ -13,8 +13,6 @@ use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_fo
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
-use std::str::FromStr;
 
 // LLM provider defaults
 /// Default temperature used for OpenRouter text requests.
@@ -1255,6 +1253,12 @@ mod tests {
     use super::*;
     use crate::testing::{test_remove_env, test_set_env};
     use serde_json::json;
+    #[cfg(any(
+        oxide_module_llm_provider_anthropic,
+        oxide_module_llm_provider_openai_base,
+        oxide_module_llm_provider_opencode_go,
+        oxide_module_llm_provider_openrouter
+    ))]
     use std::env;
 
     #[cfg(any(
@@ -1396,52 +1400,6 @@ mod tests {
             settings.modules["tool/a"].string_value("endpoint"),
             Some("https://example.test")
         );
-    }
-
-    #[test]
-    fn sandbox_backend_config_parses_supported_values() {
-        assert_eq!(
-            "docker"
-                .parse::<SandboxBackendConfig>()
-                .expect("supported docker sandbox backend should parse"),
-            SandboxBackendConfig::Docker
-        );
-        assert_eq!(
-            " broker "
-                .parse::<SandboxBackendConfig>()
-                .expect("supported broker sandbox backend should parse"),
-            SandboxBackendConfig::Broker
-        );
-    }
-
-    #[test]
-    fn sandbox_backend_config_rejects_invalid_values_with_actionable_error() {
-        let error = "podman"
-            .parse::<SandboxBackendConfig>()
-            .expect_err("invalid sandbox backend should be rejected");
-
-        assert!(error.contains("Invalid SANDBOX_BACKEND='podman'"));
-        assert!(error.contains("docker, broker"));
-    }
-
-    #[test]
-    fn sandbox_backend_env_parsing_handles_broker_mode() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = env::var_os("SANDBOX_BACKEND");
-
-        test_set_env("SANDBOX_BACKEND", "broker");
-        assert_eq!(
-            get_sandbox_backend_config().expect("broker sandbox backend env should parse"),
-            SandboxBackendConfig::Broker
-        );
-        assert!(sandbox_uses_broker());
-
-        match previous {
-            Some(value) => test_set_env("SANDBOX_BACKEND", value),
-            None => test_remove_env("SANDBOX_BACKEND"),
-        }
     }
 
     #[test]
@@ -2474,8 +2432,6 @@ pub fn get_sub_agent_max_iterations() -> usize {
 // Sandbox configuration
 /// Docker image for the sandbox
 pub const SANDBOX_IMAGE: &str = "agent-sandbox:latest";
-/// Sandbox backend mode.
-pub const SANDBOX_BACKEND: &str = "docker";
 /// Unix socket path for sandbox broker.
 pub const SANDBOXD_SOCKET: &str = "/run/sandboxd/sandboxd.sock";
 /// Memory limit for sandbox container (1GB)
@@ -2487,50 +2443,6 @@ pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
 pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 240; // 4 minutes per command
 
-/// Explicit sandbox backend selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SandboxBackendConfig {
-    /// Direct Docker backend.
-    Docker,
-    /// Unix-socket sandboxd broker backend.
-    Broker,
-}
-
-impl SandboxBackendConfig {
-    /// Valid environment/config values.
-    pub const VALID_VALUES: &'static [&'static str] = &["docker", "broker"];
-
-    /// Returns the stable environment string for this backend.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Docker => "docker",
-            Self::Broker => "broker",
-        }
-    }
-}
-
-impl fmt::Display for SandboxBackendConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for SandboxBackendConfig {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "docker" => Ok(Self::Docker),
-            "broker" => Ok(Self::Broker),
-            invalid => Err(format!(
-                "Invalid SANDBOX_BACKEND='{invalid}'. Valid values: {}.",
-                Self::VALID_VALUES.join(", ")
-            )),
-        }
-    }
-}
-
 /// Get sandbox image from env or default.
 ///
 /// Environment variable: `SANDBOX_IMAGE`
@@ -2540,31 +2452,6 @@ pub fn get_sandbox_image() -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| SANDBOX_IMAGE.to_string())
-}
-
-/// Get sandbox backend mode from env or default.
-#[must_use]
-pub fn get_sandbox_backend() -> String {
-    std::env::var("SANDBOX_BACKEND")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| SANDBOX_BACKEND.to_string())
-}
-
-/// Parse sandbox backend mode from env or default.
-///
-/// # Errors
-///
-/// Returns an actionable error when `SANDBOX_BACKEND` is not one of the
-/// supported backend names.
-pub fn get_sandbox_backend_config() -> Result<SandboxBackendConfig, String> {
-    get_sandbox_backend().parse()
-}
-
-/// Check whether sandbox broker mode is enabled.
-#[must_use]
-pub fn sandbox_uses_broker() -> bool {
-    get_sandbox_backend_config() == Ok(SandboxBackendConfig::Broker)
 }
 
 /// Get sandbox broker Unix socket path from env or default.

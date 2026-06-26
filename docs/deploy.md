@@ -86,7 +86,7 @@ Browser Live sidecar: the `browser-sidecar` service is included in the web and t
 
 ## 5. Sandbox
 
-Docker Compose uses the broker backend. Only `sandboxd` mounts `/var/run/docker.sock`; bot/web containers talk to it over `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`.
+Docker Compose uses the sandboxd broker backend exclusively. Only `sandboxd` mounts `/var/run/docker.sock`; bot/web containers talk to it over `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`.
 
 ## 6. Verify
 

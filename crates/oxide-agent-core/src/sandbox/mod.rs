@@ -1,12 +1,12 @@
 //! Sandbox management for Agent Mode.
 //!
-//! Provides isolated execution environments for agents through compiled backends
-//! such as Docker and sandboxd.
+//! Provides isolated execution environments for agents through the sandboxd
+//! broker backend. The daemon (`oxide-agent-sandboxd`) owns direct Docker
+//! access; agent processes connect to it over a Unix socket.
 
 pub mod admin;
 /// Unix-socket sandbox broker protocol, client, and server.
 #[cfg(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
@@ -16,14 +16,12 @@ pub mod broker;
 pub mod diagnostics;
 pub mod error;
 #[cfg(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
 ))]
 pub mod manager;
 #[cfg(not(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
@@ -34,40 +32,37 @@ pub mod traits;
 
 pub use admin::SandboxAdminRuntime;
 #[cfg(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
 ))]
 pub use broker::SandboxBrokerClient;
-#[cfg(oxide_module_sandbox_backend_docker_direct)]
+#[cfg(oxide_module_sandbox_daemon_sandboxd)]
 pub use broker::SandboxBrokerServer;
 #[cfg(oxide_module_tool_stack_logs)]
 pub use diagnostics::SandboxDiagnosticsRuntime;
 pub use error::SandboxError;
+#[cfg(oxide_module_sandbox_backend_sandboxd_client)]
+pub use manager::SandboxManager;
 #[cfg(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
 ))]
 pub use manager::sandbox_backend_available;
 #[cfg(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
 ))]
-pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
+pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord};
 #[cfg(not(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs
 )))]
 pub use manager_stub::sandbox_backend_available;
 #[cfg(not(any(
-    oxide_module_sandbox_backend_docker_direct,
     oxide_module_sandbox_backend_sandboxd_client,
     oxide_module_sandbox_daemon_sandboxd,
     oxide_module_tool_stack_logs

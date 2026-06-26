@@ -233,13 +233,6 @@ requires = ["sandbox-backend/*/diagnostics"]
 profiles = ["full"]
 
 [[modules]]
-id = "sandbox-backend/docker-direct"
-cargo_feature = "sandbox-backend-docker-direct"
-kind = "SandboxBackend"
-provides = ["sandbox-backend/docker-direct", "sandbox-backend/docker-direct/fileops", "sandbox-backend/docker-direct/exec", "sandbox-backend/docker-direct/lifecycle", "sandbox-backend/docker-direct/diagnostics"]
-profiles = ["full", "embedded-opencode-local"]
-
-[[modules]]
 id = "sandbox-backend/sandboxd-client"
 cargo_feature = "sandbox-backend-sandboxd-client"
 kind = "SandboxBackend"
@@ -251,7 +244,6 @@ id = "sandbox-daemon/sandboxd"
 cargo_feature = "sandbox-daemon"
 kind = "Service"
 provides = ["sandbox-daemon/sandboxd"]
-requires = ["sandbox-backend/docker-direct"]
 profiles = ["full"]
 
 [[modules]]

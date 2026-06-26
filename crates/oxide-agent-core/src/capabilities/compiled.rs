@@ -60,25 +60,19 @@ macro_rules! push_module_with_config {
 }
 
 #[allow(dead_code)]
-const SANDBOX_FILEOPS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
-    CapabilityId::new("sandbox-backend/docker-direct/fileops"),
-    CapabilityId::new("sandbox-backend/sandboxd-client/fileops"),
-];
+const SANDBOX_FILEOPS_BACKEND_CAPABILITIES: &[CapabilityId] =
+    &[CapabilityId::new("sandbox-backend/sandboxd-client/fileops")];
 #[allow(dead_code)]
-const SANDBOX_EXEC_BACKEND_CAPABILITIES: &[CapabilityId] = &[
-    CapabilityId::new("sandbox-backend/docker-direct/exec"),
-    CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
-];
+const SANDBOX_EXEC_BACKEND_CAPABILITIES: &[CapabilityId] =
+    &[CapabilityId::new("sandbox-backend/sandboxd-client/exec")];
 #[allow(dead_code)]
-const SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES: &[CapabilityId] = &[
-    CapabilityId::new("sandbox-backend/docker-direct/lifecycle"),
-    CapabilityId::new("sandbox-backend/sandboxd-client/lifecycle"),
-];
+const SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES: &[CapabilityId] = &[CapabilityId::new(
+    "sandbox-backend/sandboxd-client/lifecycle",
+)];
 #[allow(dead_code)]
-const SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
-    CapabilityId::new("sandbox-backend/docker-direct/diagnostics"),
-    CapabilityId::new("sandbox-backend/sandboxd-client/diagnostics"),
-];
+const SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES: &[CapabilityId] = &[CapabilityId::new(
+    "sandbox-backend/sandboxd-client/diagnostics",
+)];
 
 #[allow(dead_code)]
 const SANDBOX_FILEOPS_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
@@ -105,11 +99,6 @@ const SANDBOX_EXEC_AND_FILEOPS_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &
     CapabilityRequirement::any_of(SANDBOX_EXEC_BACKEND_CAPABILITIES),
     CapabilityRequirement::any_of(SANDBOX_FILEOPS_BACKEND_CAPABILITIES),
 ];
-#[allow(dead_code)]
-const SANDBOX_DOCKER_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &[CapabilityRequirement::new(
-    CapabilityId::new("sandbox-backend/docker-direct"),
-)];
-
 #[allow(dead_code)]
 const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[
@@ -545,19 +534,6 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
     let _ = &modules;
     push_module!(
         modules,
-        "sandbox-backend-docker-direct",
-        "sandbox-backend/docker-direct",
-        SandboxBackend,
-        [
-            "sandbox-backend/docker-direct",
-            "sandbox-backend/docker-direct/fileops",
-            "sandbox-backend/docker-direct/exec",
-            "sandbox-backend/docker-direct/lifecycle",
-            "sandbox-backend/docker-direct/diagnostics"
-        ]
-    );
-    push_module!(
-        modules,
         "sandbox-backend-sandboxd-client",
         "sandbox-backend/sandboxd-client",
         SandboxBackend,
@@ -569,13 +545,12 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
             "sandbox-backend/sandboxd-client/diagnostics"
         ]
     );
-    push_module_with_requires!(
+    push_module!(
         modules,
         "sandbox-daemon",
         "sandbox-daemon/sandboxd",
         Service,
-        ["sandbox-daemon/sandboxd"],
-        SANDBOX_DOCKER_BACKEND_REQUIREMENT
+        ["sandbox-daemon/sandboxd"]
     );
 
     push_module!(
