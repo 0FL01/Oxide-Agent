@@ -107,7 +107,7 @@ Default branch: `dev`.
 
 ### Browser Live
 - Provider in `agent/providers/browser_live/`; sidecar binary in `oxide-browser-sidecar`, shared REST types in `oxide-browser-contracts`.
-- Tools: `browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over a CDP WebSocket to a headless Chromium.
+- Tools: `browser_start`/`browser_observe`/`browser_execute`/`browser_extract`/`browser_debug`/`browser_save_screenshot`/`browser_close` over a CDP WebSocket to a headless Chromium.
 - Runs in Yolo mode (agent may type secrets and submit forms); disabled by default via `BROWSER_AGENT_ENABLED`. Details: `docs/browser-live.md`.
 - Available to sub-agents via `allowed_tools` whitelist in `spawn_sub_agents`; inherits parent's `browser_live_context` for artifact storage scope.
 - RAII session cleanup: `close_all_sessions` runs after every agent run end (parent and sub-agent) on any outcome (success/timeout/cancel/error) to prevent Chromium process leaks.
@@ -120,7 +120,7 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox (split into `sandbox-fileops`: `read_file`/`write_file`/`apply_file_edit`/`list_files`, `sandbox-exec`: `execute_command`, `sandbox-recreate`: `recreate_sandbox`), todos, tavily, brave-search, webfetch_md, crw, browser_live (`browser_start`/`browser_observe`/`browser_step`/`browser_debug`/`browser_close` over CDP sidecar), media (audio transcription, image description, video description), jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox (split into `sandbox-fileops`: `read_file`/`write_file`/`apply_file_edit`/`list_files`, `sandbox-exec`: `execute_command`, `sandbox-recreate`: `recreate_sandbox`), todos, tavily, brave-search, webfetch_md, crw, browser_live (`browser_start`/`browser_observe`/`browser_execute`/`browser_extract`/`browser_debug`/`browser_save_screenshot`/`browser_close` over CDP sidecar), media (audio transcription, image description, video description), jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 - `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, a unified fetch tool with explicit render modes: `render:"http"` (default, lightweight HTTP), `render:"lightpanda"` (lightweight JS), `render:"playwright"` (full browser). No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
 
 ## Configuration

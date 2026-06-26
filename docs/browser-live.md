@@ -3,10 +3,9 @@
 Oxide Browser Live is an autonomous headless-browser capability. The agent has
 full control over a browser session: it can open any URL, observe pages, execute
 actions, fill forms, submit data, extract structured data, and close the session.
-The browser is controlled by a local `browser-sidecar` container rather than
-an external service. The sidecar is a native Rust binary (`oxide-browser-sidecar`)
-that talks CDP directly to Chromium over a single WebSocket — no Python runtime,
-no `chrome-agent` subprocess.
+The browser is controlled by a local `browser-sidecar` container running a native
+Rust binary (`oxide-browser-sidecar`) that talks the Chrome DevTools Protocol
+(CDP) directly to a headless Chromium over a single WebSocket.
 
 > **Warning:** Browser Live runs in Yolo mode. The agent is allowed to type
 > passwords, secrets, and other sensitive data into web pages, and to submit
@@ -15,7 +14,7 @@ no `chrome-agent` subprocess.
 
 ## What is supported
 
-- `browser_start` / `browser_observe` / `browser_execute` / `browser_extract` / `browser_debug` / `browser_close` tools
+- `browser_start` / `browser_observe` / `browser_execute` / `browser_extract` / `browser_debug` / `browser_save_screenshot` / `browser_close` tools
 - Navigation to any URL the Chromium instance can reach, including SPA hash-based URLs with `force_reload`
 - Semantic form input via `fill` and `type_text` using native value setters and framework-visible events
 - Strict `BrowserAction` schema: per-variant `oneOf` with required fields, numeric bounds, and `additionalProperties: false`
@@ -63,15 +62,22 @@ Launch resolution order: `$CHROMIUM_BIN` env (highest priority when set) >
 binary (not the Chromium build) avoids headless-Chromium-specific fingerprints.
 Docker sets `CHROMIUM_BIN=/usr/bin/chromium` so the override is preserved.
 
-### Isolated worlds for read-only JS
+### Isolated worlds
 
-All internal read-only JavaScript (DOM fingerprinting, URL/title reads, DOM
-snapshots, element queries, selector/text polling) runs in an isolated
-execution context created via `Page.createIsolatedWorld`. Page JS cannot
-detect or intercept evaluation in an isolated world — only the C++ DOM is
-shared. If the isolated context becomes stale (client-side navigation without
-going through our `navigate()`), evaluation falls back to the main world
-gracefully.
+The sidecar uses isolated execution contexts (created via
+`Page.createIsolatedWorld`) to keep internal JS invisible to page JS — only the
+C++ DOM is shared between worlds.
+
+- **`oxide_internal`** — read-only internal JS (DOM fingerprinting, URL/title
+  reads, DOM snapshots, element queries, selector/text polling). Page JS cannot
+  detect or intercept evaluation here. If the context becomes stale
+  (client-side navigation without going through our `navigate()`), evaluation
+  falls back to the main world gracefully.
+- **`oxide_consent`** — the consent auto-dismiss engine, injected via
+  `Page.addScriptToEvaluateOnNewDocument` with `worldName: "oxide_consent"`
+  (diagnostic sessions only). Page JS cannot see the engine code, only the DOM
+  effects (button clicks, class additions). Runs at `document_start` and
+  survives navigations.
 
 Page-interacting JavaScript (event dispatch, form filling, key presses,
 scrolling, SPA hash navigation, stealth patches, console interceptor) stays
@@ -104,26 +110,43 @@ event subscription) directly on the page target WebSocket.
 - Headless screen-dimension artifacts (`--headless=new` limitations).
 - Behavioral patterns (mouse movement, typing cadence) are agent-controlled.
 
-## Ad blocking
+## Page interventions (diagnostic mode only)
 
-The sidecar includes optional network-level ad blocking using the
-`adblock-rust` engine (Brave's Rust adblock engine) integrated with CDP
-`Fetch.enable` request interception. When enabled, ad and tracking requests
-are blocked at the network layer before they reach Chromium — improving agent
-decision quality (cleaner screenshots, cleaner DOM snapshots, faster page
-loads, privacy).
+The sidecar ships two optional page interventions — network-level ad blocking
+and cookie consent banner auto-dismissal. Both engines are built once at sidecar
+startup (enabled by default when their rule files are present) and shared across
+sessions via `Arc`. **However, they are applied only to `diagnostic_debug`
+sessions.** In the default `stealth_clean` mode (`browser_start` without
+`diagnostic_debug: true`) neither intervention runs — no `Fetch.enable`, no
+script injection — so default sessions keep zero stealth impact. This gating
+lives in the session factory: the `BrowserMode` declares persona intent and the
+sidecar decides which CDP domains and page-visible scripts are allowed.
 
-### How it works
+Diagnostic sessions are not stealth-guaranteed: ad blocking and consent
+dismissal are observable page effects (ads don't load, consent dialogs close),
+which is the intended trade-off for richer diagnostics.
+
+### Ad blocking
+
+Network-level ad blocking via the `adblock-rust` engine (Brave's Rust adblock
+engine) integrated with CDP `Fetch.enable` request interception. Ad and
+tracking requests are blocked at the network layer before they reach Chromium —
+improving agent decision quality (cleaner screenshots, cleaner DOM snapshots,
+faster page loads, privacy).
+
+#### How it works
 
 1. At startup, `main.rs` builds an `AdblockEngine` from filter list files
-   (if `ADBLOCK_ENABLED=true`).
+   (when `ADBLOCK_ENABLED` is not `false`/`0` and `ADBLOCK_FILTERS` points to
+   readable lists).
 2. The engine is shared via `Arc<AdblockEngine>` across all browser sessions
    — built once, no per-session rebuild.
-3. When a session starts, `CaptureCollector::start()` sends `Fetch.enable`
-   with patterns for all non-Document resource types (navigation is never
-   paused).
+3. For a `diagnostic_debug` session, `CaptureCollector::start()` sends
+   `Fetch.enable` with **no patterns** — every request is paused and the
+   handler decides per-request. Navigation and Document resources are passed
+   through immediately (defense-in-depth, see below).
 4. For each `Fetch.requestPaused` event, the handler:
-   - Skips navigation requests and Document resources (defense-in-depth).
+   - Skips navigation requests and Document resources.
    - Builds an `adblock::Request` with the URL, current page URL as source,
      and mapped resource type.
    - Calls `engine.check_network_request()` — if matched, sends
@@ -131,24 +154,30 @@ loads, privacy).
    - If not matched, sends `Fetch.continueRequest` (pass through unmodified).
    - Fail-open: on any error, `continueRequest` is sent (never hang requests).
 
-### Stealth interaction
+`Fetch.enable` with empty patterns intercepts all resource types (including
+Ping beacons and WebSocket trackers); the navigation/Document exclusion is
+enforced in the handler, not via pattern omission, so no resource type is
+silently excluded from ad blocking.
 
-`Fetch.enable` is an independent CDP domain with zero JS-visible side
-effects. It does NOT call `Runtime.enable`, `Target.setAutoAttach`, or
-`Console.enable`. Page JS cannot detect Fetch interception — the only signal
-is that ads don't load (intended behavior, identical to Brave/uBlock).
+#### Stealth interaction
 
-When ad blocking is disabled (`ADBLOCK_ENABLED` unset or `false`), no
-`Fetch.enable` is sent, no filter lists are loaded — zero behavior change,
-zero stealth impact.
+`Fetch.enable` is an independent CDP domain with zero JS-visible side effects.
+It does NOT call `Runtime.enable`, `Target.setAutoAttach`, or `Console.enable`.
+Page JS cannot detect Fetch interception — the only signal is that ads don't
+load (intended behavior, identical to Brave/uBlock).
 
-### Configuration
+In `stealth_clean` sessions (and when ad blocking is globally disabled via
+`ADBLOCK_ENABLED=false`), no `Fetch.enable` is sent, no filter lists are loaded
+— zero behavior change, zero stealth impact.
 
-Ad blocking is **enabled by default** when filter lists are available. The
-Docker image includes EasyList and EasyPrivacy at `/opt/adblock/` and sets
-`ADBLOCK_FILTERS` in the Dockerfile — ad blocking activates automatically.
+#### Configuration
 
-To disable ad blocking, set:
+Ad blocking is enabled by default when filter lists are available. The Docker
+image includes EasyList and EasyPrivacy at `/opt/adblock/` and sets
+`ADBLOCK_FILTERS` in the Dockerfile. The engine activates for diagnostic
+sessions automatically; in stealth-clean sessions it is skipped entirely.
+
+To disable ad blocking globally, set:
 
 ```bash
 ADBLOCK_ENABLED=false
@@ -157,24 +186,77 @@ ADBLOCK_ENABLED=false
 `ADBLOCK_FILTERS` is pre-set in the Dockerfile. Only `ADBLOCK_ENABLED=false`
 needs to be set at runtime to opt out.
 
-### What it blocks
+#### What it blocks
 
 - Ad scripts (doubleclick.net, googlesyndication.com, etc.)
 - Tracking pixels and beacons (google-analytics.com, facebook.net, etc.)
 - Third-party ad iframes and resources
 - Crypto mining scripts
 
-### What it does NOT block
+#### What it does NOT block
 
-- Cosmetic ad elements already in the DOM (server-side rendered ads) — Phase 2
-- Scriptlet injection (uBlock Origin scriptlets) — Phase 2
-- Redirect resources (`$redirect=noopjs`) — Phase 2
+- Cosmetic ad elements already in the DOM (server-side rendered ads)
+- Scriptlet injection (uBlock Origin scriptlets)
+- Redirect resources (`$redirect=noopjs`)
 - Navigation requests — never intercepted
 
-### Filter list updates
+#### Filter list updates
 
 Filter lists are baked into the Docker image. To update, rebuild the image
 (the Dockerfile re-downloads from easylist.to). No runtime auto-update.
+
+### Consent banner auto-dismiss
+
+Cookie consent banner (CMP) auto-dismissal via a stripped Consent-O-Matic rule
+engine (2,130 lines, zero `chrome.*` dependencies). The engine detects CMP
+banners via CSS selectors and dismisses them by clicking through the CMP's own
+UI, rejecting all consent categories (D/A/B/E/F/X). Rules are loaded from
+Consent-O-Matic `Rules.json` files.
+
+#### How it works
+
+1. At startup, `main.rs` builds a `ConsentConfig` from a rules file (when
+   `CONSENT_AUTO_DISMISS` is not `false`/`0` and `CONSENT_FILTERS` points to a
+   readable, valid-JSON rules file).
+2. The full injection script (engine classes + bootstrap with rules) is shared
+   via `Arc<String>` across sessions — built once.
+3. For a `diagnostic_debug` session, `CaptureCollector::start()` injects the
+   script via `Page.addScriptToEvaluateOnNewDocument` in a named isolated world
+   (`oxide_consent`). It runs at `document_start` (before any page JS) and
+   survives navigations. No `Runtime.evaluate` is used — the script runs on
+   every navigation via `addScriptToEvaluateOnNewDocument`.
+4. The engine auto-detects matching CMPs and dismisses them. A restart callback
+   retries after any CMP handling (handled or errored) so a false-positive
+   detection does not stop the engine; a per-CMP `triedCMPs` set prevents
+   infinite loops.
+
+#### Stealth interaction
+
+The consent engine runs in an isolated world (`oxide_consent`) — page JS cannot
+see the engine code, only the DOM effects (button clicks, class additions). It
+does NOT call `Runtime.enable`. The only page-visible signal is that consent
+dialogs close, which is the intended behavior.
+
+In `stealth_clean` sessions (and when consent dismissal is globally disabled
+via `CONSENT_AUTO_DISMISS=false`), no script is injected — zero behavior
+change, zero stealth impact.
+
+#### Configuration
+
+Consent auto-dismiss is enabled by default when a rules file is available. The
+Docker image bundles a merged Consent-O-Matic rules file (203 CMP variants) at
+`/opt/consent/rules.json` and sets `CONSENT_FILTERS` in the Dockerfile. The
+engine activates for diagnostic sessions automatically; in stealth-clean
+sessions it is skipped entirely.
+
+To disable consent auto-dismiss globally, set:
+
+```bash
+CONSENT_AUTO_DISMISS=false
+```
+
+`CONSENT_FILTERS` is pre-set in the Dockerfile. Only `CONSENT_AUTO_DISMISS=false`
+needs to be set at runtime to opt out.
 
 ## Requirements
 
@@ -190,13 +272,12 @@ Copy the Browser Live section from `.env.example` and set a non-empty token:
 BROWSER_AGENT_SIDECAR_TOKEN=<set-a-long-random-token>
 BROWSER_AGENT_ENABLED=true
 BROWSER_AGENT_SIDECAR_BASE_URL=http://127.0.0.1:8787
-BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:8787
 ```
 
-Optional internal sidecar artifact directory (overridden by Docker Compose volumes):
+Maximum concurrent sidecar sessions (default 8):
 
 ```bash
-# BROWSER_AGENT_ARTIFACT_DIR=/var/lib/oxide-browser/artifacts
+# BROWSER_AGENT_SIDECAR_MAX_SESSIONS=8
 ```
 
 ## Deployment
@@ -254,7 +335,10 @@ Start a task-local autonomous headless browser session. Optional `start_url`,
 Return compact browser state (url, title, loading state, network/console
 summaries, optional DOM snapshot) and attach the latest screenshot as a native
 image for vision models. Set `fresh: true` to capture a new screenshot instead
-of reusing the cached one. `include_dom` defaults to true.
+of reusing the cached one. `include_dom` defaults to true. Set `include_a11y:
+true` to attach an accessibility-tree summary. The DOM sample contains only
+interactive elements (links, buttons, inputs, selects) — use `browser_extract`
+with a CSS selector for page content.
 
 ### `browser_execute`
 Execute a single concrete browser action. The `action` field uses a strict
@@ -283,13 +367,22 @@ browser process without profile purge, then opens the exact target URL.
 ### `browser_extract`
 Extract structured data from the current page. Sources:
 
-- **`dom`**: CSS `selector` + optional `attribute` (defaults to `innerText`).
-  The requested property/attribute is returned as `matches[].value` with
-  `attribute_source` (`property`/`attribute`/`missing`) and `found` flag. Raw
-  `properties` and `attributes` are included for diagnostics. No ad-hoc
-  `execute_javascript` querySelector hacks needed for normal form values.
+- **`dom`**: CSS `selector` selects root rows. Two modes:
+  - **Legacy single-field**: `attribute` (defaults to `innerText`) returns
+    `matches[].value` with `attribute_source` (`property`/`attribute`/`missing`)
+    and `found` flag. Raw `properties` and `attributes` are included for
+    diagnostics. No ad-hoc `execute_javascript` querySelector hacks needed for
+    normal form values.
+  - **Structured `fields`**: a `fields` array (up to 20) of `{ name, selector?,
+    attribute?, max_chars? }` evaluated relative to each root row. Each match
+    returns `matches[].fields.<name>` with `value`, `source`, `found`,
+    `truncated`, and `original_chars`. Use this for marketplace/search result
+    tables instead of multiple single-field calls. Bounded by `max_results`
+    (default 10), `max_value_chars` (default 512), and `max_total_chars`
+    (default 16 000).
 - **`network`**: Filter by `url_pattern`, `method`, `status_code`; includes
-  response bodies when `include_bodies` is true.
+  response bodies when `include_bodies` is true. Network data exists only for
+  `diagnostic_debug` sessions.
 
 ### `browser_debug`
 Fetch browser console/network debug summaries as compact artifact-backed
@@ -302,6 +395,15 @@ close (the `purge_profile` flag is accepted for contract compatibility and
 echoed in the response, but profiles are ephemeral by design).
 `keep_artifacts` defaults to true (screenshot artifacts are preserved for
 debugging).
+
+### `browser_save_screenshot`
+Save the latest screenshot of a browser session to the sandbox filesystem as a
+JPEG file. This bridges browser-live screenshots to sandbox-based tooling
+(`ffmpeg`, OCR, `describe_image_file`, etc.) or makes them downloadable later.
+Call `browser_observe` or `browser_execute` first to capture a screenshot.
+Requires an active sandbox; the destination defaults to
+`/workspace/browser-screenshots/step-NNNN.jpg` (override with `path`).
+Returns `path`, `bytes_written`, `sha256`, and `action_seq`.
 
 ## Post-action observations
 
@@ -327,9 +429,9 @@ Tool output includes `post_observation_diagnostics` with:
 2. Create a task and ask the agent to use the browser, e.g. "Open a browser,
    go to example.com, and tell me what you see".
 3. The agent calls `browser_start`, `browser_observe`, `browser_execute`,
-   `browser_extract`, and `browser_close` as needed. The Browser Live panel
-   shows the latest screenshot artifact and action status. There is no manual
-   browser control.
+   `browser_extract`, `browser_save_screenshot`, and `browser_close` as needed.
+   The Browser Live panel shows the latest screenshot artifact and action
+   status. There is no manual browser control.
 
 ## Limits and warnings
 
@@ -338,8 +440,11 @@ Tool output includes `post_observation_diagnostics` with:
   `browser_close`. Artifacts are preserved when `keep_artifacts` is true.
 - The sidecar requires a shared bearer token; keep it secret and out of logs.
 - The app and sidecar communicate over loopback only.
-- Screenshots are stored as artifact refs; bytes are not persisted in durable
-  chat history.
+- Screenshots are persisted to durable storage (Postgres `BYTEA`) keyed by
+  `artifact://browser/<task>/<session>/...` refs; raw bytes are not embedded in
+  chat history sent to the model — they are attached as native image
+  attachments at call time. A retention sweep on `browser_close` deletes
+  artifacts older than the configured retention period.
 - Large or repeated pages are bounded by the live-frame byte cap and ring-buffer
   eviction.
 - The agent is allowed to submit forms, type secrets, and interact with any
