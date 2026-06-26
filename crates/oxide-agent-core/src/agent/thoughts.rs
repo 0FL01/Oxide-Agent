@@ -11,8 +11,6 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("execute_command", "Executing command"),
     ("list_files", "Viewing directory contents {directory}"),
     ("recreate_sandbox", "Resetting sandbox workspace"),
-    ("tavily_search", "Searching for information: {query}"),
-    ("tavily_crawl", "Analyzing website structure {url}"),
     ("web_search", "Searching the web: {query}"),
     ("web_crawler", "Fetching web page as markdown: {url}"),
     ("web_markdown", "Opening web page as markdown: {url}"),
@@ -211,11 +209,11 @@ mod tests {
     }
 
     #[test]
-    fn test_infer_thought_tavily_search() {
-        let thought = infer_thought("tavily_search", r#"{"query": "rust async programming"}"#);
+    fn test_infer_thought_web_search() {
+        let thought = infer_thought("web_search", r#"{"query": "rust async programming"}"#);
         assert_eq!(
             thought,
-            Some("Searching for information: rust async programming".to_string())
+            Some("Searching the web: rust async programming".to_string())
         );
     }
 

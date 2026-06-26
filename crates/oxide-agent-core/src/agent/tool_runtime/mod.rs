@@ -29,16 +29,12 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(oxide_module_tool_agents_md)]
 pub use modules::AgentsMdToolModule;
-#[cfg(oxide_module_tool_brave_search)]
-pub use modules::BraveSearchToolModule;
 pub use modules::BrowserLiveModuleContext;
 #[cfg(oxide_module_tool_browser_live)]
 pub use modules::BrowserLiveToolModule;
 pub use modules::BrowserSessionCleanup;
 #[cfg(oxide_module_tool_compression)]
 pub use modules::CompressionToolModule;
-#[cfg(oxide_module_tool_crw)]
-pub use modules::CrwSearchToolModule;
 #[cfg(oxide_module_tool_delegation)]
 pub use modules::DelegationToolModule;
 #[cfg(oxide_module_tool_file_delivery)]
@@ -73,8 +69,6 @@ pub use modules::SshMcpModuleContext;
 pub use modules::SshMcpToolModule;
 #[cfg(oxide_module_tool_stack_logs)]
 pub use modules::StackLogsToolModule;
-#[cfg(oxide_module_tool_tavily)]
-pub use modules::TavilyToolModule;
 #[cfg(oxide_module_tool_todos)]
 pub use modules::TodosToolModule;
 pub use modules::ToolModuleContextParts;
@@ -82,6 +76,8 @@ pub use modules::ToolModuleContextParts;
 pub use modules::WebCrawlerToolModule;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub use modules::WebFetchMdToolModule;
+#[cfg(oxide_module_tool_web_search)]
+pub use modules::WebSearchToolModule;
 #[cfg(oxide_module_tool_wiki_memory)]
 pub use modules::WikiMemoryToolModule;
 #[cfg(oxide_module_tool_ytdlp)]

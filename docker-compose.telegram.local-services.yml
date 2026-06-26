@@ -5,10 +5,6 @@ services:
     build:
       args:
         CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local,oxide-agent-core/tool-crw,oxide-agent-sandboxd/profile-full
-    environment:
-      OXIDE_CRW_ENABLED: ${OXIDE_CRW_ENABLED:-true}
-      OXIDE_CRW_BASE_URL: ${OXIDE_CRW_BASE_URL:-http://127.0.0.1:3000}
-      OXIDE_CRW_API_TOKEN: ${OXIDE_CRW_API_TOKEN:-}
     depends_on:
       crw:
         condition: service_healthy
@@ -29,8 +25,8 @@ services:
   # (single-container) to full-stack. All three containers (crw, searxng, lightpanda)
   # run on the default bridge network and communicate by service name.
   #
-  # Loopback self-hosted CRW needs no API key (no [auth] block in config).
-  # OXIDE_CRW_API_TOKEN can stay empty for local deployments.
+  # Oxide exposes CRW-backed search/scrape tools only when OXIDE_CRW_BASE_URL
+  # and OXIDE_CRW_API_TOKEN are explicitly present in .env.
   #
   # The image has only crw/crw-mcp/crw-server binaries — no wget, no curl,
   # no busybox. Bash IS present, so the healthcheck probes /health via

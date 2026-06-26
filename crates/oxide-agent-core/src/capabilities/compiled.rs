@@ -409,25 +409,12 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-tavily",
-        "tool/tavily",
+        "tool-web-search",
+        "tool/web-search",
         Search,
-        ["tool/tavily-search"]
+        ["tool/web-search"]
     );
-    push_module!(
-        modules,
-        "tool-brave-search",
-        "tool/brave-search",
-        Search,
-        ["tool/brave-search"]
-    );
-    push_module!(
-        modules,
-        "tool-crw",
-        "tool/crw",
-        Search,
-        ["tool/crw-search", "tool/crw-scrape"]
-    );
+    push_module!(modules, "tool-crw", "tool/crw", Search, ["tool/crw-scrape"]);
     push_module!(
         modules,
         "tool-browser-live",

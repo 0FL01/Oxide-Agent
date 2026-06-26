@@ -47,28 +47,6 @@ pub struct AgentSettings {
     #[serde(default)]
     pub modules: BTreeMap<String, ModuleRuntimeConfig>,
 
-    /// Tavily API key
-    pub tavily_api_key: Option<String>,
-    /// Enable Tavily tool provider registration.
-    pub tavily_enabled: Option<bool>,
-    /// Brave Search API key.
-    pub brave_search_api_key: Option<String>,
-    /// Enable Brave Search tool provider registration.
-    pub brave_search_enabled: Option<bool>,
-    /// Brave Search request timeout (seconds).
-    pub brave_search_timeout_secs: Option<u64>,
-    /// Default Brave Search country targeting.
-    pub brave_search_country: Option<String>,
-    /// Default Brave Search language targeting.
-    pub brave_search_lang: Option<String>,
-    /// Default Brave Search UI language.
-    pub brave_search_ui_lang: Option<String>,
-    /// Default Brave Search safe-search setting.
-    pub brave_search_safesearch: Option<String>,
-    /// Process-wide Brave Search max concurrent operations.
-    pub brave_search_max_concurrent: Option<usize>,
-    /// Process-wide Brave Search minimum delay between operations.
-    pub brave_search_min_delay_ms: Option<u64>,
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -390,8 +368,6 @@ impl AgentSettings {
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
         }
-
-        settings.apply_tool_provider_env_fallbacks();
 
         if !settings.has_configured_agent_route() {
             return Err(ConfigError::Message(
@@ -788,32 +764,6 @@ impl AgentSettings {
                 }
             }
             self.sub_agent_model_routes = Some(routes);
-        }
-    }
-
-    fn apply_tool_provider_env_fallbacks(&mut self) {
-        if self.tavily_api_key.is_none()
-            && let Ok(val) = std::env::var("TAVILY_API_KEY")
-            && !val.is_empty()
-        {
-            self.tavily_api_key = Some(val);
-        }
-
-        if self.tavily_enabled.is_none() {
-            self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
-        }
-
-        if self.brave_search_api_key.is_none()
-            && let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY")
-        {
-            let val = val.trim();
-            if !val.is_empty() {
-                self.brave_search_api_key = Some(val.to_string());
-            }
-        }
-
-        if self.brave_search_enabled.is_none() {
-            self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
         }
     }
 
@@ -2084,19 +2034,10 @@ mod tests {
         clear_opencode_go_env();
     }
 
-    #[test]
-    fn tavily_enabled_flag_overrides_api_key_fallback() {
-        test_set_env("TAVILY_API_KEY", "dummy-key");
-        test_set_env("TAVILY_ENABLED", "false");
-
-        assert!(!is_tavily_enabled());
-
-        test_remove_env("TAVILY_ENABLED");
-        test_remove_env("TAVILY_API_KEY");
-    }
-
-    fn clear_brave_search_env() {
+    fn clear_web_search_env() {
         for key in [
+            "TAVILY_API_KEY",
+            "TAVILY_ENABLED",
             "BRAVE_SEARCH_API_KEY",
             "BRAVE_SEARCH_ENABLED",
             "BRAVE_SEARCH_TIMEOUT_SECS",
@@ -2106,43 +2047,51 @@ mod tests {
             "BRAVE_SEARCH_SAFESEARCH",
             "BRAVE_SEARCH_MAX_CONCURRENT",
             "BRAVE_SEARCH_MIN_DELAY_MS",
+            "OXIDE_CRW_ENABLED",
+            "OXIDE_CRW_BASE_URL",
+            "OXIDE_CRW_API_TOKEN",
+            "OXIDE_CRW_TIMEOUT_SECS",
         ] {
             test_remove_env(key);
         }
     }
 
     #[test]
-    fn brave_search_enabled_defaults_to_key_presence() {
+    fn tavily_configured_only_by_api_key_presence() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clear_brave_search_env();
+        clear_web_search_env();
 
-        assert!(!is_brave_search_enabled());
+        test_set_env("TAVILY_ENABLED", "true");
+        assert_eq!(get_tavily_api_key(), None);
 
-        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
-        assert!(is_brave_search_enabled());
+        test_set_env("TAVILY_API_KEY", " tavily-key ");
+        assert_eq!(get_tavily_api_key().as_deref(), Some("tavily-key"));
 
-        clear_brave_search_env();
+        test_set_env("TAVILY_ENABLED", "false");
+        assert_eq!(get_tavily_api_key().as_deref(), Some("tavily-key"));
+
+        clear_web_search_env();
     }
 
     #[test]
-    fn brave_search_enabled_flag_overrides_key_presence() {
+    fn brave_search_configured_only_by_api_key_presence() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clear_brave_search_env();
+        clear_web_search_env();
 
-        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
-        test_set_env("BRAVE_SEARCH_ENABLED", "false");
-        assert!(!is_brave_search_enabled());
-
-        test_remove_env("BRAVE_SEARCH_API_KEY");
         test_set_env("BRAVE_SEARCH_ENABLED", "true");
-        assert!(is_brave_search_enabled());
         assert_eq!(get_brave_search_api_key(), None);
 
-        clear_brave_search_env();
+        test_set_env("BRAVE_SEARCH_API_KEY", " brave-key ");
+        assert_eq!(get_brave_search_api_key().as_deref(), Some("brave-key"));
+
+        test_set_env("BRAVE_SEARCH_ENABLED", "false");
+        assert_eq!(get_brave_search_api_key().as_deref(), Some("brave-key"));
+
+        clear_web_search_env();
     }
 
     #[test]
@@ -2150,7 +2099,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clear_brave_search_env();
+        clear_web_search_env();
 
         assert_eq!(
             get_brave_search_timeout(),
@@ -2178,7 +2127,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clear_brave_search_env();
+        clear_web_search_env();
 
         test_set_env("BRAVE_SEARCH_TIMEOUT_SECS", "7");
         test_set_env("BRAVE_SEARCH_COUNTRY", "DE");
@@ -2196,41 +2145,21 @@ mod tests {
         assert_eq!(get_brave_search_max_concurrent(), 2);
         assert_eq!(get_brave_search_min_delay_ms(), 500);
 
-        clear_brave_search_env();
+        clear_web_search_env();
     }
 
     #[test]
-    fn crw_disabled_by_default() {
+    fn crw_base_url_has_no_default_and_enabled_flag_has_no_effect() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("OXIDE_CRW_ENABLED");
+        clear_web_search_env();
 
-        assert!(!is_crw_enabled());
-    }
-
-    #[test]
-    fn crw_enabled_flag() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         test_set_env("OXIDE_CRW_ENABLED", "true");
-        assert!(is_crw_enabled());
+        assert_eq!(get_crw_base_url(), None);
+        assert!(!is_crw_configured());
 
-        test_set_env("OXIDE_CRW_ENABLED", "false");
-        assert!(!is_crw_enabled());
-
-        test_remove_env("OXIDE_CRW_ENABLED");
-    }
-
-    #[test]
-    fn crw_base_url_defaults_to_localhost() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("OXIDE_CRW_BASE_URL");
-
-        assert_eq!(get_crw_base_url(), "http://127.0.0.1:3000");
+        clear_web_search_env();
     }
 
     #[test]
@@ -2238,13 +2167,15 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_web_search_env();
+
         test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
-        assert_eq!(get_crw_base_url(), "http://crw:3000");
+        assert_eq!(get_crw_base_url().as_deref(), Some("http://crw:3000"));
 
         test_set_env("OXIDE_CRW_BASE_URL", "  ");
-        assert_eq!(get_crw_base_url(), "http://127.0.0.1:3000");
+        assert_eq!(get_crw_base_url(), None);
 
-        test_remove_env("OXIDE_CRW_BASE_URL");
+        clear_web_search_env();
     }
 
     #[test]
@@ -2252,12 +2183,14 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("OXIDE_CRW_API_TOKEN");
+        clear_web_search_env();
 
         assert_eq!(get_crw_api_token(), None);
 
         test_set_env("OXIDE_CRW_API_TOKEN", "  ");
         assert_eq!(get_crw_api_token(), None);
+
+        clear_web_search_env();
     }
 
     #[test]
@@ -2265,10 +2198,32 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_web_search_env();
+
         test_set_env("OXIDE_CRW_API_TOKEN", " secret-token ");
         assert_eq!(get_crw_api_token(), Some("secret-token".to_string()));
 
-        test_remove_env("OXIDE_CRW_API_TOKEN");
+        clear_web_search_env();
+    }
+
+    #[test]
+    fn crw_requires_base_url_and_token() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_web_search_env();
+
+        test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
+        assert!(!is_crw_configured());
+
+        test_remove_env("OXIDE_CRW_BASE_URL");
+        test_set_env("OXIDE_CRW_API_TOKEN", "token");
+        assert!(!is_crw_configured());
+
+        test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
+        assert!(is_crw_configured());
+
+        clear_web_search_env();
     }
 
     #[test]
@@ -2276,9 +2231,11 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        test_remove_env("OXIDE_CRW_TIMEOUT_SECS");
+        clear_web_search_env();
 
         assert_eq!(get_crw_timeout_secs(), 30);
+
+        clear_web_search_env();
     }
 
     #[test]
@@ -2286,10 +2243,36 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_web_search_env();
+
         test_set_env("OXIDE_CRW_TIMEOUT_SECS", "60");
         assert_eq!(get_crw_timeout_secs(), 60);
 
-        test_remove_env("OXIDE_CRW_TIMEOUT_SECS");
+        clear_web_search_env();
+    }
+
+    #[test]
+    fn web_search_configured_when_any_backend_env_is_complete() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_web_search_env();
+
+        assert!(!is_web_search_configured());
+
+        test_set_env("TAVILY_API_KEY", "tavily");
+        assert!(is_web_search_configured());
+
+        clear_web_search_env();
+        test_set_env("BRAVE_SEARCH_API_KEY", "brave");
+        assert!(is_web_search_configured());
+
+        clear_web_search_env();
+        test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
+        test_set_env("OXIDE_CRW_API_TOKEN", "token");
+        assert!(is_web_search_configured());
+
+        clear_web_search_env();
     }
 }
 
@@ -2507,15 +2490,20 @@ pub const BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT: usize = 1;
 /// Default process-wide Brave Search minimum delay between operations.
 pub const BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS: u64 = 1_000;
 
+/// Get Tavily API key from env.
+///
+/// Environment variable: `TAVILY_API_KEY`
+#[must_use]
+pub fn get_tavily_api_key() -> Option<String> {
+    non_empty_env("TAVILY_API_KEY")
+}
+
 /// Get Brave Search API key from env.
 ///
 /// Environment variable: `BRAVE_SEARCH_API_KEY`
 #[must_use]
 pub fn get_brave_search_api_key() -> Option<String> {
-    std::env::var("BRAVE_SEARCH_API_KEY")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    non_empty_env("BRAVE_SEARCH_API_KEY")
 }
 
 /// Get Brave Search timeout from env or default.
@@ -2596,38 +2584,20 @@ pub fn get_brave_search_min_delay_ms() -> u64 {
 /// Default timeout for CRW requests (seconds).
 pub const CRW_DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-/// Determine whether CRW tools should be registered.
-///
-/// Environment variable: `OXIDE_CRW_ENABLED`.
-/// Defaults to `false` unless explicitly set truthy.
-#[must_use]
-pub fn is_crw_enabled() -> bool {
-    parse_optional_env_bool("OXIDE_CRW_ENABLED").unwrap_or(false)
-}
-
-/// Get CRW base URL from env or default.
+/// Get CRW base URL from env.
 ///
 /// Environment variable: `OXIDE_CRW_BASE_URL`.
-/// Default: `http://127.0.0.1:3000`.
 #[must_use]
-pub fn get_crw_base_url() -> String {
-    std::env::var("OXIDE_CRW_BASE_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+pub fn get_crw_base_url() -> Option<String> {
+    non_empty_env("OXIDE_CRW_BASE_URL")
 }
 
 /// Get optional CRW API token from env.
 ///
 /// Environment variable: `OXIDE_CRW_API_TOKEN`.
-/// Used as Bearer token when non-empty.
 #[must_use]
 pub fn get_crw_api_token() -> Option<String> {
-    std::env::var("OXIDE_CRW_API_TOKEN")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    non_empty_env("OXIDE_CRW_API_TOKEN")
 }
 
 /// Get CRW request timeout from env or default.
@@ -2636,6 +2606,18 @@ pub fn get_crw_api_token() -> Option<String> {
 #[must_use]
 pub fn get_crw_timeout_secs() -> u64 {
     parse_env_u64("OXIDE_CRW_TIMEOUT_SECS").unwrap_or(CRW_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Determine whether CRW is configured for search/scrape backends.
+#[must_use]
+pub fn is_crw_configured() -> bool {
+    get_crw_base_url().is_some() && get_crw_api_token().is_some()
+}
+
+/// Determine whether any indexed-search backend is configured.
+#[must_use]
+pub fn is_web_search_configured() -> bool {
+    get_tavily_api_key().is_some() || get_brave_search_api_key().is_some() || is_crw_configured()
 }
 
 /// Determine whether split URL-to-Markdown tools should be merged into `web_crawler`.
@@ -2668,6 +2650,13 @@ fn parse_optional_env_bool(name: &str) -> Option<bool> {
         })
 }
 
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn parse_env_u64(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
@@ -2684,28 +2673,6 @@ fn parse_optional_env_f32(name: &str) -> Option<f32> {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
-}
-
-/// Determine whether Tavily tools should be registered.
-///
-/// Environment variable: `TAVILY_ENABLED`
-#[must_use]
-pub fn is_tavily_enabled() -> bool {
-    parse_optional_env_bool("TAVILY_ENABLED").unwrap_or_else(|| {
-        std::env::var("TAVILY_API_KEY")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-    })
-}
-
-/// Determine whether Brave Search tools should be registered.
-///
-/// `BRAVE_SEARCH_ENABLED=false` disables registration. Without an explicit flag,
-/// registration is enabled only when `BRAVE_SEARCH_API_KEY` is non-empty.
-#[must_use]
-pub fn is_brave_search_enabled() -> bool {
-    parse_optional_env_bool("BRAVE_SEARCH_ENABLED")
-        .unwrap_or_else(|| get_brave_search_api_key().is_some())
 }
 
 // LLM HTTP client configuration

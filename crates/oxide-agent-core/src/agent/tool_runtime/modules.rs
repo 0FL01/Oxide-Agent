@@ -35,12 +35,10 @@ use tokio::sync::{Mutex, mpsc::Sender};
 
 #[cfg(oxide_module_tool_agents_md)]
 use crate::agent::providers::AgentsMdProvider;
-#[cfg(oxide_module_tool_brave_search)]
-use crate::agent::providers::BraveSearchProvider;
 #[cfg(oxide_module_tool_compression)]
 use crate::agent::providers::CompressionProvider;
-#[cfg(oxide_module_tool_crw)]
-use crate::agent::providers::CrwProvider;
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
+use crate::agent::providers::CrwScrapeClient;
 #[cfg(oxide_module_tool_delegation)]
 use crate::agent::providers::DelegationProvider;
 #[cfg(oxide_module_tool_file_delivery)]
@@ -61,12 +59,12 @@ use crate::agent::providers::ReminderProvider;
 use crate::agent::providers::SshMcpProvider;
 #[cfg(oxide_module_tool_stack_logs)]
 use crate::agent::providers::StackLogsProvider;
-#[cfg(oxide_module_tool_tavily)]
-use crate::agent::providers::TavilyProvider;
 #[cfg(oxide_module_tool_todos)]
 use crate::agent::providers::TodosProvider;
 #[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::providers::WebFetchMdProvider;
+#[cfg(oxide_module_tool_web_search)]
+use crate::agent::providers::WebSearchProvider;
 #[cfg(oxide_module_tool_wiki_memory)]
 use crate::agent::providers::WikiMemoryProvider;
 #[cfg(oxide_module_tool_ytdlp)]
@@ -961,7 +959,7 @@ struct WebCrawlerArgs {
 struct WebCrawlerToolExecutor {
     webfetch: WebFetchMdProvider,
     #[cfg(oxide_module_tool_crw)]
-    crw: Option<Arc<CrwProvider>>,
+    crw: Option<Arc<CrwScrapeClient>>,
     name: ToolName,
     spec: ToolDefinition,
 }
@@ -970,10 +968,7 @@ struct WebCrawlerToolExecutor {
 impl WebCrawlerToolExecutor {
     fn new() -> Self {
         #[cfg(oxide_module_tool_crw)]
-        let crw = crate::config::is_crw_enabled()
-            .then(CrwProvider::new)
-            .and_then(|res| res.ok())
-            .map(Arc::new);
+        let crw = CrwScrapeClient::new_from_env().ok().flatten().map(Arc::new);
 
         Self {
             webfetch: WebFetchMdProvider::new(),
@@ -1118,7 +1113,7 @@ impl WebCrawlerToolExecutor {
             wait_for_ms,
         };
 
-        match crw.client().scrape(&scrape_args).await {
+        match crw.scrape(&scrape_args).await {
             Ok(response) => {
                 let final_url = response.data.metadata.url.as_deref().unwrap_or(&url);
                 let status_code = response.data.metadata.status_code.map(u64::from);
@@ -1611,123 +1606,27 @@ mod web_crawler_tests {
     }
 }
 
-/// Capability module for Tavily search/extract tools.
-#[cfg(oxide_module_tool_tavily)]
-pub struct TavilyToolModule;
+/// Capability module for unified indexed web search.
+#[cfg(oxide_module_tool_web_search)]
+pub struct WebSearchToolModule;
 
-#[cfg(oxide_module_tool_tavily)]
-impl TavilyToolModule {
-    fn provider(&self) -> Option<TavilyProvider> {
-        if !crate::config::is_tavily_enabled() {
-            return None;
-        }
-
-        match std::env::var("TAVILY_API_KEY") {
-            Ok(tavily_key) if !tavily_key.trim().is_empty() => {
-                match TavilyProvider::new(&tavily_key) {
-                    Ok(provider) => Some(provider),
-                    Err(error) => {
-                        tracing::warn!(error = %error, "Tavily provider initialization failed");
-                        None
-                    }
-                }
-            }
-            Ok(_) => {
-                tracing::warn!(
-                    "Tavily enabled but TAVILY_API_KEY is empty; provider not registered"
-                );
-                None
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "Tavily enabled but TAVILY_API_KEY is not set; provider not registered"
-                );
-                None
-            }
-        }
-    }
-}
-
-#[cfg(oxide_module_tool_tavily)]
-impl ToolModule for TavilyToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/tavily")
-    }
-
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        // Tavily provides only `web_search` (page fetching uses the free
-        // `web_markdown` tool). When CRW is enabled, CRW owns `web_search`, so
-        // Tavily contributes no tools.
-        #[cfg(oxide_module_tool_crw)]
-        if crate::config::is_crw_enabled() {
-            return Vec::new();
-        }
-
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
-/// Capability module for Brave Search API web search.
-#[cfg(oxide_module_tool_brave_search)]
-pub struct BraveSearchToolModule;
-
-#[cfg(oxide_module_tool_brave_search)]
-impl BraveSearchToolModule {
-    fn provider(&self) -> Option<BraveSearchProvider> {
-        if !crate::config::is_brave_search_enabled() {
-            return None;
-        }
-
-        match BraveSearchProvider::new_from_config() {
-            Ok(provider) => Some(provider),
+#[cfg(oxide_module_tool_web_search)]
+impl WebSearchToolModule {
+    fn provider(&self) -> Option<WebSearchProvider> {
+        match WebSearchProvider::new_from_env() {
+            Ok(provider) => provider,
             Err(error) => {
-                tracing::warn!(error = %error, "Brave Search provider initialization failed");
+                tracing::warn!(error = %error, "web_search provider initialization failed");
                 None
             }
         }
     }
 }
 
-#[cfg(oxide_module_tool_brave_search)]
-impl ToolModule for BraveSearchToolModule {
+#[cfg(oxide_module_tool_web_search)]
+impl ToolModule for WebSearchToolModule {
     fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/brave-search")
-    }
-
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider()
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
-/// Capability module for CRW-backed web search.
-#[cfg(oxide_module_tool_crw)]
-pub struct CrwSearchToolModule;
-
-#[cfg(oxide_module_tool_crw)]
-impl CrwSearchToolModule {
-    fn provider(&self) -> Option<Arc<CrwProvider>> {
-        if !crate::config::is_crw_enabled() {
-            return None;
-        }
-
-        match CrwProvider::new() {
-            Ok(provider) => Some(Arc::new(provider)),
-            Err(error) => {
-                tracing::warn!(error = %error, "CRW provider initialization failed");
-                None
-            }
-        }
-    }
-}
-
-#[cfg(oxide_module_tool_crw)]
-impl ToolModule for CrwSearchToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/crw")
+        ModuleId::new("tool/web-search")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

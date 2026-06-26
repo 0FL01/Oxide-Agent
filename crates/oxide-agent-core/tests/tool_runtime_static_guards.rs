@@ -134,8 +134,8 @@ fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
         "SandboxFileOpsProvider::",
         "YtdlpProvider::",
         "WebFetchMdProvider::new",
-        "TavilyProvider::new",
-        "CrwProvider::new",
+        "WebSearchProvider::new_from_env",
+        "CrwScrapeClient::new_from_env",
     ];
     let offenders = forbidden_provider_paths
         .iter()

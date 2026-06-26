@@ -34,16 +34,12 @@ pub mod stack_logs;
 pub mod todos;
 #[cfg(oxide_module_tool_tts_kokoro)]
 pub mod tts;
+#[cfg(oxide_module_tool_web_search)]
+pub mod web_search;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub mod webfetch_md;
 pub mod wiki_memory;
 pub mod ytdlp;
-
-#[cfg(oxide_module_tool_tavily)]
-pub mod tavily;
-
-#[cfg(oxide_module_tool_brave_search)]
-pub mod brave_search;
 
 #[cfg(oxide_module_tool_browser_live)]
 pub mod browser_live;
@@ -102,16 +98,12 @@ pub use stack_logs::StackLogsProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 #[cfg(oxide_module_tool_tts_kokoro)]
 pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
+#[cfg(oxide_module_tool_web_search)]
+pub use web_search::WebSearchProvider;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub use webfetch_md::WebFetchMdProvider;
 pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;
-
-#[cfg(oxide_module_tool_tavily)]
-pub use tavily::TavilyProvider;
-
-#[cfg(oxide_module_tool_brave_search)]
-pub use brave_search::BraveSearchProvider;
 
 #[cfg(oxide_module_tool_browser_live)]
 pub use browser_live::{
@@ -121,7 +113,7 @@ pub use browser_live::{
 };
 
 #[cfg(oxide_module_tool_crw)]
-pub use crw::CrwProvider;
+pub use crw::CrwScrapeClient;
 
 #[cfg(oxide_module_integration_mcp_jira)]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};

@@ -35,9 +35,6 @@ services:
       - path: .env
         required: false
     environment:
-      - OXIDE_CRW_ENABLED=true
-      - OXIDE_CRW_BASE_URL=http://127.0.0.1:3000
-      - OXIDE_CRW_API_TOKEN=${OXIDE_CRW_API_TOKEN:-}
       - RUST_LOG=oxide_agent=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock

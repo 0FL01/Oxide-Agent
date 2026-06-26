@@ -140,18 +140,6 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
     let provider = string_field(payload, "provider");
     let error_kind = string_field(payload, "error_kind");
 
-    if is_brave_search(provider, effective_tool_name)
-        && matches!(
-            error_kind,
-            Some("rate_limited" | "auth" | "missing_api_key" | "server" | "network" | "timeout")
-        )
-    {
-        return Some(brave_search_dead_end(
-            error_kind.unwrap_or("provider_unavailable"),
-            string_field(payload, "query"),
-        ));
-    }
-
     if is_web_markdown(provider, effective_tool_name) {
         if error_kind == Some("anti_bot") {
             return Some(web_markdown_host_dead_end(
@@ -219,21 +207,6 @@ fn classify_text_failure(tool_name: &str, content: &str) -> Option<FailureSignal
     None
 }
 
-fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal {
-    let query = query.map(trim_for_prompt);
-    let summary = query.as_ref().map_or_else(
-        || format!("Brave Search {error_kind}"),
-        |query| format!("Brave Search {error_kind} query: {query}"),
-    );
-    FailureSignal {
-        failure_kind: error_kind.to_string(),
-        dead_end_scope: "provider",
-        target: "brave_search".to_string(),
-        summary,
-        guidance: "Do not retry brave_search in this task; use web_search or synthesize from existing results.".to_string(),
-    }
-}
-
 fn web_markdown_host_dead_end(host: Option<&str>, url: Option<&str>) -> FailureSignal {
     let target = host
         .map(str::to_string)
@@ -280,10 +253,6 @@ fn provider_dead_end(tool_name: &str, provider: &str, error_kind: &str) -> Failu
 fn is_web_markdown(provider: Option<&str>, tool_name: &str) -> bool {
     matches!(provider, Some("web_markdown" | "web_crawler"))
         || matches!(tool_name, "web_markdown" | "web_crawler")
-}
-
-fn is_brave_search(provider: Option<&str>, tool_name: &str) -> bool {
-    provider == Some("brave_search") || tool_name == "brave_search"
 }
 
 fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -354,42 +323,6 @@ mod tests {
                 .contains("Do not retry web_markdown for platform.kimi.ai")
         );
         assert!(summary.pruned_artifact.original_chars > summary.content.len());
-    }
-
-    #[test]
-    fn summarizes_brave_rate_limit_as_provider_dead_end() {
-        let raw = serde_json::to_string(&json!({
-            "provider": "brave_search",
-            "kind": "search",
-            "query": "rust async runtime comparison",
-            "error_kind": "rate_limited",
-            "error": "Brave Search is temporarily rate-limited",
-            "provider_unavailable": true,
-            "retryable": false,
-            "fallback": "web_search",
-            "results": []
-        }))
-        .expect("raw json");
-
-        let summary = summarize_tool_failure_content("brave_search", &raw)
-            .expect("rate-limited Brave failure should be summarized");
-        let value = parsed_summary(&summary.content);
-
-        assert_eq!(value["dead_end_scope"], "provider");
-        assert_eq!(value["failure_kind"], "rate_limited");
-        assert_eq!(value["target"], "brave_search");
-        assert!(
-            value["summary"]
-                .as_str()
-                .expect("summary")
-                .contains("Brave Search rate_limited query: rust async runtime comparison")
-        );
-        assert!(
-            value["guidance"]
-                .as_str()
-                .expect("guidance")
-                .contains("Do not retry brave_search in this task; use web_search")
-        );
     }
 
     #[test]

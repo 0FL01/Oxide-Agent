@@ -87,8 +87,7 @@ profile-full = [
     "tool-reminder",
     "tool-wiki-memory",
     "tool-webfetch-md",
-    "tool-tavily",
-    "tool-brave-search",
+    "tool-web-search",
     "tool-crw",
     "tool-browser-live",
     "tool-sandbox-fileops",
@@ -120,7 +119,7 @@ profile-embedded-opencode-local = [
     "tool-reminder",
     "tool-wiki-memory",
     "tool-webfetch-md",
-    "tool-tavily",
+    "tool-web-search",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -141,8 +140,7 @@ profile-web-embedded-opencode-local = [
     "tool-reminder",
     "tool-wiki-memory",
     "tool-webfetch-md",
-    "tool-tavily",
-    "tool-brave-search",
+    "tool-web-search",
     "tool-crw",
     "tool-browser-live",
     "tool-sandbox-fileops",
@@ -179,8 +177,7 @@ tool-agents-md = []
 tool-reminder = []
 tool-wiki-memory = []
 tool-webfetch-md = ["dep:htmd", "http-client"]
-tool-tavily = ["http-client"]
-tool-brave-search = ["http-client"]
+tool-web-search = ["http-client"]
 tool-crw = ["http-client"]
 tool-browser-live = ["http-client", "dep:oxide-browser-contracts"]
 tool-sandbox-fileops = []

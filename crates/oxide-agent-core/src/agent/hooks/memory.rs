@@ -812,7 +812,7 @@ mod tests {
         let hook = EpisodicExtractHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![tool("tavily_search")];
+        let tools = vec![tool("web_search")];
         let memory = memory_with_messages(vec![AgentMessage::user_task(
             "Сохрани текущий курс BTC USDT в память",
         )]);
@@ -833,13 +833,13 @@ mod tests {
         let hook = EpisodicExtractHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![tool("tavily_search")];
+        let tools = vec![tool("web_search")];
         let memory = memory_with_messages(vec![
             AgentMessage::user_task("Сохрани текущий курс BTC USDT в память"),
-            AgentMessage::assistant_with_tools("searching", vec![tool_call("tavily_search")]),
+            AgentMessage::assistant_with_tools("searching", vec![tool_call("web_search")]),
             AgentMessage::tool(
                 "call-1",
-                "tavily_search",
+                "web_search",
                 "BTC/USDT = 80 104.40 from https://example.com",
             ),
         ]);
@@ -864,13 +864,13 @@ mod tests {
         let hook = EpisodicExtractHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![tool("tavily_search")];
+        let tools = vec![tool("web_search")];
         let memory = memory_with_messages(vec![
             AgentMessage::user_task("Сохрани текущий курс BTC USDT в память"),
-            AgentMessage::assistant_with_tools("searching", vec![tool_call("tavily_search")]),
+            AgentMessage::assistant_with_tools("searching", vec![tool_call("web_search")]),
             AgentMessage::tool(
                 "call-1",
-                "tavily_search",
+                "web_search",
                 "BTC/USDT = 80 104.40 from https://example.com",
             ),
         ]);
@@ -891,7 +891,7 @@ mod tests {
         let hook = EpisodicExtractHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![tool("tavily_search")];
+        let tools = vec![tool("web_search")];
         let memory = memory_with_messages(vec![AgentMessage::user_task(
             "Сохрани текущий курс BTC USDT в память",
         )]);

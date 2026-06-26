@@ -4,9 +4,6 @@ services:
   oxide_web:
     environment:
       OXIDE_DATABASE_URL: ${OXIDE_DATABASE_URL:-postgres://oxide_agent:oxide_agent@127.0.0.1:55432/oxide_agent}
-      OXIDE_CRW_ENABLED: ${OXIDE_CRW_ENABLED:-true}
-      OXIDE_CRW_BASE_URL: ${OXIDE_CRW_BASE_URL:-http://127.0.0.1:3000}
-      OXIDE_CRW_API_TOKEN: ${OXIDE_CRW_API_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,8 +51,8 @@ services:
   #   search       → http://searxng:8080   (SearXNG JSON API)
   #   lightpanda   → ws://lightpanda:9222  (CDP for JS rendering)
   #
-  # Loopback self-hosted CRW needs no API key (no [auth] block in config).
-  # OXIDE_CRW_API_TOKEN can stay empty for local deployments.
+  # Oxide exposes CRW-backed search/scrape tools only when OXIDE_CRW_BASE_URL
+  # and OXIDE_CRW_API_TOKEN are explicitly present in .env.
   #
   # The image has only crw/crw-mcp/crw-server binaries — no wget, no curl,
   # no busybox. Bash IS present, so the healthcheck probes /health via

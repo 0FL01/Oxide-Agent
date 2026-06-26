@@ -1,5 +1,6 @@
 ---
 source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+assertion_line: 120
 expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
 ---
 {
@@ -87,10 +88,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
-        "id": "tool/brave-search",
-        "module": "tool/brave-search"
-      },
-      {
         "id": "tool/browser-close",
         "module": "tool/browser-live"
       },
@@ -120,10 +117,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       },
       {
         "id": "tool/crw-scrape",
-        "module": "tool/crw"
-      },
-      {
-        "id": "tool/crw-search",
         "module": "tool/crw"
       },
       {
@@ -171,10 +164,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/stack-logs"
       },
       {
-        "id": "tool/tavily-search",
-        "module": "tool/tavily"
-      },
-      {
         "id": "tool/todos",
         "module": "tool/todos"
       },
@@ -189,6 +178,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/web-crawler",
         "module": "tool/web-crawler"
+      },
+      {
+        "id": "tool/web-search",
+        "module": "tool/web-search"
       },
       {
         "id": "tool/webfetch-md",
@@ -580,17 +573,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-brave-search",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/brave-search",
-        "kind": "search",
-        "provides": [
-          "tool/brave-search"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-browser-live",
         "config_properties": [],
         "conflicts": [],
@@ -624,8 +606,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "id": "tool/crw",
         "kind": "search",
         "provides": [
-          "tool/crw-scrape",
-          "tool/crw-search"
+          "tool/crw-scrape"
         ],
         "requires": []
       },
@@ -769,17 +750,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         ]
       },
       {
-        "cargo_feature": "tool-tavily",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/tavily",
-        "kind": "search",
-        "provides": [
-          "tool/tavily-search"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-todos",
         "config_properties": [],
         "conflicts": [],
@@ -820,6 +790,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "search",
         "provides": [
           "tool/web-crawler"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-web-search",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/web-search",
+        "kind": "search",
+        "provides": [
+          "tool/web-search"
         ],
         "requires": []
       },
@@ -917,7 +898,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/sqlx",
       "tool/agents-md",
-      "tool/brave-search",
       "tool/browser-close",
       "tool/browser-debug",
       "tool/browser-observe",
@@ -926,7 +906,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/browser-step",
       "tool/compression",
       "tool/crw-scrape",
-      "tool/crw-search",
       "tool/delegation",
       "tool/file-delivery",
       "tool/media-audio-transcription",
@@ -938,11 +917,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
       "tool/stack-logs",
-      "tool/tavily-search",
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
       "tool/web-crawler",
+      "tool/web-search",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp-download",
@@ -966,7 +945,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/sqlx",
       "tool/agents-md",
-      "tool/brave-search",
       "tool/browser-live",
       "tool/compression",
       "tool/crw",
@@ -980,11 +958,11 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
       "tool/stack-logs",
-      "tool/tavily",
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
       "tool/web-crawler",
+      "tool/web-search",
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp",
@@ -1162,13 +1140,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/brave-search",
-      "kind": "search",
-      "cargo_feature": "tool-brave-search",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
       "module_id": "tool/browser-live",
       "kind": "browser",
       "cargo_feature": "tool-browser-live",
@@ -1183,16 +1154,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/tavily",
+      "module_id": "tool/web-crawler",
       "kind": "search",
-      "cargo_feature": "tool-tavily",
+      "cargo_feature": "tool-webfetch-md",
       "config_env": [],
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/web-crawler",
+      "module_id": "tool/web-search",
       "kind": "search",
-      "cargo_feature": "tool-webfetch-md",
+      "cargo_feature": "tool-web-search",
       "config_env": [],
       "requires_capabilities": []
     },

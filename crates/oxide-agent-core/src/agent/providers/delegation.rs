@@ -42,28 +42,20 @@ use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(oxide_module_tool_brave_search)]
-use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(oxide_module_tool_browser_live)]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
-#[cfg(oxide_module_tool_crw)]
-use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(oxide_module_tool_sandbox_fileops)]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(oxide_module_tool_tavily)]
-use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
     oxide_module_tool_sandbox_exec,
     oxide_module_tool_sandbox_fileops,
-    oxide_module_tool_brave_search,
     oxide_module_tool_browser_live,
-    oxide_module_tool_crw,
-    oxide_module_tool_tavily,
     oxide_module_tool_todos,
+    oxide_module_tool_web_search,
     oxide_module_tool_webfetch_md,
     oxide_module_tool_ytdlp
 ))]
@@ -72,6 +64,8 @@ use crate::agent::tool_runtime::ToolModule;
 use crate::agent::tool_runtime::WebCrawlerToolModule;
 #[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(oxide_module_tool_web_search)]
+use crate::agent::tool_runtime::WebSearchToolModule;
 #[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::tool_runtime::YtdlpToolModule;
 use tokio::sync::Semaphore;
@@ -734,11 +728,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(any(
             oxide_module_tool_sandbox_exec,
             oxide_module_tool_sandbox_fileops,
-            oxide_module_tool_brave_search,
             oxide_module_tool_browser_live,
-            oxide_module_tool_crw,
-            oxide_module_tool_tavily,
             oxide_module_tool_todos,
+            oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
             oxide_module_tool_ytdlp
         )))]
@@ -762,14 +754,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(oxide_module_tool_webfetch_md)]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
-        #[cfg(oxide_module_tool_tavily)]
-        self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
-
-        #[cfg(oxide_module_tool_brave_search)]
-        self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
-
-        #[cfg(oxide_module_tool_crw)]
-        self.push_sub_agent_tool_module(&mut executors, &CrwSearchToolModule, &module_ctx);
+        #[cfg(oxide_module_tool_web_search)]
+        self.push_sub_agent_tool_module(&mut executors, &WebSearchToolModule, &module_ctx);
 
         #[cfg(oxide_module_tool_browser_live)]
         let browser_cleanup = self.push_sub_agent_browser_module(&mut executors, &module_ctx);
@@ -833,10 +819,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     #[cfg(any(
         oxide_module_tool_sandbox_exec,
         oxide_module_tool_sandbox_fileops,
-        oxide_module_tool_brave_search,
-        oxide_module_tool_crw,
-        oxide_module_tool_tavily,
         oxide_module_tool_todos,
+        oxide_module_tool_web_search,
         oxide_module_tool_webfetch_md,
         oxide_module_tool_ytdlp
     ))]
@@ -857,19 +841,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
-        #[cfg(not(oxide_module_tool_tavily))]
-        if crate::config::is_tavily_enabled() {
-            warn!("Tavily enabled but feature not compiled in");
-        }
-
-        #[cfg(not(oxide_module_tool_brave_search))]
-        if crate::config::is_brave_search_enabled() {
-            warn!("Brave Search enabled but feature not compiled in");
-        }
-
-        #[cfg(not(oxide_module_tool_crw))]
-        if crate::config::is_crw_enabled() {
-            warn!("CRW enabled but feature not compiled in");
+        #[cfg(not(oxide_module_tool_web_search))]
+        if crate::config::is_web_search_configured() {
+            warn!("web_search configured but feature not compiled in");
         }
     }
 

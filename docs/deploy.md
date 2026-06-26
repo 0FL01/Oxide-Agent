@@ -78,7 +78,7 @@ The base compose files run CRW in single-container mode (scrape/markdown only, n
 
 SearXNG requires a custom `settings.yml` (`docker/searxng/settings.yml`) that enables JSON format and disables the built-in limiter. Without it, SearXNG returns 403 on JSON API requests. Generate a secret key with `openssl rand -hex 32` and set `SEARXNG_SECRET_KEY` in `.env`.
 
-The CRW image (debian:bookworm-slim) contains no wget or curl, so healthchecks use bash `/dev/tcp` probes. Loopback self-hosted CRW needs no API key — `OXIDE_CRW_API_TOKEN` can stay empty.
+The CRW image (debian:bookworm-slim) contains no wget or curl, so healthchecks use bash `/dev/tcp` probes. Oxide exposes CRW-backed tools only when both `OXIDE_CRW_BASE_URL` and `OXIDE_CRW_API_TOKEN` are explicitly configured.
 
 External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first and CRW scrape fallback; set it to `false` to expose split lightweight `web_markdown` fetches.
 

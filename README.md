@@ -150,7 +150,7 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 *   **Docker** - run the default code sandbox (`agent-sandbox:latest`)
 *   **Sandbox Broker** - Unix socket broker for Docker access isolation in Docker Compose
 *   **Tavily API** - optional web search provider (`TAVILY_API_KEY`)
-*   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_ENABLED`, `OXIDE_CRW_BASE_URL`)
+*   **CRW** - optional self-hosted web search and scrape backend (`OXIDE_CRW_BASE_URL`, `OXIDE_CRW_API_TOKEN`)
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Kokoro TTS Server** - optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** - optional for Russian voice message synthesis (`SILERO_TTS_URL`)
@@ -209,15 +209,14 @@ OPENAI_BASE_PROVIDERS__1__API_KEY=...
 OPENAI_BASE_PROVIDERS__1__PROFILE=zai
 
 # Web Search Providers (can be enabled together)
-TAVILY_API_KEY=...
+# TAVILY_API_KEY=...
 # BRAVE_SEARCH_API_KEY=...
-# BRAVE_SEARCH_ENABLED=true
 # Brave Search — primary indexed web discovery when BRAVE_SEARCH_API_KEY is configured.
 # CRW (self-hosted web search + scrape fallback)
-# OXIDE_CRW_ENABLED=true
 # OXIDE_CRW_BASE_URL=http://127.0.0.1:3000
 # OXIDE_CRW_API_TOKEN=...
-# CRW backs `web_search` and the rendered fallback path of `web_crawler`.
+# `web_search` appears only when at least one indexed backend key/endpoint is configured.
+# CRW also backs the rendered path of `web_crawler` when both CRW env vars are configured.
 
 # Wiki Memory (master switch, defaults to true)
 # WIKI_MEMORY_ENABLED=true

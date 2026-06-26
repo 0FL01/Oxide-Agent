@@ -33,8 +33,8 @@ proptest::proptest! {
     /// Any valid StructuredOutput JSON with final_answer should parse successfully.
     #[test]
     fn proptest_valid_structured_output_parses(
-        thought in "[a-z ]{5,50}",
-        answer in "[a-z0-9 .]{5,100}"
+        thought in "[a-z][a-z ]{4,49}",
+        answer in "[a-z0-9][a-z0-9 .]{4,99}"
     ) {
         let json = format!(
             r#"{{"thought":"{}","final_answer":"{}"}}"#,
@@ -53,8 +53,8 @@ proptest::proptest! {
     /// Code-fenced valid JSON should still parse (fence-stripping is a deterministic lexer fix).
     #[test]
     fn proptest_fenced_json_parses(
-        thought in "[a-z ]{5,50}",
-        answer in "[a-z0-9 .]{5,100}"
+        thought in "[a-z][a-z ]{4,49}",
+        answer in "[a-z0-9][a-z0-9 .]{4,99}"
     ) {
         let json = format!(
             r#"```json

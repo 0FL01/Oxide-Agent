@@ -359,8 +359,7 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   | `tool-reminder` | `oxide_module_tool_reminder` | (check) |
   | `tool-wiki-memory` | `oxide_module_tool_wiki_memory` | (check) |
   | `tool-webfetch-md` | `oxide_module_tool_webfetch_md` + `oxide_module_tool_web_crawler` | 44 |
-  | `tool-tavily` | `oxide_module_tool_tavily` | (check) |
-  | `tool-brave-search` | `oxide_module_tool_brave_search` | (check) |
+  | `tool-web-search` | `oxide_module_tool_web_search` | (check) |
   | `tool-crw` | `oxide_module_tool_crw` | 19 |
   | `tool-browser-live` | `oxide_module_tool_browser_live` | (check) |
   | `tool-sandbox-fileops` | `oxide_module_tool_sandbox_fileops` | (check) |

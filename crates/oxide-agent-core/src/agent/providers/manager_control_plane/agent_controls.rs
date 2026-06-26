@@ -233,28 +233,15 @@ impl ManagerControlPlaneProvider {
     }
 
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
-        #[cfg(not(any(
-            oxide_module_tool_tavily,
-            oxide_module_tool_crw,
-            oxide_module_tool_webfetch_md
-        )))]
+        #[cfg(not(any(oxide_module_tool_web_search, oxide_module_tool_webfetch_md)))]
         let _ = groups;
 
-        #[cfg(oxide_module_tool_tavily)]
-        if crate::config::is_tavily_enabled() {
+        #[cfg(oxide_module_tool_web_search)]
+        if crate::config::is_web_search_configured() {
             groups.push(TopicAgentToolGroup {
-                provider: "tavily",
-                aliases: &["search", "tavily"],
-                tools: TOPIC_AGENT_TAVILY_TOOLS,
-            });
-        }
-
-        #[cfg(oxide_module_tool_crw)]
-        if crate::config::is_crw_enabled() {
-            groups.push(TopicAgentToolGroup {
-                provider: "crw",
-                aliases: &["search", "crw", "web_search"],
-                tools: TOPIC_AGENT_CRW_TOOLS,
+                provider: "web_search",
+                aliases: &["search", "web_search", "crw", "tavily", "brave"],
+                tools: TOPIC_AGENT_WEB_SEARCH_TOOLS,
             });
         }
 
@@ -1489,17 +1476,12 @@ mod tests {
     }
 
     #[test]
-    fn search_alias_expands_all_matching_search_groups() {
+    fn search_alias_expands_unified_search_and_fetch_groups() {
         let catalog = TopicAgentToolCatalog {
             groups: vec![
                 TopicAgentToolGroup {
-                    provider: "tavily",
-                    aliases: &["search", "tavily"],
-                    tools: &["web_search"],
-                },
-                TopicAgentToolGroup {
-                    provider: "crw",
-                    aliases: &["search", "crw", "web_search"],
+                    provider: "web_search",
+                    aliases: &["search", "web_search", "crw", "tavily", "brave"],
                     tools: &["web_search"],
                 },
                 TopicAgentToolGroup {

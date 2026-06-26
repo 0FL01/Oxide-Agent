@@ -4,15 +4,11 @@ use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::tool_runtime::AgentsMdModuleContext;
 #[cfg(oxide_module_tool_agents_md)]
 use crate::agent::tool_runtime::AgentsMdToolModule;
-#[cfg(oxide_module_tool_brave_search)]
-use crate::agent::tool_runtime::BraveSearchToolModule;
 use crate::agent::tool_runtime::BrowserLiveModuleContext;
 #[cfg(oxide_module_tool_browser_live)]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
 #[cfg(oxide_module_tool_compression)]
 use crate::agent::tool_runtime::CompressionToolModule;
-#[cfg(oxide_module_tool_crw)]
-use crate::agent::tool_runtime::CrwSearchToolModule;
 #[cfg(oxide_module_tool_delegation)]
 use crate::agent::tool_runtime::DelegationToolModule;
 #[cfg(oxide_module_tool_file_delivery)]
@@ -47,8 +43,6 @@ use crate::agent::tool_runtime::SshMcpModuleContext;
 use crate::agent::tool_runtime::SshMcpToolModule;
 #[cfg(oxide_module_tool_stack_logs)]
 use crate::agent::tool_runtime::StackLogsToolModule;
-#[cfg(oxide_module_tool_tavily)]
-use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
@@ -67,14 +61,12 @@ use crate::agent::tool_runtime::TodosToolModule;
     oxide_module_tool_media_image,
     oxide_module_tool_media_video,
     oxide_module_tool_reminder,
-    oxide_module_tool_brave_search,
     oxide_module_tool_browser_live,
-    oxide_module_tool_crw,
     oxide_module_tool_stack_logs,
-    oxide_module_tool_tavily,
     oxide_module_tool_todos,
     oxide_module_tool_tts_kokoro,
     oxide_module_tool_tts_silero,
+    oxide_module_tool_web_search,
     oxide_module_tool_webfetch_md,
     oxide_module_tool_wiki_memory,
     oxide_module_tool_ytdlp,
@@ -84,6 +76,8 @@ use crate::agent::tool_runtime::ToolModule;
 use crate::agent::tool_runtime::WebCrawlerToolModule;
 #[cfg(oxide_module_tool_webfetch_md)]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(oxide_module_tool_web_search)]
+use crate::agent::tool_runtime::WebSearchToolModule;
 #[cfg(oxide_module_tool_wiki_memory)]
 use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(oxide_module_tool_ytdlp)]
@@ -156,14 +150,12 @@ impl AgentExecutor {
             oxide_module_tool_media_image,
             oxide_module_tool_media_video,
             oxide_module_tool_reminder,
-            oxide_module_tool_brave_search,
             oxide_module_tool_browser_live,
-            oxide_module_tool_crw,
             oxide_module_tool_stack_logs,
-            oxide_module_tool_tavily,
             oxide_module_tool_todos,
             oxide_module_tool_tts_kokoro,
             oxide_module_tool_tts_silero,
+            oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
             oxide_module_tool_wiki_memory,
             oxide_module_tool_ytdlp
@@ -192,23 +184,16 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
         #[cfg(oxide_module_tool_reminder)]
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
-        #[cfg(oxide_module_tool_brave_search)]
-        self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
-
         #[cfg(oxide_module_tool_browser_live)]
         let browser_cleanup = self.register_browser_live_module(registry, ctx);
 
         #[cfg(not(oxide_module_tool_browser_live))]
         let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
 
-        #[cfg(oxide_module_tool_crw)]
-        self.register_tool_runtime_module(registry, &CrwSearchToolModule, ctx);
         #[cfg(oxide_module_integration_ssh_mcp)]
         self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
         #[cfg(oxide_module_tool_stack_logs)]
         self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
-        #[cfg(oxide_module_tool_tavily)]
-        self.register_tool_runtime_module(registry, &TavilyToolModule, ctx);
         #[cfg(oxide_module_tool_todos)]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
         #[cfg(oxide_module_tool_tts_kokoro)]
@@ -217,6 +202,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
         #[cfg(oxide_module_tool_webfetch_md)]
         self.register_tool_runtime_module(registry, &WebCrawlerToolModule, ctx);
+        #[cfg(oxide_module_tool_web_search)]
+        self.register_tool_runtime_module(registry, &WebSearchToolModule, ctx);
         #[cfg(oxide_module_tool_webfetch_md)]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(oxide_module_tool_wiki_memory)]
@@ -267,14 +254,12 @@ impl AgentExecutor {
         oxide_module_tool_media_image,
         oxide_module_tool_media_video,
         oxide_module_tool_reminder,
-        oxide_module_tool_brave_search,
         oxide_module_tool_browser_live,
-        oxide_module_tool_crw,
         oxide_module_tool_stack_logs,
-        oxide_module_tool_tavily,
         oxide_module_tool_todos,
         oxide_module_tool_tts_kokoro,
         oxide_module_tool_tts_silero,
+        oxide_module_tool_web_search,
         oxide_module_tool_webfetch_md,
         oxide_module_tool_wiki_memory,
         oxide_module_tool_ytdlp
@@ -313,14 +298,12 @@ impl AgentExecutor {
             oxide_module_tool_media_image,
             oxide_module_tool_media_video,
             oxide_module_tool_reminder,
-            oxide_module_tool_brave_search,
             oxide_module_tool_browser_live,
-            oxide_module_tool_crw,
             oxide_module_tool_stack_logs,
-            oxide_module_tool_tavily,
             oxide_module_tool_todos,
             oxide_module_tool_tts_kokoro,
             oxide_module_tool_tts_silero,
+            oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
             oxide_module_tool_wiki_memory,
             oxide_module_tool_ytdlp

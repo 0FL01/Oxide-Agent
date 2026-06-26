@@ -61,12 +61,8 @@ pub(super) fn ToolCard(
         "execute_command" => {
             view! { <ShellToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "web_search" | "tavily_search" => view! {
-            <SearchToolCard label="Web Search" preview_query_first=false call=call result=result output=output_json />
-        }
-        .into_any(),
-        "brave_search" => view! {
-            <SearchToolCard label="Brave Search" preview_query_first=true call=call result=result output=output_json />
+        "web_search" => view! {
+            <SearchToolCard label="Web Search" call=call result=result output=output_json />
         }
         .into_any(),
         "web_markdown" => {
@@ -76,10 +72,12 @@ pub(super) fn ToolCard(
             view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
         }
         "spawn_sub_agents" => {
-            view! { <SpawnSubAgentsToolCard call=call result=result output=output_json /> }.into_any()
+            view! { <SpawnSubAgentsToolCard call=call result=result output=output_json /> }
+                .into_any()
         }
         "wait_sub_agents" => {
-            view! { <WaitSubAgentsToolCard call=call result=result output=output_json /> }.into_any()
+            view! { <WaitSubAgentsToolCard call=call result=result output=output_json /> }
+                .into_any()
         }
         "write_todos" => {
             view! { <WriteTodosToolCard call=call result=result output=output_json /> }.into_any()
@@ -194,12 +192,11 @@ fn ShellToolCard(
     }
 }
 
-// ── Search Tool Card (web_search / tavily_search) ────────────────────────
+// ── Search Tool Card (web_search) ────────────────────────────────────────
 
 #[component]
 fn SearchToolCard(
     label: &'static str,
-    preview_query_first: bool,
     call: Option<PersistedTaskEvent>,
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
@@ -259,13 +256,7 @@ fn SearchToolCard(
         .filter(|sr| !sr.snippet.is_empty())
         .map(|sr| sr.snippet.clone());
     let stdout_headline = stdout.as_ref().map(|text| first_line(text));
-    // For Brave Search, query is the compact preview (stable, like Crawl's URL host).
-    let preview_text = if success && preview_query_first {
-        query
-            .clone()
-            .or_else(|| preview_snippet.clone())
-            .or_else(|| stdout_headline.clone())
-    } else if success {
+    let preview_text = if success {
         preview_snippet.or_else(|| {
             search_results
                 .first()

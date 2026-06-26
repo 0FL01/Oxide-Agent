@@ -29,7 +29,7 @@ pub mod preprocessor;
 pub mod profile;
 /// Prompt composition for system prompts
 pub mod prompt;
-/// Built-in tool providers (Sandbox, Tavily, Todos)
+/// Built-in tool providers (Sandbox, Web Search, Todos)
 pub mod providers;
 /// Recovery module for malformed LLM responses
 pub mod recovery;

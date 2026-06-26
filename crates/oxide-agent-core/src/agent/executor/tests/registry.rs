@@ -768,18 +768,33 @@ fn typed_runtime_registry_skips_disabled_delegation_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(oxide_module_tool_tavily)]
+#[cfg(oxide_module_tool_web_search)]
+fn clear_web_search_registry_env() {
+    for key in [
+        "TAVILY_API_KEY",
+        "TAVILY_ENABLED",
+        "BRAVE_SEARCH_API_KEY",
+        "BRAVE_SEARCH_ENABLED",
+        "OXIDE_CRW_ENABLED",
+        "OXIDE_CRW_BASE_URL",
+        "OXIDE_CRW_API_TOKEN",
+    ] {
+        test_remove_env(key);
+    }
+}
+
+#[cfg(oxide_module_tool_web_search)]
 #[test]
-fn typed_runtime_registry_skips_disabled_tavily_module() {
+fn typed_runtime_registry_skips_disabled_web_search_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_web_search_registry_env();
     test_set_env("TAVILY_API_KEY", "dummy-key");
-    test_set_env("TAVILY_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
-            "tool/tavily".to_string(),
+            "tool/web-search".to_string(),
             ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
@@ -798,53 +813,16 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     assert!(!tool_names.contains("web_search"));
     assert!(tool_names.contains("write_todos"));
 
-    test_remove_env("TAVILY_ENABLED");
-    test_remove_env("TAVILY_API_KEY");
+    clear_web_search_registry_env();
 }
 
-#[cfg(oxide_module_tool_brave_search)]
+#[cfg(oxide_module_tool_web_search)]
 #[test]
-fn typed_runtime_registry_skips_disabled_brave_search_module() {
+fn current_tool_definitions_omit_web_search_without_backend_env() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
-    test_set_env("BRAVE_SEARCH_ENABLED", "true");
-
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/brave-search".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("brave_search"));
-    #[cfg(oxide_module_tool_todos)]
-    assert!(tool_names.contains("write_todos"));
-
-    test_remove_env("BRAVE_SEARCH_ENABLED");
-    test_remove_env("BRAVE_SEARCH_API_KEY");
-}
-
-#[cfg(oxide_module_tool_brave_search)]
-#[test]
-fn current_tool_definitions_include_brave_search_when_key_is_configured() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
-    test_set_env("BRAVE_SEARCH_ENABLED", "true");
+    clear_web_search_registry_env();
 
     let tool_names = build_executor()
         .current_tool_definitions()
@@ -852,20 +830,42 @@ fn current_tool_definitions_include_brave_search_when_key_is_configured() {
         .map(|tool| tool.name)
         .collect::<std::collections::BTreeSet<_>>();
 
-    assert!(tool_names.contains("brave_search"));
+    assert!(!tool_names.contains("web_search"));
 
-    test_remove_env("BRAVE_SEARCH_ENABLED");
-    test_remove_env("BRAVE_SEARCH_API_KEY");
+    clear_web_search_registry_env();
 }
 
-#[cfg(oxide_module_tool_tavily)]
+#[cfg(oxide_module_tool_web_search)]
 #[test]
-fn typed_runtime_registry_registers_search_modules_once() {
+fn current_tool_definitions_include_web_search_when_key_is_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_web_search_registry_env();
+    test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
+
+    let tool_names = build_executor()
+        .current_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(tool_names.contains("web_search"));
+
+    clear_web_search_registry_env();
+}
+
+#[cfg(oxide_module_tool_web_search)]
+#[test]
+fn typed_runtime_registry_registers_unified_web_search_once_for_all_backends() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    clear_web_search_registry_env();
     test_set_env("TAVILY_API_KEY", "dummy-key");
-    test_set_env("TAVILY_ENABLED", "true");
+    test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
+    test_set_env("OXIDE_CRW_BASE_URL", "http://crw:3000");
+    test_set_env("OXIDE_CRW_API_TOKEN", "crw-token");
 
     let executor = build_executor();
     let registry =
@@ -880,38 +880,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
         1
     );
 
-    test_remove_env("TAVILY_ENABLED");
-    test_remove_env("TAVILY_API_KEY");
-}
-
-#[cfg(all(oxide_module_tool_tavily, oxide_module_tool_crw))]
-#[test]
-fn typed_runtime_registry_crw_owns_web_search_tavily_contributes_nothing() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    test_set_env("TAVILY_API_KEY", "dummy-key");
-    test_set_env("TAVILY_ENABLED", "true");
-    test_set_env("OXIDE_CRW_ENABLED", "true");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry.tool_names();
-
-    // CRW owns `web_search`; Tavily's only tool is `web_search`, so it is
-    // filtered out entirely at module level.
-    assert_eq!(
-        tool_names
-            .iter()
-            .filter(|name| *name == "web_search")
-            .count(),
-        1
-    );
-
-    test_remove_env("OXIDE_CRW_ENABLED");
-    test_remove_env("TAVILY_ENABLED");
-    test_remove_env("TAVILY_API_KEY");
+    clear_web_search_registry_env();
 }
 
 #[cfg(oxide_module_manager_control_plane)]
