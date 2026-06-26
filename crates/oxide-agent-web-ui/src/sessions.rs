@@ -2,8 +2,8 @@ use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::confirm_dialog::ConfirmDialog;
 use crate::utils::{navigate, spawn_ui};
-use leptos::prelude::*;
-use oxide_agent_web_contracts::SessionSummary;
+use leptos::{html, prelude::*};
+use oxide_agent_web_contracts::{SessionSummary, UpdateSessionRequest};
 
 /// Pending deletion target — the session the user is about to delete.
 #[derive(Clone)]
@@ -165,6 +165,8 @@ pub fn SessionSidebar(
                                                 session=session
                                                 active=active
                                                 set_confirm_target=set_confirm_target
+                                                set_sessions=set_sessions
+                                                set_error=set_error
                                             />
                                         }
                                     }
@@ -195,9 +197,17 @@ fn SessionItem(
     session: SessionSummary,
     active: Signal<bool>,
     set_confirm_target: WriteSignal<Option<DeleteTarget>>,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
+    set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
+    let auth = use_auth();
     let session_id = session.session_id.clone();
     let session_title = display_session_title(&session);
+    let original_title = session.title.clone();
+
+    let (is_renaming, set_is_renaming) = signal(false);
+    let (draft_title, set_draft_title) = signal(original_title.clone());
+    let (is_saving, set_is_saving) = signal(false);
 
     // Determine status dot class from last task status
     let status_class = match session.last_task_status {
@@ -209,34 +219,156 @@ fn SessionItem(
         _ => "idle",
     };
 
-    let request_delete = move |ev: leptos::ev::MouseEvent| {
-        ev.prevent_default();
-        ev.stop_propagation();
-        set_confirm_target.set(Some(DeleteTarget {
-            id: session_id.clone(),
-            title: session_title.clone(),
-        }));
-    };
+    let input_ref = NodeRef::<html::Input>::new();
+    Effect::new(move |_| {
+        if is_renaming.get()
+            && !is_saving.get()
+            && let Some(el) = input_ref.get()
+        {
+            let _ = el.focus();
+            el.select();
+        }
+    });
+
+    let request_rename = Callback::new({
+        let original_title = original_title.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            ev.stop_propagation();
+            set_draft_title.set(original_title.clone());
+            set_is_renaming.set(true);
+        }
+    });
+
+    let request_delete = Callback::new({
+        let session_id = session_id.clone();
+        let session_title = session_title.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            ev.stop_propagation();
+            set_confirm_target.set(Some(DeleteTarget {
+                id: session_id.clone(),
+                title: session_title.clone(),
+            }));
+        }
+    });
+
+    let cancel_rename = Callback::new(move |_: ()| {
+        if is_saving.get() {
+            return;
+        }
+        set_is_renaming.set(false);
+    });
+
+    let commit_rename = Callback::new({
+        let session_id = session_id.clone();
+        let original_title = original_title.clone();
+        move |_: ()| {
+            if !is_renaming.get() || is_saving.get() {
+                return;
+            }
+            let title = draft_title.get().trim().to_string();
+            if title.is_empty() || title == original_title {
+                set_is_renaming.set(false);
+                return;
+            }
+            set_is_saving.set(true);
+            set_error.set(None);
+            let session_id = session_id.clone();
+            spawn_ui(async move {
+                match auth
+                    .client()
+                    .update_session(&session_id, &UpdateSessionRequest { title })
+                    .await
+                {
+                    Ok(resp) => {
+                        set_sessions.update(|items| {
+                            if let Some(item) =
+                                items.iter_mut().find(|i| i.session_id == session_id)
+                            {
+                                item.title = resp.session.title;
+                            }
+                        });
+                        set_is_renaming.set(false);
+                    }
+                    Err(e) => set_error.set(Some(e.to_string())),
+                }
+                set_is_saving.set(false);
+            });
+        }
+    });
 
     view! {
         <li class="session-list-item">
-            <a
-                class=move || if active.get() { "session-item active" } else { "session-item" }
-                href=format!("/app/session/{}", session.session_id)
-            >
-                <span class=format!("session-status-dot {}", status_class)></span>
-                <span class="session-copy">
-                    <span class="session-id">{display_session_title(&session)}</span>
-                </span>
-            </a>
-            <button
-                class="session-delete-button"
-                type="button"
-                title="Delete session"
-                on:click=request_delete
-            >
-                "Del"
-            </button>
+            {move || {
+                if is_renaming.get() {
+                    view! {
+                        <div class="session-rename-row">
+                            <span class=format!("session-status-dot {}", status_class)></span>
+                            <input
+                                class="session-rename-input"
+                                type="text"
+                                node_ref=input_ref
+                                prop:value=draft_title
+                                disabled=is_saving
+                                on:input=move |ev| set_draft_title.set(event_target_value(&ev))
+                                on:keydown=move |ev| {
+                                    match ev.key().as_str() {
+                                        "Enter" => {
+                                            ev.prevent_default();
+                                            commit_rename.run(());
+                                        }
+                                        "Escape" => {
+                                            ev.prevent_default();
+                                            cancel_rename.run(());
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                on:focusout=move |_| commit_rename.run(())
+                            />
+                        </div>
+                    }
+                        .into_any()
+                } else {
+                    let session = session.clone();
+                    view! {
+                        <a
+                            class=move || if active.get() { "session-item active" } else { "session-item" }
+                            href=format!("/app/session/{}", session.session_id)
+                        >
+                            <span class=format!("session-status-dot {}", status_class)></span>
+                            <span class="session-copy">
+                                <span class="session-id">{display_session_title(&session)}</span>
+                            </span>
+                        </a>
+                        <div class="session-actions">
+                            <button
+                                class="session-action-button rename"
+                                type="button"
+                                title="Rename session"
+                                on:click=move |ev| request_rename.run(ev)
+                            >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2"
+                                     stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 20h9"/>
+                                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                                </svg>
+                            </button>
+                            <button
+                                class="session-action-button delete"
+                                type="button"
+                                title="Delete session"
+                                on:click=move |ev| request_delete.run(ev)
+                            >
+                                "Del"
+                            </button>
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
         </li>
     }
 }

@@ -7,9 +7,9 @@ use oxide_agent_web_contracts::{
     GetTaskProgressResponse, GetTaskResponse, ListAgentProfilesResponse, ListModelRoutesResponse,
     ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, RegisterRequest,
     ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse, UpdateAgentProfileRequest,
-    UpdateAgentProfileResponse, UpdateSessionProfileRequest, UpdateSessionResponse,
-    UpdateUserSettingsRequest, UploadLargeInputRequest, UploadLargeInputResponse,
-    UploadTaskAttachmentsResponse, UserSettingsResponse,
+    UpdateAgentProfileResponse, UpdateSessionProfileRequest, UpdateSessionRequest,
+    UpdateSessionResponse, UpdateUserSettingsRequest, UploadLargeInputRequest,
+    UploadLargeInputResponse, UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt;
@@ -164,6 +164,18 @@ impl ApiClient {
                 .await?,
         )
         .await
+    }
+
+    pub async fn update_session(
+        &self,
+        session_id: &str,
+        request: &UpdateSessionRequest,
+    ) -> Result<UpdateSessionResponse, ApiClientError> {
+        let mut builder =
+            with_credentials(Request::patch(&format!("/api/v1/sessions/{session_id}")))
+                .header("Content-Type", "application/json");
+        builder = self.with_csrf(builder)?;
+        decode(builder.json(request)?.send().await?).await
     }
 
     pub async fn update_session_profile(
