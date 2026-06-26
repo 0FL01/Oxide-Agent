@@ -6,7 +6,7 @@ Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native inte
 
 ## Branch
 
-Default branch: `dev`.
+Default branch: `main`.
 
 ## Scale and decision principles
 
