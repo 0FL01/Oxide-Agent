@@ -1,7 +1,6 @@
 ---
 source: crates/oxide-agent-core/tests/snapshot_prompts.rs
-assertion_line: 25
-expression: build_structured_output_instructions(&tools)
+expression: "build_structured_output_instructions(&tools, false)"
 ---
 ## STRUCTURED OUTPUT (MANDATORY)
 You MUST respond ONLY with a valid JSON object strictly following the schema:
@@ -40,6 +39,3 @@ Rules:
 
 ### Example Awaiting User Input
 {"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}
-
-## Available Tools
-- `test_tool`

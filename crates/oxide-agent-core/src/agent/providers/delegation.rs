@@ -10,7 +10,7 @@ use crate::agent::hooks::{
 };
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
-use crate::agent::prompt::create_sub_agent_system_prompt;
+use crate::agent::prompt::{PromptToolContext, create_sub_agent_system_prompt};
 use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::runner::{
     AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
@@ -1134,9 +1134,10 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             Arc::new(self.build_sub_agent_tool_runtime_registry(&allowed, executors));
         let tools = tool_runtime_registry.specs();
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
+        let tool_ctx = PromptToolContext::from_tools(&tools);
         let system_prompt = create_sub_agent_system_prompt(
             task.as_str(),
-            &tools,
+            tool_ctx,
             structured_output,
             context.as_deref(),
         );

@@ -5,6 +5,7 @@
 
 use crate::agent::prompt::PromptContextBlock;
 use crate::agent::session::AgentSession;
+use crate::agent::tool_runtime::CapabilityGroup;
 use crate::llm::ToolDefinition;
 use std::collections::BTreeSet;
 
@@ -44,6 +45,73 @@ impl ComposedPrompt {
 impl std::fmt::Display for ComposedPrompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.full_prompt())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PromptToolContext
+// ---------------------------------------------------------------------------
+
+/// Tool context for prompt composition.
+///
+/// Encapsulates what the prompt composer needs from the tool catalog:
+/// - **Catalog specs** — all tool definitions in the catalog, used for
+///   workflow hints and date context.  These reflect the full set of
+///   compiled tools, not just the currently visible surface.
+/// - **Available groups** — capability groups present in the catalog, used
+///   for the "Available Tool Groups" block that tells the model what it can
+///   retrieve via `retrieve_tools`.
+///
+/// In the lazy-tool production path, both fields are derived from the
+/// `ToolCatalog`.  In tests and non-lazy paths (sub-agents before Phase H),
+/// `PromptToolContext::from_tools` provides a context with no retrievable
+/// groups — workflow hints still work, but no category list block is emitted.
+pub struct PromptToolContext<'a> {
+    catalog_specs: &'a [ToolDefinition],
+    available_groups: &'a [CapabilityGroup],
+}
+
+impl<'a> PromptToolContext<'a> {
+    /// Create a tool context from catalog specs and activatable groups.
+    #[must_use]
+    pub const fn new(
+        catalog_specs: &'a [ToolDefinition],
+        available_groups: &'a [CapabilityGroup],
+    ) -> Self {
+        Self {
+            catalog_specs,
+            available_groups,
+        }
+    }
+
+    /// Construct from a tool list with no retrievable groups.
+    ///
+    /// Use this for tests and non-lazy paths where all tools are already
+    /// visible and `retrieve_tools` is not applicable.
+    #[must_use]
+    pub const fn from_tools(catalog_specs: &'a [ToolDefinition]) -> Self {
+        Self {
+            catalog_specs,
+            available_groups: &[],
+        }
+    }
+
+    /// Full catalog tool definitions.
+    #[must_use]
+    pub const fn catalog_specs(&self) -> &'a [ToolDefinition] {
+        self.catalog_specs
+    }
+
+    /// Activatable capability groups in the catalog.
+    #[must_use]
+    pub const fn available_groups(&self) -> &'a [CapabilityGroup] {
+        self.available_groups
+    }
+
+    /// Whether any retrievable groups exist.
+    #[must_use]
+    pub fn has_retrievable_groups(&self) -> bool {
+        !self.available_groups.is_empty()
     }
 }
 
@@ -451,6 +519,57 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
     builder.finish()
 }
 
+/// Build the "Available Tool Groups" block for the lazy tool protocol.
+///
+/// Tells the model which capability groups it can activate via
+/// `retrieve_tools`.  This block is static for a run (the catalog does not
+/// change mid-run) and lives in the cacheable prompt prefix.
+///
+/// Returns `None` when no retrievable groups exist (test path or all tools
+/// are always-visible).
+fn build_category_list_block(groups: &[CapabilityGroup]) -> Option<String> {
+    if groups.is_empty() {
+        return None;
+    }
+
+    let group_lines: Vec<String> = groups
+        .iter()
+        .map(|&g| format!("- `{}` — {}", g.as_str(), capability_group_description(g)))
+        .collect();
+
+    Some(format!(
+        "## Available Tool Groups\n\
+        You can activate additional tools by calling `retrieve_tools` with one or more of the \
+        following capability names:\n\
+        {groups}\n\
+        Call `retrieve_tools` early when you know which capabilities you need. \
+        Activated tools appear in the tools list for subsequent turns.",
+        groups = group_lines.join("\n"),
+    ))
+}
+
+/// Human-readable description for a capability group.
+const fn capability_group_description(group: CapabilityGroup) -> &'static str {
+    match group {
+        CapabilityGroup::Files => "file operations (read, write, edit, list)",
+        CapabilityGroup::Shell => "command execution and sandbox lifecycle",
+        CapabilityGroup::Web => "web search and page fetch",
+        CapabilityGroup::Browser => "autonomous browser control",
+        CapabilityGroup::Memory => "wiki memory (list, read, delete)",
+        CapabilityGroup::Media => "media analysis (audio, image, video)",
+        CapabilityGroup::Ytdlp => "YouTube metadata, transcript, download",
+        CapabilityGroup::Tts => "text-to-speech",
+        CapabilityGroup::Delegation => "sub-agent delegation",
+        CapabilityGroup::AgentsMd => "AGENTS.md self-editing",
+        CapabilityGroup::Manager => "manager control-plane (topics, infra, profiles)",
+        CapabilityGroup::Ssh => "SSH remote execution and file editing",
+        CapabilityGroup::StackLogs => "Docker Compose stack logs",
+        CapabilityGroup::Reminders => "reminder scheduling",
+        CapabilityGroup::Jira => "Jira MCP integration",
+        CapabilityGroup::Mattermost => "Mattermost MCP integration",
+    }
+}
+
 /// Get the built-in fallback prompt for the main agent.
 #[must_use]
 pub fn get_fallback_prompt() -> String {
@@ -466,22 +585,29 @@ pub fn get_fallback_prompt() -> String {
 
 /// Build instructions for mandatory structured output (JSON).
 ///
-/// Tool schemas are NOT duplicated here — the model receives them via the native
-/// `tools[]` API payload.  Only a compact sorted tool-name list is embedded to
-/// keep the prompt prefix stable and cache-friendly.
+/// Tool schemas are NOT included here — the model receives them via the
+/// native `tools[]` API payload.  The structured output instructions contain
+/// only the JSON schema, rules, and examples.
+///
+/// When `has_retrievable_groups` is true, an additional rule tells the model
+/// to call `retrieve_tools` to activate tools that are not yet in the
+/// tools list.
 #[must_use]
-pub fn build_structured_output_instructions(tools: &[ToolDefinition]) -> String {
-    let tool_names = tool_name_set(tools);
+pub fn build_structured_output_instructions(
+    catalog_tools: &[ToolDefinition],
+    has_retrievable_groups: bool,
+) -> String {
+    let tool_names = tool_name_set(catalog_tools);
     let todo_blocked_rule = if has_tool(&tool_names, "write_todos") {
         "\n- If you maintain a todo list and the remaining work is blocked on the user, mark the relevant todo as `blocked_on_user` before returning `awaiting_user_input`"
     } else {
         ""
     };
-    let tools_list = tool_names
-        .iter()
-        .map(|n| format!("- `{n}`"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let retrieve_rule = if has_retrievable_groups {
+        "\n- Only call tools that are currently in the tools list; if you need a tool that is not listed, call `retrieve_tools` to activate it first"
+    } else {
+        ""
+    };
 
     format!(
         r#"## STRUCTURED OUTPUT (MANDATORY)
@@ -509,7 +635,7 @@ Rules:
 - `awaiting_user_input.prompt` must be a short, direct request telling the user what to send next
 - `tool_call.arguments` is always a JSON object
 - No extra keys, markdown, XML, explanations, or text outside JSON
-- Tool results arrive in messages with role `tool`
+- Tool results arrive in messages with role `tool`{retrieve_rule}
 - In `final_answer`, ALWAYS use markdown code blocks (```language) for code, logs, terminal outputs, and file contents
 - Use backticks (`) for inline code, such as file paths, variables, and short commands
 
@@ -520,12 +646,9 @@ Rules:
 {{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```","awaiting_user_input":null}}
 
 ### Example Awaiting User Input
-{{"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}}}
-
-## Available Tools
-{tools_list}"#,
+{{"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}}}"#,
         todo_blocked_rule = todo_blocked_rule,
-        tools_list = tools_list
+        retrieve_rule = retrieve_rule,
     )
 }
 
@@ -543,17 +666,23 @@ fn strip_structured_output_requirement(prompt: &str) -> String {
 /// 1. Adding built-in operational instructions
 /// 2. Adding typed dynamic prompt context blocks
 /// 3. Separating date/time context into `date_suffix` for cache-friendly assembly
+///
+/// The `tool_ctx` provides the full catalog specs (for workflow hints and date
+/// context) and the activatable capability groups (for the "Available Tool
+/// Groups" block in the lazy tool protocol).
 pub async fn create_agent_system_prompt(
     _task: &str,
-    tools: &[ToolDefinition],
+    tool_ctx: PromptToolContext<'_>,
     structured_output: bool,
     _session: &mut AgentSession,
     prompt_instructions: Option<&str>,
     dynamic_context_blocks: &[PromptContextBlock],
 ) -> ComposedPrompt {
+    let catalog_specs = tool_ctx.catalog_specs();
+
     // Build date_context separately — it will be inserted between stable
     // and volatile system messages by the fold pipeline.
-    let date_context = build_date_context(tools);
+    let date_context = build_date_context(catalog_specs);
 
     let base_prompt = get_fallback_prompt();
 
@@ -571,7 +700,7 @@ pub async fn create_agent_system_prompt(
     };
 
     // Workflow guidance is stable for a given tool-set — place before dynamic wiki.
-    let base_prompt = if let Some(workflow_guidance) = build_workflow_guidance(tools) {
+    let base_prompt = if let Some(workflow_guidance) = build_workflow_guidance(catalog_specs) {
         format!("{base_prompt}\n\n{workflow_guidance}")
     } else {
         base_prompt
@@ -584,8 +713,18 @@ pub async fn create_agent_system_prompt(
         base_prompt
     };
 
+    // Category list block: tells the model which capability groups it can
+    // retrieve.  Static for a run — placed in the cacheable prefix.
+    let base_prompt =
+        if let Some(category_block) = build_category_list_block(tool_ctx.available_groups()) {
+            format!("{base_prompt}\n\n{category_block}")
+        } else {
+            base_prompt
+        };
+
     let base = if structured_output {
-        let structured_output = build_structured_output_instructions(tools);
+        let structured_output =
+            build_structured_output_instructions(catalog_specs, tool_ctx.has_retrievable_groups());
         format!("{base_prompt}\n\n{structured_output}")
     } else {
         base_prompt
@@ -620,13 +759,15 @@ fn render_dynamic_context_blocks(blocks: &[PromptContextBlock]) -> Option<String
 #[must_use]
 pub fn create_sub_agent_system_prompt(
     _task: &str,
-    tools: &[ToolDefinition],
+    tool_ctx: PromptToolContext<'_>,
     structured_output: bool,
     extra_context: Option<&str>,
 ) -> ComposedPrompt {
+    let catalog_specs = tool_ctx.catalog_specs();
+
     // Build date_context separately — it will be inserted between stable
     // and volatile system messages by the fold pipeline.
-    let date_context = build_date_context(tools);
+    let date_context = build_date_context(catalog_specs);
 
     // Task is intentionally excluded from the system prompt to keep the prefix
     // cache-stable across different sub-agent invocations.  The task reaches the
@@ -650,14 +791,23 @@ Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
         strip_structured_output_requirement(&base_prompt)
     };
 
-    let base_prompt = if let Some(workflow_guidance) = build_workflow_guidance(tools) {
+    let base_prompt = if let Some(workflow_guidance) = build_workflow_guidance(catalog_specs) {
         format!("{base_prompt}\n\n{workflow_guidance}")
     } else {
         base_prompt
     };
 
+    // Category list block for sub-agents with retrievable groups.
+    let base_prompt =
+        if let Some(category_block) = build_category_list_block(tool_ctx.available_groups()) {
+            format!("{base_prompt}\n\n{category_block}")
+        } else {
+            base_prompt
+        };
+
     let base = if structured_output {
-        let structured_output = build_structured_output_instructions(tools);
+        let structured_output =
+            build_structured_output_instructions(catalog_specs, tool_ctx.has_retrievable_groups());
         format!("{base_prompt}\n\n{structured_output}")
     } else {
         base_prompt
@@ -702,7 +852,7 @@ mod tests {
 
         let prompt = create_agent_system_prompt(
             "demo task",
-            &tools,
+            PromptToolContext::from_tools(&tools),
             true,
             &mut session,
             Some("Stay within the infra role."),
@@ -724,8 +874,15 @@ mod tests {
         }];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Reminder Scheduling"));
@@ -735,8 +892,15 @@ mod tests {
     #[tokio::test]
     async fn test_create_agent_system_prompt_adds_task_tracking_only_with_todos() {
         let mut session = AgentSession::new(1_i64.into());
-        let prompt =
-            create_agent_system_prompt("demo task", &[], true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&[]),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
         assert!(!prompt.contains("## Workflow Hints"));
         assert!(!prompt.contains("write_todos"));
@@ -747,8 +911,15 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
         }];
         let mut session = AgentSession::new(1_i64.into());
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Workflow Hints"));
@@ -772,8 +943,15 @@ mod tests {
         ];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## File Workflows"));
@@ -794,8 +972,15 @@ mod tests {
         }];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("If `send_file_to_user` returns `download_url`"));
@@ -833,8 +1018,15 @@ mod tests {
         ];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Browser Direct Control"));
@@ -856,8 +1048,15 @@ mod tests {
         }];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("### Web Research"));
@@ -882,8 +1081,15 @@ mod tests {
         ];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
         let prompt = prompt.full_prompt();
 
         assert_eq!(prompt.matches("### Web Research").count(), 1);
@@ -900,7 +1106,7 @@ mod tests {
 
         let prompt = create_agent_system_prompt(
             "demo task",
-            &tools,
+            PromptToolContext::from_tools(&tools),
             true,
             &mut session,
             None,
@@ -923,7 +1129,7 @@ mod tests {
         let mut session = AgentSession::new(1_i64.into());
         let prompt = create_agent_system_prompt(
             "demo task",
-            &[],
+            PromptToolContext::from_tools(&[]),
             true,
             &mut session,
             None,
@@ -959,7 +1165,7 @@ mod tests {
 
     #[test]
     fn test_structured_output_instructions_include_awaiting_user_input() {
-        let prompt = build_structured_output_instructions(&[]);
+        let prompt = build_structured_output_instructions(&[], false);
 
         assert!(prompt.contains("awaiting_user_input"));
         assert!(prompt.contains("url_or_file"));
@@ -978,7 +1184,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
         }];
 
-        let prompt = build_structured_output_instructions(&tools);
+        let prompt = build_structured_output_instructions(&tools, false);
 
         assert!(prompt.contains("blocked_on_user"));
     }
@@ -994,8 +1200,15 @@ mod tests {
         }];
         let mut session = AgentSession::new(1_i64.into());
 
-        let prompt =
-            create_agent_system_prompt("demo task", &tools, true, &mut session, None, &[]).await;
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            &mut session,
+            None,
+            &[],
+        )
+        .await;
 
         let full = prompt.full_prompt();
         let date_pos = full
@@ -1023,7 +1236,12 @@ mod tests {
         }];
 
         let unique_task = "XRAY_UNIQUE_TASK_MARKER_7f3a";
-        let prompt = create_sub_agent_system_prompt(unique_task, &tools, true, None);
+        let prompt = create_sub_agent_system_prompt(
+            unique_task,
+            PromptToolContext::from_tools(&tools),
+            true,
+            None,
+        );
         let prompt = prompt.full_prompt();
 
         assert!(
@@ -1046,7 +1264,12 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
         }];
 
-        let prompt = create_sub_agent_system_prompt("demo task", &tools, true, None);
+        let prompt = create_sub_agent_system_prompt(
+            "demo task",
+            PromptToolContext::from_tools(&tools),
+            true,
+            None,
+        );
 
         let full = prompt.full_prompt();
         let date_pos = full
@@ -1075,7 +1298,7 @@ mod tests {
 
         let prompt = create_agent_system_prompt(
             "demo task",
-            &tools,
+            PromptToolContext::from_tools(&tools),
             true,
             &mut session,
             None,
@@ -1181,14 +1404,14 @@ mod tests {
     }
 
     /// Verifies that build_structured_output_instructions() does NOT embed full tool
-    /// JSON schemas in the system prompt text.  Tool schemas are delivered exclusively
-    /// via the native `tools[]` API payload; the prompt only contains a compact sorted
-    /// tool-name list for cache-friendly prefix stability.
+    /// JSON schemas or tool descriptions in the system prompt text.  Tool schemas are
+    /// delivered exclusively via the native `tools[]` API payload.  The structured
+    /// output instructions contain only the JSON schema, rules, and examples.
     #[test]
     fn test_structured_output_uses_compact_tool_names_not_schemas() {
         let tools = realistic_tools();
 
-        let instructions = build_structured_output_instructions(&tools);
+        let instructions = build_structured_output_instructions(&tools, false);
 
         // 1. The prompt must NOT contain full JSON schemas.
         let tools_json = serde_json::to_string_pretty(&tools)
@@ -1200,12 +1423,6 @@ mod tests {
 
         // 2. The prompt must NOT contain any tool descriptions or parameter schemas.
         for tool in &tools {
-            // Tool name is present (compact list), but description must not be.
-            assert!(
-                instructions.contains(&tool.name),
-                "tool name '{}' must appear in compact list",
-                tool.name
-            );
             assert!(
                 !instructions.contains(&tool.description),
                 "tool description for '{}' must NOT appear in prompt — it is in native tools[]",
@@ -1213,35 +1430,30 @@ mod tests {
             );
         }
 
-        // 3. Size measurement: compact list is much smaller than pretty-printed JSON.
-        let prompt_tools_section = instructions
-            .find("## Available Tools")
-            .map(|pos| &instructions[pos..])
-            .expect("## Available Tools section must exist");
-        let tools_json_bytes = tools_json.len();
-        let compact_bytes = prompt_tools_section.len();
-
-        eprintln!(
-            "Tool schema deduplication metrics:\n\
-             - Full JSON schema (old): {tools_json_bytes} bytes\n\
-             - Compact name list (new): {compact_bytes} bytes\n\
-             - Reduction: {:.1}x",
-            tools_json_bytes as f64 / compact_bytes.max(1) as f64
+        // 3. No "## Available Tools" section — tool discovery is via tools[].
+        assert!(
+            !instructions.contains("## Available Tools"),
+            "structured output instructions must NOT contain an Available Tools section"
         );
 
+        // 4. The instructions are much smaller than the full tools JSON.
+        let instructions_bytes = instructions.len();
+        let tools_json_bytes = tools_json.len();
+        eprintln!(
+            "Structured output instructions: {instructions_bytes} bytes\n\
+             Full tools JSON: {tools_json_bytes} bytes\n\
+             Reduction: {:.1}x",
+            tools_json_bytes as f64 / instructions_bytes.max(1) as f64
+        );
         assert!(
-            compact_bytes < tools_json_bytes / 5,
-            "compact tool list ({compact_bytes} bytes) must be much smaller than \
-             old pretty-printed JSON ({tools_json_bytes} bytes)"
+            instructions_bytes < tools_json_bytes,
+            "structured output instructions ({instructions_bytes} bytes) must be smaller than \
+             tools JSON ({tools_json_bytes} bytes)"
         );
     }
 
-    /// Verifies two cache-stability properties of the compact tool-name approach:
-    ///
-    /// 1. With an **unchanged** tool set, the full prompt prefix (including the tool-name
-    ///    list) is byte-for-byte identical across iterations — enabling cache hit.
-    /// 2. Adding a tool only changes the tail of the prompt (compact name list + date
-    ///    context), preserving the stable prefix (fallback + instructions + workflow).
+    /// Verifies cache-stability: same tool set → byte-identical base prompt,
+    /// and adding a tool preserves the stable prefix (fallback + workflow hints).
     #[tokio::test]
     async fn test_tool_addition_preserves_stable_prefix() {
         let tools_small: Vec<ToolDefinition> = realistic_tools();
@@ -1264,46 +1476,46 @@ mod tests {
         let mut session1 = AgentSession::new(1_i64.into());
         let mut session2 = AgentSession::new(1_i64.into());
 
-        let prompt_small =
-            create_agent_system_prompt("task", &tools_small, true, &mut session1, None, &[]).await;
-        let prompt_large =
-            create_agent_system_prompt("task", &tools_large, true, &mut session2, None, &[]).await;
+        let prompt_small = create_agent_system_prompt(
+            "task",
+            PromptToolContext::from_tools(&tools_small),
+            true,
+            &mut session1,
+            None,
+            &[],
+        )
+        .await;
+        let prompt_large = create_agent_system_prompt(
+            "task",
+            PromptToolContext::from_tools(&tools_large),
+            true,
+            &mut session2,
+            None,
+            &[],
+        )
+        .await;
 
-        // Property 1: same tool set → identical prompt (except date context which changes
-        // between calls due to time). Test this by building two prompts with same tools.
+        // Property 1: same tool set → identical base prompt.
         let mut session3 = AgentSession::new(1_i64.into());
-        let prompt_same =
-            create_agent_system_prompt("task", &tools_small, true, &mut session3, None, &[]).await;
-
-        // Everything before date context should be byte-identical for same tool set.
-        let available_tools_end_small = prompt_small
-            .base
-            .find("## Available Tools\n")
-            .map(|pos| {
-                prompt_small.base[pos..]
-                    .find("\n\n")
-                    .map(|delta| pos + delta)
-                    .unwrap_or(prompt_small.base.len())
-            })
-            .expect("## Available Tools must exist");
-        let available_tools_end_same = prompt_same
-            .base
-            .find("## Available Tools\n")
-            .map(|pos| {
-                prompt_same.base[pos..]
-                    .find("\n\n")
-                    .map(|delta| pos + delta)
-                    .unwrap_or(prompt_same.base.len())
-            })
-            .expect("## Available Tools must exist");
+        let prompt_same = create_agent_system_prompt(
+            "task",
+            PromptToolContext::from_tools(&tools_small),
+            true,
+            &mut session3,
+            None,
+            &[],
+        )
+        .await;
 
         assert_eq!(
-            &prompt_small.base[..available_tools_end_small],
-            &prompt_same.base[..available_tools_end_same],
-            "same tool set must produce byte-identical prompt up to and including the tool list"
+            prompt_small.base, prompt_same.base,
+            "same tool set must produce byte-identical base prompt"
         );
 
-        // Property 2: different tool sets → stable prefix preserved, divergence at name list.
+        // Property 2: different tool sets → stable prefix preserved.
+        // The shared prefix includes fallback + workflow hints.  The suffix
+        // changes because workflow hints differ (wiki_memory_read adds a
+        // wiki memory section).
         let shared_prefix_len = prompt_small
             .base
             .chars()
@@ -1311,49 +1523,30 @@ mod tests {
             .take_while(|(a, b)| a == b)
             .count();
 
-        let available_tools_pos = prompt_small
-            .base
-            .find("## Available Tools")
-            .expect("available tools section must exist");
-
         eprintln!(
-            "Prefix stability analysis (compact names):\n\
+            "Prefix stability analysis:\n\
              - Shared prefix length: {shared_prefix_len} chars\n\
-             - Available Tools starts at: {available_tools_pos}\n\
              - prompt_small base: {} chars\n\
              - prompt_large base: {} chars",
             prompt_small.base.len(),
             prompt_large.base.len(),
         );
 
-        let lost_cache_bytes = prompt_small.base.len() - shared_prefix_len;
-        let lost_pct = lost_cache_bytes as f64 / prompt_small.base.len() as f64 * 100.0;
-        eprintln!(
-            "Cache impact of adding 1 tool:\n\
-             - Bytes that lose cache hit: {lost_cache_bytes} ({lost_pct:.1}%)\n\
-             - Stable prefix preserved: {shared_prefix_len} chars ({:.1}%)",
-            shared_prefix_len as f64 / prompt_small.base.len() as f64 * 100.0
-        );
-
-        // The stable prefix (everything before the tool name list) must be > 40 chars.
+        // The stable prefix (fallback + shared workflow hints) must be substantial.
         assert!(shared_prefix_len > 40, "stable prefix must be substantial");
     }
 
-    /// Verifies that the prompt tool list and native tools[] payload are
-    /// complementary (not duplicating): prompt has only names, native has
-    /// full schemas.  Total wire bytes are significantly reduced.
+    /// Verifies that the prompt does NOT duplicate tool schemas or descriptions
+    /// from the native `tools[]` payload.  The prompt contains only instructions
+    /// and rules — tool discovery is via `tools[]`.
     #[test]
     fn test_prompt_and_native_payload_are_complementary() {
         let tools = realistic_tools();
 
-        // Prompt tools section (compact names only).
-        let instructions = build_structured_output_instructions(&tools);
-        let prompt_tools_section = instructions
-            .find("## Available Tools")
-            .map(|pos| &instructions[pos..])
-            .expect("## Available Tools section must exist");
+        // Structured output instructions (no tool schemas).
+        let instructions = build_structured_output_instructions(&tools, false);
 
-        // Native OpenAI-format tools[] (full schemas — unchanged).
+        // Native OpenAI-format tools[] (full schemas).
         let native_tools: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
@@ -1370,35 +1563,28 @@ mod tests {
         let native_tools_json =
             serde_json::to_string(&native_tools).expect("serializing native tools must succeed");
 
-        let prompt_bytes = prompt_tools_section.len();
-        let native_bytes = native_tools_json.len();
-
-        let pct = native_bytes as f64 / (native_bytes * 2 + prompt_bytes) as f64 * 100.0;
-        eprintln!(
-            "Wire metrics (no duplication):\n\
-             - Prompt tool-name list: {prompt_bytes} bytes\n\
-             - Native tools[] payload: {native_bytes} bytes (full schemas)\n\
-             - Total on wire: {total} bytes\n\
-             - Old total was: {old_total} bytes (prompt had full schemas too)\n\
-             - Savings: {native_bytes} bytes ({pct:.0}%)",
-            total = prompt_bytes + native_bytes,
-            old_total = native_bytes * 2 + prompt_bytes,
-        );
-
-        // Prompt section must be much smaller than native payload (names only vs schemas).
-        assert!(
-            prompt_bytes < native_bytes / 3,
-            "prompt tools section ({prompt_bytes} bytes) must be much smaller than \
-             native payload ({native_bytes} bytes) — only names, no schemas"
-        );
-
         // No description or parameter content from native tools should leak into prompt.
         for tool in &tools {
             assert!(
-                !prompt_tools_section.contains(&tool.description),
+                !instructions.contains(&tool.description),
                 "tool description for '{}' must NOT appear in prompt",
                 tool.name
             );
+            let params_str = serde_json::to_string(&tool.parameters)
+                .expect("serializing parameters must succeed");
+            assert!(
+                !instructions.contains(&params_str),
+                "tool parameters for '{}' must NOT appear in prompt",
+                tool.name
+            );
         }
+
+        eprintln!(
+            "Wire metrics (no duplication):\n\
+             - Prompt structured output instructions: {} bytes\n\
+             - Native tools[] payload: {} bytes (full schemas)",
+            instructions.len(),
+            native_tools_json.len(),
+        );
     }
 }

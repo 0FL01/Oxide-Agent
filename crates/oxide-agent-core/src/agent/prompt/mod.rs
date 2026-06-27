@@ -5,7 +5,9 @@
 pub mod composer;
 pub mod context;
 
-pub use composer::{ComposedPrompt, create_agent_system_prompt, create_sub_agent_system_prompt};
+pub use composer::{
+    ComposedPrompt, PromptToolContext, create_agent_system_prompt, create_sub_agent_system_prompt,
+};
 pub use context::{
     DynamicPromptContextProvider, PromptContextBlock, PromptContextError, PromptContextRequest,
     PromptContextResult, PromptContextSemantics,

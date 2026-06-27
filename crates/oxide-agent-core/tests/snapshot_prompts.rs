@@ -22,5 +22,5 @@ fn test_structured_output_instructions_snapshot() {
             }
         }),
     }];
-    assert_snapshot!(build_structured_output_instructions(&tools));
+    assert_snapshot!(build_structured_output_instructions(&tools, false));
 }

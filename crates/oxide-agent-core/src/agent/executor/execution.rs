@@ -12,7 +12,9 @@ use crate::agent::compaction::{
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
-use crate::agent::prompt::{PromptContextBlock, PromptContextRequest, create_agent_system_prompt};
+use crate::agent::prompt::{
+    PromptContextBlock, PromptContextRequest, PromptToolContext, create_agent_system_prompt,
+};
 use crate::agent::providers::TopicInfraPreflightReport;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
@@ -26,7 +28,7 @@ use crate::agent::wiki_memory::{
 use crate::config::{
     ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit,
 };
-use crate::llm::{InternalTextPurpose, LlmClient};
+use crate::llm::{InternalTextPurpose, LlmClient, ToolDefinition};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::future::Future;
@@ -538,9 +540,17 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
+        // Build prompt tool context from the full catalog: workflow hints and
+        // date context reflect all compiled tools, while the category list
+        // block tells the model which groups it can retrieve.
+        let catalog_specs: Vec<ToolDefinition> =
+            tool_catalog.entries().map(|e| e.spec.clone()).collect();
+        let available_groups = tool_catalog.activatable_groups();
+        let tool_ctx = PromptToolContext::new(&catalog_specs, &available_groups);
+
         let system_prompt = create_agent_system_prompt(
             task,
-            &tools,
+            tool_ctx,
             structured_output,
             &mut self.session,
             prompt_instructions.as_deref(),
