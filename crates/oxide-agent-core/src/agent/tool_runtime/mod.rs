@@ -15,6 +15,7 @@ pub mod process;
 pub mod provider_opencode_go;
 pub mod registry;
 pub mod runtime;
+pub mod surface;
 pub mod types;
 
 pub use artifacts::{ArtifactKind, ArtifactRef};
@@ -95,4 +96,7 @@ pub use provider_opencode_go::{
 };
 pub use registry::{RegistryError, ToolRegistry};
 pub use runtime::{ToolCallRuntime, ToolRuntimeFatal, ToolTurnContext};
+pub use surface::{
+    ActivationResult, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolSurface, ToolVisibility,
+};
 pub use types::{ToolBatchId, ToolCallId, ToolName, TurnId};
