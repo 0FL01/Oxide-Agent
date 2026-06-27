@@ -109,9 +109,14 @@ pub(super) struct ToolRuntimeBuild {
 }
 
 impl AgentExecutor {
-    /// Build the currently exposed tool definitions for this executor state.
+    /// Build the full tool catalog for this executor state.
+    ///
+    /// Returns every registered tool definition — the complete executable set.
+    /// This is the catalog used for admin/UI/snapshots and manual compaction
+    /// token estimation. The model-visible surface (a subset) is resolved
+    /// per-iteration during a run via `AgentRunnerContext::tools`.
     #[must_use]
-    pub fn current_tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
+    pub fn current_tool_catalog(&self) -> Vec<crate::llm::ToolDefinition> {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
         self.build_tool_runtime_registry(todos_arc, None).specs()
     }

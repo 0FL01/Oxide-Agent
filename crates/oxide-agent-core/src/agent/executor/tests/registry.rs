@@ -815,14 +815,14 @@ fn typed_runtime_registry_skips_disabled_web_search_module() {
 
 #[cfg(oxide_module_tool_web_search)]
 #[test]
-fn current_tool_definitions_omit_web_search_without_backend_env() {
+fn current_tool_catalog_omit_web_search_without_backend_env() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     clear_web_search_registry_env();
 
     let tool_names = build_executor()
-        .current_tool_definitions()
+        .current_tool_catalog()
         .into_iter()
         .map(|tool| tool.name)
         .collect::<std::collections::BTreeSet<_>>();
@@ -834,7 +834,7 @@ fn current_tool_definitions_omit_web_search_without_backend_env() {
 
 #[cfg(oxide_module_tool_web_search)]
 #[test]
-fn current_tool_definitions_include_web_search_when_key_is_configured() {
+fn current_tool_catalog_include_web_search_when_key_is_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -842,7 +842,7 @@ fn current_tool_definitions_include_web_search_when_key_is_configured() {
     test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
 
     let tool_names = build_executor()
-        .current_tool_definitions()
+        .current_tool_catalog()
         .into_iter()
         .map(|tool| tool.name)
         .collect::<std::collections::BTreeSet<_>>();
@@ -1227,7 +1227,7 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
     oxide_module_tool_file_delivery
 ))]
 #[test]
-fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
+fn current_tool_catalog_use_typed_runtime_specs_for_v1_route() {
     let settings = Arc::new(AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
@@ -1238,7 +1238,7 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     let executor = AgentExecutor::new(llm, session, settings);
 
     let tool_names = executor
-        .current_tool_definitions()
+        .current_tool_catalog()
         .into_iter()
         .map(|tool| tool.name)
         .collect::<std::collections::BTreeSet<_>>();
@@ -1256,7 +1256,7 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
 
 #[cfg(oxide_module_manager_control_plane)]
 #[test]
-fn current_tool_definitions_include_manager_tools_for_v1_route() {
+fn current_tool_catalog_include_manager_tools_for_v1_route() {
     let settings = Arc::new(AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode-go".to_string()),
@@ -1268,7 +1268,7 @@ fn current_tool_definitions_include_manager_tools_for_v1_route() {
         .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
 
     let tool_names = executor
-        .current_tool_definitions()
+        .current_tool_catalog()
         .into_iter()
         .map(|tool| tool.name)
         .collect::<std::collections::BTreeSet<_>>();

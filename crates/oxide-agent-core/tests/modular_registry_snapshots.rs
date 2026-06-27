@@ -62,7 +62,7 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
     );
     let provider_client = LlmClient::new(&provider_settings);
     let registered_tool_names_default_config: Vec<_> = executor
-        .current_tool_definitions()
+        .current_tool_catalog()
         .into_iter()
         .map(|tool| tool.name)
         .collect();

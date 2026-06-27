@@ -197,7 +197,7 @@ fn executor_exposes_wiki_memory_tools_when_store_configured() {
     let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend;
     let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
     let executor = build_executor().with_wiki_memory_store(wiki_store);
-    let tools = executor.current_tool_definitions();
+    let tools = executor.current_tool_catalog();
 
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_list"));
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_read"));

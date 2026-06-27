@@ -1768,7 +1768,7 @@ mod tests {
             .await
             .expect("probe executor should be created for existing web session");
 
-        assert!(probe.current_tool_definitions().is_empty());
+        assert!(probe.current_tool_catalog().is_empty());
 
         #[cfg(any(
             feature = "profile-full",
@@ -1787,7 +1787,7 @@ mod tests {
                 .expect("probe executor should be created for existing web session");
 
             let tool_names = probe
-                .current_tool_definitions()
+                .current_tool_catalog()
                 .into_iter()
                 .map(|tool| tool.name)
                 .collect::<std::collections::BTreeSet<_>>();

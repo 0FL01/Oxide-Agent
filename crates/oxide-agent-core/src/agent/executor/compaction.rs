@@ -42,7 +42,7 @@ impl AgentExecutor {
         .await;
 
         let route = self.settings.get_configured_agent_model();
-        let tools = self.current_tool_definitions();
+        let tools = self.current_tool_catalog();
         let cancellation_token = self.session.cancellation_token.clone();
 
         let result = Self::await_until_cancelled(cancellation_token, async {
