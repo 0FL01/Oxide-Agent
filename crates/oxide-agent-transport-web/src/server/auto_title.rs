@@ -140,7 +140,10 @@ async fn attempt_auto_title_for_session(
         return Ok(());
     }
 
-    let model = inherited_title_model(&state);
+    let model = state
+        .session_manager
+        .resolve_title_model(session.model_selection.as_ref())
+        .await;
     info!(
         session_id = %session_id,
         provider = %model.provider,
@@ -309,16 +312,6 @@ fn retry_delay(attempts: u32) -> ChronoDuration {
 
 fn truncate_error(error: &str) -> String {
     error.chars().take(MAX_AUTO_TITLE_ERROR_CHARS).collect()
-}
-
-/// Derive the model to use for title generation from the primary agent route.
-fn inherited_title_model(state: &AppState) -> ModelInfo {
-    let settings = state.session_manager.agent_settings();
-    settings
-        .get_configured_agent_model_routes()
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| settings.get_configured_agent_model())
 }
 
 fn title_reasoning_effort(model: &ModelInfo) -> Option<&'static str> {

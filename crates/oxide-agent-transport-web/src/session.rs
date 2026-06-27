@@ -476,6 +476,31 @@ impl WebSessionManager {
         Some(vec![selected_route])
     }
 
+    /// Resolve the model to use for a per-session side task (e.g. auto-title)
+    /// from the session's model selection, falling back to the configured
+    /// global agent route when no selection is present.
+    ///
+    /// Side tasks must resolve the model the same way as the main run — from
+    /// the per-session selection — so they do not silently fall back to the
+    /// OpenCode Go bootstrap route when the user has selected a different model.
+    pub(crate) async fn resolve_title_model(
+        &self,
+        selection: Option<&ModelSelection>,
+    ) -> ModelInfo {
+        if let Some(routes) = self.model_routes_override_for_selection(selection).await
+            && let Some(route) = routes.into_iter().next()
+        {
+            return route;
+        }
+        // Last-resort fallback: global configured route (bootstrap).
+        let settings = self.agent_settings();
+        settings
+            .get_configured_agent_model_routes()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| settings.get_configured_agent_model())
+    }
+
     fn preferred_web_model_provider_name(&self, model_prefix: &str) -> String {
         if is_openai_base_prefix(model_prefix) {
             return model_prefix.to_string();
@@ -1472,6 +1497,43 @@ mod tests {
                 .iter()
                 .all(|route| route.provider != "openai-base:zai")
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_title_model_uses_session_selection_not_global_bootstrap() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        // Global route is the OpenCode Go bootstrap default (deepseek-v4-flash).
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "opencode-go/deepseek-v4-flash".to_string(),
+                provider: "opencode_go".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        // Per-session selection overrides the global bootstrap route so side
+        // tasks (auto-title) use the user's saved default model, not deepseek.
+        let model = manager
+            .resolve_title_model(Some(&ModelSelection {
+                qualified_id: "opencode-go/mimo-v2.5".to_string(),
+            }))
+            .await;
+        assert_eq!(model.id, "opencode-go/mimo-v2.5");
+        assert_eq!(model.provider, "opencode-go");
+        assert!(
+            !model.id.contains("deepseek-v4-flash"),
+            "side task model must not fall back to bootstrap when a session selection exists"
+        );
+
+        // Without a selection, the global configured route is the fallback.
+        let fallback = manager.resolve_title_model(None).await;
+        assert_eq!(fallback.id, "opencode-go/deepseek-v4-flash");
     }
 
     #[tokio::test]
