@@ -24,8 +24,8 @@ use super::{
     api_privacy_hard_wipe_life, api_public_config, api_refresh_model_routes, api_register,
     api_resume_task, api_soft_reset_life_generation, api_submit_life_input,
     api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_large_input, api_upload_task_attachments, api_wipe_life_derived_generation,
-    api_wipe_life_generation, auto_title, health, sse, static_assets,
+    api_upload_task_attachments, api_wipe_life_derived_generation, api_wipe_life_generation,
+    auto_title, health, sse, static_assets,
 };
 
 pub fn build_router(state: AppState) -> Router {
@@ -109,10 +109,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/:session_id/uploads",
             post(api_upload_task_attachments),
-        )
-        .route(
-            "/api/v1/sessions/:session_id/large-input",
-            post(api_upload_large_input),
         )
         .route("/api/v1/sessions/:session_id/tasks", get(api_list_tasks))
         .route("/api/v1/sessions/:session_id/tasks", post(api_create_task))

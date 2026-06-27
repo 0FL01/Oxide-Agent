@@ -8,7 +8,7 @@ use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
     PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskAttachment,
     TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
-    UploadLargeInputRequest, UserSettingsResponse,
+    UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, time::Duration};
 
@@ -120,16 +120,19 @@ async fn prepare_task_input(
     text: String,
     files: &[PendingAttachmentFile],
     max_task_input_chars: usize,
-    large_input_attachments_supported: bool,
 ) -> Result<(String, Vec<TaskAttachment>), String> {
-    if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
+    // A message exceeding the input limit is a hard error: large pastes are
+    // diverted to attachments at paste time, so a too-long textarea means the
+    // diversion did not happen (manual entry or sandbox unavailable) and the
+    // content cannot be staged without losing the user's preamble.
+    if task_input_too_long(&text, max_task_input_chars) {
         return Err(format!(
-            "Message is too large ({} / {max_task_input_chars} characters). Sandbox attachments are not available.",
+            "Message is too large ({} / {max_task_input_chars} characters). Large pastes are attached as files; shorten the message or attach the content.",
             text.chars().count()
         ));
     }
 
-    let mut attachments = if files.is_empty() {
+    let attachments = if files.is_empty() {
         Vec::new()
     } else {
         client
@@ -139,21 +142,7 @@ async fn prepare_task_input(
             .attachments
     };
 
-    if task_input_too_long(&text, max_task_input_chars) {
-        let response = client
-            .upload_large_input(
-                session_id,
-                &UploadLargeInputRequest {
-                    input_markdown: text,
-                },
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        attachments.push(response.attachment);
-        Ok((response.input_markdown, attachments))
-    } else {
-        Ok((text, attachments))
-    }
+    Ok((text, attachments))
 }
 
 fn merge_task_events(
@@ -593,15 +582,8 @@ fn Workspace(
         }
         let auth_state = auth.auth.get();
         let max_task_input_chars = auth_state.max_task_input_chars;
-        let large_input_attachments_supported = auth_state.large_input_attachments_supported;
-        if task_input_too_long(&text, max_task_input_chars) && !large_input_attachments_supported {
-            if let Some((message, _)) = task_input_limit_notice(
-                &text,
-                max_task_input_chars,
-                large_input_attachments_supported,
-            ) {
-                set_error.set(Some(message));
-            }
+        if let Some(message) = task_input_limit_notice(&text, max_task_input_chars) {
+            set_error.set(Some(message));
             return;
         }
         set_loading.set(true);
@@ -634,14 +616,13 @@ fn Workspace(
                             return;
                         }
                     };
-                    // 2. Prepare task input (uploads, large-input handling)
+                    // 2. Prepare task input (upload pending attachments)
                     let (task_input, attachments) = match prepare_task_input(
                         &client,
                         &session_id,
                         text,
                         &files,
                         max_task_input_chars,
-                        large_input_attachments_supported,
                     )
                     .await
                     {
@@ -699,23 +680,17 @@ fn Workspace(
                 set_lightbox_image.set(None);
                 spawn_ui(async move {
                     let client = auth.client();
-                    let (task_input, attachments) = match prepare_task_input(
-                        &client,
-                        &sid,
-                        text,
-                        &files,
-                        max_task_input_chars,
-                        large_input_attachments_supported,
-                    )
-                    .await
-                    {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            set_error.set(Some(error));
-                            set_loading.set(false);
-                            return;
-                        }
-                    };
+                    let (task_input, attachments) =
+                        match prepare_task_input(&client, &sid, text, &files, max_task_input_chars)
+                            .await
+                        {
+                            Ok(payload) => payload,
+                            Err(error) => {
+                                set_error.set(Some(error));
+                                set_loading.set(false);
+                                return;
+                            }
+                        };
                     let resume_task_id = active_task
                         .get()
                         .filter(|task| task.status == TaskStatus::WaitingForUserInput)
@@ -952,8 +927,12 @@ fn Workspace(
                                 handle_composer_input(&ev, set_input);
                             }
                             on:paste=move |ev| {
+                                let auth_state = auth.auth.get();
                                 handle_composer_paste(
                                     &ev,
+                                    &input.get(),
+                                    auth_state.max_task_input_chars,
+                                    auth_state.large_input_attachments_supported,
                                     next_pending_file_id,
                                     set_next_pending_file_id,
                                     set_pending_files,
@@ -969,14 +948,12 @@ fn Workspace(
                         />
                         {move || {
                             let auth_state = auth.auth.get();
-                            task_input_limit_notice(
-                                &input.get(),
-                                auth_state.max_task_input_chars,
-                                auth_state.large_input_attachments_supported,
-                            )
-                            .map(|(message, is_error)| {
-                                view! { <p class="composer-validation" class:error=is_error class:info=move || !is_error>{message}</p> }
-                            })
+                            task_input_limit_notice(&input.get(), auth_state.max_task_input_chars)
+                                .map(|message| {
+                                    view! {
+                                        <p class="composer-validation" class:error=true>{message}</p>
+                                    }
+                                })
                         }}
                         <div class="composer-footer">
                             <div class="composer-actions" class:btn-hidden=move || {

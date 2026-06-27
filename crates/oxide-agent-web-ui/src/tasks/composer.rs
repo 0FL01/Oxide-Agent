@@ -4,6 +4,7 @@ use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, TaskAttachment, UpdateUserSettingsRequest,
 };
+use wasm_bindgen::JsValue;
 
 use super::profile::{
     PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
@@ -202,31 +203,14 @@ pub(super) fn task_input_too_long(input: &str, max_chars: usize) -> bool {
     task_input_char_count(input) > max_chars
 }
 
-pub(super) fn task_input_limit_notice(
-    input: &str,
-    max_chars: usize,
-    large_input_attachments_supported: bool,
-) -> Option<(String, bool)> {
+pub(super) fn task_input_limit_notice(input: &str, max_chars: usize) -> Option<String> {
     let count = task_input_char_count(input);
     if count <= max_chars {
         return None;
     }
-
-    if large_input_attachments_supported {
-        Some((
-            format!(
-                "Message is large ({count}/{max_chars} characters) and will be uploaded as a sandbox attachment."
-            ),
-            false,
-        ))
-    } else {
-        Some((
-            format!(
-                "Message is too large ({count}/{max_chars} characters). Sandbox attachments are not available."
-            ),
-            true,
-        ))
-    }
+    Some(format!(
+        "Message is too large ({count}/{max_chars} characters). Large pastes are attached as files; shorten the message or attach the content."
+    ))
 }
 
 pub(super) fn handle_composer_drag(
@@ -270,11 +254,49 @@ pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textare
 
 pub(super) fn handle_composer_paste(
     ev: &leptos::ev::ClipboardEvent,
+    current_input: &str,
+    max_chars: usize,
+    large_input_attachments_supported: bool,
     next_id: ReadSignal<usize>,
     set_next_id: WriteSignal<usize>,
     set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
 ) {
-    append_pasted_image_files(ev, next_id, set_next_id, set_attachments);
+    // Image files (e.g. screenshots) are staged as attachments as before.
+    let image_files = browser_image_files_from_clipboard_event(ev);
+    if !image_files.is_empty() {
+        append_pending_browser_files(next_id, set_next_id, set_attachments, image_files);
+        return;
+    }
+
+    // Large text pastes are diverted to a markdown attachment so the textarea
+    // never exceeds the server-side input limit and any preamble the user typed
+    // stays inline. The agent then receives the preamble plus a file reference
+    // instead of losing the whole message to a staging pointer. When sandbox
+    // attachments are unavailable, fall through to the default paste so the
+    // existing too-large hard stop surfaces a clear error on submit.
+    if !large_input_attachments_supported {
+        return;
+    }
+    let Some(transfer) = ev.clipboard_data() else {
+        return;
+    };
+    let Ok(text) = transfer.get_data("text/plain") else {
+        return;
+    };
+    if text.trim().is_empty() {
+        return;
+    }
+    if current_input.chars().count() + text.chars().count() <= max_chars {
+        return;
+    }
+    // Build the attachment file first; only suppress the default paste once the
+    // file is ready, so a construction failure falls back to a normal paste
+    // (and a too-large error on submit) rather than silently dropping the text.
+    let Some(file) = text_paste_attachment_file(&text) else {
+        return;
+    };
+    ev.prevent_default();
+    append_pending_browser_files(next_id, set_next_id, set_attachments, vec![file]);
 }
 
 pub(super) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
@@ -327,20 +349,6 @@ pub(super) fn append_pending_browser_files(
     set_attachments.update(|items| items.extend(new_files));
 }
 
-fn append_pasted_image_files(
-    ev: &leptos::ev::ClipboardEvent,
-    next_id: ReadSignal<usize>,
-    set_next_id: WriteSignal<usize>,
-    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
-) {
-    append_pending_browser_files(
-        next_id,
-        set_next_id,
-        set_attachments,
-        browser_image_files_from_clipboard_event(ev),
-    );
-}
-
 fn into_pending_attachment_files(
     files: Vec<web_sys::File>,
     start_id: usize,
@@ -391,6 +399,17 @@ fn browser_image_files_from_clipboard_event(ev: &leptos::ev::ClipboardEvent) -> 
         .and_then(|transfer| transfer.files())
         .map(browser_image_files_from_file_list)
         .unwrap_or_default()
+}
+
+/// Builds a `text/markdown` `File` from a pasted string so it can be staged as
+/// a regular attachment via the same upload path as dropped/uploaded files.
+fn text_paste_attachment_file(text: &str) -> Option<web_sys::File> {
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from_str(text));
+    let options = web_sys::FilePropertyBag::new();
+    options.set_type("text/markdown; charset=utf-8");
+    let name = format!("pasted-{}.md", js_sys::Date::now() as u64);
+    web_sys::File::new_with_str_sequence_and_options(parts.as_ref(), &name, &options).ok()
 }
 
 fn browser_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {

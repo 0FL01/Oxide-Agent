@@ -2912,6 +2912,7 @@ dependencies = [
  "futures-util",
  "gloo-net 0.7.0",
  "gloo-timers",
+ "js-sys",
  "leptos",
  "leptos_router",
  "oxide-agent-web-contracts",
