@@ -1,6 +1,7 @@
 //! Capability-oriented tool modules.
 
 use super::ToolExecutor;
+use super::surface::{CapabilityGroup, ToolVisibility};
 #[cfg(oxide_module_tool_webfetch_md)]
 use super::{
     OutputNormalizer, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
@@ -402,6 +403,16 @@ pub trait ToolModule {
     /// Stable module ID corresponding to the compiled capability manifest.
     fn module_id(&self) -> ModuleId;
 
+    /// Capability group for deferred tool activation.
+    ///
+    /// Returns `None` for always-visible bootstrap tools (e.g. `retrieve_tools`,
+    /// `write_todos`, `compress`), `Some(group)` for deferred tools that are
+    /// activated via `retrieve_tools`.
+    fn capability_group(&self) -> Option<CapabilityGroup>;
+
+    /// Whether this module's tools are always visible or deferred.
+    fn visibility(&self) -> ToolVisibility;
+
     /// Builds typed tool executors owned by this module.
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
 }
@@ -452,6 +463,14 @@ impl ToolModule for BrowserLiveToolModule {
         ModuleId::new("tool/browser-live")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Browser)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -469,6 +488,14 @@ impl ToolModule for CompressionToolModule {
         ModuleId::new("tool/compression")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        None
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::AlwaysVisible
+    }
+
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(CompressionProvider::new()).tool_runtime_executors()
     }
@@ -482,6 +509,14 @@ pub struct FileDeliveryToolModule;
 impl ToolModule for FileDeliveryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/file-delivery")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Files)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -507,6 +542,14 @@ impl AgentsMdToolModule {
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::AgentsMd)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -550,6 +593,14 @@ impl ToolModule for DelegationToolModule {
         ModuleId::new("tool/delegation")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Delegation)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(self.provider(ctx)).tool_runtime_executors(ctx.progress_tx())
     }
@@ -575,6 +626,14 @@ impl ManagerControlPlaneToolModule {
 impl ToolModule for ManagerControlPlaneToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("manager/control-plane")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Manager)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -626,6 +685,14 @@ impl ToolModule for SshMcpToolModule {
         ModuleId::new("integration/ssh-mcp")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Ssh)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors(ctx.progress_tx()))
@@ -648,6 +715,14 @@ impl ReminderToolModule {
 impl ToolModule for ReminderToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/reminder")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Reminders)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -678,6 +753,14 @@ impl WikiMemoryToolModule {
 impl ToolModule for WikiMemoryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/wiki-memory")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Memory)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -714,6 +797,14 @@ impl ToolModule for MediaAudioToolModule {
         ModuleId::new("tool/media-audio")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Media)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["transcribe_audio_file"])
     }
@@ -729,6 +820,14 @@ impl ToolModule for MediaImageToolModule {
         ModuleId::new("tool/media-image")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Media)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["describe_image_file"])
     }
@@ -742,6 +841,14 @@ pub struct MediaVideoToolModule;
 impl ToolModule for MediaVideoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-video")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Media)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -785,6 +892,14 @@ impl JiraMcpToolModule {
 impl ToolModule for JiraMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-jira")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Jira)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -834,6 +949,14 @@ impl ToolModule for MattermostMcpToolModule {
         ModuleId::new("integration/mcp-mattermost")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Mattermost)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -851,6 +974,14 @@ impl ToolModule for StackLogsToolModule {
         ModuleId::new("tool/stack-logs")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::StackLogs)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(StackLogsProvider::new()).tool_runtime_executors()
     }
@@ -864,6 +995,14 @@ pub struct WebFetchMdToolModule;
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Web)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -882,6 +1021,14 @@ pub struct WebCrawlerToolModule;
 impl ToolModule for WebCrawlerToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/web-crawler")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Web)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1629,6 +1776,14 @@ impl ToolModule for WebSearchToolModule {
         ModuleId::new("tool/web-search")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Web)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -1671,6 +1826,14 @@ impl KokoroTtsToolModule {
 impl ToolModule for KokoroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-kokoro")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Tts)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1717,6 +1880,14 @@ impl ToolModule for SileroTtsToolModule {
         ModuleId::new("tool/tts-silero")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Tts)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -1745,6 +1916,14 @@ impl ToolModule for YtdlpToolModule {
         ModuleId::new("tool/ytdlp")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Ytdlp)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(self.provider(ctx)).tool_runtime_executors()
     }
@@ -1758,6 +1937,14 @@ pub struct TodosToolModule;
 impl ToolModule for TodosToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/todos")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        None
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::AlwaysVisible
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1775,6 +1962,14 @@ impl ToolModule for SandboxExecToolModule {
         ModuleId::new("tool/sandbox-exec")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Shell)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(SandboxExecProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
@@ -1788,6 +1983,14 @@ pub struct SandboxFileOpsToolModule;
 impl ToolModule for SandboxFileOpsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-fileops")
+    }
+
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Files)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1805,7 +2008,269 @@ impl ToolModule for SandboxRecreateToolModule {
         ModuleId::new("tool/sandbox-recreate")
     }
 
+    fn capability_group(&self) -> Option<CapabilityGroup> {
+        Some(CapabilityGroup::Shell)
+    }
+
+    fn visibility(&self) -> ToolVisibility {
+        ToolVisibility::Deferred
+    }
+
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(SandboxLifecycleProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
+    }
+}
+
+#[cfg(test)]
+mod capability_mapping_tests {
+    use super::*;
+
+    /// Verify every compiled tool module has a consistent
+    /// (`capability_group`, `visibility`) pair:
+    /// - AlwaysVisible ⇒ `None` group
+    /// - Deferred ⇒ `Some(group)`
+    #[test]
+    fn compiled_modules_have_consistent_group_and_visibility() {
+        let mut checks: Vec<(&str, Option<CapabilityGroup>, ToolVisibility)> = Vec::new();
+
+        #[cfg(oxide_module_tool_browser_live)]
+        checks.push((
+            "browser-live",
+            BrowserLiveToolModule.capability_group(),
+            BrowserLiveToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_compression)]
+        checks.push((
+            "compression",
+            CompressionToolModule.capability_group(),
+            CompressionToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_file_delivery)]
+        checks.push((
+            "file-delivery",
+            FileDeliveryToolModule.capability_group(),
+            FileDeliveryToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_agents_md)]
+        checks.push((
+            "agents-md",
+            AgentsMdToolModule.capability_group(),
+            AgentsMdToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_delegation)]
+        checks.push((
+            "delegation",
+            DelegationToolModule.capability_group(),
+            DelegationToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_manager_control_plane)]
+        checks.push((
+            "manager",
+            ManagerControlPlaneToolModule.capability_group(),
+            ManagerControlPlaneToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_integration_ssh_mcp)]
+        checks.push((
+            "ssh-mcp",
+            SshMcpToolModule.capability_group(),
+            SshMcpToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_reminder)]
+        checks.push((
+            "reminder",
+            ReminderToolModule.capability_group(),
+            ReminderToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_wiki_memory)]
+        checks.push((
+            "wiki-memory",
+            WikiMemoryToolModule.capability_group(),
+            WikiMemoryToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_media_audio)]
+        checks.push((
+            "media-audio",
+            MediaAudioToolModule.capability_group(),
+            MediaAudioToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_media_image)]
+        checks.push((
+            "media-image",
+            MediaImageToolModule.capability_group(),
+            MediaImageToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_media_video)]
+        checks.push((
+            "media-video",
+            MediaVideoToolModule.capability_group(),
+            MediaVideoToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_integration_mcp_jira)]
+        checks.push((
+            "mcp-jira",
+            JiraMcpToolModule.capability_group(),
+            JiraMcpToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_integration_mcp_mattermost)]
+        checks.push((
+            "mcp-mattermost",
+            MattermostMcpToolModule.capability_group(),
+            MattermostMcpToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_stack_logs)]
+        checks.push((
+            "stack-logs",
+            StackLogsToolModule.capability_group(),
+            StackLogsToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_webfetch_md)]
+        checks.push((
+            "webfetch-md",
+            WebFetchMdToolModule.capability_group(),
+            WebFetchMdToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_webfetch_md)]
+        checks.push((
+            "web-crawler",
+            WebCrawlerToolModule.capability_group(),
+            WebCrawlerToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_web_search)]
+        checks.push((
+            "web-search",
+            WebSearchToolModule.capability_group(),
+            WebSearchToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_tts_kokoro)]
+        checks.push((
+            "tts-kokoro",
+            KokoroTtsToolModule.capability_group(),
+            KokoroTtsToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_tts_silero)]
+        checks.push((
+            "tts-silero",
+            SileroTtsToolModule.capability_group(),
+            SileroTtsToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_ytdlp)]
+        checks.push((
+            "ytdlp",
+            YtdlpToolModule.capability_group(),
+            YtdlpToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_todos)]
+        checks.push((
+            "todos",
+            TodosToolModule.capability_group(),
+            TodosToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_sandbox_exec)]
+        checks.push((
+            "sandbox-exec",
+            SandboxExecToolModule.capability_group(),
+            SandboxExecToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_sandbox_fileops)]
+        checks.push((
+            "sandbox-fileops",
+            SandboxFileOpsToolModule.capability_group(),
+            SandboxFileOpsToolModule.visibility(),
+        ));
+
+        #[cfg(oxide_module_tool_sandbox_recreate)]
+        checks.push((
+            "sandbox-recreate",
+            SandboxRecreateToolModule.capability_group(),
+            SandboxRecreateToolModule.visibility(),
+        ));
+
+        assert!(
+            !checks.is_empty(),
+            "no tool modules compiled in this profile"
+        );
+
+        for (name, group, visibility) in &checks {
+            match visibility {
+                ToolVisibility::AlwaysVisible => assert!(
+                    group.is_none(),
+                    "AlwaysVisible module {name} must have None capability_group"
+                ),
+                ToolVisibility::Deferred => assert!(
+                    group.is_some(),
+                    "Deferred module {name} must have Some(capability_group)"
+                ),
+            }
+        }
+    }
+
+    /// Verify specific group assignments for representative modules.
+    #[test]
+    fn representative_group_assignments() {
+        #[cfg(oxide_module_tool_todos)]
+        {
+            assert_eq!(TodosToolModule.capability_group(), None);
+            assert_eq!(TodosToolModule.visibility(), ToolVisibility::AlwaysVisible);
+        }
+
+        #[cfg(oxide_module_tool_compression)]
+        {
+            assert_eq!(CompressionToolModule.capability_group(), None);
+            assert_eq!(
+                CompressionToolModule.visibility(),
+                ToolVisibility::AlwaysVisible
+            );
+        }
+
+        #[cfg(oxide_module_tool_sandbox_fileops)]
+        {
+            assert_eq!(
+                SandboxFileOpsToolModule.capability_group(),
+                Some(CapabilityGroup::Files)
+            );
+            assert_eq!(
+                SandboxFileOpsToolModule.visibility(),
+                ToolVisibility::Deferred
+            );
+        }
+
+        #[cfg(oxide_module_tool_sandbox_exec)]
+        {
+            assert_eq!(
+                SandboxExecToolModule.capability_group(),
+                Some(CapabilityGroup::Shell)
+            );
+        }
+
+        #[cfg(oxide_module_tool_web_search)]
+        {
+            assert_eq!(
+                WebSearchToolModule.capability_group(),
+                Some(CapabilityGroup::Web)
+            );
+        }
     }
 }
