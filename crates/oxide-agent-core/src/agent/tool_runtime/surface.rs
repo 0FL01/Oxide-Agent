@@ -375,6 +375,35 @@ impl ToolCatalog {
         }
         registry
     }
+
+    /// Return a new catalog containing only entries whose tool name is in
+    /// `allowed`.
+    ///
+    /// Used by the sub-agent path to pre-filter the catalog to the parent's
+    /// `allowed_tools` whitelist before the lazy surface is computed.  This
+    /// ensures `retrieve_tools` can only activate tools the sub-agent is
+    /// permitted to use (M9 closure).
+    #[must_use]
+    pub fn filter_by_names(&self, allowed: &std::collections::HashSet<String>) -> Self {
+        let mut filtered = ToolCatalog::new();
+        for entry in self.entries.values() {
+            if allowed.contains(entry.name.as_str()) {
+                // Cloning a ToolCatalogEntry clones the Arc executor (cheap)
+                // and the spec/name (owned).  The entry retains its original
+                // module_id, capability_group, and visibility.
+                let cloned = ToolCatalogEntry {
+                    name: entry.name.clone(),
+                    executor: Arc::clone(&entry.executor),
+                    spec: entry.spec.clone(),
+                    module_id: entry.module_id,
+                    capability_group: entry.capability_group,
+                    visibility: entry.visibility,
+                };
+                let _ = filtered.register(cloned);
+            }
+        }
+        filtered
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +654,22 @@ impl ToolSurfaceHandle {
             .copied()
             .collect()
     }
+
+    /// Create a handle whose group map is populated from a catalog.
+    ///
+    /// The surface starts empty (no deferred tools activated).  Only deferred
+    /// tools with a capability group are recorded in the group map.
+    /// Always-visible tools (group `None`) are not activatable and are always
+    /// visible via [`visible_specs`](Self::visible_specs) regardless of the
+    /// surface state.
+    #[must_use]
+    pub fn from_catalog(catalog: &ToolCatalog) -> Self {
+        let handle = Self::new();
+        for (group, names) in catalog.group_map() {
+            handle.record_group_tools(group, names.into_iter().collect());
+        }
+        handle
+    }
 }
 
 impl Default for ToolSurfaceHandle {
@@ -645,6 +690,7 @@ mod tests {
     use crate::agent::tool_runtime::output::ToolOutput;
     use async_trait::async_trait;
     use serde_json::json;
+    use std::collections::HashSet;
 
     struct MockExecutor {
         tool_name: ToolName,
@@ -685,6 +731,35 @@ mod tests {
             group,
             visibility,
         )
+    }
+
+    /// Build a catalog with representative entries for filter/handle tests.
+    fn make_test_catalog() -> ToolCatalog {
+        let mut catalog = ToolCatalog::new();
+        catalog
+            .register(make_entry(
+                "write_todos",
+                None,
+                ToolVisibility::AlwaysVisible,
+            ))
+            .expect("register");
+        for name in ["read_file", "write_file", "apply_file_edit", "list_files"] {
+            catalog
+                .register(make_entry(
+                    name,
+                    Some(CapabilityGroup::Files),
+                    ToolVisibility::Deferred,
+                ))
+                .expect("register");
+        }
+        catalog
+            .register(make_entry(
+                "execute_command",
+                Some(CapabilityGroup::Shell),
+                ToolVisibility::Deferred,
+            ))
+            .expect("register");
+        catalog
     }
 
     // -- CapabilityGroup ---------------------------------------------------
@@ -1219,5 +1294,65 @@ mod tests {
             .expect("shell");
         assert!(handle.contains(&ToolName::from("read_file")));
         assert!(handle.contains(&ToolName::from("execute_command")));
+    }
+
+    #[test]
+    fn catalog_filter_by_names_keeps_only_allowed() {
+        let catalog = make_test_catalog();
+        let allowed: HashSet<String> = ["read_file", "write_todos"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let filtered = catalog.filter_by_names(&allowed);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&ToolName::from("read_file")));
+        assert!(filtered.contains(&ToolName::from("write_todos")));
+        assert!(!filtered.contains(&ToolName::from("execute_command")));
+    }
+
+    #[test]
+    fn catalog_filter_preserves_metadata() {
+        let catalog = make_test_catalog();
+        let allowed: HashSet<String> = ["read_file"].iter().map(|s| s.to_string()).collect();
+        let filtered = catalog.filter_by_names(&allowed);
+
+        let entry = filtered.entries().next().expect("at least one entry");
+        assert_eq!(entry.capability_group, Some(CapabilityGroup::Files));
+        assert_eq!(entry.visibility, ToolVisibility::Deferred);
+    }
+
+    #[test]
+    fn handle_from_catalog_populates_group_map() {
+        let catalog = make_test_catalog();
+        let handle = ToolSurfaceHandle::from_catalog(&catalog);
+
+        // Files group has read_file, write_file, apply_file_edit, list_files
+        let groups = handle.activatable_groups();
+        assert!(groups.contains(&CapabilityGroup::Files));
+        assert!(groups.contains(&CapabilityGroup::Shell));
+
+        // Activate Files → all file tools become visible
+        let result = handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("files group exists");
+        assert_eq!(result.activated.len(), 4); // read_file, write_file, apply_file_edit, list_files
+    }
+
+    #[test]
+    fn handle_from_filtered_catalog_excludes_disallowed_groups() {
+        let catalog = make_test_catalog();
+        let allowed: HashSet<String> = ["read_file", "write_todos"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let filtered = catalog.filter_by_names(&allowed);
+        let handle = ToolSurfaceHandle::from_catalog(&filtered);
+
+        // Shell group should not be in the group map because execute_command
+        // was filtered out.
+        let groups = handle.activatable_groups();
+        assert!(groups.contains(&CapabilityGroup::Files));
+        assert!(!groups.contains(&CapabilityGroup::Shell));
     }
 }

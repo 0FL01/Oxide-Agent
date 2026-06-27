@@ -18,9 +18,10 @@ use crate::agent::runner::{
 };
 use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
-    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolExecutor,
-    ToolInvocation, ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
-    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError, ToolSurfaceHandle,
+    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolCatalog,
+    ToolCatalogEntry, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
+    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    ToolSurfaceHandle,
 };
 use crate::config::{
     AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
@@ -195,6 +196,8 @@ struct PreparedSubAgentExecution {
     task: String,
     tool_runtime_registry: Arc<RuntimeToolRegistry>,
     tools: Vec<ToolDefinition>,
+    tool_catalog: Arc<ToolCatalog>,
+    tool_surface_handle: Arc<ToolSurfaceHandle>,
     system_prompt: String,
     date_suffix: String,
     todos_arc: Arc<Mutex<TodoList>>,
@@ -551,6 +554,14 @@ fn serialize_json(value: serde_json::Value) -> String {
     })
 }
 
+/// Result of building sub-agent tool runtime: executors, browser cleanup,
+/// and the tool catalog (metadata for lazy surface).
+struct SubAgentToolBuild {
+    executors: Vec<Arc<dyn ToolExecutor>>,
+    browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>>,
+    catalog: ToolCatalog,
+}
+
 impl DelegationProvider {
     /// Create a new delegation provider.
     #[must_use]
@@ -714,17 +725,14 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .collect()
     }
 
-    #[allow(clippy::type_complexity)]
     fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
         memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> (
-        Vec<Arc<dyn ToolExecutor>>,
-        Option<Arc<dyn BrowserSessionCleanup>>,
-    ) {
+    ) -> SubAgentToolBuild {
         let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
+        let mut catalog = ToolCatalog::new();
         let module_ctx =
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
@@ -738,41 +746,86 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             oxide_module_tool_webfetch_md,
             oxide_module_tool_ytdlp
         )))]
-        let _ = (&module_ctx, &mut executors);
+        let _ = (&module_ctx, &mut executors, &mut catalog);
 
         #[cfg(oxide_module_tool_todos)]
-        self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &TodosToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_retrieve_tools)]
-        self.push_sub_agent_tool_module(&mut executors, &RetrieveToolsToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &RetrieveToolsToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_sandbox_exec)]
-        self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &SandboxExecToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_sandbox_fileops)]
-        self.push_sub_agent_tool_module(&mut executors, &SandboxFileOpsToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &SandboxFileOpsToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_ytdlp)]
-        self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &YtdlpToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_webfetch_md)]
-        self.push_sub_agent_tool_module(&mut executors, &WebCrawlerToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &WebCrawlerToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_webfetch_md)]
-        self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &WebFetchMdToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_web_search)]
-        self.push_sub_agent_tool_module(&mut executors, &WebSearchToolModule, &module_ctx);
+        self.push_sub_agent_tool_module(
+            &mut executors,
+            &mut catalog,
+            &WebSearchToolModule,
+            &module_ctx,
+        );
 
         #[cfg(oxide_module_tool_browser_live)]
-        let browser_cleanup = self.push_sub_agent_browser_module(&mut executors, &module_ctx);
+        let browser_cleanup =
+            self.push_sub_agent_browser_module(&mut executors, &mut catalog, &module_ctx);
 
         #[cfg(not(oxide_module_tool_browser_live))]
         let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
 
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
-        (executors, browser_cleanup)
+        SubAgentToolBuild {
+            executors,
+            browser_cleanup,
+            catalog,
+        }
     }
 
     /// Register browser-live tools for a sub-agent and return the shared
@@ -781,6 +834,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     fn push_sub_agent_browser_module(
         &self,
         executors: &mut Vec<Arc<dyn ToolExecutor>>,
+        catalog: &mut ToolCatalog,
         ctx: &ToolModuleContext,
     ) -> Option<Arc<dyn BrowserSessionCleanup>> {
         let module = BrowserLiveToolModule;
@@ -795,6 +849,23 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         if let Some(group) = module.capability_group() {
             let names: Vec<ToolName> = browser_executors.iter().map(|e| e.name()).collect();
             ctx.tool_surface_handle().record_group_tools(group, names);
+        }
+
+        // Build catalog entries for browser tools.
+        for executor in &browser_executors {
+            let entry = ToolCatalogEntry::new(
+                Arc::clone(executor),
+                module_id,
+                module.capability_group(),
+                module.visibility(),
+            );
+            if let Err(error) = catalog.register(entry) {
+                warn!(
+                    tool_name = %executor.name(),
+                    error = %error,
+                    "Skipping duplicate sub-agent browser tool catalog entry"
+                );
+            }
         }
 
         executors.extend(browser_executors);
@@ -845,6 +916,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     fn push_sub_agent_tool_module<M>(
         &self,
         executors: &mut Vec<Arc<dyn ToolExecutor>>,
+        catalog: &mut ToolCatalog,
         module: &M,
         ctx: &ToolModuleContext,
     ) where
@@ -863,6 +935,23 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             ctx.tool_surface_handle().record_group_tools(group, names);
         }
 
+        // Build catalog entries with module metadata.
+        for executor in &module_executors {
+            let entry = ToolCatalogEntry::new(
+                Arc::clone(executor),
+                module_id,
+                module.capability_group(),
+                module.visibility(),
+            );
+            if let Err(error) = catalog.register(entry) {
+                warn!(
+                    tool_name = %executor.name(),
+                    error = %error,
+                    "Skipping duplicate sub-agent typed tool catalog entry"
+                );
+            }
+        }
+
         executors.extend(module_executors);
     }
 
@@ -871,28 +960,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         if crate::config::is_web_search_configured() {
             warn!("web_search configured but feature not compiled in");
         }
-    }
-
-    fn build_sub_agent_tool_runtime_registry(
-        &self,
-        allowed_tools: &HashSet<String>,
-        executors: Vec<Arc<dyn ToolExecutor>>,
-    ) -> RuntimeToolRegistry {
-        let mut registry = RuntimeToolRegistry::new();
-        for executor in executors {
-            let tool_name = executor.name();
-            if !allowed_tools.contains(tool_name.as_str()) {
-                continue;
-            }
-            if let Err(error) = registry.register(executor) {
-                warn!(
-                    tool_name = %tool_name,
-                    error = %error,
-                    "Skipping duplicate sub-agent typed runtime executor"
-                );
-            }
-        }
-        registry
     }
 
     fn filter_allowed_tools(
@@ -1120,21 +1187,37 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
             spawn_sub_agent_progress_relay(progress_tx, task_id.clone(), name.clone());
-        let (executors, browser_cleanup) = self.build_sub_agent_tool_runtime_executors(
+        let tool_build = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
             AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
             sub_agent_progress_tx.as_ref(),
         );
-        let available_tools: HashSet<String> = executors
+        let available_tools: HashSet<String> = tool_build
+            .executors
             .iter()
             .map(|executor| executor.name().into_inner())
             .collect();
-        let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
-        let tool_runtime_registry =
-            Arc::new(self.build_sub_agent_tool_runtime_registry(&allowed, executors));
-        let tools = tool_runtime_registry.specs();
+        let mut allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
+
+        // retrieve_tools is a bootstrap control tool — always available to
+        // sub-agents so the lazy surface protocol works.  It is not a
+        // capability and not in the blocked set.
+        #[cfg(oxide_module_tool_retrieve_tools)]
+        allowed.insert("retrieve_tools".to_string());
+
+        // Filter the catalog to the allowed whitelist, then derive the
+        // execution registry and surface handle from the filtered catalog.
+        // This ensures retrieve_tools can only activate tools the sub-agent
+        // is permitted to use (M9 closure).
+        let tool_catalog = Arc::new(tool_build.catalog.filter_by_names(&allowed));
+        let tool_surface_handle = Arc::new(ToolSurfaceHandle::from_catalog(&tool_catalog));
+        let tool_runtime_registry = Arc::new(tool_catalog.to_registry());
+        let tools = tool_surface_handle.visible_specs(&tool_catalog);
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
-        let tool_ctx = PromptToolContext::from_tools(&tools);
+        let catalog_specs: Vec<ToolDefinition> =
+            tool_catalog.entries().map(|e| e.spec.clone()).collect();
+        let available_groups = tool_catalog.activatable_groups();
+        let tool_ctx = PromptToolContext::new(&catalog_specs, &available_groups);
         let system_prompt = create_sub_agent_system_prompt(
             task.as_str(),
             tool_ctx,
@@ -1148,6 +1231,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             task,
             tool_runtime_registry,
             tools,
+            tool_catalog,
+            tool_surface_handle,
             system_prompt: system_prompt.base,
             date_suffix: system_prompt.date_suffix,
             todos_arc,
@@ -1157,7 +1242,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
-            browser_cleanup,
+            browser_cleanup: tool_build.browser_cleanup,
         })
     }
 
@@ -1180,6 +1265,10 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             prepared.runner_config.clone(),
         );
         ctx.tool_runtime_registry = Some(Arc::clone(&prepared.tool_runtime_registry));
+        ctx = ctx.with_tool_surface(
+            Arc::clone(&prepared.tool_catalog),
+            Arc::clone(&prepared.tool_surface_handle),
+        );
         ctx
     }
 
@@ -1282,6 +1371,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         // sub-agent channel never closes and the relay task cannot finish.
         prepared.tools.clear();
         prepared.tool_runtime_registry = Arc::new(RuntimeToolRegistry::new());
+        prepared.tool_catalog = Arc::new(ToolCatalog::new());
+        prepared.tool_surface_handle = Arc::new(ToolSurfaceHandle::new());
         drop(prepared.progress_tx.take());
 
         if let Some(task) = prepared.progress_relay_task.take() {
@@ -2197,6 +2288,10 @@ mod tests {
 
         let ctx = DelegationProvider::build_sub_agent_runner_context(&mut prepared);
         assert!(ctx.tool_runtime_registry.is_some());
+        // Sub-agent runner context has the lazy surface set up so
+        // refresh_visible_tools can recompute visible specs per iteration.
+        assert!(ctx.tool_catalog.is_some());
+        assert!(ctx.tool_surface_handle.is_some());
     }
 
     #[cfg(oxide_module_tool_todos)]
@@ -2291,9 +2386,10 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let (executors, _browser_cleanup) =
+        let build =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
-        let tools: HashSet<String> = executors
+        let tools: HashSet<String> = build
+            .executors
             .iter()
             .map(|executor| executor.name().into_inner())
             .collect();
@@ -2307,9 +2403,10 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let (executors, _browser_cleanup) =
+        let build =
             provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
-        let tools: HashSet<String> = executors
+        let tools: HashSet<String> = build
+            .executors
             .iter()
             .map(|executor| executor.name().into_inner())
             .collect();
