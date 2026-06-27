@@ -4,6 +4,8 @@
 
 mod execution;
 mod hooks;
+#[cfg(test)]
+mod lazy_tests;
 mod llm_calls;
 mod loop_detection;
 mod model_routes;

@@ -292,3 +292,69 @@ fn telegram_runner_uses_storage_module_factory_not_concrete_r2() {
         );
     }
 }
+
+#[test]
+fn lazy_tool_surface_types_are_defined_in_surface_module() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let surface = fs::read_to_string(manifest_dir.join("src/agent/tool_runtime/surface.rs"))
+        .expect("read surface module");
+
+    for required in [
+        "pub struct ToolCatalog",
+        "pub struct ToolSurface",
+        "pub struct ToolSurfaceHandle",
+        "pub enum CapabilityGroup",
+        "pub enum ToolVisibility",
+        "pub struct ToolCatalogEntry",
+    ] {
+        assert!(
+            surface.contains(required),
+            "surface.rs must define {required} for lazy tool protocol"
+        );
+    }
+}
+
+#[test]
+fn runner_refreshes_visible_tools_before_each_llm_call() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let execution = fs::read_to_string(manifest_dir.join("src/agent/runner/execution.rs"))
+        .expect("read runner execution loop");
+
+    assert!(
+        execution.contains("refresh_visible_tools"),
+        "runner execution loop must call refresh_visible_tools before each LLM call"
+    );
+}
+
+#[test]
+fn tool_module_trait_declares_capability_group_and_visibility() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let modules = fs::read_to_string(manifest_dir.join("src/agent/tool_runtime/modules.rs"))
+        .expect("read tool modules");
+
+    assert!(
+        modules.contains("fn capability_group(") && modules.contains("fn visibility("),
+        "ToolModule trait must declare capability_group() and visibility() for lazy tool classification"
+    );
+}
+
+#[test]
+fn retrieve_tools_module_is_always_visible_bootstrap() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let retrieve_tools =
+        fs::read_to_string(manifest_dir.join("src/agent/tool_runtime/retrieve_tools.rs"))
+            .expect("read retrieve_tools module");
+
+    assert!(
+        retrieve_tools.contains("ToolVisibility::AlwaysVisible"),
+        "retrieve_tools must be AlwaysVisible (bootstrap surface, M16)"
+    );
+    assert!(
+        retrieve_tools.contains("fn capability_group(&self) -> Option<CapabilityGroup>"),
+        "retrieve_tools must declare capability_group for M16 no-self-reference invariant"
+    );
+    assert!(
+        retrieve_tools.contains("None") && retrieve_tools.contains("capability_group"),
+        "retrieve_tools capability_group must return None (no self-activation, M16)"
+    );
+}
