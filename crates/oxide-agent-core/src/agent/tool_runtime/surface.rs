@@ -20,7 +20,7 @@ use super::types::ToolName;
 use crate::capabilities::ModuleId;
 use crate::llm::ToolDefinition;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 // ---------------------------------------------------------------------------
 // CapabilityGroup
@@ -338,6 +338,24 @@ impl ToolCatalog {
         self.entries.is_empty()
     }
 
+    /// Mapping of capability group → tool names for deferred tools.
+    ///
+    /// Only deferred tools with a capability group are included.  Always-visible
+    /// tools (group `None`) are excluded.  Used to populate the
+    /// [`ToolSurfaceHandle`] group map during run bootstrap.
+    #[must_use]
+    pub fn group_map(&self) -> BTreeMap<CapabilityGroup, BTreeSet<ToolName>> {
+        let mut map: BTreeMap<CapabilityGroup, BTreeSet<ToolName>> = BTreeMap::new();
+        for entry in self.entries.values() {
+            if entry.visibility == ToolVisibility::Deferred
+                && let Some(group) = entry.capability_group
+            {
+                map.entry(group).or_default().insert(entry.name.clone());
+            }
+        }
+        map
+    }
+
     /// Build a [`ToolRegistry`] from the catalog's executors for execution.
     ///
     /// The registry is the execution handle; the catalog is the metadata
@@ -429,6 +447,13 @@ impl ToolSurface {
         }
     }
 
+    /// Mark a single tool name as active.
+    ///
+    /// Returns `true` if the name was newly inserted, `false` if already active.
+    pub fn activate_name(&mut self, name: ToolName) -> bool {
+        self.active.insert(name)
+    }
+
     /// Whether a deferred tool name has been activated.
     ///
     /// Does **not** check always-visible tools — those are visible by
@@ -472,6 +497,129 @@ pub struct ActivationResult {
     pub already_active: Vec<ToolName>,
     /// Group names that don't match any catalog entry.
     pub unknown_groups: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// ToolSurfaceHandle
+// ---------------------------------------------------------------------------
+
+/// Shared mutable state for the lazy tool surface.
+///
+/// Created at run start and shared between:
+/// - The **runner** — reads [`surface`](Self::surface) to compute the
+///   model-visible tool specs each iteration.
+/// - The **`retrieve_tools` executor** — calls [`activate_group`](Self::activate_group)
+///   to make deferred tool schemas visible to the model.
+/// - **Module registration** — calls [`record_group_tools`](Self::record_group_tools)
+///   during bootstrap to populate the group→tool-names mapping.
+///
+/// The surface is **monotonic within a run**: once a tool is activated, it
+/// stays visible for the rest of the run.
+///
+/// The group map is populated incrementally during module registration and
+/// then frozen.  At execution time, `activate_group` uses the group map to
+/// resolve which tool names belong to a requested capability group — it does
+/// not need the full [`ToolCatalog`].
+pub struct ToolSurfaceHandle {
+    /// Live tool surface (mutable, shared).
+    surface: RwLock<ToolSurface>,
+    /// Group → tool names mapping, populated during module registration.
+    group_map: RwLock<BTreeMap<CapabilityGroup, BTreeSet<ToolName>>>,
+}
+
+impl ToolSurfaceHandle {
+    /// Create an empty handle (no surface, no group map).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            surface: RwLock::new(ToolSurface::new()),
+            group_map: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    /// Record which tool names belong to a capability group.
+    ///
+    /// Called during module registration for each deferred module.  Accumulates
+    /// names — if multiple modules share the same group, their tool names are
+    /// merged.
+    pub fn record_group_tools(&self, group: CapabilityGroup, names: Vec<ToolName>) {
+        let mut map = self.group_map.write().expect("group_map lock poisoned");
+        let entry = map.entry(group).or_default();
+        for name in names {
+            entry.insert(name);
+        }
+    }
+
+    /// Activate all tools in a capability group.
+    ///
+    /// Uses the internal group map to resolve tool names — does not need the
+    /// full catalog.  Idempotent: tools already active are reported as
+    /// `already_active`.
+    ///
+    /// Returns [`None`] if the group is not in the group map (no tools
+    /// registered for this group in this run).  The caller should treat this
+    /// as an unknown/unavailable group.
+    #[must_use]
+    pub fn activate_group(&self, group: CapabilityGroup) -> Option<ActivationResult> {
+        let names = {
+            let map = self.group_map.read().expect("group_map lock poisoned");
+            map.get(&group).cloned()
+        };
+
+        let names = names?;
+
+        let mut surface = self.surface.write().expect("surface lock poisoned");
+        let mut activated = Vec::new();
+        let mut already_active = Vec::new();
+
+        for name in &names {
+            if surface.activate_name(name.clone()) {
+                activated.push(name.clone());
+            } else {
+                already_active.push(name.clone());
+            }
+        }
+
+        Some(ActivationResult {
+            activated,
+            already_active,
+            unknown_groups: Vec::new(),
+        })
+    }
+
+    /// Read access to the live surface.
+    ///
+    /// The guard allows callers to call [`ToolSurface::visible_specs`] with a
+    /// catalog reference.
+    pub fn surface(&self) -> std::sync::RwLockReadGuard<'_, ToolSurface> {
+        self.surface.read().expect("surface lock poisoned")
+    }
+
+    /// Check whether a deferred tool name has been activated.
+    #[must_use]
+    pub fn contains(&self, name: &ToolName) -> bool {
+        self.surface
+            .read()
+            .expect("surface lock poisoned")
+            .contains(name)
+    }
+
+    /// All activatable groups (keys of the group map).
+    #[must_use]
+    pub fn activatable_groups(&self) -> Vec<CapabilityGroup> {
+        self.group_map
+            .read()
+            .expect("group_map lock poisoned")
+            .keys()
+            .copied()
+            .collect()
+    }
+}
+
+impl Default for ToolSurfaceHandle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -913,5 +1061,152 @@ mod tests {
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         // BTreeMap orders by name: read_file, retrieve_tools, write_file.
         assert_eq!(names, vec!["read_file", "retrieve_tools", "write_file"]);
+    }
+
+    // -- ToolSurface::activate_name ----------------------------------------
+
+    #[test]
+    fn activate_name_returns_true_for_new_false_for_existing() {
+        let mut surface = ToolSurface::new();
+        assert!(surface.activate_name(ToolName::from("read_file")));
+        assert!(!surface.activate_name(ToolName::from("read_file")));
+        assert!(surface.contains(&ToolName::from("read_file")));
+    }
+
+    // -- ToolCatalog::group_map --------------------------------------------
+
+    #[test]
+    fn catalog_group_map_excludes_always_visible() {
+        let mut catalog = ToolCatalog::new();
+        catalog
+            .register(make_entry(
+                "retrieve_tools",
+                None,
+                ToolVisibility::AlwaysVisible,
+            ))
+            .expect("register");
+        catalog
+            .register(make_entry(
+                "read_file",
+                Some(CapabilityGroup::Files),
+                ToolVisibility::Deferred,
+            ))
+            .expect("register");
+        catalog
+            .register(make_entry(
+                "write_file",
+                Some(CapabilityGroup::Files),
+                ToolVisibility::Deferred,
+            ))
+            .expect("register");
+        catalog
+            .register(make_entry(
+                "execute_command",
+                Some(CapabilityGroup::Shell),
+                ToolVisibility::Deferred,
+            ))
+            .expect("register");
+
+        let map = catalog.group_map();
+        assert_eq!(map.len(), 2);
+        let files = map.get(&CapabilityGroup::Files).expect("files group");
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&ToolName::from("read_file")));
+        assert!(files.contains(&ToolName::from("write_file")));
+        let shell = map.get(&CapabilityGroup::Shell).expect("shell group");
+        assert_eq!(shell.len(), 1);
+        assert!(shell.contains(&ToolName::from("execute_command")));
+    }
+
+    // -- ToolSurfaceHandle -------------------------------------------------
+
+    #[test]
+    fn handle_record_and_activate_group() {
+        let handle = ToolSurfaceHandle::new();
+        handle.record_group_tools(
+            CapabilityGroup::Files,
+            vec![ToolName::from("read_file"), ToolName::from("write_file")],
+        );
+
+        let result = handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("group exists");
+        assert_eq!(result.activated.len(), 2);
+        assert!(result.already_active.is_empty());
+        assert!(handle.contains(&ToolName::from("read_file")));
+        assert!(handle.contains(&ToolName::from("write_file")));
+    }
+
+    #[test]
+    fn handle_activate_group_idempotent() {
+        let handle = ToolSurfaceHandle::new();
+        handle.record_group_tools(CapabilityGroup::Files, vec![ToolName::from("read_file")]);
+
+        let first = handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("first");
+        assert_eq!(first.activated.len(), 1);
+        assert!(first.already_active.is_empty());
+
+        let second = handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("second");
+        assert!(second.activated.is_empty());
+        assert_eq!(second.already_active.len(), 1);
+    }
+
+    #[test]
+    fn handle_activate_unknown_group_returns_none() {
+        let handle = ToolSurfaceHandle::new();
+        assert!(handle.activate_group(CapabilityGroup::Files).is_none());
+    }
+
+    #[test]
+    fn handle_activatable_groups() {
+        let handle = ToolSurfaceHandle::new();
+        handle.record_group_tools(CapabilityGroup::Files, vec![ToolName::from("read_file")]);
+        handle.record_group_tools(
+            CapabilityGroup::Shell,
+            vec![ToolName::from("execute_command")],
+        );
+
+        let groups = handle.activatable_groups();
+        assert_eq!(groups, vec![CapabilityGroup::Files, CapabilityGroup::Shell]);
+    }
+
+    #[test]
+    fn handle_record_merges_multiple_modules_same_group() {
+        let handle = ToolSurfaceHandle::new();
+        handle.record_group_tools(CapabilityGroup::Files, vec![ToolName::from("read_file")]);
+        handle.record_group_tools(
+            CapabilityGroup::Files,
+            vec![ToolName::from("write_file"), ToolName::from("list_files")],
+        );
+
+        let result = handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("group");
+        assert_eq!(result.activated.len(), 3);
+    }
+
+    #[test]
+    fn handle_surface_monotonic_across_groups() {
+        let handle = ToolSurfaceHandle::new();
+        handle.record_group_tools(CapabilityGroup::Files, vec![ToolName::from("read_file")]);
+        handle.record_group_tools(
+            CapabilityGroup::Shell,
+            vec![ToolName::from("execute_command")],
+        );
+
+        handle
+            .activate_group(CapabilityGroup::Files)
+            .expect("files");
+        assert!(handle.contains(&ToolName::from("read_file")));
+
+        handle
+            .activate_group(CapabilityGroup::Shell)
+            .expect("shell");
+        assert!(handle.contains(&ToolName::from("read_file")));
+        assert!(handle.contains(&ToolName::from("execute_command")));
     }
 }

@@ -1,7 +1,7 @@
 //! Capability-oriented tool modules.
 
 use super::ToolExecutor;
-use super::surface::{CapabilityGroup, ToolVisibility};
+use super::surface::{CapabilityGroup, ToolSurfaceHandle, ToolVisibility};
 #[cfg(oxide_module_tool_webfetch_md)]
 use super::{
     OutputNormalizer, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
@@ -242,6 +242,12 @@ pub struct ToolModuleContext {
     memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
     inherited_model: Option<crate::config::ModelInfo>,
+    /// Shared tool surface handle for the lazy tool protocol.
+    ///
+    /// Created at run start, shared between the runner (reads visible specs)
+    /// and the `retrieve_tools` executor (activates groups).  The group→tools
+    /// mapping is populated during module registration.
+    tool_surface_handle: Arc<ToolSurfaceHandle>,
 }
 
 /// Constructor arguments for [`ToolModuleContext`].
@@ -277,6 +283,8 @@ pub struct ToolModuleContextParts {
     /// override is active (e.g. Telegram, or web sessions using the bootstrap
     /// default).
     pub inherited_model: Option<crate::config::ModelInfo>,
+    /// Shared tool surface handle for the lazy tool protocol.
+    pub tool_surface_handle: Arc<ToolSurfaceHandle>,
 }
 
 impl ToolModuleContext {
@@ -298,6 +306,7 @@ impl ToolModuleContext {
             memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
             inherited_model: parts.inherited_model,
+            tool_surface_handle: parts.tool_surface_handle,
         }
     }
 
@@ -395,6 +404,15 @@ impl ToolModuleContext {
     #[must_use]
     pub fn inherited_model(&self) -> Option<crate::config::ModelInfo> {
         self.inherited_model.clone()
+    }
+
+    /// Shared tool surface handle for the lazy tool protocol.
+    ///
+    /// Used by the `retrieve_tools` executor to activate capability groups
+    /// and by the runner to compute the model-visible tool surface.
+    #[must_use]
+    pub fn tool_surface_handle(&self) -> Arc<ToolSurfaceHandle> {
+        Arc::clone(&self.tool_surface_handle)
     }
 }
 
@@ -2030,6 +2048,7 @@ mod capability_mapping_tests {
     /// - AlwaysVisible ⇒ `None` group
     /// - Deferred ⇒ `Some(group)`
     #[test]
+    #[allow(clippy::vec_init_then_push)]
     fn compiled_modules_have_consistent_group_and_visibility() {
         let mut checks: Vec<(&str, Option<CapabilityGroup>, ToolVisibility)> = Vec::new();
 

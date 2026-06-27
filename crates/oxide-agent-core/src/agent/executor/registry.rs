@@ -30,6 +30,8 @@ use crate::agent::tool_runtime::MediaImageToolModule;
 use crate::agent::tool_runtime::MediaVideoToolModule;
 #[cfg(oxide_module_tool_reminder)]
 use crate::agent::tool_runtime::ReminderToolModule;
+#[cfg(oxide_module_tool_retrieve_tools)]
+use crate::agent::tool_runtime::RetrieveToolsToolModule;
 #[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(oxide_module_tool_sandbox_fileops)]
@@ -56,6 +58,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     oxide_module_tool_agents_md,
     oxide_module_tool_compression,
     oxide_module_tool_delegation,
+    oxide_module_tool_retrieve_tools,
     oxide_module_tool_file_delivery,
     oxide_module_tool_media_audio,
     oxide_module_tool_media_image,
@@ -85,8 +88,8 @@ use crate::agent::tool_runtime::YtdlpToolModule;
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::agent::tool_runtime::{
-    BrowserSessionCleanup, ToolExecutor, ToolModuleContext, ToolModuleContextParts,
-    ToolRegistry as RuntimeToolRegistry,
+    BrowserSessionCleanup, ToolExecutor, ToolModuleContext, ToolModuleContextParts, ToolName,
+    ToolRegistry as RuntimeToolRegistry, ToolSurfaceHandle,
 };
 #[cfg(test)]
 use crate::config::ModelInfo;
@@ -145,6 +148,7 @@ impl AgentExecutor {
             oxide_module_tool_agents_md,
             oxide_module_tool_compression,
             oxide_module_tool_delegation,
+            oxide_module_tool_retrieve_tools,
             oxide_module_tool_file_delivery,
             oxide_module_tool_media_audio,
             oxide_module_tool_media_image,
@@ -172,6 +176,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
         #[cfg(oxide_module_tool_compression)]
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
+        #[cfg(oxide_module_tool_retrieve_tools)]
+        self.register_tool_runtime_module(registry, &RetrieveToolsToolModule, ctx);
         #[cfg(oxide_module_tool_delegation)]
         self.register_tool_runtime_module(registry, &DelegationToolModule, ctx);
         #[cfg(oxide_module_tool_file_delivery)]
@@ -234,7 +240,15 @@ impl AgentExecutor {
             return None;
         }
         let provider = module.shared_provider(ctx)?;
-        self.register_tool_runtime_executors(registry, provider.tool_runtime_executors());
+        let browser_executors = provider.tool_runtime_executors();
+
+        // Record group→tools mapping for the lazy tool surface.
+        if let Some(group) = module.capability_group() {
+            let names: Vec<ToolName> = browser_executors.iter().map(|e| e.name()).collect();
+            ctx.tool_surface_handle().record_group_tools(group, names);
+        }
+
+        self.register_tool_runtime_executors(registry, browser_executors);
         Some(provider)
     }
 
@@ -249,6 +263,7 @@ impl AgentExecutor {
         oxide_module_tool_agents_md,
         oxide_module_tool_compression,
         oxide_module_tool_delegation,
+        oxide_module_tool_retrieve_tools,
         oxide_module_tool_file_delivery,
         oxide_module_tool_media_audio,
         oxide_module_tool_media_image,
@@ -279,7 +294,16 @@ impl AgentExecutor {
         }
 
         tracing::debug!(%module_id, "Registering typed tool runtime module");
-        self.register_tool_runtime_executors(registry, module.tool_runtime_executors(ctx));
+        let executors = module.tool_runtime_executors(ctx);
+
+        // Record group→tools mapping for the lazy tool surface.
+        // Only deferred modules with a capability group are recorded.
+        if let Some(group) = module.capability_group() {
+            let names: Vec<ToolName> = executors.iter().map(|e| e.name()).collect();
+            ctx.tool_surface_handle().record_group_tools(group, names);
+        }
+
+        self.register_tool_runtime_executors(registry, executors);
     }
 
     #[cfg_attr(
@@ -293,6 +317,7 @@ impl AgentExecutor {
             oxide_module_integration_mcp_mattermost,
             oxide_module_tool_agents_md,
             oxide_module_tool_compression,
+            oxide_module_tool_retrieve_tools,
             oxide_module_tool_file_delivery,
             oxide_module_tool_media_audio,
             oxide_module_tool_media_image,
@@ -346,6 +371,7 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolModuleContext {
         let sandbox_scope = self.session.sandbox_scope().clone();
+        let tool_surface_handle = Arc::new(ToolSurfaceHandle::new());
         ToolModuleContext::new(ToolModuleContextParts {
             todos: todos_arc,
             sandbox_scope: sandbox_scope.clone(),
@@ -389,6 +415,7 @@ impl AgentExecutor {
             inherited_model: self
                 .model_routes_override()
                 .and_then(|routes| routes.first().cloned()),
+            tool_surface_handle,
         })
     }
 

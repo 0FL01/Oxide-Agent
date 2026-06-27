@@ -14,6 +14,8 @@ pub mod output;
 pub mod process;
 pub mod provider_opencode_go;
 pub mod registry;
+#[cfg(oxide_module_tool_retrieve_tools)]
+pub mod retrieve_tools;
 pub mod runtime;
 pub mod surface;
 pub mod types;
@@ -95,8 +97,11 @@ pub use provider_opencode_go::{
     OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,
 };
 pub use registry::{RegistryError, ToolRegistry};
+#[cfg(oxide_module_tool_retrieve_tools)]
+pub use retrieve_tools::RetrieveToolsToolModule;
 pub use runtime::{ToolCallRuntime, ToolRuntimeFatal, ToolTurnContext};
 pub use surface::{
-    ActivationResult, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolSurface, ToolVisibility,
+    ActivationResult, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolSurface,
+    ToolSurfaceHandle, ToolVisibility,
 };
 pub use types::{ToolBatchId, ToolCallId, ToolName, TurnId};

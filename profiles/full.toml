@@ -25,6 +25,7 @@ cargo_features = ["profile-full"]
 "tool/media-image" = { enabled = true }
 "tool/media-video" = { enabled = true }
 "tool/reminder" = { enabled = true }
+"tool/retrieve-tools" = { enabled = true }
 "tool/sandbox-exec" = { enabled = true }
 "tool/sandbox-fileops" = { enabled = true }
 "tool/sandbox-recreate" = { enabled = true }

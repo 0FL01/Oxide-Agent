@@ -367,6 +367,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
+        "tool-retrieve-tools",
+        "tool/retrieve-tools",
+        Tool,
+        ["tool/retrieve-tools"]
+    );
+    push_module!(
+        modules,
         "tool-delegation",
         "tool/delegation",
         Tool,

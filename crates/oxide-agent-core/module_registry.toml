@@ -81,6 +81,13 @@ provides = ["tool/compression"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
+id = "tool/retrieve-tools"
+cargo_feature = "tool-retrieve-tools"
+kind = "Tool"
+provides = ["tool/retrieve-tools"]
+profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
+
+[[modules]]
 id = "tool/delegation"
 cargo_feature = "tool-delegation"
 kind = "Tool"

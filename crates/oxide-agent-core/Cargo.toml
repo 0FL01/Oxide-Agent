@@ -82,6 +82,7 @@ profile-full = [
     "llm-openrouter",
     "tool-todos",
     "tool-compression",
+    "tool-retrieve-tools",
     "tool-delegation",
     "tool-agents-md",
     "tool-reminder",
@@ -114,6 +115,7 @@ profile-embedded-opencode-local = [
     "llm-opencode-go",
     "tool-todos",
     "tool-compression",
+    "tool-retrieve-tools",
     "tool-delegation",
     "tool-agents-md",
     "tool-reminder",
@@ -136,6 +138,7 @@ profile-web-embedded-opencode-local = [
     "llm-opencode-go",
     "tool-todos",
     "tool-compression",
+    "tool-retrieve-tools",
     "tool-delegation",
     "tool-reminder",
     "tool-wiki-memory",
@@ -172,6 +175,7 @@ llm-openrouter = ["http-client"]
 # Tools
 tool-todos = []
 tool-compression = []
+tool-retrieve-tools = []
 tool-delegation = []
 tool-agents-md = []
 tool-reminder = []

@@ -20,7 +20,7 @@ use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
     BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolExecutor,
     ToolInvocation, ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
-    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError, ToolSurfaceHandle,
 };
 use crate::config::{
     AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
@@ -44,6 +44,8 @@ use uuid::Uuid;
 
 #[cfg(oxide_module_tool_browser_live)]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
+#[cfg(oxide_module_tool_retrieve_tools)]
+use crate::agent::tool_runtime::RetrieveToolsToolModule;
 #[cfg(oxide_module_tool_sandbox_exec)]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(oxide_module_tool_sandbox_fileops)]
@@ -54,6 +56,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     oxide_module_tool_sandbox_exec,
     oxide_module_tool_sandbox_fileops,
     oxide_module_tool_browser_live,
+    oxide_module_tool_retrieve_tools,
     oxide_module_tool_todos,
     oxide_module_tool_web_search,
     oxide_module_tool_webfetch_md,
@@ -729,6 +732,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             oxide_module_tool_sandbox_exec,
             oxide_module_tool_sandbox_fileops,
             oxide_module_tool_browser_live,
+            oxide_module_tool_retrieve_tools,
             oxide_module_tool_todos,
             oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
@@ -738,6 +742,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(oxide_module_tool_todos)]
         self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
+
+        #[cfg(oxide_module_tool_retrieve_tools)]
+        self.push_sub_agent_tool_module(&mut executors, &RetrieveToolsToolModule, &module_ctx);
 
         #[cfg(oxide_module_tool_sandbox_exec)]
         self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
@@ -782,7 +789,15 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             return None;
         }
         let provider = module.shared_provider(ctx)?;
-        executors.extend(provider.tool_runtime_executors());
+        let browser_executors = provider.tool_runtime_executors();
+
+        // Record group→tools mapping for the sub-agent's lazy tool surface.
+        if let Some(group) = module.capability_group() {
+            let names: Vec<ToolName> = browser_executors.iter().map(|e| e.name()).collect();
+            ctx.tool_surface_handle().record_group_tools(group, names);
+        }
+
+        executors.extend(browser_executors);
         Some(provider)
     }
 
@@ -813,12 +828,15 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             memory_scope: _memory_scope,
             progress_tx: progress_tx.cloned(),
             inherited_model: None,
+            tool_surface_handle: Arc::new(ToolSurfaceHandle::new()),
         })
     }
 
     #[cfg(any(
         oxide_module_tool_sandbox_exec,
         oxide_module_tool_sandbox_fileops,
+        oxide_module_tool_browser_live,
+        oxide_module_tool_retrieve_tools,
         oxide_module_tool_todos,
         oxide_module_tool_web_search,
         oxide_module_tool_webfetch_md,
@@ -837,7 +855,15 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             return;
         }
 
-        executors.extend(module.tool_runtime_executors(ctx));
+        let module_executors = module.tool_runtime_executors(ctx);
+
+        // Record group→tools mapping for the sub-agent's lazy tool surface.
+        if let Some(group) = module.capability_group() {
+            let names: Vec<ToolName> = module_executors.iter().map(|e| e.name()).collect();
+            ctx.tool_surface_handle().record_group_tools(group, names);
+        }
+
+        executors.extend(module_executors);
     }
 
     fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
