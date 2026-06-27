@@ -352,6 +352,11 @@ pub struct AgentExecutionProfile {
     prompt_instructions: Option<String>,
     tool_policy: ToolAccessPolicy,
     hook_policy: HookAccessPolicy,
+    /// When true, all deferred tool groups are pre-activated at run start so
+    /// the model sees the full catalog from turn 1.  Used by specialized
+    /// agents with a tiny tool set (e.g. search probe) where the lazy
+    /// surface protocol adds unnecessary overhead.
+    pre_activate_all_tools: bool,
 }
 
 impl AgentExecutionProfile {
@@ -367,6 +372,7 @@ impl AgentExecutionProfile {
             prompt_instructions,
             tool_policy,
             hook_policy: HookAccessPolicy::default(),
+            pre_activate_all_tools: false,
         }
     }
 
@@ -398,6 +404,19 @@ impl AgentExecutionProfile {
     #[must_use]
     pub fn with_hook_policy(mut self, hook_policy: HookAccessPolicy) -> Self {
         self.hook_policy = hook_policy;
+        self
+    }
+
+    /// Whether all deferred tool groups should be pre-activated at run start.
+    #[must_use]
+    pub fn pre_activate_all_tools(&self) -> bool {
+        self.pre_activate_all_tools
+    }
+
+    /// Set the pre-activate-all-tools flag.
+    #[must_use]
+    pub fn with_pre_activate_all_tools(mut self, flag: bool) -> Self {
+        self.pre_activate_all_tools = flag;
         self
     }
 }

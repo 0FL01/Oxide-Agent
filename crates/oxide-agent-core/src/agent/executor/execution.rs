@@ -489,6 +489,17 @@ impl AgentExecutor {
         // Compute the initial model-visible tool surface (bootstrap only).
         // Deferred tools are hidden until the model activates their group via
         // `retrieve_tools`.  The surface is refreshed each iteration by the runner.
+        //
+        // Profiles with `pre_activate_all_tools` (e.g. search probe) bypass
+        // the lazy surface — all deferred groups are activated at startup so
+        // the model sees the full catalog from turn 1.  This is appropriate
+        // for specialized agents with a tiny tool set where the lazy
+        // protocol adds unnecessary overhead.
+        if self.execution_profile.pre_activate_all_tools() {
+            for group in tool_catalog.activatable_groups() {
+                let _ = tool_surface_handle.activate_group(group);
+            }
+        }
         let tools = tool_surface_handle.visible_specs(&tool_catalog);
         debug!(
             target: AGENT_LATENCY_TARGET,

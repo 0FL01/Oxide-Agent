@@ -1215,11 +1215,15 @@ fn search_probe_execution_profile(options: SearchProbeRuntimeOptions) -> AgentEx
         .map(|tool| tool.trim().to_string())
         .filter(|tool| !tool.is_empty())
         .collect::<HashSet<_>>();
+    // The search probe uses a tiny, fixed tool set (≤5 tools).  Pre-activate
+    // all deferred groups so the probe's model sees every tool from turn 1 —
+    // the lazy surface protocol is unnecessary overhead here.
     AgentExecutionProfile::new(
         Some("search-probe".to_string()),
         options.prompt_instructions,
         ToolAccessPolicy::new(Some(allowed_tools), HashSet::new()),
     )
+    .with_pre_activate_all_tools(true)
 }
 
 fn is_fresh_web_session_context(context_key: &str) -> bool {
@@ -1812,6 +1816,20 @@ mod tests {
 
         assert!(probe.is_none());
         assert_eq!(manager.session_registry().len().await, 0);
+    }
+
+    #[test]
+    fn search_probe_profile_pre_activates_all_tools() {
+        let profile = search_probe_execution_profile(SearchProbeRuntimeOptions {
+            tool_allowlist: vec!["web_markdown".to_string()],
+            prompt_instructions: None,
+        });
+        // The search probe bypasses the lazy surface — all tools visible
+        // from turn 1 (M10 closure: probe has ≤5 tools, no lazy overhead).
+        assert!(
+            profile.pre_activate_all_tools(),
+            "search probe profile must pre-activate all tools"
+        );
     }
 
     // -----------------------------------------------------------------------
