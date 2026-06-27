@@ -21,7 +21,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -55,7 +55,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -91,7 +91,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -128,7 +128,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -162,7 +162,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -194,7 +194,7 @@ impl AgentRunner {
             ctx.config.continuation_limit,
         )
         .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
+        .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
@@ -283,7 +283,9 @@ mod tests {
             task: "test transient context",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,

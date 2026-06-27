@@ -6,7 +6,9 @@ use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
-use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
+use crate::agent::tool_runtime::{
+    ToolCatalog, ToolRegistry as RuntimeToolRegistry, ToolSurfaceHandle,
+};
 use crate::config::{
     ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_model,
     get_agent_search_limit,
@@ -132,8 +134,18 @@ pub struct AgentRunnerContext<'a> {
     pub system_prompt: &'a str,
     /// Volatile date/time suffix appended after stable system messages.
     pub date_suffix: &'a str,
-    /// Available tools for the model.
-    pub tools: &'a [ToolDefinition],
+    /// Available tools for the model (visible surface snapshot).
+    ///
+    /// Owned and refreshed per-iteration from the tool surface when
+    /// `tool_catalog` and `tool_surface_handle` are set.  When they are
+    /// `None` (test path), this vector is used as-is.
+    pub tools: Vec<ToolDefinition>,
+    /// Full executable tool catalog (metadata).  When `Some`, the runner
+    /// refreshes `tools` from the surface each iteration.
+    pub tool_catalog: Option<Arc<ToolCatalog>>,
+    /// Shared mutable tool surface handle.  When `Some`, the runner reads
+    /// visible specs from the surface each iteration.
+    pub tool_surface_handle: Option<Arc<ToolSurfaceHandle>>,
     /// Optional typed runtime registry for v1 async tool execution.
     pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
@@ -168,7 +180,7 @@ pub(crate) struct AgentRunnerContextBase<'a> {
     pub(crate) task: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) date_suffix: &'a str,
-    pub(crate) tools: &'a [ToolDefinition],
+    pub(crate) tools: Vec<ToolDefinition>,
     pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
     pub(crate) task_id: &'a str,
@@ -188,6 +200,8 @@ impl<'a> AgentRunnerContext<'a> {
             system_prompt: base.system_prompt,
             date_suffix: base.date_suffix,
             tools: base.tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,
@@ -201,6 +215,33 @@ impl<'a> AgentRunnerContext<'a> {
             storage: None,
             config,
         }
+    }
+
+    /// Recompute the model-visible tool snapshot from the surface and catalog.
+    ///
+    /// Called at the start of each runner iteration before the LLM call.
+    /// When `tool_catalog` and `tool_surface_handle` are both `Some`, this
+    /// resolves the current visible specs (always-visible + activated
+    /// deferred tools).  When either is `None` (test path), `tools` is left
+    /// unchanged.
+    pub(crate) fn refresh_visible_tools(&mut self) {
+        if let (Some(catalog), Some(handle)) = (&self.tool_catalog, &self.tool_surface_handle) {
+            self.tools = handle.visible_specs(catalog);
+        }
+    }
+
+    /// Set the tool catalog and surface handle for lazy tool resolution.
+    ///
+    /// Called by the executor after building the runner context.  After this,
+    /// `refresh_visible_tools` will resolve the visible surface each iteration.
+    pub(crate) fn with_tool_surface(
+        mut self,
+        catalog: Arc<ToolCatalog>,
+        handle: Arc<ToolSurfaceHandle>,
+    ) -> Self {
+        self.tool_catalog = Some(catalog);
+        self.tool_surface_handle = Some(handle);
+        self
     }
 }
 

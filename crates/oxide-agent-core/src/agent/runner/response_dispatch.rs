@@ -42,7 +42,7 @@ impl AgentRunner {
                 .await;
         }
 
-        let parsed = match parse_structured_output(&raw_json, ctx.tools) {
+        let parsed = match parse_structured_output(&raw_json, &ctx.tools) {
             Ok(parsed) => {
                 state.structured_output_failures = 0;
                 parsed
@@ -154,7 +154,7 @@ impl AgentRunner {
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
         if let Some(parsed) = should_parse_unstructured_structured_output_fallback(&raw_output)
-            .then(|| parse_structured_output(&raw_output, ctx.tools))
+            .then(|| parse_structured_output(&raw_output, &ctx.tools))
             .and_then(Result::ok)
         {
             warn!(
@@ -353,7 +353,9 @@ mod tests {
             task: "Какие инструменты тебе доступны?",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -408,7 +410,9 @@ mod tests {
             task: "tool runtime missing",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -479,7 +483,9 @@ mod tests {
             task: "Inspect token metrics",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -526,7 +532,9 @@ mod tests {
             task: "test reasoning promotion",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -574,7 +582,9 @@ mod tests {
             task: "Find laptops",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,

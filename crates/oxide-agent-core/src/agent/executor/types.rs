@@ -5,7 +5,9 @@ use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
 use crate::agent::session::{AgentSession, PendingUserInput};
-use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
+use crate::agent::tool_runtime::{
+    ToolCatalog, ToolRegistry as RuntimeToolRegistry, ToolSurfaceHandle,
+};
 use crate::llm::{Message, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
@@ -43,6 +45,8 @@ pub(super) struct PreparedExecution {
     pub(super) todos_arc: Arc<Mutex<TodoList>>,
     pub(super) tool_runtime_registry: Arc<RuntimeToolRegistry>,
     pub(super) tools: Vec<ToolDefinition>,
+    pub(super) tool_catalog: Arc<ToolCatalog>,
+    pub(super) tool_surface_handle: Arc<ToolSurfaceHandle>,
     pub(super) system_prompt: String,
     pub(super) date_suffix: String,
     pub(super) messages: Vec<Message>,
@@ -72,7 +76,7 @@ impl PreparedExecution {
                 task,
                 system_prompt: &self.system_prompt,
                 date_suffix: &self.date_suffix,
-                tools: &self.tools,
+                tools: self.tools.clone(),
                 progress_tx,
                 todos_arc: &self.todos_arc,
                 task_id,
@@ -88,6 +92,10 @@ impl PreparedExecution {
         ctx.memory_behavior = memory_behavior;
         ctx.storage = storage;
         ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
+        ctx = ctx.with_tool_surface(
+            Arc::clone(&self.tool_catalog),
+            Arc::clone(&self.tool_surface_handle),
+        );
 
         ctx
     }

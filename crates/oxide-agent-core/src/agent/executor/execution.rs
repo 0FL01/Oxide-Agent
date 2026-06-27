@@ -468,9 +468,12 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let (tool_runtime_registry, browser_cleanup) =
+        let tool_build =
             self.build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
-        let tool_runtime_registry = Arc::new(tool_runtime_registry);
+        let tool_runtime_registry = Arc::new(tool_build.registry);
+        let tool_surface_handle = tool_build.surface_handle;
+        let tool_catalog = tool_build.catalog;
+        let browser_cleanup = tool_build.browser_cleanup;
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
@@ -481,11 +484,15 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let tools = tool_runtime_registry.specs();
+        // Compute the initial model-visible tool surface (bootstrap only).
+        // Deferred tools are hidden until the model activates their group via
+        // `retrieve_tools`.  The surface is refreshed each iteration by the runner.
+        let tools = tool_surface_handle.visible_specs(&tool_catalog);
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
-            tool_count = tools.len(),
+            visible_tool_count = tools.len(),
+            catalog_tool_count = tool_catalog.len(),
             phase = "tool_specs_collected",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
@@ -619,6 +626,8 @@ impl AgentExecutor {
             todos_arc,
             tool_runtime_registry,
             tools,
+            tool_catalog,
+            tool_surface_handle,
             system_prompt: system_prompt.base,
             date_suffix: system_prompt.date_suffix,
             messages,

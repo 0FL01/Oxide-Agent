@@ -71,6 +71,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/reminder"
       },
       {
+        "id": "tool/retrieve-tools",
+        "module": "tool/retrieve-tools"
+      },
+      {
         "id": "tool/sandbox-exec",
         "module": "tool/sandbox-exec"
       },
@@ -372,6 +376,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "tool-retrieve-tools",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/retrieve-tools",
+        "kind": "tool",
+        "provides": [
+          "tool/retrieve-tools"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-sandbox-exec",
         "config_properties": [],
         "conflicts": [],
@@ -512,6 +527,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/media-image-description",
       "tool/media-video-description",
       "tool/reminder",
+      "tool/retrieve-tools",
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
@@ -536,6 +552,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/media-image",
       "tool/media-video",
       "tool/reminder",
+      "tool/retrieve-tools",
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
@@ -557,6 +574,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "list_files",
     "read_file",
     "recreate_sandbox",
+    "retrieve_tools",
     "send_file_to_user",
     "spawn_sub_agents",
     "transcribe_audio_file",

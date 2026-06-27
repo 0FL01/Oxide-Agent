@@ -1168,7 +1168,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
                 task: prepared.task.as_str(),
                 system_prompt: &prepared.system_prompt,
                 date_suffix: &prepared.date_suffix,
-                tools: &prepared.tools,
+                tools: prepared.tools.clone(),
                 progress_tx: prepared.progress_tx.as_ref(),
                 todos_arc: &prepared.todos_arc,
                 task_id: &prepared.task_id,

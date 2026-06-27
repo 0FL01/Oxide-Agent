@@ -595,6 +595,17 @@ impl ToolSurfaceHandle {
         self.surface.read().expect("surface lock poisoned")
     }
 
+    /// Compute model-visible tool specs from the surface state and catalog.
+    ///
+    /// Convenience method: reads the surface guard, delegates to
+    /// [`ToolSurface::visible_specs`].  The catalog provides the actual
+    /// `ToolDefinition` for each visible tool name.
+    #[must_use]
+    pub fn visible_specs(&self, catalog: &ToolCatalog) -> Vec<ToolDefinition> {
+        let surface = self.surface();
+        surface.visible_specs(catalog)
+    }
+
     /// Check whether a deferred tool name has been activated.
     #[must_use]
     pub fn contains(&self, name: &ToolName) -> bool {

@@ -53,6 +53,12 @@ impl AgentRunner {
             self.run_pre_llm_maintenance(ctx, &mut state, iteration)
                 .await?;
 
+            // Refresh the model-visible tool surface from the lazy tool
+            // catalog + surface handle.  This resolves which tools the model
+            // can see this iteration (always-visible + activated deferred).
+            // When catalog/handle are None (test path), tools are unchanged.
+            ctx.refresh_visible_tools();
+
             if iteration == 0 {
                 debug!(
                     target: AGENT_LATENCY_TARGET,

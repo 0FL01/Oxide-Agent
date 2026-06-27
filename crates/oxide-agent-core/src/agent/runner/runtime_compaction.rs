@@ -111,7 +111,7 @@ impl AgentRunner {
             CompactionTrigger::PreIteration,
             ctx.task,
             ctx.system_prompt,
-            ctx.tools,
+            &ctx.tools,
             &route.id,
             route.max_output_tokens,
             ctx.config.is_sub_agent,
@@ -141,7 +141,7 @@ impl AgentRunner {
     fn projected_total_tokens_for_route(ctx: &AgentRunnerContext<'_>) -> usize {
         let policy = CompactionPolicy::default();
         count_tokens_cached(ctx.system_prompt)
-            .saturating_add(Self::tool_schema_tokens(ctx.tools))
+            .saturating_add(Self::tool_schema_tokens(&ctx.tools))
             .saturating_add(ctx.agent.memory().rendered_token_count())
             .saturating_add(policy.hard_reserve_tokens)
     }
@@ -222,7 +222,7 @@ impl AgentRunner {
                 ctx.agent.memory_mut(),
                 route,
                 ctx.task,
-                ctx.tools,
+                &ctx.tools,
                 ctx.system_prompt,
                 reason,
                 phase,
@@ -468,7 +468,9 @@ mod tests {
             task: "Test compaction",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -556,7 +558,9 @@ mod tests {
             task: "Test",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -608,7 +612,9 @@ mod tests {
             task: "Test",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -649,7 +655,9 @@ mod tests {
             task: "Test",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -717,7 +725,9 @@ mod tests {
             task: "Find laptops",
             system_prompt: "system prompt",
             date_suffix: "",
-            tools: &tools,
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
