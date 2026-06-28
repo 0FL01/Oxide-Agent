@@ -103,6 +103,8 @@ pub struct ApiLifeTurnResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiLifeTurnsResponse {
     pub turns: Vec<ApiLifeTurnResponse>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +120,8 @@ pub struct ApiLifeEventResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiLifeEventsResponse {
     pub events: Vec<ApiLifeEventResponse>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -206,7 +210,9 @@ fn empty_object() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiLifeInputSensitivity, ApiLifeSubmitRequest};
+    use super::{
+        ApiLifeEventsResponse, ApiLifeInputSensitivity, ApiLifeSubmitRequest, ApiLifeTurnsResponse,
+    };
 
     #[test]
     fn life_submit_request_defaults_optional_json_fields() {
@@ -218,5 +224,37 @@ mod tests {
         assert_eq!(request.attachments, serde_json::json!([]));
         assert_eq!(request.metadata, serde_json::json!({}));
         assert_eq!(request.sensitivity, ApiLifeInputSensitivity::Normal);
+    }
+
+    #[test]
+    fn life_turns_response_supports_paging_cursor() {
+        let response: ApiLifeTurnsResponse = serde_json::from_value(serde_json::json!({
+            "turns": []
+        }))
+        .expect("turns response should deserialize without next_cursor");
+        assert!(response.next_cursor.is_none());
+
+        let response: ApiLifeTurnsResponse = serde_json::from_value(serde_json::json!({
+            "turns": [],
+            "next_cursor": "1700000000000:abc"
+        }))
+        .expect("turns response should deserialize with next_cursor");
+        assert_eq!(response.next_cursor.as_deref(), Some("1700000000000:abc"));
+    }
+
+    #[test]
+    fn life_events_response_supports_paging_cursor() {
+        let response: ApiLifeEventsResponse = serde_json::from_value(serde_json::json!({
+            "events": []
+        }))
+        .expect("events response should deserialize without next_cursor");
+        assert!(response.next_cursor.is_none());
+
+        let response: ApiLifeEventsResponse = serde_json::from_value(serde_json::json!({
+            "events": [],
+            "next_cursor": "1700000000000:def:5"
+        }))
+        .expect("events response should deserialize with next_cursor");
+        assert_eq!(response.next_cursor.as_deref(), Some("1700000000000:def:5"));
     }
 }

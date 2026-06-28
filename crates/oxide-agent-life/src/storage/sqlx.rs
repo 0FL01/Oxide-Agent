@@ -253,6 +253,179 @@ impl SqlxLifeStorage {
         rows.into_iter().map(event_from_row).collect()
     }
 
+    /// Lists a cursor-paged window of canonical transcript turns for a principal.
+    ///
+    /// The cursor is an opaque string produced by a prior call to this method.
+    /// `None` starts from the most recent turn. The page contains at most `limit`
+    /// turns; `next_cursor` is `Some` when more rows exist beyond this page.
+    pub async fn list_turns_page(
+        &self,
+        principal_user_id: PrincipalUserId,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> LifeStorageResult<TurnsPage> {
+        let fetch_limit = limit.saturating_add(1);
+        let rows = if let Some(parsed) = parse_turn_cursor(cursor)? {
+            query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_turns
+                WHERE principal_user_id = $1
+                  AND (created_at < $2
+                       OR (created_at = $2 AND turn_id > $3))
+                ORDER BY created_at DESC, turn_id ASC
+                LIMIT $4
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(parsed.created_at)
+            .bind(parsed.turn_id)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?
+        } else {
+            query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_turns
+                WHERE principal_user_id = $1
+                ORDER BY created_at DESC, turn_id ASC
+                LIMIT $2
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?
+        };
+
+        let has_more = rows.len() > limit as usize;
+        let turns: Vec<LifeTurn> = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(turn_from_row)
+            .collect::<LifeStorageResult<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            turns
+                .last()
+                .map(|turn| encode_turn_cursor(turn.created_at.get(), turn.turn_id))
+        } else {
+            None
+        };
+
+        Ok(TurnsPage { turns, next_cursor })
+    }
+
+    /// Lists a cursor-paged window of run events for a principal or a specific run.
+    ///
+    /// When `run_id` is `None`, events are scoped to the principal (all runs).
+    /// When `run_id` is `Some`, events are scoped to that single run.
+    /// The cursor is an opaque string produced by a prior call to this method.
+    pub async fn list_events_page(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: Option<RunId>,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> LifeStorageResult<EventsPage> {
+        let fetch_limit = limit.saturating_add(1);
+        let parsed = parse_event_cursor(cursor)?;
+
+        let rows = match (run_id, parsed) {
+            (Some(rid), None) => query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_events
+                WHERE run_id = $1
+                ORDER BY created_at DESC, run_id ASC, seq DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(rid.as_uuid())
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+            (Some(rid), Some(cur)) => query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_events
+                WHERE run_id = $1
+                  AND (created_at < $2
+                       OR (created_at = $2 AND run_id > $3)
+                       OR (created_at = $2 AND run_id = $3 AND seq < $4))
+                ORDER BY created_at DESC, run_id ASC, seq DESC
+                LIMIT $5
+                "#,
+            )
+            .bind(rid.as_uuid())
+            .bind(cur.created_at)
+            .bind(cur.run_id)
+            .bind(cur.seq)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+            (None, None) => query::<Postgres>(
+                r#"
+                SELECT events.*
+                FROM life_events events
+                INNER JOIN life_runs runs ON runs.run_id = events.run_id
+                WHERE runs.principal_user_id = $1
+                ORDER BY events.created_at DESC, events.run_id ASC, events.seq DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+            (None, Some(cur)) => query::<Postgres>(
+                r#"
+                SELECT events.*
+                FROM life_events events
+                INNER JOIN life_runs runs ON runs.run_id = events.run_id
+                WHERE runs.principal_user_id = $1
+                  AND (events.created_at < $2
+                       OR (events.created_at = $2 AND events.run_id > $3)
+                       OR (events.created_at = $2 AND events.run_id = $3 AND events.seq < $4))
+                ORDER BY events.created_at DESC, events.run_id ASC, events.seq DESC
+                LIMIT $5
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(cur.created_at)
+            .bind(cur.run_id)
+            .bind(cur.seq)
+            .bind(fetch_limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+        };
+
+        let has_more = rows.len() > limit as usize;
+        let events: Vec<LifeEvent> = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(event_from_row)
+            .collect::<LifeStorageResult<Vec<_>>>()?;
+        let next_cursor = if has_more {
+            events
+                .last()
+                .map(|event| encode_event_cursor(event.created_at.get(), event.run_id, event.seq))
+        } else {
+            None
+        };
+
+        Ok(EventsPage {
+            events,
+            next_cursor,
+        })
+    }
+
     /// Lists canonical memory items for a specific generation scope, including candidates/deleted rows.
     pub async fn memory_items_for_generation(
         &self,
@@ -2002,6 +2175,102 @@ fn support_protocol_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<Lif
     })
 }
 
+// ---------------------------------------------------------------------------
+// Cursor-paged response types
+// ---------------------------------------------------------------------------
+
+/// A cursor-paged page of canonical transcript turns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnsPage {
+    /// Turns in this page, ordered newest-first.
+    pub turns: Vec<LifeTurn>,
+    /// Opaque cursor for the next page, or `None` if this is the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// A cursor-paged page of run events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventsPage {
+    /// Events in this page, ordered newest-first.
+    pub events: Vec<LifeEvent>,
+    /// Opaque cursor for the next page, or `None` if this is the last page.
+    pub next_cursor: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Cursor encoding / decoding (opaque to callers)
+// ---------------------------------------------------------------------------
+
+struct TurnCursor {
+    created_at: i64,
+    turn_id: Uuid,
+}
+
+struct EventCursor {
+    created_at: i64,
+    run_id: Uuid,
+    seq: i64,
+}
+
+fn encode_turn_cursor(created_at: i64, turn_id: TurnId) -> String {
+    format!("{created_at}:{turn_id}")
+}
+
+fn encode_event_cursor(created_at: i64, run_id: RunId, seq: i64) -> String {
+    format!("{created_at}:{run_id}:{seq}")
+}
+
+fn parse_turn_cursor(cursor: Option<&str>) -> LifeStorageResult<Option<TurnCursor>> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let cursor = cursor.trim();
+    if cursor.is_empty() {
+        return Ok(None);
+    }
+    let (created_at_str, turn_id_str) = cursor
+        .split_once(':')
+        .ok_or_else(|| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    let created_at: i64 = created_at_str
+        .parse()
+        .map_err(|_| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    let turn_id: Uuid = turn_id_str
+        .parse()
+        .map_err(|_| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    Ok(Some(TurnCursor {
+        created_at,
+        turn_id,
+    }))
+}
+
+fn parse_event_cursor(cursor: Option<&str>) -> LifeStorageResult<Option<EventCursor>> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let cursor = cursor.trim();
+    if cursor.is_empty() {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = cursor.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return Err(LifeStorageError::InvalidCursor(cursor.to_owned()));
+    }
+    let created_at: i64 = parts[0]
+        .parse()
+        .map_err(|_| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    let run_id: Uuid = parts[1]
+        .parse()
+        .map_err(|_| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    let seq: i64 = parts[2]
+        .parse()
+        .map_err(|_| LifeStorageError::InvalidCursor(cursor.to_owned()))?;
+    Ok(Some(EventCursor {
+        created_at,
+        run_id,
+        seq,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -3040,6 +3309,185 @@ mod tests {
         fn now(&self) -> LifeGatewayResult<TimestampMillis> {
             Ok(self.0)
         }
+    }
+
+    #[tokio::test]
+    async fn sqlx_life_turns_and_events_cursor_paging() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let base = TimestampMillis::new(1_700_000_500_000);
+        let principal = LifePrincipal {
+            principal_user_id,
+            profile_state: json!({}),
+            operating_profile: json!({}),
+            settings: json!({}),
+            schema_version: 1,
+            created_at: base,
+            updated_at: base,
+        };
+        must(
+            storage.upsert_principal(&principal).await,
+            "upsert principal",
+        );
+        let gen_record = generation(principal_user_id, 1, MemoryGenerationStatus::Building, base);
+        must(
+            storage.insert_memory_generation(&gen_record).await,
+            "insert generation",
+        );
+        must(
+            storage
+                .activate_memory_generation(
+                    principal_user_id,
+                    gen_record.memory_generation_id,
+                    base,
+                    "paging test",
+                )
+                .await,
+            "activate generation",
+        );
+
+        // Append 5 turns with strictly increasing timestamps.
+        let mut turns = Vec::new();
+        for i in 0..5 {
+            let turn = LifeTurn {
+                turn_id: TurnId::new_v4(),
+                principal_user_id,
+                run_id: None,
+                role: LifeTurnRole::User,
+                source_transport: LifeSourceTransport::Internal,
+                source_ref: None,
+                content: format!("turn-{i}"),
+                attachments: json!([]),
+                transport_metadata: json!({}),
+                redaction_state: RedactionState::Clean,
+                created_at: TimestampMillis::new(base.get() + i),
+            };
+            must(
+                storage.append_turn(&turn).await,
+                &format!("append turn {i}"),
+            );
+            turns.push(turn);
+        }
+
+        // Page 1: limit=2 → newest two turns (turn-4, turn-3) + next_cursor.
+        let page1 = must(
+            storage.list_turns_page(principal_user_id, None, 2).await,
+            "page1",
+        );
+        assert_eq!(page1.turns.len(), 2);
+        assert_eq!(page1.turns[0].content, "turn-4");
+        assert_eq!(page1.turns[1].content, "turn-3");
+        let cursor1 = page1.next_cursor.expect("page1 should have next cursor");
+
+        // Page 2: using cursor → next two turns (turn-2, turn-1) + next_cursor.
+        let page2 = must(
+            storage
+                .list_turns_page(principal_user_id, Some(&cursor1), 2)
+                .await,
+            "page2",
+        );
+        assert_eq!(page2.turns.len(), 2);
+        assert_eq!(page2.turns[0].content, "turn-2");
+        assert_eq!(page2.turns[1].content, "turn-1");
+        let cursor2 = page2.next_cursor.expect("page2 should have next cursor");
+
+        // Page 3: using cursor → last turn (turn-0) + no next_cursor.
+        let page3 = must(
+            storage
+                .list_turns_page(principal_user_id, Some(&cursor2), 2)
+                .await,
+            "page3",
+        );
+        assert_eq!(page3.turns.len(), 1);
+        assert_eq!(page3.turns[0].content, "turn-0");
+        assert!(page3.next_cursor.is_none(), "page3 should be the last");
+
+        // Invalid cursor → InvalidCursor error.
+        let bad = storage
+            .list_turns_page(principal_user_id, Some("not-a-cursor"), 2)
+            .await
+            .expect_err("malformed cursor should fail");
+        assert!(matches!(bad, LifeStorageError::InvalidCursor(_)));
+
+        // Events paging: create a run and append events.
+        let run_id = RunId::new_v4();
+        let active = must(
+            storage.active_generation(principal_user_id).await,
+            "load active generation",
+        )
+        .expect("active generation should exist");
+        must(
+            query::<Postgres>(
+                r#"
+                INSERT INTO life_runs (
+                    run_id, principal_user_id, memory_generation_id, status,
+                    started_at, finished_at, last_checkpoint_at, error_text, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, 'completed', $4, $4, $4, NULL, $4, $4)
+                "#,
+            )
+            .bind(run_id.as_uuid())
+            .bind(principal_user_id.get())
+            .bind(active.scope.memory_generation_id.as_uuid())
+            .bind(base.get())
+            .execute(storage.pool())
+            .await
+            .map_err(db_error),
+            "insert run",
+        );
+
+        for i in 0..4 {
+            let seq = must(storage.next_event_seq(run_id).await, &format!("seq {i}"));
+            must(
+                storage
+                    .append_event(&LifeEvent {
+                        event_id: EventId::new_v4(),
+                        run_id,
+                        seq,
+                        kind: format!("kind-{i}"),
+                        payload: json!({"i": i}),
+                        created_at: TimestampMillis::new(base.get() + i * 10),
+                    })
+                    .await,
+                &format!("append event {i}"),
+            );
+        }
+
+        // Events page 1 by run_id: limit=2 → newest two events.
+        let epage1 = must(
+            storage
+                .list_events_page(principal_user_id, Some(run_id), None, 2)
+                .await,
+            "events page1",
+        );
+        assert_eq!(epage1.events.len(), 2);
+        assert_eq!(epage1.events[0].kind, "kind-3");
+        assert_eq!(epage1.events[1].kind, "kind-2");
+        let ecursor1 = epage1.next_cursor.expect("events page1 next cursor");
+
+        // Events page 2 by run_id: remaining two events.
+        let epage2 = must(
+            storage
+                .list_events_page(principal_user_id, Some(run_id), Some(&ecursor1), 2)
+                .await,
+            "events page2",
+        );
+        assert_eq!(epage2.events.len(), 2);
+        assert_eq!(epage2.events[0].kind, "kind-1");
+        assert_eq!(epage2.events[1].kind, "kind-0");
+        assert!(epage2.next_cursor.is_none(), "events page2 should be last");
+
+        // Events by principal (no run_id) returns all 4 in one page.
+        let epage_all = must(
+            storage
+                .list_events_page(principal_user_id, None, None, 100)
+                .await,
+            "events all by principal",
+        );
+        assert_eq!(epage_all.events.len(), 4);
+        assert!(epage_all.next_cursor.is_none());
     }
 
     fn generation(

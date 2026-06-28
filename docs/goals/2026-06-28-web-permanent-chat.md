@@ -87,8 +87,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §9, `migrations/0010_life_mode.sql.pending`, `docs/goals/2026-06-24-permanent-life-memory.md` G3.
   - Acceptance: `0010_life_mode.sql` runs as a normal migration; `life_turns`, `life_inputs`, `life_runs`, `life_events`, `agent_memory_snapshots(principal, "life", "main")` are usable for web permanent chat; startup migrations succeed on a clean Postgres.
   - Evidence required: migration file rename + `cargo test -p oxide-agent-life` real-Postgres test passing; `INFO FOR TABLE life_turns`/`life_runs`/`life_events` output.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Renamed `migrations/0010_life_mode.sql.pending` → `migrations/0010_life_mode.sql`. `cargo test -p oxide-agent-life` all 30 tests pass including real-Postgres SQLx tests (`sqlx_life_storage_migrates_and_scopes_memory_by_active_generation`, `sqlx_life_gateway_submit_persists_turn_metadata_and_input`, `sqlx_life_turns_and_events_cursor_paging`, `sqlx_life_worker_claim_start_complete_and_drain_are_db_backed`, `sqlx_life_link_tokens_and_wipe_lifecycle_are_db_backed`) — migration ran on clean Postgres.
 
 - G2: `POST /api/v1/life/inputs` starts/attaches a run, not just queues.
   - Source: PRD §12.1, §12.6 step 1-2; current `life_routes.rs` returns `run_id: None`.
@@ -122,8 +122,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: web UX requirement; current `list_turns(principal, 200)` / `list_events(principal, 500)` are unbounded single-page reads.
   - Acceptance: `GET /api/v1/life/turns?cursor=...&limit=...` and `GET /api/v1/life/events?run_id=...&cursor=...&limit=...` return a page plus an opaque next-cursor; cursors are backend-provided and not constructed by the UI.
   - Evidence required: route + repository test proving paging returns correct pages and cursors; contract DTO carries `next_cursor`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `SqlxLifeStorage::list_turns_page(principal, cursor, limit)` and `list_events_page(principal, run_id, cursor, limit)` implemented with opaque cursor encoding (`created_at:turn_id` / `created_at:run_id:seq`). `ApiLifeTurnsResponse` / `ApiLifeEventsResponse` carry `next_cursor: Option<String>` with `#[serde(default)]`. `LifeTurnsQuery` / `LifeEventsQuery` axum query extractors added. `LifeStorageError::InvalidCursor` → HTTP 400. `sqlx_life_turns_and_events_cursor_paging` test verifies 3-page turns traversal, events by run_id and by principal, and invalid cursor rejection. Contract tests verify `next_cursor` serde round-trip.
 
 - G7: Life SSE streams turns, events, and run status from Postgres-backed state.
   - Source: PRD §9.4 "web SSE может читать progress из БД"; current web SSE is task-scoped and broadcast-driven.
@@ -381,6 +381,18 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: none yet.
   - Audit IDs updated: none (planning only).
   - Next: checkpoint C1 (activate migration + storage paging contract).
+
+- 2026-06-28 C1: Activate migration + storage paging contract.
+  - Changed:
+    - `migrations/0010_life_mode.sql.pending` → `migrations/0010_life_mode.sql` (activated migration).
+    - `crates/oxide-agent-life/src/storage/repository.rs`: added `LifeStorageError::InvalidCursor`.
+    - `crates/oxide-agent-life/src/storage/sqlx.rs`: added `TurnsPage`, `EventsPage` types; `list_turns_page`, `list_events_page` methods with opaque cursor encoding; `TurnCursor`/`EventCursor` parse/encode helpers; `sqlx_life_turns_and_events_cursor_paging` test.
+    - `crates/oxide-agent-web-contracts/src/life.rs`: added `next_cursor: Option<String>` to `ApiLifeTurnsResponse` and `ApiLifeEventsResponse`; paging serde contract tests.
+    - `crates/oxide-agent-transport-web/src/server/life_routes.rs`: `LifeTurnsQuery`/`LifeEventsQuery` axum extractors; `api_list_life_turns`/`api_list_life_events` now accept `Query<...>`; `list_life_turns_for_user`/`list_life_events_for_user` use paging; `life_storage_error_response` maps `InvalidCursor` → 400.
+  - Evidence: `cargo test -p oxide-agent-life` 30/30 pass (incl. real-Postgres). `cargo test -p oxide-agent-web-contracts` 13/13 pass. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-life --all-targets -- -D warnings` pass.
+  - Commands: `cargo test -p oxide-agent-life`, `cargo test -p oxide-agent-web-contracts`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`.
+  - Audit IDs updated: G1 → verified, G6 → verified.
+  - Next: checkpoint C2 (runtime wake + run-bound turn linkage).
 
 ## Risks and Blockers
 

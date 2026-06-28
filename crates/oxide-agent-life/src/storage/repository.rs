@@ -78,6 +78,9 @@ pub enum LifeStorageError {
         /// Principal without active generation.
         principal_user_id: PrincipalUserId,
     },
+    /// A paging cursor was malformed or could not be parsed.
+    #[error("invalid life paging cursor: {0}")]
+    InvalidCursor(String),
 }
 
 /// Claimed input plus the persisted run created for it.

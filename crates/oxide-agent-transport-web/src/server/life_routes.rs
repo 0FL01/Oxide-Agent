@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
 };
@@ -21,6 +21,7 @@ use oxide_agent_web_contracts::{
     ApiLifeSubmitRequest, ApiLifeSubmitResponse, ApiLifeSupportProtocolsResponse,
     ApiLifeTaskStatesResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope,
 };
+use serde::Deserialize;
 
 use super::{AppState, api_error, authenticated_user_with_csrf};
 
@@ -33,15 +34,15 @@ use oxide_agent_life::{
         LifeMemoryGeneration, LifeMemoryItem, LifeSourceTransport, LifeSupportProtocol,
         LifeTaskState, LifeTurn, LifeTurnRole, MemoryAuthority, MemoryGenerationId,
         MemoryGenerationStatus, MemoryItemId, MemoryItemKind, MemoryItemStatus, MemorySensitivity,
-        PrincipalUserId, ProviderSubject, RedactionState, SupportStateStatus, TaskStateStatus,
-        TimestampMillis,
+        PrincipalUserId, ProviderSubject, RedactionState, RunId, SupportStateStatus,
+        TaskStateStatus, TimestampMillis,
     },
     gateway::{
         LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
         LifePrincipalAllocator,
     },
     linking::{RawLifeLinkToken, hash_link_token},
-    storage::LifeStorageRepository,
+    storage::{LifeStorageError, LifeStorageRepository},
 };
 
 pub(crate) async fn api_submit_life_input(
@@ -88,17 +89,19 @@ pub(crate) async fn api_get_life_profile(
 pub(crate) async fn api_list_life_turns(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<LifeTurnsQuery>,
 ) -> Result<Json<ApiLifeTurnsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
-    list_life_turns_for_user(&state, user.user_id).await
+    list_life_turns_for_user(&state, user.user_id, query).await
 }
 
 pub(crate) async fn api_list_life_events(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<LifeEventsQuery>,
 ) -> Result<Json<ApiLifeEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
-    list_life_events_for_user(&state, user.user_id).await
+    list_life_events_for_user(&state, user.user_id, query).await
 }
 
 pub(crate) async fn api_list_life_memories(
@@ -185,6 +188,26 @@ pub(crate) async fn api_privacy_hard_wipe_life(
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     privacy_hard_wipe_life_for_user(&state, user.user_id).await
 }
+
+/// Query parameters for `GET /api/v1/life/turns`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LifeTurnsQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// Query parameters for `GET /api/v1/life/events`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LifeEventsQuery {
+    pub run_id: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+const DEFAULT_LIFE_TURNS_PAGE_LIMIT: i64 = 50;
+const MAX_LIFE_TURNS_PAGE_LIMIT: i64 = 200;
+const DEFAULT_LIFE_EVENTS_PAGE_LIMIT: i64 = 100;
+const MAX_LIFE_EVENTS_PAGE_LIMIT: i64 = 500;
 
 #[cfg(feature = "storage-sqlx")]
 async fn submit_life_input_for_user(
@@ -359,25 +382,32 @@ async fn life_profile_for_user(
 async fn list_life_turns_for_user(
     state: &AppState,
     web_user_id: i64,
+    query: LifeTurnsQuery,
 ) -> Result<Json<ApiLifeTurnsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let life_storage = state
         .life_storage()
         .ok_or_else(life_storage_unavailable_response)?;
     let principal = PrincipalUserId::new(web_user_id).map_err(life_domain_error_response)?;
-    let turns = life_storage
-        .list_turns(principal, 200)
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIFE_TURNS_PAGE_LIMIT)
+        .clamp(1, MAX_LIFE_TURNS_PAGE_LIMIT);
+    let page = life_storage
+        .list_turns_page(principal, query.cursor.as_deref(), limit)
         .await
-        .map_err(life_storage_error_response)?
-        .into_iter()
-        .map(api_turn)
-        .collect();
-    Ok(Json(ApiLifeTurnsResponse { turns }))
+        .map_err(life_storage_error_response)?;
+    let turns = page.turns.into_iter().map(api_turn).collect();
+    Ok(Json(ApiLifeTurnsResponse {
+        turns,
+        next_cursor: page.next_cursor,
+    }))
 }
 
 #[cfg(not(feature = "storage-sqlx"))]
 async fn list_life_turns_for_user(
     _state: &AppState,
     _web_user_id: i64,
+    _query: LifeTurnsQuery,
 ) -> Result<Json<ApiLifeTurnsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     Err(life_storage_unavailable_response())
 }
@@ -386,25 +416,41 @@ async fn list_life_turns_for_user(
 async fn list_life_events_for_user(
     state: &AppState,
     web_user_id: i64,
+    query: LifeEventsQuery,
 ) -> Result<Json<ApiLifeEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let life_storage = state
         .life_storage()
         .ok_or_else(life_storage_unavailable_response)?;
     let principal = PrincipalUserId::new(web_user_id).map_err(life_domain_error_response)?;
-    let events = life_storage
-        .list_events(principal, 500)
+    let run_id = query
+        .run_id
+        .as_deref()
+        .map(|s| {
+            s.parse::<uuid::Uuid>().map(RunId::from_uuid).map_err(|_| {
+                life_storage_error_response(LifeStorageError::InvalidCursor(s.to_owned()))
+            })
+        })
+        .transpose()?;
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LIFE_EVENTS_PAGE_LIMIT)
+        .clamp(1, MAX_LIFE_EVENTS_PAGE_LIMIT);
+    let page = life_storage
+        .list_events_page(principal, run_id, query.cursor.as_deref(), limit)
         .await
-        .map_err(life_storage_error_response)?
-        .into_iter()
-        .map(api_event)
-        .collect();
-    Ok(Json(ApiLifeEventsResponse { events }))
+        .map_err(life_storage_error_response)?;
+    let events = page.events.into_iter().map(api_event).collect();
+    Ok(Json(ApiLifeEventsResponse {
+        events,
+        next_cursor: page.next_cursor,
+    }))
 }
 
 #[cfg(not(feature = "storage-sqlx"))]
 async fn list_life_events_for_user(
     _state: &AppState,
     _web_user_id: i64,
+    _query: LifeEventsQuery,
 ) -> Result<Json<ApiLifeEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     Err(life_storage_unavailable_response())
 }
@@ -1114,12 +1160,17 @@ fn validation_error(message: String) -> (StatusCode, Json<ErrorEnvelope>) {
 fn life_storage_error_response(
     error: oxide_agent_life::storage::LifeStorageError,
 ) -> (StatusCode, Json<ErrorEnvelope>) {
-    api_error(
-        StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::BackendUnavailable,
-        error.to_string(),
-        true,
-    )
+    let (status, code, retryable) = match &error {
+        LifeStorageError::InvalidCursor(_) => {
+            (StatusCode::BAD_REQUEST, ErrorCode::ValidationError, false)
+        }
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::BackendUnavailable,
+            true,
+        ),
+    };
+    api_error(status, code, error.to_string(), retryable)
 }
 
 #[cfg(feature = "storage-sqlx")]
