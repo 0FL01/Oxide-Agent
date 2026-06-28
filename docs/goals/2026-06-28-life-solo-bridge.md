@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 initial contract
+Last updated: 2026-06-28 B1 bridge config contract
 
 ## Objective
 
@@ -70,8 +70,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §1, §8 B1, §10 out of scope.
   - Acceptance: config/docs/code use bridge/chat ownership wording; `LIFE_OWNER_WEB_LOGIN`, `LIFE_TELEGRAM_BOT_TOKEN`, and `LIFE_TELEGRAM_CHAT_ID` are the configured solo bridge inputs; no new Engram/curator/memory-generation code is introduced.
   - Evidence required: diff/code review; grep for removed memory-first bridge paths; relevant config docs/tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B1 documented the solo bridge env contract in `.env.example`, `README.md`, and `docs/deploy.md`: `LIFE_OWNER_WEB_LOGIN`, `LIFE_TELEGRAM_BOT_TOKEN`, and `LIFE_TELEGRAM_CHAT_ID`. `README.md` explicitly distinguishes the dedicated Life Telegram bot from ordinary Agent Mode `TELEGRAM_TOKEN` and states the milestone is chat synchronization, not memory/curator UX. `git diff --check`, targeted env grep, and `cargo fmt --all -- --check` passed. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with pre-existing warnings only; B1 changed no Rust code. Grep for stale `LIFE_WEB_USER_LOGIN` returned no matches.
 
 - G2: Life core uses an open transport id contract.
   - Source: PRD §5.1, §8 B2.
@@ -149,8 +149,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: `AGENTS.md` secret refs/instructions.
   - Acceptance: bot tokens/env values are read from config/env, never written to prompts, memory, logs, docs, tests, or goal evidence.
   - Evidence required: code review/grep for token logging or persistence; tests use fake/redacted values.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: B1 documents only placeholder/redacted values (`YOUR_DEDICATED_LIFE_BOT_TOKEN`, numeric example chat ids) and does not add token logging or persistence. Real env secrets remain outside repo. Full Q2 remains open for B3/B7/B8 code paths that will read and deliver with the token.
 
 - Q3: Existing Web `/life` behavior remains functional.
   - Source: PRD §2, §3.1.
@@ -172,15 +172,15 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §1, §10.
   - Must preserve: bridge milestone remains ordinary chat synchronization.
   - Evidence required: diff/grep review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B1 changed only `.env.example`, `README.md`, `docs/deploy.md`, and this goal doc. Targeted code grep found only the existing Wiki memory curator prompt in `oxide-agent-core`, outside Life bridge and untouched; no Life Engram/curator/memory-generation code was added.
 
 - N2: Do not implement multi-user linking/token exchange.
   - Source: PRD §4.1, §10.
   - Must preserve: solo owner env/config binding model only.
   - Evidence required: diff/code review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B1 documents explicit solo-owner env/config bindings only. No token-linking flow, account discovery, multi-user link tables, or runtime code paths were added.
 
 - N3: Do not require `/life` in the dedicated Telegram bot.
   - Source: PRD §3.2, user correction.
@@ -275,6 +275,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commit: `docs(life): add solo bridge goal contract`.
   - Audit IDs updated: none verified yet.
   - Next: create in-session goal pointing to this document; start B1 verification/design.
+
+- 2026-06-28 B1 bridge config contract
+  - Changed: added Permanent Life Mode solo bridge config contract to `.env.example`, `README.md`, and `docs/deploy.md`; kept ordinary `TELEGRAM_TOKEN` distinct from dedicated `LIFE_TELEGRAM_BOT_TOKEN`.
+  - Evidence: targeted grep found canonical env names in config/docs and no stale `LIFE_WEB_USER_LOGIN`; targeted code grep found no new Life memory/Engram/curator code; diff review shows no Rust runtime changes.
+  - Commands: `git diff --check`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G1 verified; N1 verified; N2 verified; Q2 in progress with B1 no-secret-doc evidence.
+  - Next: commit B1; compress; start B2 open transport id.
 
 ## Risks and Blockers
 

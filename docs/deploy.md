@@ -20,6 +20,8 @@ Required for first boot:
 | Telegram | `TELEGRAM_TOKEN`, `TELEGRAM_ALLOWED_USERS` |
 | Web | `OXIDE_WEB_BOOTSTRAP_TOKEN` when registration/bootstrap is enabled |
 
+Permanent Life Mode bridge rollout uses explicit solo-owner bindings rather than token linking: set `LIFE_OWNER_WEB_LOGIN` for the Web `/life` owner, and set `LIFE_TELEGRAM_BOT_TOKEN` plus `LIFE_TELEGRAM_CHAT_ID` for the dedicated Life Telegram bot/chat. Keep `LIFE_TELEGRAM_BOT_TOKEN` separate from the ordinary Agent Mode `TELEGRAM_TOKEN` unless you intentionally run the same bot process for both roles.
+
 Durable storage is SQLx/Postgres only. Old object-storage data is intentionally not imported, read, or dual-written.
 
 ## 2. Start a stack

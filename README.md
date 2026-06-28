@@ -131,6 +131,8 @@ The Web Interface is a Leptos SPA with a dark theme, SSE streaming, and markdown
 | **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
 | **Zhipu AI (ZAI)** | `OPENAI_BASE_PROVIDERS__1__*` | Configure as OpenAI Base profile `zai` for GLM routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 
+Permanent Life Mode bridge setup is solo-owner and explicit: `LIFE_OWNER_WEB_LOGIN` names the Web owner account, while `LIFE_TELEGRAM_BOT_TOKEN` + `LIFE_TELEGRAM_CHAT_ID` configure a dedicated Telegram Life bot/chat. This is separate from the ordinary Agent Mode `TELEGRAM_TOKEN`; the bridge milestone is ordinary chat synchronization across interfaces, not a memory/curator UX.
+
 For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
 
 ### Supported LLM Providers for Agent Mode
@@ -194,6 +196,11 @@ OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
 OXIDE_DATABASE_MAX_CONNECTIONS=5
 OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
 OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
+
+# Permanent Life Mode solo bridge (optional/planned rollout)
+# LIFE_OWNER_WEB_LOGIN=alice
+# LIFE_TELEGRAM_BOT_TOKEN=YOUR_DEDICATED_LIFE_BOT_TOKEN
+# LIFE_TELEGRAM_CHAT_ID=123456789
 
 # API Keys
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
