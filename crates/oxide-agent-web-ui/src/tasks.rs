@@ -1,10 +1,10 @@
-mod activity;
-mod composer;
+pub(crate) mod activity;
+pub(crate) mod composer;
 mod delivered_files;
 mod lightbox;
-mod payload;
+pub(crate) mod payload;
 mod profile;
-mod state;
+pub(crate) mod state;
 mod streaming;
 mod task_card;
 mod tool_cards;

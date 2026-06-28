@@ -10,7 +10,7 @@ pub(super) fn payload_str_event(event: &PersistedTaskEvent, key: &str) -> Option
         .map(ToString::to_string)
 }
 
-pub(super) fn is_sub_agent_event(event: &PersistedTaskEvent) -> bool {
+pub(crate) fn is_sub_agent_event(event: &PersistedTaskEvent) -> bool {
     event.payload.get("source").and_then(|value| value.as_str()) == Some("sub_agent")
 }
 

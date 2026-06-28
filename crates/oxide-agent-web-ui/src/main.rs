@@ -31,6 +31,10 @@ mod task_state;
 #[allow(dead_code)]
 #[path = "tasks/versions.rs"]
 mod task_versions;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "life/state.rs"]
+mod life_state;
 
 fn main() {
     #[cfg(target_arch = "wasm32")]

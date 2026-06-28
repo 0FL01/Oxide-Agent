@@ -143,8 +143,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: user requirement "chat with agent (activity, paging and etc)".
   - Acceptance: transcript renders user/assistant turns; composer submits to `/api/v1/life/inputs`; activity drawer shows tool/thinking events for the active/selected run; "Load older" pages transcript and activity via cursors; reload preserves transcript.
   - Evidence required: `trunk build --release` succeeds; manual/E2E verification of submit → response → reload → transcript persists → load older.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Full life chat UI implemented in `crates/oxide-agent-web-ui/src/life/`: `console.rs` (main `LifeConsole` component), `transcript.rs` (turn list with "Load older" paging via `list_life_turns(cursor, limit)`), `composer.rs` (textarea + attachments + submit to `POST /api/v1/life/inputs` via `ApiClient::submit_life_input`, uploads via `ApiClient::upload_life_attachments` to `/api/v1/life/uploads`), `activity.rs` (life activity drawer reusing shared `group_activity_events`/`ActivityItemCard`/`is_chat_visible_event`/`is_useful_event` from `tasks/activity.rs`, with "Load older" paging via `list_life_events(run_id, cursor, limit)`), `streaming.rs` (SSE client subscribing to `/api/v1/life/stream` with `snapshot`/`turn`/`life_event`/`run_status`/`keepalive`/`error` event types, cursor-based reconnect), `state.rs` (event conversion `life_event_to_persisted` + merge helpers). API methods added to `api.rs`: `submit_life_input`, `get_life_state`, `list_life_turns`, `list_life_events`, `upload_life_attachments`, `life_large_input`. Visibility widened `pub(super)` → `pub(crate)` in `tasks/activity.rs`, `tasks/composer.rs`, `tasks/state.rs`, `tasks/payload.rs` for shared rendering reuse. CSS added in `09-pages.css`. `trunk build --release` success. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass. `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings` pass. `cargo test -p oxide-agent-web-ui` 26 pass (21 existing + 5 new life state tests). `cargo fmt --all -- --check` pass. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` 7 pass, 23 ignored. Full E2E (submit → response → reload → transcript persists) deferred to C9 restart survival test.
 
 - G10: Attachments work for permanent chat via stable life endpoints.
   - Source: ordinary web chat attachment path is session-scoped; PRD §19 "без изменения semantics обычных session routes".
@@ -196,22 +196,22 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: user request "without memory tool".
   - Must preserve: Engram/outbox code may exist but must not be activated or surfaced in the web permanent chat path.
   - Evidence required: grep proving no Engram HTTP calls or outbox worker activation in the permanent chat runtime path.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `life/console.rs`, `life/composer.rs`, `life/transcript.rs`, `life/activity.rs`, `life/streaming.rs`, `life/state.rs` — no Engram/outbox/recall references. UI renders only transcript + composer + activity. No memory inspector panels.
 
 - N2: No memory inspector/editor/conflict review UI.
   - Source: user request "without memory tool".
   - Must preserve: existing `/api/v1/life/memories` etc. routes may remain but are not wired into the `/life` UI.
   - Evidence required: UI review proving no memory inspector panels in the life console.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `LifeConsole` in `life/console.rs` renders only `LifeTranscript`, `LifeComposer`, `LifeActivityDrawer`, and `ErrorBanner`. No memory/curator/friction/support-protocol panels. `life/mod.rs` exports only `LifeConsole`.
 
 - N3: No curator/sensitivity-gate UX.
   - Source: user request.
   - Must preserve: curator may run post-run but is not surfaced in the UI; no curator controls in `/life`.
   - Evidence required: UI review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: No curator controls in any life UI module. `life/mod.rs` has no curator/sensitivity imports.
 
 - N4: No Telegram `/life` UX or cross-transport linking in this goal.
   - Source: user request "начнём с web ui".
@@ -471,6 +471,26 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`, `cargo fmt --all -- --check`, `cargo test -p oxide-agent-web-ui`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `trunk build --release`.
   - Audit IDs updated: G8 → verified, N5 → verified (ordinary session routes/sidebar/TaskConsole behavior unchanged — diff shows only additive changes to sessions.rs and components.rs branch).
   - Next: checkpoint C8 (life chat UI — transcript + composer + activity + paging).
+
+- 2026-06-28 09:30: checkpoint C8 — Life chat UI (transcript + composer + activity + paging)
+  - Changed:
+    - `crates/oxide-agent-web-ui/src/life/console.rs`: full `LifeConsole` component with initial load (turns + events + state), SSE streaming, transcript, composer, activity drawer, paging.
+    - `crates/oxide-agent-web-ui/src/life/transcript.rs` (new): `LifeTranscript` renders turns (user=plain text, assistant=markdown) with "Load older" paging.
+    - `crates/oxide-agent-web-ui/src/life/composer.rs` (new): `LifeComposer` with textarea, attachment handling (drag/drop/paste/upload), submit to `/api/v1/life/inputs`.
+    - `crates/oxide-agent-web-ui/src/life/activity.rs` (new): `LifeActivityDrawer` reuses shared `group_activity_events`/`ActivityItemCard` from `tasks/activity.rs`, filters by active run, "Load older" paging.
+    - `crates/oxide-agent-web-ui/src/life/streaming.rs` (new): SSE client for `/api/v1/life/stream` with `snapshot`/`turn`/`life_event`/`run_status`/`keepalive`/`error` events, cursor-based reconnect.
+    - `crates/oxide-agent-web-ui/src/life/state.rs` (new): `life_event_to_persisted` conversion, `merge_turns`/`merge_events` helpers, 5 unit tests.
+    - `crates/oxide-agent-web-ui/src/life/mod.rs`: updated with all new submodules.
+    - `crates/oxide-agent-web-ui/src/api.rs`: added `submit_life_input`, `get_life_state`, `list_life_turns`, `list_life_events`, `upload_life_attachments`, `life_large_input` methods.
+    - `crates/oxide-agent-web-ui/src/main.rs`: added `#[cfg(test)] #[path = "life/state.rs"] mod life_state;` for native test compilation.
+    - `crates/oxide-agent-web-ui/src/tasks.rs`: widened module visibility to `pub(crate)` for `activity`, `composer`, `payload`, `state` (enables reuse from `life/`).
+    - `crates/oxide-agent-web-ui/src/tasks/{activity,composer,payload,state}.rs`: widened `pub(super)` → `pub(crate)` on shared rendering functions.
+    - `crates/oxide-agent-web-ui/Cargo.toml`: added `chrono` dependency (for `DateTime::from_timestamp_millis` in event conversion).
+    - `crates/oxide-agent-web-ui/src/styles/09-pages.css`: replaced placeholder CSS with full life chat UI styles (transcript, turns, empty state, load older, activity toggle, composer).
+  - Evidence: `trunk build --release` success. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass. `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings` pass. `cargo test -p oxide-agent-web-ui` 26 pass (21 existing + 5 new life state tests). `cargo fmt --all -- --check` pass. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo test -p oxide-agent-web-contracts --all-features` 14 pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` 7 pass, 23 ignored.
+  - Commands: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`, `cargo fmt --all -- --check`, `cargo test -p oxide-agent-web-ui`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `trunk build --release`, `cargo test -p oxide-agent-web-contracts --all-features`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G9 → verified, N1 → verified, N2 → verified, N3 → verified.
+  - Next: checkpoint C9 (restart survival + final audit).
 
 ## Risks and Blockers
 

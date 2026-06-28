@@ -1,15 +1,16 @@
 use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
-    AuthUserResponse, BootstrapRequest, CancelTaskResponse, ChangePasswordRequest,
-    CreateAgentProfileRequest, CreateAgentProfileResponse, CreateSessionRequest,
-    CreateSessionResponse, CreateTaskRequest, CreateTaskResponse, CreateTaskVersionRequest,
-    CreateTaskVersionResponse, CurrentUserResponse, ErrorCode, ErrorEnvelope, GetSessionResponse,
-    GetTaskProgressResponse, GetTaskResponse, ListAgentProfilesResponse, ListModelRoutesResponse,
-    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, RegisterRequest,
-    ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse, UpdateAgentProfileRequest,
-    UpdateAgentProfileResponse, UpdateSessionProfileRequest, UpdateSessionRequest,
-    UpdateSessionResponse, UpdateUserSettingsRequest, UploadTaskAttachmentsResponse,
-    UserSettingsResponse,
+    ApiLifeEventsResponse, ApiLifeLargeInputRequest, ApiLifeStateResponse, ApiLifeSubmitRequest,
+    ApiLifeSubmitResponse, ApiLifeTurnsResponse, AuthUserResponse, BootstrapRequest,
+    CancelTaskResponse, ChangePasswordRequest, CreateAgentProfileRequest,
+    CreateAgentProfileResponse, CreateSessionRequest, CreateSessionResponse, CreateTaskRequest,
+    CreateTaskResponse, CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse,
+    ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
+    ListAgentProfilesResponse, ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse,
+    LoginRequest, OkResponse, RegisterRequest, ResumeTaskRequest, ResumeTaskResponse,
+    TaskEventsResponse, UpdateAgentProfileRequest, UpdateAgentProfileResponse,
+    UpdateSessionProfileRequest, UpdateSessionRequest, UpdateSessionResponse,
+    UpdateUserSettingsRequest, UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt;
@@ -353,6 +354,84 @@ impl ApiClient {
             "/api/v1/sessions/{session_id}/tasks/{task_id}/cancel"
         ))
         .await
+    }
+
+    // ── Life API ──────────────────────────────────────────────────────────
+
+    pub async fn submit_life_input(
+        &self,
+        request: &ApiLifeSubmitRequest,
+    ) -> Result<ApiLifeSubmitResponse, ApiClientError> {
+        self.post("/api/v1/life/inputs", request, true).await
+    }
+
+    pub async fn get_life_state(&self) -> Result<ApiLifeStateResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get("/api/v1/life/state"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn list_life_turns(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<ApiLifeTurnsResponse, ApiClientError> {
+        let path = match cursor {
+            Some(cursor) => format!("/api/v1/life/turns?limit={limit}&cursor={cursor}"),
+            None => format!("/api/v1/life/turns?limit={limit}"),
+        };
+        decode(with_credentials(Request::get(&path)).send().await?).await
+    }
+
+    pub async fn list_life_events(
+        &self,
+        run_id: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<ApiLifeEventsResponse, ApiClientError> {
+        let mut path = format!("/api/v1/life/events?limit={limit}");
+        if let Some(run_id) = run_id {
+            path.push_str(&format!("&run_id={run_id}"));
+        }
+        if let Some(cursor) = cursor {
+            path.push_str(&format!("&cursor={cursor}"));
+        }
+        decode(with_credentials(Request::get(&path)).send().await?).await
+    }
+
+    pub async fn upload_life_attachments(
+        &self,
+        files: &[web_sys::File],
+    ) -> Result<UploadTaskAttachmentsResponse, ApiClientError> {
+        let form_data = web_sys::FormData::new().map_err(|error| {
+            ApiClientError::Browser(format!("form data init failed: {error:?}"))
+        })?;
+        for file in files {
+            form_data
+                .append_with_blob_and_filename("files", file, &file.name())
+                .map_err(|error| {
+                    ApiClientError::Browser(format!(
+                        "failed to append attachment '{}': {error:?}",
+                        file.name()
+                    ))
+                })?;
+        }
+
+        let builder = self.with_csrf(with_credentials(Request::post("/api/v1/life/uploads")))?;
+        decode(builder.body(form_data)?.send().await?).await
+    }
+
+    /// Stage large text content as a file in the life sandbox.
+    /// Available for programmatic use; the composer uses file-upload instead.
+    #[allow(dead_code)]
+    pub async fn life_large_input(
+        &self,
+        request: &ApiLifeLargeInputRequest,
+    ) -> Result<UploadTaskAttachmentsResponse, ApiClientError> {
+        self.post("/api/v1/life/large-input", request, true).await
     }
 
     async fn post<B, T>(&self, path: &str, body: &B, csrf: bool) -> Result<T, ApiClientError>

@@ -231,7 +231,7 @@ pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummar
 ///
 /// Falls back to the last `write_todos` tool-call input when no `TodosUpdated`
 /// event is present (e.g. the task ended before the first update was emitted).
-pub(super) fn latest_pinned_todos(task_events: &[PersistedTaskEvent]) -> Option<Value> {
+pub(crate) fn latest_pinned_todos(task_events: &[PersistedTaskEvent]) -> Option<Value> {
     // Primary: last TodosUpdated event carries the structured TodoList.
     let from_todos_updated = task_events
         .iter()

@@ -261,7 +261,7 @@ fn activity_elapsed_label(
     )))
 }
 
-enum ActivityItem {
+pub(crate) enum ActivityItem {
     Tool {
         call: Option<PersistedTaskEvent>,
         result: Option<PersistedTaskEvent>,
@@ -269,7 +269,7 @@ enum ActivityItem {
     Event(PersistedTaskEvent),
 }
 
-fn group_activity_events(
+pub(crate) fn group_activity_events(
     events: Vec<PersistedTaskEvent>,
     task_is_terminal: bool,
 ) -> Vec<ActivityItem> {
@@ -380,7 +380,7 @@ fn missing_tool_result_event(call: &PersistedTaskEvent) -> PersistedTaskEvent {
 }
 
 #[component]
-fn ActivityItemCard(item: ActivityItem) -> impl IntoView {
+pub(crate) fn ActivityItemCard(item: ActivityItem) -> impl IntoView {
     match item {
         ActivityItem::Tool { call, result } => {
             view! { <ToolCard call=call result=result /> }.into_any()
@@ -526,7 +526,7 @@ fn TodosCard(todos: Value) -> impl IntoView {
     render_todo_list(items, true)
 }
 
-fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
+pub(crate) fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
     matches!(
         kind,
         TaskEventKind::Reasoning
@@ -550,8 +550,7 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
     )
 }
 
-/// Filter out empty reasoning events and other noise.
-fn is_useful_event(event: &PersistedTaskEvent) -> bool {
+pub(crate) fn is_useful_event(event: &PersistedTaskEvent) -> bool {
     if event.kind == TaskEventKind::Reasoning {
         return reasoning_event_summary(event).is_some();
     }

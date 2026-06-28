@@ -11,13 +11,13 @@ use super::profile::{
 };
 
 #[derive(Clone)]
-pub(super) struct PendingAttachmentFile {
-    id: usize,
-    file: web_sys::File,
+pub(crate) struct PendingAttachmentFile {
+    pub(crate) id: usize,
+    pub(crate) file: web_sys::File,
 }
 
 #[component]
-pub(super) fn AgentProfileSelect(
+pub(crate) fn AgentProfileSelect(
     profiles: ReadSignal<Vec<AgentProfileView>>,
     selected_profile: ReadSignal<String>,
     disabled: Signal<bool>,
@@ -49,7 +49,7 @@ pub(super) fn AgentProfileSelect(
 }
 
 #[component]
-pub(super) fn AgentEffortSelect(
+pub(crate) fn AgentEffortSelect(
     selected_effort: ReadSignal<AgentEffort>,
     disabled: Signal<bool>,
     on_change: Callback<leptos::ev::Event>,
@@ -70,7 +70,7 @@ pub(super) fn AgentEffortSelect(
     }
 }
 
-pub(super) fn persist_default_effort(
+pub(crate) fn persist_default_effort(
     auth: AuthContext,
     effort: AgentEffort,
     set_error: WriteSignal<Option<String>>,
@@ -107,7 +107,7 @@ fn selected_profile_missing_option(
 }
 
 #[component]
-pub(super) fn PendingAttachmentList(
+pub(crate) fn PendingAttachmentList(
     attachments: ReadSignal<Vec<PendingAttachmentFile>>,
     set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
 ) -> impl IntoView {
@@ -159,7 +159,7 @@ pub(super) fn PendingAttachmentList(
 }
 
 #[component]
-pub(super) fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoView {
+pub(crate) fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoView {
     if attachments.is_empty() {
         return ().into_any();
     }
@@ -191,19 +191,19 @@ pub(super) fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoV
     .into_any()
 }
 
-pub(super) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile]) -> bool {
+pub(crate) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile]) -> bool {
     !input.trim().is_empty() || !attachments.is_empty()
 }
 
-pub(super) fn task_input_char_count(input: &str) -> usize {
+pub(crate) fn task_input_char_count(input: &str) -> usize {
     input.chars().count()
 }
 
-pub(super) fn task_input_too_long(input: &str, max_chars: usize) -> bool {
+pub(crate) fn task_input_too_long(input: &str, max_chars: usize) -> bool {
     task_input_char_count(input) > max_chars
 }
 
-pub(super) fn task_input_limit_notice(input: &str, max_chars: usize) -> Option<String> {
+pub(crate) fn task_input_limit_notice(input: &str, max_chars: usize) -> Option<String> {
     let count = task_input_char_count(input);
     if count <= max_chars {
         return None;
@@ -213,7 +213,7 @@ pub(super) fn task_input_limit_notice(input: &str, max_chars: usize) -> Option<S
     ))
 }
 
-pub(super) fn handle_composer_drag(
+pub(crate) fn handle_composer_drag(
     ev: &leptos::ev::DragEvent,
     set_drag_active: WriteSignal<bool>,
     active: bool,
@@ -222,7 +222,7 @@ pub(super) fn handle_composer_drag(
     set_drag_active.set(active);
 }
 
-pub(super) fn handle_composer_drop(
+pub(crate) fn handle_composer_drop(
     ev: &leptos::ev::DragEvent,
     set_drag_active: WriteSignal<bool>,
     next_id: ReadSignal<usize>,
@@ -239,12 +239,12 @@ pub(super) fn handle_composer_drop(
     );
 }
 
-pub(super) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSignal<String>) {
+pub(crate) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSignal<String>) {
     set_input.set(event_target_value(ev));
     resize_textarea_from_input_event(ev);
 }
 
-pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textarea>) {
+pub(crate) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textarea>) {
     if let Some(textarea) = textarea_ref.get() {
         use wasm_bindgen::JsCast;
         let el: web_sys::HtmlElement = textarea.unchecked_into();
@@ -252,7 +252,7 @@ pub(super) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textare
     }
 }
 
-pub(super) fn handle_composer_paste(
+pub(crate) fn handle_composer_paste(
     ev: &leptos::ev::ClipboardEvent,
     current_input: &str,
     max_chars: usize,
@@ -299,7 +299,7 @@ pub(super) fn handle_composer_paste(
     append_pending_browser_files(next_id, set_next_id, set_attachments, vec![file]);
 }
 
-pub(super) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
+pub(crate) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
     if !ev.ctrl_key() || ev.key() != "Enter" {
         return;
     }
@@ -334,7 +334,7 @@ fn resize_textarea_from_input_event(ev: &leptos::ev::Event) {
         .ok();
 }
 
-pub(super) fn append_pending_browser_files(
+pub(crate) fn append_pending_browser_files(
     next_id: ReadSignal<usize>,
     set_next_id: WriteSignal<usize>,
     set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
@@ -363,14 +363,14 @@ fn into_pending_attachment_files(
         .collect()
 }
 
-pub(super) fn browser_files(attachments: &[PendingAttachmentFile]) -> Vec<web_sys::File> {
+pub(crate) fn browser_files(attachments: &[PendingAttachmentFile]) -> Vec<web_sys::File> {
     attachments
         .iter()
         .map(|attachment| attachment.file.clone())
         .collect()
 }
 
-pub(super) fn browser_files_from_input_event(ev: &leptos::ev::Event) -> Vec<web_sys::File> {
+pub(crate) fn browser_files_from_input_event(ev: &leptos::ev::Event) -> Vec<web_sys::File> {
     use wasm_bindgen::JsCast;
 
     let Some(target) = ev.target() else {
@@ -440,7 +440,7 @@ fn is_image_file_metadata(mime_type: &str, file_name: &str) -> bool {
     .any(|extension| file_name.ends_with(extension))
 }
 
-pub(super) fn format_attachment_meta(size_bytes: u64, mime_type: String) -> String {
+pub(crate) fn format_attachment_meta(size_bytes: u64, mime_type: String) -> String {
     let size = format_file_size(size_bytes);
     let mime = mime_type.trim();
     if mime.is_empty() {
