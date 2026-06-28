@@ -5,6 +5,7 @@
 //! life inputs without owning memory semantics.
 
 pub mod config;
+pub mod delivery;
 pub mod domain;
 pub mod errors;
 pub mod gateway;

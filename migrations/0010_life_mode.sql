@@ -1,5 +1,5 @@
 -- Permanent Life Mode source-of-truth storage.
--- Scoped to web permanent chat: principals, identity links, turns, runs, inputs, events.
+-- Scoped to solo bridge chat: principals, bindings, turns, runs, inputs, events, delivery outbox.
 -- Engram/curator/memory-generation tables are intentionally excluded — they will be
 -- added in a future migration when that subsystem is designed.
 
@@ -124,3 +124,38 @@ CREATE TABLE life_events (
     created_at BIGINT NOT NULL,
     UNIQUE (run_id, seq)
 );
+
+CREATE TABLE life_delivery_outbox (
+    delivery_id UUID PRIMARY KEY,
+    turn_id UUID NOT NULL REFERENCES life_turns(turn_id) ON DELETE CASCADE,
+    binding_id UUID NOT NULL REFERENCES life_transport_bindings(binding_id) ON DELETE CASCADE,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    transport_id TEXT NOT NULL CHECK (btrim(transport_id) <> ''),
+    delivery_address JSONB NOT NULL CHECK (jsonb_typeof(delivery_address) = 'object'),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'claimed', 'delivered', 'failed', 'dead')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    claimed_by TEXT,
+    claimed_at BIGINT,
+    claim_expires_at BIGINT,
+    next_attempt_at BIGINT NOT NULL,
+    last_error TEXT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE (turn_id, binding_id),
+    CHECK (
+        status <> 'claimed'
+        OR (
+            claimed_by IS NOT NULL
+            AND btrim(claimed_by) <> ''
+            AND claimed_at IS NOT NULL
+            AND claim_expires_at IS NOT NULL
+        )
+    )
+);
+
+CREATE INDEX life_delivery_outbox_claim_idx
+    ON life_delivery_outbox (transport_id, status, next_attempt_at, created_at)
+    WHERE status IN ('queued', 'failed', 'claimed');
+
+CREATE INDEX life_delivery_outbox_turn_idx
+    ON life_delivery_outbox (turn_id, status);

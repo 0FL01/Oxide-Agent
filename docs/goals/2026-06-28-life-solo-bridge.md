@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B6 run lease/reaper
+Last updated: 2026-06-28 B7 delivery outbox
 
 ## Objective
 
@@ -112,8 +112,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §5.5, §6.3, §8 B7.
   - Acceptance: assistant turn persistence enqueues delivery rows for enabled bindings; workers claim/send/retry/dead-letter rows; `LifeAgentExecutor` only persists canonical assistant output and does not call Telegram/Linux/Android APIs.
   - Evidence required: schema/storage tests for outbox enqueue/claim/status transitions; grep proving executor has no Telegram/API delivery calls; delivery worker tests with mocked sender.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B7 added `life_delivery_outbox` with `delivery_id`, `turn_id`, `binding_id`, `principal_user_id`, open `transport_id`, non-secret `delivery_address`, status `queued|claimed|delivered|failed|dead`, attempt count, claim owner/timestamps/expiry, retry time, last error, and timestamps. `LifeAgentExecutor::persist_assistant_turn` now calls storage method `append_assistant_turn_and_enqueue_deliveries`, which atomically inserts the assistant `life_turns` row and delivery rows for enabled bindings; it does not call Telegram/Linux/Android APIs. SQLx test `sqlx_delivery_outbox_enqueue_claim_retry_and_deliver_are_db_backed` verifies assistant-only enqueue, rows for Telegram plus future `linux`, claim content loading, no double-claim before claim expiry, expired claim reclaim, retry scheduling by `next_attempt_at`, delivered status, and dead-letter status. `delivery::tests::delivery_worker_marks_success_delivered` and `delivery_worker_retries_then_dead_letters` verify the transport-neutral worker boundary with mocked senders. Grep for `sendMessage|LIFE_TELEGRAM|TelegramLife|delivery` shows no executor-owned external Telegram/API delivery calls; delivery code in `oxide-agent-life` is transport-neutral.
 
 - G8: Dedicated Telegram adapter does not require `/life`.
   - Source: PRD §3.2, §7.1, §8 B8.
@@ -133,8 +133,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §7, §9 validation.
   - Acceptance: Telegram write appears in Web transcript; Web write enqueues delivery to Telegram; future transport can be represented by binding + adapter without executor semantic changes.
   - Evidence required: integration/unit tests covering Telegram-like binding to Web transcript and Web assistant turn to outbox; code review for future `linux`/`android` transport id test case.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: B7 proves the Web/agent side of outbound sync: assistant turn persistence writes canonical `life_turns` for Web SSE/Postgres transcript and atomically creates durable `life_delivery_outbox` rows for enabled bindings including `telegram` and future `linux`. Full Telegram no-`/life` inbound adapter and real Telegram sender/chunking remain for B8.
 
 ### Quality/compatibility constraints (Q*)
 
@@ -143,21 +143,21 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Acceptance: `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; `oxide-agent-life` remains transport-agnostic; Telegram SDK stays out of web/core/life.
   - Evidence required: `cargo tree`/grep or code review plus workspace check.
   - Status: in_progress
-  - Evidence collected: B2 kept the open transport id in `oxide-agent-life` domain/storage/gateway and updated web/telegram call-sites without adding transport crate dependencies to core/runtime/life. Telegram SDK remains confined to `oxide-agent-transport-telegram`; web executor stores `source_transport="internal"` via `LifeTransportId` and still has no external delivery API. Full Q1 remains open until B7/B8 delivery boundaries are implemented and audited.
+  - Evidence collected: B2 kept the open transport id in `oxide-agent-life` domain/storage/gateway and updated web/telegram call-sites without adding transport crate dependencies to core/runtime/life. Telegram SDK remains confined to `oxide-agent-transport-telegram`; web executor stores `source_transport="internal"` via `LifeTransportId`. B7 added transport-neutral `oxide-agent-life::delivery` traits/worker and SQLx outbox methods; no Telegram SDK or external API client was added to life/core/runtime/web executor. Full Q1 remains open until B8 wires the concrete Telegram adapter and final boundary audit passes.
 
 - Q2: No hidden secret leakage.
   - Source: `AGENTS.md` secret refs/instructions.
   - Acceptance: bot tokens/env values are read from config/env, never written to prompts, memory, logs, docs, tests, or goal evidence.
   - Evidence required: code review/grep for token logging or persistence; tests use fake/redacted values.
   - Status: in_progress
-  - Evidence collected: B1 documents only placeholder/redacted values (`YOUR_DEDICATED_LIFE_BOT_TOKEN`, numeric example chat ids) and does not add token logging or persistence. B3 reads only whether `LIFE_TELEGRAM_BOT_TOKEN` is configured; it never stores the token in `life_transport_bindings`, identity links, logs, or goal evidence. `bootstrap_config_never_exposes_bot_token_value` verifies startup error text does not include a fake token secret. Full Q2 remains open for B7/B8 delivery code paths that will read and use the token.
+  - Evidence collected: B1 documents only placeholder/redacted values (`YOUR_DEDICATED_LIFE_BOT_TOKEN`, numeric example chat ids) and does not add token logging or persistence. B3 reads only whether `LIFE_TELEGRAM_BOT_TOKEN` is configured; it never stores the token in `life_transport_bindings`, identity links, logs, or goal evidence. `bootstrap_config_never_exposes_bot_token_value` verifies startup error text does not include a fake token secret. B7 outbox stores only non-secret `delivery_address` snapshots and assistant turn references/content loaded from Postgres; it does not read, persist, or log bot tokens. Full Q2 remains open for B8 concrete Telegram token usage.
 
 - Q3: Existing Web `/life` behavior remains functional.
   - Source: PRD §2, §3.1.
   - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
   - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
   - Status: in_progress
-  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. B5 preserves the Web route wake contract: fast follow-up submits that receive `WakeOutcome::AttachedToActive` remain queued, and the active worker claims them as separate runs after completion. B6 preserves the same wake/worker route boundary while adding storage-owned lease reaping to claim paths, so an expired crashed run unblocks later Web/Telegram queued input instead of changing the HTTP/SSE contract. `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` passed through B5 with pre-existing core/web warnings only; B6 targeted `cargo test -p oxide-agent-life --lib` passed (21 tests). Full Q3 remains open for route/runtime/UI checks after B7-B8 behavior changes.
+  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. B5 preserves the Web route wake contract: fast follow-up submits that receive `WakeOutcome::AttachedToActive` remain queued, and the active worker claims them as separate runs after completion. B6 preserves the same wake/worker route boundary while adding storage-owned lease reaping to claim paths, so an expired crashed run unblocks later Web/Telegram queued input instead of changing the HTTP/SSE contract. B7 preserves Web transcript/SSE by keeping `life_turns` as canonical source and adding outbox rows atomically after assistant turn persistence; no Web UI/contracts were changed. `cargo test -p oxide-agent-life --lib` passed (24 tests), and workspace `cargo check` plus `cargo test --workspace ... --no-run` passed with pre-existing core/web warnings only. Full Q3 remains open for B8 behavior changes and final route/runtime/UI checks.
 
 - Q4: Validation breadth is monorepo-wide before completion.
   - Source: repo instructions P0.6; PRD §9 code gates.
@@ -270,6 +270,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: Life submit is receiver-resolved by enabled `life_transport_bindings`; transport adapters submit only observed inbound address plus source reference. Principal allocation is outside the submit contract, so an unknown Telegram chat/Linux instance/Android device cannot create hidden Life state.
 - 2026-06-28: Life queue progression is one input per run. A worker may claim the next queued input only after the current run is completed, and `mark_input_consumed` is narrowed to claimed rows only, so queued follow-ups cannot be silently consumed without their content crossing the executor boundary.
 - 2026-06-28: Life run liveness is a storage-owned lease invariant, not a trust assumption about prior workers. Claim transactions reap expired running rows under the principal advisory lock before active-run checks; workers heartbeat their own running lease during executor execution.
+- 2026-06-28: Assistant outbound sync is a storage-owned outbox invariant. `LifeAgentExecutor` atomically persists the assistant turn plus outbox rows but never owns transport API calls; concrete adapters implement the `LifeDeliverySender` boundary and outbox claims have expiry so delivery-worker crashes are recoverable.
 
 ## Progress Log
 
@@ -322,6 +323,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (21 passed); `git diff --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
   - Audit IDs updated: G6 verified; Q3 in progress.
   - Next: run broader B6 validation, commit B6; compress; start B7 delivery outbox.
+
+- 2026-06-28 B7 delivery outbox
+  - Changed: added `DeliveryId`, `LifeDeliveryOutbox`, `ClaimedLifeDelivery`, and transport-neutral `LifeDeliveryWorker`/`LifeDeliverySender`; added durable `life_delivery_outbox` schema with claim expiry; added SQLx atomic assistant-turn+outbox enqueue and claim/deliver/fail/dead transitions; changed `LifeAgentExecutor` to persist assistant turns through the outbox-enqueue storage method.
+  - Evidence: SQLx outbox test covers assistant-only enqueue, Telegram and future `linux` delivery rows, claim/reclaim/retry/deliver/dead-letter transitions, and assistant content loading from Postgres. Mocked delivery worker tests cover successful send, retry scheduling, and dead-letter on retry exhaustion. Grep shows no executor-owned `sendMessage`, Telegram notifier, or `LIFE_TELEGRAM` API path.
+  - Commands: `cargo fmt --all -- --check`; `git diff --check`; `cargo test -p oxide-agent-life --lib` (24 passed); `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G7 verified; G10 in progress; Q1/Q2/Q3 in progress.
+  - Next: commit B7; compress; start B8 dedicated Telegram adapter and plain chunked delivery.
 
 ## Risks and Blockers
 

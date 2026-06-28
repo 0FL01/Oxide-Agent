@@ -11,13 +11,14 @@ use sqlx_postgres::{PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::domain::{
-    BindingId, InputId, LifeEvent, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal,
-    LifeRun, LifeRunStatus, LifeTransportBinding, LifeTransportId, LifeTurn, LifeTurnRole,
-    PrincipalUserId, ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId,
+    BindingId, ClaimedLifeDelivery, DeliveryId, InputId, LifeDeliveryOutbox, LifeDeliveryStatus,
+    LifeEvent, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal, LifeRun, LifeRunStatus,
+    LifeTransportBinding, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId,
+    ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId, validate_delivery_worker_id,
 };
 use crate::storage::{
-    ClaimedLifeInputRun, LIFE_RUN_LEASE_MILLIS, LifeStorageError, LifeStorageRepository,
-    LifeStorageResult,
+    ClaimedLifeInputRun, LIFE_DELIVERY_CLAIM_MILLIS, LIFE_RUN_LEASE_MILLIS, LifeStorageError,
+    LifeStorageRepository, LifeStorageResult,
 };
 
 /// SQLx-backed life storage repository.
@@ -717,6 +718,91 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
+    async fn append_assistant_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>> {
+        if turn.role != LifeTurnRole::Assistant {
+            return Err(LifeStorageError::InvalidOperation(
+                "delivery outbox can only be enqueued for assistant turns".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_turns (
+                turn_id, principal_user_id, run_id, role, source_transport,
+                source_ref, content, attachments, transport_metadata,
+                redaction_state, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "#,
+        )
+        .bind(turn.turn_id.as_uuid())
+        .bind(turn.principal_user_id.get())
+        .bind(turn.run_id.map(crate::domain::RunId::as_uuid))
+        .bind(turn_role_as_str(turn.role))
+        .bind(turn.source_transport.as_str())
+        .bind(&turn.source_ref)
+        .bind(&turn.content)
+        .bind(&turn.attachments)
+        .bind(&turn.transport_metadata)
+        .bind(redaction_state_as_str(turn.redaction_state))
+        .bind(turn.created_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let binding_rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_transport_bindings
+            WHERE principal_user_id = $1 AND enabled = TRUE
+            ORDER BY transport_id ASC, binding_id ASC
+            "#,
+        )
+        .bind(turn.principal_user_id.get())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let mut deliveries = Vec::with_capacity(binding_rows.len());
+        for row in binding_rows {
+            let binding = binding_from_row(row)?;
+            let delivery_id = DeliveryId::new_v4();
+            let inserted = query::<Postgres>(
+                r#"
+                INSERT INTO life_delivery_outbox (
+                    delivery_id, turn_id, binding_id, principal_user_id, transport_id,
+                    delivery_address, status, attempt_count, claimed_by, claimed_at,
+                    claim_expires_at, next_attempt_at, last_error, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'queued', 0, NULL, NULL, NULL, $7, NULL, $7, $7)
+                ON CONFLICT (turn_id, binding_id) DO NOTHING
+                RETURNING *
+                "#,
+            )
+            .bind(delivery_id.as_uuid())
+            .bind(turn.turn_id.as_uuid())
+            .bind(binding.binding_id.as_uuid())
+            .bind(binding.principal_user_id.get())
+            .bind(binding.transport_id.as_str())
+            .bind(&binding.delivery_address)
+            .bind(now.get())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            if let Some(row) = inserted {
+                deliveries.push(delivery_from_row(row)?);
+            }
+        }
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(deliveries)
+    }
+
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
         query::<Postgres>(
             r#"
@@ -1141,6 +1227,132 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .map_err(db_error)?;
         Ok(())
     }
+
+    async fn claim_next_delivery(
+        &self,
+        transport_id: &LifeTransportId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Option<ClaimedLifeDelivery>> {
+        validate_delivery_worker_id(worker_id)?;
+        let row = query::<Postgres>(
+            r#"
+            WITH candidate AS (
+                SELECT delivery_id
+                FROM life_delivery_outbox
+                WHERE transport_id = $1
+                  AND (
+                    (status IN ('queued', 'failed') AND next_attempt_at <= $3)
+                    OR (status = 'claimed' AND claim_expires_at <= $3)
+                  )
+                ORDER BY created_at ASC, delivery_id ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE life_delivery_outbox d
+            SET status = 'claimed',
+                attempt_count = d.attempt_count + 1,
+                claimed_by = $2,
+                claimed_at = $3,
+                claim_expires_at = $4,
+                updated_at = $3
+            FROM candidate
+            WHERE d.delivery_id = candidate.delivery_id
+            RETURNING d.*, (SELECT content FROM life_turns WHERE turn_id = d.turn_id) AS content
+            "#,
+        )
+        .bind(transport_id.as_str())
+        .bind(worker_id.trim())
+        .bind(now.get())
+        .bind(now.get() + LIFE_DELIVERY_CLAIM_MILLIS)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(claimed_delivery_from_row).transpose()
+    }
+
+    async fn mark_delivery_delivered(
+        &self,
+        delivery_id: DeliveryId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_delivery_outbox
+            SET status = 'delivered',
+                claimed_by = NULL,
+                claimed_at = NULL,
+                claim_expires_at = NULL,
+                last_error = NULL,
+                updated_at = $2
+            WHERE delivery_id = $1 AND status = 'claimed'
+            "#,
+        )
+        .bind(delivery_id.as_uuid())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn mark_delivery_failed(
+        &self,
+        delivery_id: DeliveryId,
+        error_text: &str,
+        next_attempt_at: TimestampMillis,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_delivery_outbox
+            SET status = 'failed',
+                claimed_by = NULL,
+                claimed_at = NULL,
+                claim_expires_at = NULL,
+                next_attempt_at = $3,
+                last_error = $2,
+                updated_at = $4
+            WHERE delivery_id = $1 AND status = 'claimed'
+            "#,
+        )
+        .bind(delivery_id.as_uuid())
+        .bind(error_text)
+        .bind(next_attempt_at.get())
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn mark_delivery_dead(
+        &self,
+        delivery_id: DeliveryId,
+        error_text: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_delivery_outbox
+            SET status = 'dead',
+                claimed_by = NULL,
+                claimed_at = NULL,
+                claim_expires_at = NULL,
+                last_error = $2,
+                updated_at = $3
+            WHERE delivery_id = $1 AND status = 'claimed'
+            "#,
+        )
+        .bind(delivery_id.as_uuid())
+        .bind(error_text)
+        .bind(now.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 fn db_error(error: sqlx_core::error::Error) -> LifeStorageError {
@@ -1213,6 +1425,17 @@ fn run_status_from_str(value: &str) -> LifeStorageResult<LifeRunStatus> {
     }
 }
 
+fn delivery_status_from_str(value: &str) -> LifeStorageResult<LifeDeliveryStatus> {
+    match value {
+        "queued" => Ok(LifeDeliveryStatus::Queued),
+        "claimed" => Ok(LifeDeliveryStatus::Claimed),
+        "delivered" => Ok(LifeDeliveryStatus::Delivered),
+        "failed" => Ok(LifeDeliveryStatus::Failed),
+        "dead" => Ok(LifeDeliveryStatus::Dead),
+        other => unknown_enum("life_delivery_status", other),
+    }
+}
+
 fn run_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeRun> {
     Ok(LifeRun {
         run_id: RunId::from_uuid(row.get("run_id")),
@@ -1281,6 +1504,38 @@ fn binding_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeTranspor
         enabled: row.get("enabled"),
         created_at: TimestampMillis::new(row.get("created_at")),
         updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn delivery_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeDeliveryOutbox> {
+    Ok(LifeDeliveryOutbox {
+        delivery_id: DeliveryId::from_uuid(row.get("delivery_id")),
+        turn_id: TurnId::from_uuid(row.get("turn_id")),
+        binding_id: BindingId::from_uuid(row.get("binding_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        transport_id: LifeTransportId::new(row.get::<&str, _>("transport_id"))?,
+        delivery_address: row.get("delivery_address"),
+        status: delivery_status_from_str(row.get::<&str, _>("status"))?,
+        attempt_count: row.get("attempt_count"),
+        claimed_by: row.get("claimed_by"),
+        claimed_at: row
+            .get::<Option<i64>, _>("claimed_at")
+            .map(TimestampMillis::new),
+        claim_expires_at: row
+            .get::<Option<i64>, _>("claim_expires_at")
+            .map(TimestampMillis::new),
+        next_attempt_at: TimestampMillis::new(row.get("next_attempt_at")),
+        last_error: row.get("last_error"),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
+fn claimed_delivery_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<ClaimedLifeDelivery> {
+    let content = row.get("content");
+    Ok(ClaimedLifeDelivery {
+        delivery: delivery_from_row(row)?,
+        content,
     })
 }
 
@@ -1524,6 +1779,219 @@ mod tests {
                 "resolve disabled telegram binding",
             )
             .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlx_delivery_outbox_enqueue_claim_retry_and_deliver_are_db_backed() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_030_000);
+        must(
+            storage
+                .upsert_principal(&LifePrincipal {
+                    principal_user_id,
+                    profile_state: json!({}),
+                    operating_profile: json!({}),
+                    settings: json!({}),
+                    schema_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "upsert principal",
+        );
+
+        let telegram = LifeTransportId::new("telegram").expect("telegram transport");
+        let linux = LifeTransportId::new("linux").expect("linux transport");
+        for (transport_id, address) in [
+            (telegram.clone(), json!({ "chat_id": "424242" })),
+            (linux.clone(), json!({ "instance_id": "desktop-1" })),
+        ] {
+            must(
+                storage
+                    .upsert_transport_binding(&LifeTransportBinding {
+                        binding_id: BindingId::new_v4(),
+                        principal_user_id,
+                        transport_id,
+                        inbound_address: address.clone(),
+                        delivery_address: address,
+                        enabled: true,
+                        created_at: now,
+                        updated_at: now,
+                    })
+                    .await,
+                "upsert binding",
+            );
+        }
+
+        let user_turn = user_turn(principal_user_id, "not assistant", now);
+        let invalid = storage
+            .append_assistant_turn_and_enqueue_deliveries(&user_turn, now)
+            .await
+            .expect_err("user turn must not enqueue deliveries");
+        assert!(matches!(invalid, LifeStorageError::InvalidOperation(_)));
+
+        let assistant_turn = LifeTurn {
+            turn_id: TurnId::new_v4(),
+            principal_user_id,
+            run_id: None,
+            role: LifeTurnRole::Assistant,
+            source_transport: LifeTransportId::new(INTERNAL_TRANSPORT_ID)
+                .expect("internal transport"),
+            source_ref: None,
+            content: "assistant response".to_owned(),
+            attachments: json!([]),
+            transport_metadata: json!({}),
+            redaction_state: RedactionState::Clean,
+            created_at: now,
+        };
+        let deliveries = must(
+            storage
+                .append_assistant_turn_and_enqueue_deliveries(&assistant_turn, now)
+                .await,
+            "append assistant and enqueue deliveries",
+        );
+        assert_eq!(deliveries.len(), 2);
+        assert!(deliveries.iter().all(|delivery| {
+            delivery.turn_id == assistant_turn.turn_id
+                && delivery.principal_user_id == principal_user_id
+                && delivery.status == LifeDeliveryStatus::Queued
+                && delivery.attempt_count == 0
+                && delivery.claimed_by.is_none()
+        }));
+
+        let first_claim_time = TimestampMillis::new(now.get() + 1);
+        let claimed = must(
+            storage
+                .claim_next_delivery(&telegram, "telegram-worker", first_claim_time)
+                .await,
+            "claim telegram delivery",
+        )
+        .expect("telegram delivery should claim");
+        assert_eq!(claimed.content, "assistant response");
+        assert_eq!(claimed.delivery.transport_id.as_str(), "telegram");
+        assert_eq!(claimed.delivery.status, LifeDeliveryStatus::Claimed);
+        assert_eq!(claimed.delivery.attempt_count, 1);
+        assert_eq!(
+            claimed.delivery.claimed_by.as_deref(),
+            Some("telegram-worker")
+        );
+        assert_eq!(
+            claimed.delivery.claim_expires_at,
+            Some(TimestampMillis::new(
+                first_claim_time.get() + LIFE_DELIVERY_CLAIM_MILLIS
+            ))
+        );
+
+        assert!(
+            must(
+                storage
+                    .claim_next_delivery(
+                        &telegram,
+                        "other-worker",
+                        TimestampMillis::new(first_claim_time.get() + 1),
+                    )
+                    .await,
+                "claim before claim expiry",
+            )
+            .is_none(),
+            "non-expired claimed delivery is not double-claimed"
+        );
+
+        let reclaim_time =
+            TimestampMillis::new(first_claim_time.get() + LIFE_DELIVERY_CLAIM_MILLIS + 1);
+        let reclaimed = must(
+            storage
+                .claim_next_delivery(&telegram, "other-worker", reclaim_time)
+                .await,
+            "reclaim expired delivery",
+        )
+        .expect("expired claimed delivery should reclaim");
+        assert_eq!(reclaimed.delivery.delivery_id, claimed.delivery.delivery_id);
+        assert_eq!(reclaimed.delivery.attempt_count, 2);
+        assert_eq!(
+            reclaimed.delivery.claimed_by.as_deref(),
+            Some("other-worker")
+        );
+
+        let retry_at = TimestampMillis::new(reclaim_time.get() + 10_000);
+        must(
+            storage
+                .mark_delivery_failed(
+                    reclaimed.delivery.delivery_id,
+                    "temporary transport error",
+                    retry_at,
+                    reclaim_time,
+                )
+                .await,
+            "mark failed",
+        );
+        assert!(
+            must(
+                storage
+                    .claim_next_delivery(
+                        &telegram,
+                        "telegram-worker",
+                        TimestampMillis::new(retry_at.get() - 1),
+                    )
+                    .await,
+                "claim before retry_at",
+            )
+            .is_none(),
+            "failed delivery is not claimable before next_attempt_at"
+        );
+
+        let retry_claim = must(
+            storage
+                .claim_next_delivery(&telegram, "telegram-worker", retry_at)
+                .await,
+            "claim retry",
+        )
+        .expect("failed delivery should retry at next_attempt_at");
+        assert_eq!(retry_claim.delivery.attempt_count, 3);
+        must(
+            storage
+                .mark_delivery_delivered(retry_claim.delivery.delivery_id, retry_at)
+                .await,
+            "mark delivered",
+        );
+
+        let delivered_row = must(
+            query::<Postgres>(
+                "SELECT status, last_error FROM life_delivery_outbox WHERE delivery_id = $1",
+            )
+            .bind(retry_claim.delivery.delivery_id.as_uuid())
+            .fetch_one(storage.pool())
+            .await,
+            "load delivered row",
+        );
+        assert_eq!(delivered_row.get::<String, _>("status"), "delivered");
+        assert!(
+            delivered_row
+                .get::<Option<String>, _>("last_error")
+                .is_none()
+        );
+
+        let linux_claim = must(
+            storage
+                .claim_next_delivery(&linux, "linux-worker", TimestampMillis::new(now.get() + 2))
+                .await,
+            "claim linux delivery",
+        )
+        .expect("future linux transport delivery should claim");
+        assert_eq!(linux_claim.delivery.transport_id.as_str(), "linux");
+        must(
+            storage
+                .mark_delivery_dead(
+                    linux_claim.delivery.delivery_id,
+                    "permanent adapter error",
+                    TimestampMillis::new(now.get() + 3),
+                )
+                .await,
+            "mark linux dead",
         );
     }
 

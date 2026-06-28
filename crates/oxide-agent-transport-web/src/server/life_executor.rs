@@ -238,12 +238,19 @@ impl LifeAgentExecutor {
             redaction_state: RedactionState::Clean,
             created_at: now,
         };
-        self.life_storage
-            .append_turn(&turn)
+        let deliveries = self
+            .life_storage
+            .append_assistant_turn_and_enqueue_deliveries(&turn, now)
             .await
             .map_err(LifeWorkerError::Storage)?;
         // The assistant turn is created with run_id already set, so no
         // separate link_turn_to_run call is needed.
+        tracing::debug!(
+            run_id = %run_id,
+            turn_id = %turn_id,
+            delivery_count = deliveries.len(),
+            "life assistant turn persisted and delivery outbox enqueued"
+        );
         Ok(turn_id)
     }
 }

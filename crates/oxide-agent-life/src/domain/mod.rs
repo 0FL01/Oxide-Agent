@@ -1,5 +1,6 @@
 //! Pure life-mode domain types.
 
+pub mod delivery;
 pub mod event;
 pub mod identity;
 pub mod ids;
@@ -8,6 +9,7 @@ pub mod principal;
 pub mod run;
 pub mod turn;
 
+pub use delivery::*;
 pub use event::*;
 pub use identity::*;
 pub use ids::*;

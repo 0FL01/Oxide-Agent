@@ -5,8 +5,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    LifeEvent, LifeIdentityLink, LifeInput, LifePrincipal, LifeRun, LifeTransportBinding,
-    LifeTransportId, LifeTurn, PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
+    ClaimedLifeDelivery, DeliveryId, LifeDeliveryOutbox, LifeEvent, LifeIdentityLink, LifeInput,
+    LifePrincipal, LifeRun, LifeTransportBinding, LifeTransportId, LifeTurn, PrincipalUserId,
+    ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Durable running-run lease duration.
@@ -15,6 +16,12 @@ use crate::domain::{
 /// timestamp. Expired leases are reaped before any new claim for the same
 /// principal, so a crashed worker cannot block the queue indefinitely.
 pub const LIFE_RUN_LEASE_MILLIS: i64 = 15 * 60 * 1000;
+
+/// Delivery claim visibility timeout.
+///
+/// Expired claimed rows are eligible for another worker claim, so a delivery
+/// worker crash cannot permanently strand assistant responses.
+pub const LIFE_DELIVERY_CLAIM_MILLIS: i64 = 5 * 60 * 1000;
 
 /// Result alias for life storage operations.
 pub type LifeStorageResult<T> = Result<T, LifeStorageError>;
@@ -34,6 +41,9 @@ pub enum LifeStorageError {
     /// JSON serialization failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// A repository method was called with an invalid domain operation.
+    #[error("invalid life storage operation: {0}")]
+    InvalidOperation(String),
     /// A provider subject is already linked to another principal.
     #[error("life identity link conflict for {transport_id}:{provider_subject}")]
     IdentityLinkConflict {
@@ -104,6 +114,13 @@ pub trait LifeStorageRepository: Send + Sync {
 
     /// Appends a canonical transcript turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
+
+    /// Atomically appends an assistant turn and enqueues delivery rows for enabled bindings.
+    async fn append_assistant_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>>;
 
     /// Enqueues a canonical user input for future worker processing.
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
@@ -186,5 +203,37 @@ pub trait LifeStorageRepository: Send + Sync {
         run_id: RunId,
         finished_at: TimestampMillis,
         error_text: &str,
+    ) -> LifeStorageResult<()>;
+
+    /// Claims the next due delivery row for a transport.
+    async fn claim_next_delivery(
+        &self,
+        transport_id: &LifeTransportId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Option<ClaimedLifeDelivery>>;
+
+    /// Marks a claimed delivery row delivered.
+    async fn mark_delivery_delivered(
+        &self,
+        delivery_id: DeliveryId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Marks a claimed delivery row retryable after a later attempt time.
+    async fn mark_delivery_failed(
+        &self,
+        delivery_id: DeliveryId,
+        error_text: &str,
+        next_attempt_at: TimestampMillis,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()>;
+
+    /// Marks a claimed delivery row permanently dead.
+    async fn mark_delivery_dead(
+        &self,
+        delivery_id: DeliveryId,
+        error_text: &str,
+        now: TimestampMillis,
     ) -> LifeStorageResult<()>;
 }
