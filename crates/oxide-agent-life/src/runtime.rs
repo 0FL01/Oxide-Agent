@@ -192,7 +192,10 @@ where
                 let run_id = claimed.run.run_id;
                 let turn_id = claimed.input.turn_id;
                 self.store.link_turn_to_run(turn_id, run_id).await?;
-                Ok(WakeOutcome::Started { run_id, claimed: Box::new(claimed) })
+                Ok(WakeOutcome::Started {
+                    run_id,
+                    claimed: Box::new(claimed),
+                })
             }
             None => {
                 let active = self.store.find_active_run(principal_user_id).await?;
@@ -323,6 +326,7 @@ mod tests {
                 created_at: now,
                 updated_at: now,
             },
+            user_content: "test user content".to_owned(),
         };
 
         let store = FakeRuntimeStore::with_claim(claimed);

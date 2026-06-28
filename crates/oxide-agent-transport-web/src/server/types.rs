@@ -323,8 +323,12 @@ impl AppState {
         let life_storage = Arc::new(SqlxLifeStorage::new(sqlx_storage.pool().clone()));
 
         // Construct the life runtime handle and worker for permanent chat.
-        // The executor is a noop stub until C3 wires the real AgentExecutor adapter.
-        let executor: LifeExecutor = Arc::new(NoopLifeRunExecutor);
+        // The executor adapter reuses the ordinary AgentExecutor with a stable
+        // life memory scope (principal, "life", "main").
+        let executor: LifeExecutor = Arc::new(super::life_executor::LifeAgentExecutor::new(
+            &session_manager,
+            life_storage.clone(),
+        ));
         let life_worker: LifeWorkerHandle = Arc::new(LifeWorker::new(
             life_storage.as_ref().clone(),
             executor,
@@ -752,38 +756,6 @@ pub(crate) fn is_production_run_mode() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Noop life run executor (placeholder until C3 wires the real AgentExecutor)
 // ---------------------------------------------------------------------------
-
-#[cfg(feature = "storage-sqlx")]
-use oxide_agent_life::domain::TimestampMillis;
-#[cfg(feature = "storage-sqlx")]
-use oxide_agent_life::worker::{
-    LifeRunExecutionOutcome, LifeWorkerError, LifeWorkerResult, LifeWorkerRunContext,
-};
-
-/// Placeholder executor that completes immediately with an empty checkpoint.
-/// This will be replaced by a real `AgentExecutor` adapter in checkpoint C3.
-#[cfg(feature = "storage-sqlx")]
-#[derive(Default)]
-struct NoopLifeRunExecutor;
-
-#[cfg(feature = "storage-sqlx")]
-#[async_trait]
-impl LifeRunExecutor for NoopLifeRunExecutor {
-    async fn execute_life_run(
-        &self,
-        _context: LifeWorkerRunContext,
-    ) -> LifeWorkerResult<LifeRunExecutionOutcome> {
-        let duration = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| LifeWorkerError::Clock(error.to_string()))?;
-        let millis = i64::try_from(duration.as_millis())
-            .map_err(|error| LifeWorkerError::Clock(error.to_string()))?;
-        Ok(LifeRunExecutionOutcome {
-            final_checkpoint_at: TimestampMillis::new(millis),
-            final_memory: serde_json::json!({}),
-            final_memory_schema_version: 1,
-        })
-    }
-}
+// Life run executor — real adapter lives in life_executor.rs
+// ---------------------------------------------------------------------------

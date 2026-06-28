@@ -1052,10 +1052,15 @@ impl LifeStorageRepository for SqlxLifeStorage {
 
         let input_row = query::<Postgres>(
             r#"
-            UPDATE life_inputs
-            SET status = 'claimed', claimed_by = $3, claimed_at = $4, updated_at = $4
-            WHERE input_id = $1 AND principal_user_id = $2 AND status = 'queued'
-            RETURNING *
+            WITH claimed AS (
+                UPDATE life_inputs
+                SET status = 'claimed', claimed_by = $3, claimed_at = $4, updated_at = $4
+                WHERE input_id = $1 AND principal_user_id = $2 AND status = 'queued'
+                RETURNING *
+            )
+            SELECT claimed.*, lt.content AS user_content
+            FROM claimed
+            JOIN life_turns lt ON lt.turn_id = claimed.turn_id
             "#,
         )
         .bind(input_id.as_uuid())
@@ -1069,6 +1074,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
             tx.commit().await.map_err(db_error)?;
             return Ok(None);
         };
+        let user_content: String = input_row.get("user_content");
 
         let active_row = query::<Postgres>(
             r#"
@@ -1120,6 +1126,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
                 created_at: now,
                 updated_at: now,
             },
+            user_content,
         }))
     }
 
@@ -3198,6 +3205,7 @@ mod tests {
             claimed.run.memory_generation_id,
             active.scope.memory_generation_id
         );
+        assert_eq!(claimed.user_content, "first");
 
         let second_claim = must(
             storage
@@ -3394,6 +3402,7 @@ mod tests {
             "claim input and start run",
         )
         .expect("input should be claimed");
+        assert_eq!(_claimed.user_content, "hello");
 
         // find_active_run should now return the running run.
         let active = must(

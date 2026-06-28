@@ -65,6 +65,8 @@ pub struct ClaimedLifeRun {
     pub stable_memory_scope: StableLifeMemoryScope,
     /// Claimed input that started the run.
     pub input: LifeInput,
+    /// User turn content loaded from `life_turns` at claim time.
+    pub user_content: String,
 }
 
 impl From<ClaimedLifeInputRun> for ClaimedLifeRun {
@@ -77,6 +79,7 @@ impl From<ClaimedLifeInputRun> for ClaimedLifeRun {
             ),
             stable_memory_scope: StableLifeMemoryScope::for_principal(value.run.principal_user_id),
             input: value.input,
+            user_content: value.user_content,
         }
     }
 }
@@ -454,14 +457,11 @@ where
         match self.executor.execute_life_run(context).await {
             Ok(outcome) => {
                 let finished_at = self.clock.now()?;
-                self.store
-                    .save_life_memory_checkpoint(
-                        &claimed_run.stable_memory_scope,
-                        &outcome.final_memory,
-                        outcome.final_memory_schema_version,
-                        outcome.final_checkpoint_at,
-                    )
-                    .await?;
+                // The adapter is responsible for durable memory checkpoint
+                // persistence (via StorageFlowCheckpoint + forced
+                // persist_memory_checkpoint). The worker does NOT call
+                // save_life_memory_checkpoint — that would be a double-write
+                // bypassing the proper AgentMemory serialization path.
                 self.store
                     .mark_input_consumed(claimed_run.input.input_id, finished_at)
                     .await?;
@@ -554,13 +554,9 @@ mod tests {
         assert_eq!(stable_memory_scope.flow_id, LIFE_FLOW_ID);
         assert_eq!(store.completed_runs.lock().expect("lock").len(), 1);
         assert_eq!(*store.consumed_inputs.lock().expect("lock"), vec![input_id]);
-        let checkpoints = store.checkpoints.lock().expect("lock");
-        assert_eq!(checkpoints.len(), 1);
-        assert_eq!(checkpoints[0].0.context_key, LIFE_CONTEXT_KEY);
-        assert_eq!(checkpoints[0].0.flow_id, LIFE_FLOW_ID);
-        assert_eq!(checkpoints[0].1, json!({"checkpoint": "final"}));
-        assert_eq!(checkpoints[0].2, 1);
-        assert_eq!(checkpoints[0].3, TimestampMillis::new(30));
+        // Worker no longer saves checkpoints — the adapter handles durable
+        // memory persistence via StorageFlowCheckpoint.
+        assert!(store.checkpoints.lock().expect("lock").is_empty());
         assert_eq!(store.event_kinds(), vec!["run_started", "run_completed"]);
 
         let context = seen_context
@@ -576,6 +572,7 @@ mod tests {
             context.run.stable_memory_scope.context_key,
             LIFE_CONTEXT_KEY
         );
+        assert_eq!(context.run.user_content, "test user content");
     }
 
     #[tokio::test]
@@ -728,7 +725,11 @@ mod tests {
                 created_at: now,
                 updated_at: now,
             };
-            Self::new(Some(ClaimedLifeInputRun { input, run }))
+            Self::new(Some(ClaimedLifeInputRun {
+                input,
+                run,
+                user_content: "test user content".to_owned(),
+            }))
         }
 
         fn without_claim() -> Self {

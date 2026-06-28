@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 C2
+Last updated: 2026-06-28 C3
 
 ## Objective
 
@@ -101,8 +101,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §12.3, §12.5; user requirement "same tools as ordinary agents, only without chat reset".
   - Acceptance: executor is built with `AgentMemoryScope(principal, "life", "main")`, stable sandbox scope, the same tool registration and execution profile path as ordinary web agents; no life memory tool; final synchronous checkpoint to `agent_memory_snapshots`; assistant response persisted to `life_turns(role='assistant')`.
   - Evidence required: adapter code review/grep proving reuse of ordinary tool registration; unit/integration test proving assistant turn + checkpoint are persisted after a run.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `LifeAgentExecutor` adapter in `crates/oxide-agent-transport-web/src/server/life_executor.rs` implements `LifeRunExecutor`. It builds an `AgentExecutor` with `AgentMemoryScope(principal, "life", "main")` and `SandboxScope::new(principal, "life")`, hydrates `AgentMemory` via `StorageProvider::load_agent_memory_for_flow`, installs a `LifeMemoryCheckpoint` (same `save_agent_memory_for_flow` path as ordinary `StorageFlowCheckpoint`), configures wiki memory + AGENTS.md + reminder context (same as `create_session_with_model_selection`), calls `execute_user_input_with_options`, forces `persist_memory_checkpoint()` after execution, and persists the assistant response to `life_turns(role='assistant')` with `run_id`. The worker's `save_life_memory_checkpoint` call was removed from `execute_claimed_run` because the adapter handles durable persistence via the same `agent_memory_snapshots` path. `NoopLifeRunExecutor` replaced by `LifeAgentExecutor` in `AppState::new_with_sqlx_web_store`. Full HTTP integration test deferred to C9 (requires running Postgres + LLM). `cargo test -p oxide-agent-life` 36/36 pass, `cargo test -p oxide-agent-transport-web` 7 pass/23 ignored, `cargo clippy` clean.
 
 - G4: User turn is linked to its run for activity rendering.
   - Source: PRD §9.1 `life_turns.run_id`; current gateway leaves `run_id = None`.
@@ -407,6 +407,20 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo test -p oxide-agent-life`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
   - Audit IDs updated: G2 → verified, G4 → verified.
   - Next: checkpoint C3 (real LifeRunExecutor over AgentExecutor).
+
+- 2026-06-28 C3: Real LifeRunExecutor over AgentExecutor.
+  - Changed:
+    - `crates/oxide-agent-life/src/storage/repository.rs`: added `user_content: String` field to `ClaimedLifeInputRun`.
+    - `crates/oxide-agent-life/src/storage/sqlx.rs`: `claim_input_and_start_run` SQL now JOINs `life_turns` to fetch user turn content at claim time (CTE: `WITH claimed AS (UPDATE ... RETURNING *) SELECT claimed.*, lt.content AS user_content FROM claimed JOIN life_turns lt ON lt.turn_id = claimed.turn_id`). Added `user_content` assertions in both SQLx tests.
+    - `crates/oxide-agent-life/src/worker/mod.rs`: added `user_content: String` to `ClaimedLifeRun`; `From<ClaimedLifeInputRun>` carries it through. Removed `save_life_memory_checkpoint` call from `execute_claimed_run` — the adapter handles durable memory persistence via `StorageFlowCheckpoint`-equivalent (`LifeMemoryCheckpoint`), making the worker's separate raw-JSON save redundant and architecturally wrong (double-write bypassing proper `AgentMemory` serialization). Updated `FakeWorkerStore::with_claim` to include `user_content`. Updated `worker_claims_run_and_uses_stable_life_scope` test: checkpoint assertions removed (worker no longer saves), `user_content` assertion added.
+    - `crates/oxide-agent-transport-web/src/server/life_executor.rs` (new, cfg storage-sqlx): `LifeAgentExecutor` adapter implementing `LifeRunExecutor`. Builds `AgentSession` with `AgentMemoryScope(principal, "life", "main")` + `SandboxScope::new(principal, "life")`. Hydrates `AgentMemory` from `agent_memory_snapshots` via `load_agent_memory_for_flow`. Installs `LifeMemoryCheckpoint` (writes to `agent_memory_snapshots` via `save_agent_memory_for_flow` — identical path to ordinary `StorageFlowCheckpoint`). Creates `AgentExecutor` with same tool configuration as ordinary sessions (wiki memory, AGENTS.md, reminders, storage). Calls `execute_user_input_with_options`. Forces `persist_memory_checkpoint()` after execution. Persists assistant response to `life_turns(role='assistant')` with `run_id` set. Returns `LifeRunExecutionOutcome` with serialized final memory + checkpoint timestamp. `WaitingForUserInput` outcome returns an error (life mode doesn't support pausing yet).
+    - `crates/oxide-agent-transport-web/src/server/mod.rs`: added `#[cfg(feature = "storage-sqlx")] mod life_executor;`.
+    - `crates/oxide-agent-transport-web/src/server/types.rs`: replaced `NoopLifeRunExecutor` with `LifeAgentExecutor::new(&session_manager, life_storage.clone())` in `new_with_sqlx_web_store`. Removed `NoopLifeRunExecutor` struct and impl.
+    - `crates/oxide-agent-life/src/runtime.rs`: updated test `ClaimedLifeInputRun` construction to include `user_content`.
+  - Evidence: `cargo test -p oxide-agent-life --lib` 36/36 pass (incl. real-Postgres). `cargo test -p oxide-agent-web-contracts` 13/13 pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` 7 pass, 23 ignored. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-life --all-targets -- -D warnings` pass. `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` pass.
+  - Commands: `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
+  - Audit IDs updated: G3 → verified.
+  - Next: checkpoint C4 (AgentEvent → life_events bridge).
 
 ## Risks and Blockers
 

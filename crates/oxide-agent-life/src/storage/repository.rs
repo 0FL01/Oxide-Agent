@@ -90,6 +90,9 @@ pub struct ClaimedLifeInputRun {
     pub input: LifeInput,
     /// Persisted running run.
     pub run: LifeRun,
+    /// User turn content loaded from `life_turns` at claim time.
+    /// Avoids a separate round-trip when the executor needs the user message.
+    pub user_content: String,
 }
 
 /// Minimal repository boundary shared by future storage services.
