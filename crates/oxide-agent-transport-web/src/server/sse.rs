@@ -552,7 +552,7 @@ fn sse_error_event(code: ErrorCode, message: String, retryable: bool) -> Event {
     )
 }
 
-fn sse_json_event(name: &'static str, payload: &impl Serialize) -> Event {
+pub(super) fn sse_json_event(name: &'static str, payload: &impl Serialize) -> Event {
     let data = serde_json::to_string(payload).unwrap_or_else(|error| {
         serde_json::json!({
             "code": "internal",

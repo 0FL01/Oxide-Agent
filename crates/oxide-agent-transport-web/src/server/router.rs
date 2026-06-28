@@ -10,6 +10,8 @@ use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
+#[cfg(feature = "storage-sqlx")]
+use super::life_routes::api_life_sse_stream;
 use super::types::is_production_run_mode;
 use super::{
     AppState, api_activate_life_generation, api_bootstrap, api_cancel_task, api_change_password,
@@ -31,7 +33,7 @@ use super::{
 pub fn build_router(state: AppState) -> Router {
     let cors = web_cors_layer();
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/api/v1/public-config", get(api_public_config))
         .route("/api/v1/me", get(api_me))
@@ -147,7 +149,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/cancel",
             post(api_cancel_task),
-        )
+        );
+
+    #[cfg(feature = "storage-sqlx")]
+    let router = router.route("/api/v1/life/stream", get(api_life_sse_stream));
+
+    router
         .fallback(static_assets::static_assets_handler)
         .layer(middleware::from_fn(add_web_response_headers))
         .layer(TraceLayer::new_for_http())

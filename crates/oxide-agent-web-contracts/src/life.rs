@@ -208,6 +208,43 @@ fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
+// ---------------------------------------------------------------------------
+// SSE event payloads
+// ---------------------------------------------------------------------------
+
+/// `snapshot` SSE event: initial state sent on connect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeSseSnapshot {
+    /// Active run if one is in progress, otherwise `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<ApiLifeRunSummary>,
+}
+
+/// Compact run summary used in SSE `snapshot` and `run_status` events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeRunSummary {
+    pub run_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+}
+
+/// `run_status` SSE event: emitted when the active run's status changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeSseRunStatus {
+    pub run_id: String,
+    pub status: String,
+}
+
+/// `keepalive` SSE event: heartbeat carrying current cursor positions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeSseKeepalive {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_cursor: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

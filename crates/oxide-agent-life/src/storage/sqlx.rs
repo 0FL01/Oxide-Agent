@@ -426,6 +426,179 @@ impl SqlxLifeStorage {
         })
     }
 
+    /// Lists transcript turns in **ascending** chronological order (oldest first).
+    ///
+    /// When `cursor` is `None`, returns the most recent `limit` turns (the
+    /// transcript tail) in ascending order. When `cursor` is `Some`, returns
+    /// turns strictly **after** the cursor position in ascending order.
+    ///
+    /// Used by the life SSE handler for initial tail delivery and subsequent
+    /// replay/live-delivery of new turns.
+    pub async fn list_turns_ascending(
+        &self,
+        principal_user_id: PrincipalUserId,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> LifeStorageResult<Vec<LifeTurn>> {
+        if let Some(parsed) = parse_turn_cursor(cursor)? {
+            let rows = query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_turns
+                WHERE principal_user_id = $1
+                  AND (created_at > $2
+                       OR (created_at = $2 AND turn_id > $3))
+                ORDER BY created_at ASC, turn_id ASC
+                LIMIT $4
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(parsed.created_at)
+            .bind(parsed.turn_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
+
+            return rows.into_iter().map(turn_from_row).collect();
+        }
+
+        // No cursor: fetch the most recent `limit` turns (DESC) then reverse
+        // to ascending order. This avoids a subquery and gives the SSE handler
+        // the transcript tail on initial connect.
+        let rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_turns
+            WHERE principal_user_id = $1
+            ORDER BY created_at DESC, turn_id ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        let mut turns: Vec<LifeTurn> = rows
+            .into_iter()
+            .map(turn_from_row)
+            .collect::<LifeStorageResult<Vec<_>>>()?;
+        turns.reverse();
+        Ok(turns)
+    }
+
+    /// Lists run events in **ascending** chronological order (oldest first).
+    ///
+    /// When `cursor` is `None`, returns the most recent `limit` events (the
+    /// activity tail) in ascending order. When `cursor` is `Some`, returns
+    /// events strictly **after** the cursor position in ascending order.
+    ///
+    /// When `run_id` is `Some`, events are scoped to that run. When `None`,
+    /// events are scoped to the principal (all runs).
+    ///
+    /// Used by the life SSE handler for initial tail delivery and subsequent
+    /// replay/live-delivery of new events.
+    pub async fn list_events_ascending(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: Option<RunId>,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> LifeStorageResult<Vec<LifeEvent>> {
+        let parsed = parse_event_cursor(cursor)?;
+
+        // Cursor provided: fetch strictly after the cursor position, ASC.
+        if let Some(cur) = parsed {
+            let rows = match run_id {
+                Some(rid) => query::<Postgres>(
+                    r#"
+                    SELECT *
+                    FROM life_events
+                    WHERE run_id = $1
+                      AND (created_at > $2
+                           OR (created_at = $2 AND run_id > $3)
+                           OR (created_at = $2 AND run_id = $3 AND seq > $4))
+                    ORDER BY created_at ASC, run_id ASC, seq ASC
+                    LIMIT $5
+                    "#,
+                )
+                .bind(rid.as_uuid())
+                .bind(cur.created_at)
+                .bind(cur.run_id)
+                .bind(cur.seq)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?,
+                None => query::<Postgres>(
+                    r#"
+                    SELECT events.*
+                    FROM life_events events
+                    INNER JOIN life_runs runs ON runs.run_id = events.run_id
+                    WHERE runs.principal_user_id = $1
+                      AND (events.created_at > $2
+                           OR (events.created_at = $2 AND events.run_id > $3)
+                           OR (events.created_at = $2 AND events.run_id = $3 AND events.seq > $4))
+                    ORDER BY events.created_at ASC, events.run_id ASC, events.seq ASC
+                    LIMIT $5
+                    "#,
+                )
+                .bind(principal_user_id.get())
+                .bind(cur.created_at)
+                .bind(cur.run_id)
+                .bind(cur.seq)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?,
+            };
+
+            return rows.into_iter().map(event_from_row).collect();
+        }
+
+        // No cursor: fetch the most recent `limit` events (DESC) then reverse.
+        let rows = match run_id {
+            Some(rid) => query::<Postgres>(
+                r#"
+                SELECT *
+                FROM life_events
+                WHERE run_id = $1
+                ORDER BY created_at DESC, run_id ASC, seq DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(rid.as_uuid())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+            None => query::<Postgres>(
+                r#"
+                SELECT events.*
+                FROM life_events events
+                INNER JOIN life_runs runs ON runs.run_id = events.run_id
+                WHERE runs.principal_user_id = $1
+                ORDER BY events.created_at DESC, events.run_id ASC, events.seq DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(principal_user_id.get())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?,
+        };
+
+        let mut events: Vec<LifeEvent> = rows
+            .into_iter()
+            .map(event_from_row)
+            .collect::<LifeStorageResult<Vec<_>>>()?;
+        events.reverse();
+        Ok(events)
+    }
+
     /// Lists canonical memory items for a specific generation scope, including candidates/deleted rows.
     pub async fn memory_items_for_generation(
         &self,
@@ -2290,11 +2463,11 @@ struct EventCursor {
     seq: i64,
 }
 
-fn encode_turn_cursor(created_at: i64, turn_id: TurnId) -> String {
+pub fn encode_turn_cursor(created_at: i64, turn_id: TurnId) -> String {
     format!("{created_at}:{turn_id}")
 }
 
-fn encode_event_cursor(created_at: i64, run_id: RunId, seq: i64) -> String {
+pub fn encode_event_cursor(created_at: i64, run_id: RunId, seq: i64) -> String {
     format!("{created_at}:{run_id}:{seq}")
 }
 

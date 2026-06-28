@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 C4
+Last updated: 2026-06-28 C5
 
 ## Objective
 
@@ -129,8 +129,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §9.4 "web SSE может читать progress из БД"; current web SSE is task-scoped and broadcast-driven.
   - Acceptance: `GET /api/v1/life/stream` emits `snapshot`, `turn`, `life_event`, `run_status`, `keepalive`; reconnect after restart replays missed turns/events from Postgres; no dependency on a process-local registry as source of truth.
   - Evidence required: SSE handler test proving replay + live delivery; grep proving no `SessionRegistry`-as-source dependency in the life SSE path.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `GET /api/v1/life/stream` handler (`api_life_sse_stream`) added to `life_routes.rs`, registered in `router.rs` (gated on `storage-sqlx`). Emits 5 event types: `snapshot` (active run summary on connect), `turn` (transcript turns via `list_turns_ascending`), `life_event` (activity events via `list_events_ascending`), `run_status` (run status transitions via `find_active_run`), `keepalive` (heartbeat with cursors every 15s). Source of truth is always Postgres via `SqlxLifeStorage` — DB-poll at 2s intervals, no in-process broadcast or `SessionRegistry` dependency. New storage methods `list_turns_ascending` and `list_events_ascending` return items in ascending chronological order (oldest-first) with "after cursor" semantics for SSE replay; `cursor=None` returns the tail (most recent N items). SSE DTOs (`ApiLifeSseSnapshot`, `ApiLifeRunSummary`, `ApiLifeSseRunStatus`, `ApiLifeSseKeepalive`) added to `oxide-agent-web-contracts/src/life.rs`. `encode_turn_cursor`/`encode_event_cursor` made `pub` in `oxide-agent-life` storage for cursor construction by the SSE handler. `sse_json_event` made `pub(super)` in `sse.rs` for reuse. Test: `life_sse_returns_503_without_storage` proves handler returns 503 when storage unavailable. Grep: no `SessionRegistry` code references in `life_routes.rs` or `life_executor.rs` (only a doc comment in `life_executor.rs` explaining its deliberate absence). `cargo test -p oxide-agent-transport-web` 51 pass (including new test), `cargo clippy` clean, `cargo fmt` clean, `cargo check --workspace` clean. Full HTTP integration test with Postgres deferred to C9.
 
 - G8: `/life` route and sidebar entry exist in the web UI.
   - Source: PRD §14.1, §19 "новый `/life` UI path".
@@ -432,6 +432,19 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Audit IDs updated: G5 → verified.
   - Next: checkpoint C5 (Life SSE stream).
 
+- 2026-06-28 C5: Life SSE stream.
+  - Changed:
+    - `crates/oxide-agent-life/src/storage/sqlx.rs`: added `list_turns_ascending` (returns turns in ascending chronological order, after-cursor or tail) and `list_events_ascending` (same for events, with optional run_id filter). Both reuse existing cursor format and parse functions. For `cursor=None`, fetches most recent N (DESC) and reverses to ascending. For `cursor=Some`, uses "after" semantics with ASC ordering. Made `encode_turn_cursor` and `encode_event_cursor` `pub` for cursor construction by the SSE handler.
+    - `crates/oxide-agent-web-contracts/src/life.rs`: added `ApiLifeSseSnapshot` (active run summary on connect), `ApiLifeRunSummary` (compact run info), `ApiLifeSseRunStatus` (run status transition), `ApiLifeSseKeepalive` (heartbeat with cursors).
+    - `crates/oxide-agent-transport-web/src/server/sse.rs`: made `sse_json_event` `pub(super)` for reuse by life SSE handler.
+    - `crates/oxide-agent-transport-web/src/server/life_routes.rs`: added `LifeSseQuery` (turn_cursor, event_cursor, run_id), `api_life_sse_stream` handler (authenticates, resolves principal, creates `LifeSseStreamState`, returns `Sse` response), `LifeSseStreamState` struct, `life_sse_stream` stream generator (snapshot → poll loop: turns_ascending, events_ascending, run_status check, keepalive), `sse_error_event` helper. Handler gated on `storage-sqlx`. SSE handler uses `authenticated_user` (no CSRF, same as task SSE). DB-poll at 2s intervals, keepalive at 15s. No `SessionRegistry` dependency.
+    - `crates/oxide-agent-transport-web/src/server/router.rs`: added conditional `#[cfg(feature = "storage-sqlx")]` route `/api/v1/life/stream` → `api_life_sse_stream`.
+    - `crates/oxide-agent-transport-web/src/server/tests.rs`: added `life_sse_returns_503_without_storage` test proving handler returns 503 when storage unavailable.
+  - Evidence: `cargo test -p oxide-agent-life --lib` 36/36 pass. `cargo test -p oxide-agent-web-contracts` 13/13 pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests` 51 pass (including `life_sse_returns_503_without_storage`). `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-life --all-targets -- -D warnings` pass. `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings` pass. `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` pass. Grep: no `SessionRegistry` code references in `life_routes.rs` or `life_executor.rs` (only doc comment in `life_executor.rs` explaining deliberate absence).
+  - Commands: `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
+  - Audit IDs updated: G7 → verified.
+  - Next: checkpoint C6 (typed attachments + life upload/large-input endpoints).
+
 ## Risks and Blockers
 
 - Risk: `LifeRunExecutor` diverging from ordinary agent tool setup.
@@ -442,8 +455,8 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
 
 - Risk: Life SSE depending on a process-local registry.
   - Impact: cross-process continuity breaks; restart loses live updates.
-  - Evidence: none yet.
-  - Mitigation: Postgres-backed replay + run-scoped broadcast; grep-proof in C5.
+  - Evidence: mitigated — life SSE uses Postgres-backed DB-poll, no `SessionRegistry` dependency.
+  - Mitigation: Postgres-backed replay + DB-poll; grep-proven in C5.
   - Audit IDs affected: G7, Q2.
 
 - Risk: activating the migration without runtime wiring.

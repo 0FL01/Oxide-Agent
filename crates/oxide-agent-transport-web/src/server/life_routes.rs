@@ -1,6 +1,12 @@
 #[cfg(feature = "storage-sqlx")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+#[cfg(feature = "storage-sqlx")]
+use std::time::SystemTime;
+#[cfg(feature = "storage-sqlx")]
+use std::time::UNIX_EPOCH;
 
+#[cfg(feature = "storage-sqlx")]
+use axum::response::sse::{Event, Sse};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -8,10 +14,13 @@ use axum::{
     http::StatusCode,
 };
 #[cfg(feature = "storage-sqlx")]
+use futures_util::stream::Stream;
+#[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::ApiLifeInputSensitivity;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::{
     ApiLifeEventResponse, ApiLifeFrictionPatternResponse, ApiLifeMemoryItemResponse,
+    ApiLifeRunSummary, ApiLifeSseKeepalive, ApiLifeSseRunStatus, ApiLifeSseSnapshot,
     ApiLifeSupportProtocolResponse, ApiLifeTaskStateResponse, ApiLifeTurnResponse,
 };
 use oxide_agent_web_contracts::{
@@ -22,7 +31,13 @@ use oxide_agent_web_contracts::{
     ApiLifeTaskStatesResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope,
 };
 use serde::Deserialize;
+#[cfg(feature = "storage-sqlx")]
+use std::convert::Infallible;
 
+#[cfg(feature = "storage-sqlx")]
+use super::authenticated_user;
+#[cfg(feature = "storage-sqlx")]
+use super::sse::sse_json_event;
 use super::{AppState, api_error, authenticated_user_with_csrf};
 
 #[cfg(feature = "storage-sqlx")]
@@ -42,7 +57,10 @@ use oxide_agent_life::{
         LifePrincipalAllocator,
     },
     linking::{RawLifeLinkToken, hash_link_token},
-    storage::{LifeStorageError, LifeStorageRepository},
+    storage::{
+        LifeStorageError, LifeStorageRepository, SqlxLifeStorage, encode_event_cursor,
+        encode_turn_cursor,
+    },
 };
 
 pub(crate) async fn api_submit_life_input(
@@ -188,6 +206,238 @@ pub(crate) async fn api_privacy_hard_wipe_life(
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     privacy_hard_wipe_life_for_user(&state, user.user_id).await
 }
+
+// ---------------------------------------------------------------------------
+// Life SSE stream
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /api/v1/life/stream`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LifeSseQuery {
+    /// Opaque cursor: last turn position the client has seen.
+    /// Replays missed turns from this position on connect.
+    pub turn_cursor: Option<String>,
+    /// Opaque cursor: last event position the client has seen.
+    /// Replays missed events from this position on connect.
+    pub event_cursor: Option<String>,
+    /// Filter events to a specific run. If `None`, events from all runs
+    /// for the principal are streamed.
+    pub run_id: Option<String>,
+}
+
+/// DB-poll interval for the life SSE stream. At personal-use scale (≤5 RPS)
+/// this is trivially light on Postgres and gives near-real-time delivery.
+#[cfg(feature = "storage-sqlx")]
+const LIFE_SSE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Keepalive cadence — prevents proxy/load-balancer timeouts.
+#[cfg(feature = "storage-sqlx")]
+const LIFE_SSE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Page size for turn replay/poll.
+#[cfg(feature = "storage-sqlx")]
+const LIFE_SSE_TURN_PAGE: i64 = 50;
+
+/// Page size for event replay/poll.
+#[cfg(feature = "storage-sqlx")]
+const LIFE_SSE_EVENT_PAGE: i64 = 100;
+
+/// SSE streaming endpoint for permanent chat: replays missed turns/events
+/// from Postgres on connect, then live-delivers new ones via DB polling.
+///
+/// Source of truth is always Postgres — no in-process registry dependency.
+#[cfg(feature = "storage-sqlx")]
+pub(crate) async fn api_life_sse_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<LifeSseQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let life_storage = state
+        .life_storage()
+        .ok_or_else(life_storage_unavailable_response)?;
+    let principal = PrincipalUserId::new(user.user_id).map_err(life_domain_error_response)?;
+    let run_id_filter = if let Some(ref rid_str) = query.run_id {
+        Some(RunId::from_uuid(uuid::Uuid::parse_str(rid_str).map_err(
+            |_| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    ErrorCode::ValidationError,
+                    "Invalid run_id in query parameters.",
+                    false,
+                )
+            },
+        )?))
+    } else {
+        None
+    };
+
+    let stream_state = LifeSseStreamState {
+        life_storage,
+        principal,
+        run_id_filter,
+        turn_cursor: query.turn_cursor,
+        event_cursor: query.event_cursor,
+    };
+
+    Ok(Sse::new(life_sse_stream(stream_state)))
+}
+
+#[cfg(feature = "storage-sqlx")]
+struct LifeSseStreamState {
+    life_storage: std::sync::Arc<SqlxLifeStorage>,
+    principal: PrincipalUserId,
+    run_id_filter: Option<RunId>,
+    turn_cursor: Option<String>,
+    event_cursor: Option<String>,
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn life_sse_stream(mut state: LifeSseStreamState) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        // --- Phase 1: snapshot ---
+        let active_run = match state.life_storage.find_active_run(state.principal).await {
+            Ok(run) => run,
+            Err(error) => {
+                yield Ok(sse_error_event(ErrorCode::BackendUnavailable,
+                    format!("Failed to load life state: {error}"), true));
+                return;
+            }
+        };
+        let mut last_active_run_id = active_run.as_ref().map(|r| r.run_id);
+        yield Ok(sse_json_event("snapshot", &ApiLifeSseSnapshot {
+            active_run: active_run.as_ref().map(|run| ApiLifeRunSummary {
+                run_id: run.run_id.to_string(),
+                status: serde_json::to_string(&run.status)
+                    .unwrap_or_else(|_| "\"running\"".to_string())
+                    .trim_matches('"')
+                    .to_string(),
+                started_at: run.started_at.map(|ts| ts.get()),
+            }),
+        }));
+
+        // --- Phase 2: initial replay + poll loop ---
+        let mut keepalive = tokio::time::interval(LIFE_SSE_KEEPALIVE_INTERVAL);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip the immediate first tick.
+        keepalive.tick().await;
+
+        loop {
+            let mut emitted_any = false;
+
+            // Drain new turns (ascending, after cursor).
+            match state.life_storage
+                .list_turns_ascending(state.principal, state.turn_cursor.as_deref(), LIFE_SSE_TURN_PAGE)
+                .await
+            {
+                Ok(turns) => {
+                    for turn in &turns {
+                        let cursor = encode_turn_cursor(turn.created_at.get(), turn.turn_id);
+                        yield Ok(sse_json_event("turn", &api_turn(turn.clone()))
+                            .id(cursor.clone()));
+                        state.turn_cursor = Some(cursor);
+                        emitted_any = true;
+                    }
+                }
+                Err(error) => {
+                    yield Ok(sse_error_event(ErrorCode::BackendUnavailable,
+                        format!("Failed to load turns: {error}"), true));
+                    return;
+                }
+            }
+
+            // Drain new events (ascending, after cursor).
+            match state.life_storage
+                .list_events_ascending(state.principal, state.run_id_filter,
+                    state.event_cursor.as_deref(), LIFE_SSE_EVENT_PAGE)
+                .await
+            {
+                Ok(events) => {
+                    for event in &events {
+                        let cursor = encode_event_cursor(
+                            event.created_at.get(), event.run_id, event.seq);
+                        yield Ok(sse_json_event("life_event", &api_event(event.clone()))
+                            .id(cursor.clone()));
+                        state.event_cursor = Some(cursor);
+                        emitted_any = true;
+                    }
+                }
+                Err(error) => {
+                    yield Ok(sse_error_event(ErrorCode::BackendUnavailable,
+                        format!("Failed to load events: {error}"), true));
+                    return;
+                }
+            }
+
+            // Check run status changes.
+            match state.life_storage.find_active_run(state.principal).await {
+                Ok(active) => {
+                    let current_id = active.as_ref().map(|r| r.run_id);
+                    if current_id != last_active_run_id {
+                        let (rid, status) = match &active {
+                            Some(run) => (run.run_id.to_string(), "running"),
+                            None => {
+                                let prev = last_active_run_id
+                                    .map(|r| r.to_string())
+                                    .unwrap_or_default();
+                                (prev, "idle")
+                            }
+                        };
+                        yield Ok(sse_json_event("run_status", &ApiLifeSseRunStatus {
+                            run_id: rid,
+                            status: status.to_string(),
+                        }));
+                        last_active_run_id = current_id;
+                        emitted_any = true;
+                    }
+                }
+                Err(error) => {
+                    yield Ok(sse_error_event(ErrorCode::BackendUnavailable,
+                        format!("Failed to check run status: {error}"), true));
+                    return;
+                }
+            }
+
+            if emitted_any {
+                // New data was delivered; immediately check for more without
+                // sleeping. This gives burst delivery after a gap.
+                continue;
+            }
+
+            // No new data: wait for poll interval or keepalive, whichever
+            // fires first.
+            tokio::select! {
+                biased;
+                _ = keepalive.tick() => {
+                    yield Ok(sse_json_event("keepalive", &ApiLifeSseKeepalive {
+                        turn_cursor: state.turn_cursor.clone(),
+                        event_cursor: state.event_cursor.clone(),
+                    }));
+                }
+                _ = tokio::time::sleep(LIFE_SSE_POLL_INTERVAL) => {
+                    // Wake up and poll again.
+                }
+            }
+        }
+    }
+}
+
+/// SSE error event helper (same shape as the task SSE error event).
+#[cfg(feature = "storage-sqlx")]
+fn sse_error_event(code: ErrorCode, message: String, retryable: bool) -> Event {
+    sse_json_event(
+        "error",
+        &serde_json::json!({
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Query types for REST endpoints
+// ---------------------------------------------------------------------------
 
 /// Query parameters for `GET /api/v1/life/turns`.
 #[derive(Debug, Clone, Deserialize)]

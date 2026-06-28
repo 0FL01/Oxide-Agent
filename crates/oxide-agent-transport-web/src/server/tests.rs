@@ -4236,6 +4236,49 @@ async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
     assert_eq!(session.last_task_status, Some(ApiTaskStatus::Completed));
 }
 
+#[cfg(feature = "storage-sqlx")]
+#[tokio::test]
+async fn life_sse_returns_503_without_storage() {
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "life_user".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "life_user".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let result = super::life_routes::api_life_sse_stream(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+        axum::extract::Query(super::life_routes::LifeSseQuery {
+            turn_cursor: None,
+            event_cursor: None,
+            run_id: None,
+        }),
+    )
+    .await;
+
+    assert!(result.is_err(), "SSE handler should error without storage");
+    let (status, _) = result.expect_err("error tuple");
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+}
+
 fn test_app_state() -> AppState {
     test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]).0
 }
