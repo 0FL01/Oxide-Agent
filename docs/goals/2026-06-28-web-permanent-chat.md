@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 C5
+Last updated: 2026-06-28 C6
 
 ## Objective
 
@@ -150,8 +150,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: ordinary web chat attachment path is session-scoped; PRD §19 "без изменения semantics обычных session routes".
   - Acceptance: `POST /api/v1/life/uploads` and `POST /api/v1/life/large-input` stage files in the stable life sandbox; `ApiLifeSubmitRequest.attachments` is typed `Vec<TaskAttachment>` (or equivalent typed contract), not loose `Value`.
   - Evidence required: route tests for upload + large-input; contract test proving typed attachments deserialize; sandbox path verification.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `ApiLifeSubmitRequest.attachments` changed from `serde_json::Value` to `Vec<TaskAttachment>` with `#[serde(default)]` in `oxide-agent-web-contracts/src/life.rs`. Contract test `life_submit_request_deserializes_typed_attachments` verifies typed deserialization (file_name, sandbox_path, size_bytes). `empty_array` helper removed (dead code). `POST /api/v1/life/uploads` (`api_life_upload_attachments`) stages multipart file uploads in `SandboxScope::new(user_id, LIFE_CONTEXT_KEY)` (= `SandboxScope::new(user_id, "life")`), same stable life sandbox as `LifeAgentExecutor`). Enforces `web_chat_upload_limit_mb()` limit, returns `UploadTaskAttachmentsResponse`. `POST /api/v1/life/large-input` (`api_life_large_input`) accepts `ApiLifeLargeInputRequest { content, file_name? }`, stages text as `.txt` file in life sandbox, returns `UploadTaskAttachmentsResponse`. Both routes registered in `router.rs`. `submit_life_input_for_user` converts `Vec<TaskAttachment>` → `serde_json::Value` via `serde_json::to_value` at the domain boundary (`LifeInputSubmission.attachments` stays `Value` for transport-neutral storage). Non-sqlx stubs return 503. `life_routes.rs` test `life_submit_contract_keeps_transport_metadata_separate` updated to use `TaskAttachment` struct. `cargo test -p oxide-agent-web-contracts` 14/14 pass (including 2 new tests). `cargo test -p oxide-agent-transport-web -- server::tests` 51 pass. `cargo clippy` clean. `cargo fmt` clean. `cargo check --workspace` clean.
 
 ### Quality/security/non-functional requirements (Q*)
 
@@ -444,6 +444,17 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
   - Audit IDs updated: G7 → verified.
   - Next: checkpoint C6 (typed attachments + life upload/large-input endpoints).
+
+- 2026-06-28 C6: Typed attachments + life upload/large-input endpoints.
+  - Changed:
+    - `crates/oxide-agent-web-contracts/src/life.rs`: `ApiLifeSubmitRequest.attachments` changed from `serde_json::Value` to `Vec<TaskAttachment>` with `#[serde(default)]`. Removed `empty_array` helper (dead code). Added `ApiLifeLargeInputRequest { content, file_name? }` DTO. Added contract test `life_submit_request_deserializes_typed_attachments`. Updated `life_submit_request_defaults_optional_json_fields` test.
+    - `crates/oxide-agent-transport-web/src/server/life_routes.rs`: Added `api_life_upload_attachments` (multipart upload to `SandboxScope::new(user_id, LIFE_CONTEXT_KEY)`, enforces `web_chat_upload_limit_mb`, returns `UploadTaskAttachmentsResponse`) and `api_life_large_input` (stages text content as `.txt` in life sandbox, returns `UploadTaskAttachmentsResponse`). Both gated on `storage-sqlx` with non-sqlx 503 stubs. `submit_life_input_for_user` converts `Vec<TaskAttachment>` → `serde_json::Value` via `serde_json::to_value` at domain boundary. Updated test to use `TaskAttachment` struct. Added imports: `Multipart`, `Preprocessor`, `SandboxScope`, `LIFE_CONTEXT_KEY`, `web_chat_upload_limit_mb`, `TaskAttachment`, `UploadTaskAttachmentsResponse`, `ApiLifeLargeInputRequest`, `backend_unavailable_response`.
+    - `crates/oxide-agent-transport-web/src/server/router.rs`: Added routes `/api/v1/life/uploads` and `/api/v1/life/large-input`. Updated import list.
+    - `crates/oxide-agent-transport-web/src/server/mod.rs`: Added `api_life_large_input`, `api_life_upload_attachments` to `life_routes` re-export.
+  - Evidence: `cargo test -p oxide-agent-web-contracts` 14/14 pass (2 new tests). `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests` 51 pass. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings` pass. `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` pass.
+  - Commands: `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
+  - Audit IDs updated: G10 → verified.
+  - Next: checkpoint C7 (/life route + sidebar entry).
 
 ## Risks and Blockers
 

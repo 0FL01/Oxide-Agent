@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::TaskAttachment;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiLifeSubmitRequest {
     pub content: String,
-    #[serde(default = "empty_array")]
-    pub attachments: Value,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
     #[serde(default = "empty_object")]
     pub metadata: Value,
     #[serde(default)]
@@ -28,6 +30,18 @@ pub struct ApiLifeSubmitResponse {
     pub turn_id: String,
     pub input_id: String,
     pub run_id: Option<String>,
+}
+
+/// Request body for `POST /api/v1/life/large-input`.
+///
+/// Stages large text content as a file in the stable life sandbox and returns
+/// a `TaskAttachment` that can be included in a subsequent
+/// `ApiLifeSubmitRequest.attachments`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeLargeInputRequest {
+    pub content: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,10 +214,6 @@ pub struct ApiLifeSupportProtocolsResponse {
     pub support_protocols: Vec<ApiLifeSupportProtocolResponse>,
 }
 
-fn empty_array() -> Value {
-    Value::Array(Vec::new())
-}
-
 fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
@@ -258,9 +268,33 @@ mod tests {
         }))
         .expect("life submit request should deserialize with defaults");
 
-        assert_eq!(request.attachments, serde_json::json!([]));
+        assert!(request.attachments.is_empty());
         assert_eq!(request.metadata, serde_json::json!({}));
         assert_eq!(request.sensitivity, ApiLifeInputSensitivity::Normal);
+    }
+
+    #[test]
+    fn life_submit_request_deserializes_typed_attachments() {
+        let request: ApiLifeSubmitRequest = serde_json::from_value(serde_json::json!({
+            "content": "analyze this",
+            "attachments": [
+                {
+                    "file_name": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                    "sandbox_path": "/workspace/uploads/report.pdf"
+                }
+            ]
+        }))
+        .expect("life submit request should deserialize typed attachments");
+
+        assert_eq!(request.attachments.len(), 1);
+        assert_eq!(request.attachments[0].file_name, "report.pdf");
+        assert_eq!(
+            request.attachments[0].sandbox_path,
+            "/workspace/uploads/report.pdf"
+        );
+        assert_eq!(request.attachments[0].size_bytes, 1024);
     }
 
     #[test]

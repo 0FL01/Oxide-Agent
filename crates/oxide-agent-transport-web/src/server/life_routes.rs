@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 use axum::response::sse::{Event, Sse};
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
 };
@@ -25,20 +25,28 @@ use oxide_agent_web_contracts::{
 };
 use oxide_agent_web_contracts::{
     ApiLifeEventsResponse, ApiLifeFrictionPatternsResponse, ApiLifeGenerationResponse,
-    ApiLifeGenerationsResponse, ApiLifeLifecycleResponse, ApiLifeLinkTokenResponse,
-    ApiLifeMemoriesResponse, ApiLifeProfileResponse, ApiLifeSoftResetRequest, ApiLifeStateResponse,
-    ApiLifeSubmitRequest, ApiLifeSubmitResponse, ApiLifeSupportProtocolsResponse,
-    ApiLifeTaskStatesResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope,
+    ApiLifeGenerationsResponse, ApiLifeLargeInputRequest, ApiLifeLifecycleResponse,
+    ApiLifeLinkTokenResponse, ApiLifeMemoriesResponse, ApiLifeProfileResponse,
+    ApiLifeSoftResetRequest, ApiLifeStateResponse, ApiLifeSubmitRequest, ApiLifeSubmitResponse,
+    ApiLifeSupportProtocolsResponse, ApiLifeTaskStatesResponse, ApiLifeTurnsResponse, ErrorCode,
+    ErrorEnvelope, TaskAttachment, UploadTaskAttachmentsResponse,
 };
 use serde::Deserialize;
 #[cfg(feature = "storage-sqlx")]
 use std::convert::Infallible;
 
 #[cfg(feature = "storage-sqlx")]
-use super::authenticated_user;
-#[cfg(feature = "storage-sqlx")]
 use super::sse::sse_json_event;
 use super::{AppState, api_error, authenticated_user_with_csrf};
+#[cfg(feature = "storage-sqlx")]
+use super::{authenticated_user, backend_unavailable_response};
+
+#[cfg(feature = "storage-sqlx")]
+use super::types::web_chat_upload_limit_mb;
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_core::agent::preprocessor::Preprocessor;
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_core::sandbox::SandboxScope;
 
 #[cfg(feature = "storage-sqlx")]
 use async_trait::async_trait;
@@ -61,6 +69,7 @@ use oxide_agent_life::{
         LifeStorageError, LifeStorageRepository, SqlxLifeStorage, encode_event_cursor,
         encode_turn_cursor,
     },
+    worker::LIFE_CONTEXT_KEY,
 };
 
 pub(crate) async fn api_submit_life_input(
@@ -70,6 +79,24 @@ pub(crate) async fn api_submit_life_input(
 ) -> Result<Json<ApiLifeSubmitResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     submit_life_input_for_user(&state, user.user_id, request).await
+}
+
+pub(crate) async fn api_life_upload_attachments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    life_upload_attachments_for_user(&state, user.user_id, multipart).await
+}
+
+pub(crate) async fn api_life_large_input(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ApiLifeLargeInputRequest>,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    life_large_input_for_user(&state, user.user_id, request).await
 }
 
 pub(crate) async fn api_get_life_state(
@@ -479,7 +506,7 @@ async fn submit_life_input_for_user(
             provider_subject: ProviderSubject::new(web_user_id.to_string())
                 .map_err(life_domain_error_response)?,
             content: request.content,
-            attachments: request.attachments,
+            attachments: serde_json::to_value(&request.attachments).unwrap_or_default(),
             metadata: request.metadata,
             sensitivity: map_input_sensitivity(request.sensitivity),
         })
@@ -517,6 +544,120 @@ async fn submit_life_input_for_user(
         turn_id: result.turn_id.to_string(),
         input_id: result.input_id.to_string(),
         run_id,
+    }))
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn life_upload_attachments_for_user(
+    state: &AppState,
+    user_id: i64,
+    mut multipart: Multipart,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let limit_mb = web_chat_upload_limit_mb();
+    let max_bytes = limit_mb.saturating_mul(1024 * 1024);
+    let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
+    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let mut total_bytes = 0_u64;
+    let mut attachments = Vec::new();
+
+    while let Some(field) = multipart.next_field().await.map_err(|error| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationError,
+            format!("Invalid multipart upload payload: {error}"),
+            false,
+        )
+    })? {
+        let Some(file_name) = field.file_name().map(ToString::to_string) else {
+            continue;
+        };
+        let mime_type = field.content_type().map(ToString::to_string);
+        let bytes = field.bytes().await.map_err(|error| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                ErrorCode::ValidationError,
+                format!("Failed to read uploaded file bytes: {error}"),
+                false,
+            )
+        })?;
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > max_bytes {
+            return Err(api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationError,
+                format!("Total attachment upload size must be at most {limit_mb} MB per request."),
+                false,
+            ));
+        }
+
+        let staged = preprocessor
+            .stage_document_upload(bytes.to_vec(), file_name.clone(), mime_type.clone(), None)
+            .await
+            .map_err(|error| {
+                backend_unavailable_response(format!("Failed to stage uploaded file: {error}"))
+            })?;
+        attachments.push(TaskAttachment {
+            file_name,
+            mime_type,
+            size_bytes: staged.size_bytes,
+            sandbox_path: staged.sandbox_path,
+        });
+    }
+
+    if attachments.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "At least one attachment file must be provided.",
+            false,
+        ));
+    }
+
+    Ok(Json(UploadTaskAttachmentsResponse { attachments }))
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn life_large_input_for_user(
+    state: &AppState,
+    user_id: i64,
+    request: ApiLifeLargeInputRequest,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    if request.content.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Content must not be empty.",
+            false,
+        ));
+    }
+
+    let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
+    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let file_name = request
+        .file_name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "large-input.txt".to_string());
+    let bytes = request.content.into_bytes();
+
+    let staged = preprocessor
+        .stage_document_upload(
+            bytes,
+            file_name.clone(),
+            Some("text/plain".to_string()),
+            None,
+        )
+        .await
+        .map_err(|error| {
+            backend_unavailable_response(format!("Failed to stage large input: {error}"))
+        })?;
+
+    Ok(Json(UploadTaskAttachmentsResponse {
+        attachments: vec![TaskAttachment {
+            file_name,
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: staged.size_bytes,
+            sandbox_path: staged.sandbox_path,
+        }],
     }))
 }
 
@@ -1071,6 +1212,24 @@ async fn submit_life_input_for_user(
     Err(life_storage_unavailable_response())
 }
 
+#[cfg(not(feature = "storage-sqlx"))]
+async fn life_upload_attachments_for_user(
+    _state: &AppState,
+    _web_user_id: i64,
+    _multipart: Multipart,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    Err(life_storage_unavailable_response())
+}
+
+#[cfg(not(feature = "storage-sqlx"))]
+async fn life_large_input_for_user(
+    _state: &AppState,
+    _web_user_id: i64,
+    _request: ApiLifeLargeInputRequest,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    Err(life_storage_unavailable_response())
+}
+
 #[cfg(feature = "storage-sqlx")]
 async fn life_state_for_user(
     state: &AppState,
@@ -1485,18 +1644,23 @@ fn life_domain_error_response(
 
 #[cfg(test)]
 mod tests {
-    use oxide_agent_web_contracts::ApiLifeSubmitRequest;
+    use oxide_agent_web_contracts::{ApiLifeSubmitRequest, TaskAttachment};
 
     #[test]
     fn life_submit_contract_keeps_transport_metadata_separate() {
         let request = ApiLifeSubmitRequest {
             content: "continue".to_string(),
-            attachments: serde_json::json!([{"kind":"file","id":"a"}]),
+            attachments: vec![TaskAttachment {
+                file_name: "a".to_string(),
+                mime_type: None,
+                size_bytes: 0,
+                sandbox_path: "/workspace/uploads/a".to_string(),
+            }],
             metadata: serde_json::json!({"correlation_id":"web-1"}),
             sensitivity: oxide_agent_web_contracts::ApiLifeInputSensitivity::Normal,
         };
 
-        assert_eq!(request.attachments[0]["id"], "a");
+        assert_eq!(request.attachments[0].file_name, "a");
         assert_eq!(request.metadata["correlation_id"], "web-1");
     }
 }

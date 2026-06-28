@@ -49,11 +49,11 @@ pub(crate) use auth_routes::{
 use converters::*;
 pub(crate) use life_routes::{
     api_activate_life_generation, api_create_life_link_token, api_forget_life_memory,
-    api_get_life_profile, api_get_life_state, api_list_life_events,
-    api_list_life_friction_patterns, api_list_life_generations, api_list_life_memories,
-    api_list_life_support_protocols, api_list_life_task_states, api_list_life_turns,
-    api_privacy_hard_wipe_life, api_soft_reset_life_generation, api_submit_life_input,
-    api_wipe_life_derived_generation, api_wipe_life_generation,
+    api_get_life_profile, api_get_life_state, api_life_large_input, api_life_upload_attachments,
+    api_list_life_events, api_list_life_friction_patterns, api_list_life_generations,
+    api_list_life_memories, api_list_life_support_protocols, api_list_life_task_states,
+    api_list_life_turns, api_privacy_hard_wipe_life, api_soft_reset_life_generation,
+    api_submit_life_input, api_wipe_life_derived_generation, api_wipe_life_generation,
 };
 pub(crate) use model_routes::{
     api_list_model_routes, api_refresh_model_routes, canonical_model_selection,
