@@ -1,24 +1,33 @@
-# PRD: Permanent Life Mode — Transport-Scalable Chat
+# PRD: Permanent Life Mode — Solo Bridge Chat
 
-Статус: `web permanent chat shipped (C1-C9); Telegram bridge redesign required before implementation`
+Статус: `web permanent chat shipped (C1-C9); bridge-first redesign in planning`
 
 Дата: `2026-06-28`
 
 ## 1. Что это
 
-Permanent Life Mode — отдельный продуктовый режим: один непрерывный чат с агентом, без сброса контекста между сессиями. Агент использует те же инструменты, что и в обычных сессиях, но с стабильной памятью `(principal, "life", "main")` и транскриптом в Postgres.
+Permanent Life Mode на ближайший этап — **обычный чат с агентом, синхронизированный между интерфейсами**.
 
-Источник истины — Postgres. Никакого Engram, curator, memory generations, friction patterns, support protocols — этот слой удалён как мёртвый код (commit `f71ed6ac`, -7765 строк).
+Первый фокус не memory UX, не curator/Engram/инспектор памяти. Первый фокус — сделать универсальный мост:
 
-Целевая модель — **один Life transcript и одна Life memory на principal, доступные из нескольких транспортов**:
+```text
+Web UI  ↔
+Telegram dedicated Life bot  ↔   один общий чат агента
+future Linux app             ↔   один общий transcript
+future Android app           ↔   один executor
+```
 
-- Web UI (`/life`)
-- Telegram DM / future Telegram chat variants
-- future Linux/system app
-- future Android app
-- future local/system integrations
+То есть пользователь может написать в Telegram, увидеть это в Web, продолжить в Web, получить ответ в Telegram и не думать о том, через какой интерфейс был начат диалог.
 
-Главный инвариант: **добавление нового транспорта не должно требовать изменения executor-а, life runtime-а, memory scope или canonical transcript model**.
+Проект solo/personal-use. Архитектурно проектируем под одного владельца, а не под SaaS/multi-user linking:
+
+- один владелец/principal;
+- транспорты подключаются через явные env/config bindings;
+- Postgres — источник истины для transcript/queue/events;
+- web process остаётся владельцем executor-а;
+- transport processes/adapters — тонкие клиенты ввода/доставки.
+
+Memory-обвязка может быть добавлена отдельным будущим goal. Текущий bridge milestone не должен зависеть от memory tooling и не должен продаваться как memory UX.
 
 ## 2. Что уже сделано (C1-C9)
 
@@ -27,16 +36,16 @@ Permanent Life Mode — отдельный продуктовый режим: о
 | Компонент | Назначение |
 |-----------|-----------|
 | `0010_life_mode.sql` | Миграция: 6 таблиц (`life_principals`, `life_identity_links`, `life_turns`, `life_runs`, `life_inputs`, `life_events`) |
-| `LifeGateway` | Narrow submit path: `(provider, provider_subject, content, attachments, metadata)` → principal → turn + queued input |
+| `LifeGateway` | Submit path: `(provider, provider_subject, content, attachments, metadata)` → principal → turn + queued input |
 | `LifeRuntimeHandle` | Wake: claim input + start run (advisory lock), link turn to run |
 | `LifeWorker` | Execute claimed run, link turns, append events, complete/fail run |
-| `LifeAgentExecutor` | Real `LifeRunExecutor` over `AgentExecutor`: stable scope `(principal, "life", "main")`, hydrate from `agent_memory_snapshots`, execute with ordinary tools, persist assistant turn, force final checkpoint |
+| `LifeAgentExecutor` | Real `LifeRunExecutor` over ordinary `AgentExecutor`: execute user input, persist assistant turn, persist checkpoint |
 | AgentEvent → life_events bridge | mpsc channel → `agent_event_to_life_parts` → `life_events` rows with monotonic seq |
 | Cursor paging | `list_turns_page` / `list_events_page` / `list_turns_ascending` / `list_events_ascending` |
 | SSE stream | `GET /api/v1/life/stream` — Postgres-backed DB-poll (2s), no SessionRegistry dependency |
 | REST endpoints | `POST /api/v1/life/inputs`, `GET /api/v1/life/turns`, `GET /api/v1/life/events`, `GET /api/v1/life/state`, `POST /api/v1/life/uploads`, `POST /api/v1/life/large-input` |
 | Typed attachments | `ApiLifeSubmitRequest.attachments: Vec<TaskAttachment>` |
-| Privacy hard wipe | `DELETE /api/v1/life/state` — cascades to `life_principals` + `agent_memory_snapshots` |
+| Privacy hard wipe | `DELETE /api/v1/life/state` — cascades to `life_principals` + current life checkpoint rows |
 
 ### 2.2. Frontend (oxide-agent-web-ui)
 
@@ -67,219 +76,247 @@ Permanent Life Mode — отдельный продуктовый режим: о
 - Profile state / settings inspector
 - Memory inspector / editor / conflict review
 
-Миграция trimmed: 15 → 6 таблиц. Мёртвых миграций не деплоится.
+Миграция trimmed: 15 → 6 таблиц. Мёртвые memory features не возвращаются в bridge milestone.
 
-## 3. Verified current state and mines
+## 3. UX target
 
-Этот раздел фиксирует не желаемое состояние, а проверенные факты по коду/миграции на `2026-06-28`.
+### 3.1. Web Permanent Chat
 
-### 3.1. Current Postgres model
+Web `/life` — полноценная рабочая консоль.
 
+Пользователь видит общий transcript из всех интерфейсов:
+
+```text
+[Telegram]  Скинь текущий статус по задаче
+[Assistant] Сейчас задача в стадии...
+
+[Web]       Ок, продолжи и проверь PRD
+[Assistant] Проверил PRD, нашёл...
 ```
-life_principals
-life_identity_links(provider CHECK IN ('web','telegram'), provider_subject, principal_user_id)
-life_turns(source_transport CHECK IN ('web','telegram','internal'), role, content, attachments, metadata)
-life_inputs(status IN ('queued','claimed','consumed','dead'))
-life_runs(status IN ('queued','running','completed','failed','cancelled'))
-life_events(run_id, seq, kind, payload)
-agent_memory_snapshots(user_id, context_key='life', flow_id='main')
+
+Web должен давать:
+
+- полный transcript;
+- composer;
+- attachments;
+- source labels (`web`, `telegram`, later `linux`, `android`);
+- activity/events для текущего run;
+- paging старой истории;
+- SSE/poll sync новых turns/events из Postgres.
+
+### 3.2. Dedicated Telegram Life bot
+
+Telegram — отдельный bot только для Life Perm Mode. Поэтому **`/life` не нужен**.
+
+Правило:
+
+```text
+Every non-command private DM message to the dedicated Life bot = Life chat input.
 ```
 
-### 3.2. Mine A — closed transport enums/checks
+Пример:
 
-Сейчас transport/provider закрыты в двух местах:
+```text
+User:   Проверь потом PRD и скажи, что осталось
+Bot:    💭 Обрабатываю...
+Bot:    Проверил. Осталось...
+```
+
+Минимальные команды adapter-а:
+
+- `/start` — коротко объяснить, что это dedicated Life bot;
+- `/help` — как пользоваться;
+- `/status` — active run / queued inputs / last delivery state.
+
+Обычные текстовые сообщения не требуют команд и не роутятся через общий Telegram bot mode.
+
+## 4. Solo-user binding model
+
+### 4.1. Главный принцип
+
+На ближайший этап нет multi-user linking, token exchange, account discovery, “подтверждения устройств”.
+
+Есть один владелец, и транспорты подключаются явно через env/config:
+
+```env
+LIFE_OWNER_WEB_LOGIN=alice
+
+LIFE_TELEGRAM_BOT_TOKEN=123456:ABC...
+LIFE_TELEGRAM_CHAT_ID=424242
+```
+
+Для будущих транспортов аналогично:
+
+```env
+LIFE_LINUX_INSTANCE_ID=workstation
+LIFE_ANDROID_DEVICE_ID=pixel-8
+```
+
+### 4.2. Web binding
+
+Web owner задаётся login-ом:
+
+```text
+LIFE_OWNER_WEB_LOGIN=alice
+  → normalize_login("alice")
+  → web_store.load_login_index("alice")
+  → user_id
+  → principal_user_id = user_id
+```
+
+Web `/life` продолжает работать как сейчас: authenticated web user читает/пишет свой principal.
+
+### 4.3. Telegram binding
+
+Для dedicated Telegram Life bot в solo mode достаточно:
+
+```text
+LIFE_TELEGRAM_BOT_TOKEN = token dedicated bot-а
+LIFE_TELEGRAM_CHAT_ID   = private DM chat id владельца
+```
+
+Telegram adapter принимает input только из configured `LIFE_TELEGRAM_CHAT_ID`. Всё остальное — ignored/denied.
+
+Для Telegram private DM этот же `chat_id` является и inbound matcher, и delivery address. Это допустимо как Telegram-adapter contract, но core bridge не должен зашивать это как универсальное правило для всех транспортов.
+
+### 4.4. Target binding table
+
+Чтобы не плодить отдельные identity/delivery абстракции для solo проекта, целевая durable модель — одна таблица bindings:
+
+```text
+life_transport_bindings
+  binding_id         UUID PRIMARY KEY
+  principal_user_id  BIGINT NOT NULL
+  transport_id       TEXT NOT NULL       -- "web", "telegram", "linux", "android", ...
+  inbound_address    JSONB NOT NULL      -- how adapter recognizes owner input
+  delivery_address   JSONB NOT NULL      -- where adapter sends assistant output
+  enabled            BOOLEAN NOT NULL
+  created_at         BIGINT NOT NULL
+  updated_at         BIGINT NOT NULL
+```
+
+Examples:
+
+```json
+{"transport_id":"web","inbound_address":{"login":"alice"},"delivery_address":{"mode":"sse"}}
+{"transport_id":"telegram","inbound_address":{"chat_id":424242},"delivery_address":{"chat_id":424242}}
+{"transport_id":"linux","inbound_address":{"instance_id":"workstation"},"delivery_address":{"instance_id":"workstation"}}
+{"transport_id":"android","inbound_address":{"device_id":"pixel-8"},"delivery_address":{"device_id":"pixel-8"}}
+```
+
+This keeps solo-user setup simple while leaving an open transport namespace.
+
+## 5. Verified current mines
+
+### 5.1. Closed transport enums/checks
+
+Current implementation is closed over `web` and `telegram`:
 
 - SQL CHECK: `provider IN ('web', 'telegram')`
 - SQL CHECK: `source_transport IN ('web', 'telegram', 'internal')`
-- Rust enums: `LifeIdentityProvider::{Web, Telegram}` и `LifeSourceTransport::{Web, Telegram, Internal}`
+- Rust enums: `LifeIdentityProvider::{Web, Telegram}` and `LifeSourceTransport::{Web, Telegram, Internal}`
 
-Это не масштабируется. Новый transport (`linux`, `android`, `system`) потребует schema migration + Rust enum changes + mapping changes по всему стеку.
+This blocks future `linux`/`android` transports without migrations and enum edits.
 
-**Target:** transport namespace должен быть открытым строковым id/newtype, а не closed enum в ядре.
+**Fix:** replace closed provider/source enums in the life core with open `TransportId`/reserved `internal` source.
 
-### 3.3. Mine B — identity смешана с delivery
+### 5.2. Current submit path can create accidental principals
 
-Старый Telegram bridge plan использовал `LIFE_TELEGRAM_CHAT_ID` одновременно как:
+`LifeGateway::submit_life_input` currently allocates a new principal if identity is missing.
 
-1. identity subject
-2. delivery target
+For bridge mode this is unsafe: wrong Telegram config could create a separate hidden transcript.
 
-Для Telegram private DM это случайно совпадает (`user.id == chat.id`). Для будущих транспортов и даже Telegram group/thread это неверно:
+**Fix:** in bridge mode, submit must resolve an existing binding/principal. Unknown inbound address = denied/unlinked, not new principal.
 
-- Telegram group/thread: identity = `telegram_user_id`, delivery = `{chat_id, thread_id}`
-- Android: identity = app account/device owner, delivery = push token/device channel
-- Linux app: identity = web account/local principal, delivery = local daemon/socket/session
-- system integration: identity может быть web user, delivery — отдельный endpoint
+### 5.3. Follow-up inputs may be consumed without execution
 
-**Target:** `life_identity_links` и delivery endpoints должны быть разными таблицами/контрактами.
+Current worker can drain queued follow-up inputs and mark/link them, while executor receives only the originally claimed input content.
 
-### 3.4. Mine C — submit path создаёт principal
+**Fix:** preferred bridge contract is:
 
-`LifeGateway::submit_life_input` сейчас, если identity не найдена, вызывает allocator и создаёт новый principal.
-
-Для single-transport web это допустимо. Для bridge — опасно:
-
-- ошибочный Telegram env/link создаст отдельный principal
-- Web UI его не увидит, потому что web читает principal из web user id
-- memory/transcript разделятся
-- баг выглядит как “агент иногда не помнит”
-
-**Target:** обычный submit path только резолвит identity. Если identity не связана — `UnlinkedIdentity`. Создание principal/link — отдельный privileged bootstrap/linking operation.
-
-### 3.5. Mine D — follow-up inputs могут быть silently consumed
-
-`LifeWorker::execute_claimed_run` drain-ит queued follow-up inputs и помечает их `consumed`, но `LifeAgentExecutor` получает только `claimed_run.user_content`.
-
-Это значит: follow-up message может быть связан с run, но не попасть в agent input.
-
-**Target:** выбрать один контракт:
-
-- preferred: one queued input = one run; если run active, новые inputs остаются queued до следующего run
-- alternative: batch-run, но тогда executor получает ordered content всех drained turns
-
-Для personal-use и future transports preferred вариант проще и надёжнее.
-
-### 3.6. Mine E — active run crash recovery неполный
-
-Postgres-backed reads survive restart, но active execution не полностью self-healing:
-
-- process может умереть после `life_runs.status='running'`
-- after restart run остаётся `running`
-- new input получает `AttachedToActive`
-- worker уже мёртв
-- principal зависает
-
-**Target:** run lease/reaper: `lease_owner`, `lease_expires_at`, `heartbeat_at`; startup/poller marks expired running runs as interrupted/failed and releases queued work.
-
-### 3.7. Mine F — Telegram notifier inside executor is wrong boundary
-
-Старый T3 предлагал `TelegramLifeNotifier` внутри `life_executor.rs` после `persist_assistant_turn`.
-
-Это прибивает executor к Telegram и не масштабируется на Android/Linux.
-
-**Target:** executor только пишет canonical assistant turn. Доставка — durable delivery outbox + per-transport delivery workers.
-
-### 3.8. Mine G — Telegram MarkdownV2 on raw assistant output
-
-Telegram `sendMessage` contract:
-
-- `text`: 1–4096 characters after entity parsing
-- `parse_mode=MarkdownV2` требует escaping спецсимволов: underscore, asterisk, square/round brackets, tilde, backtick, greater-than, hash, plus, minus, equals, pipe, braces, dot, bang
-- malformed MarkdownV2 returns HTTP 400 and drops the message
-
-**Target:** first Telegram delivery sends plain text chunks <= 4096 chars. Rich rendering can be added later via deterministic renderer, not raw assistant markdown.
-
-## 4. Target architecture
-
-### 4.1. Process model
-
-Web process remains the only executor owner. Other transports are thin submit/delivery adapters.
-
+```text
+one queued input = one agent run
 ```
+
+If a run is active, later inputs stay queued until the active run completes. No input is consumed unless it is actually executed or explicitly dead-lettered.
+
+### 5.4. Active run crash recovery is incomplete
+
+If process dies while a run is `running`, a future input can attach to a run whose worker no longer exists.
+
+**Fix:** run lease/reaper:
+
+```text
+life_runs.lease_owner
+life_runs.lease_expires_at
+life_runs.heartbeat_at
+```
+
+Expired running runs are marked interrupted/failed and queued work continues.
+
+### 5.5. Delivery must not live inside executor
+
+Executor must only write canonical assistant turn. It must not call Telegram/Android/Linux APIs.
+
+**Fix:** durable delivery outbox.
+
+### 5.6. Telegram MarkdownV2 is not the first milestone
+
+Telegram `sendMessage` has a 4096-char limit and MarkdownV2 escaping rules. Raw assistant markdown can 400.
+
+**Fix:** first Telegram delivery sends plain text chunks <= 4096 chars. Rich Telegram rendering is a later deterministic renderer, not bridge core.
+
+## 6. Target bridge architecture
+
+### 6.1. Process model
+
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Postgres source of truth                       │
 │                                                                             │
-│ life_principals        life_transport_identities   life_delivery_endpoints   │
-│ life_turns             life_inputs                 life_delivery_outbox      │
-│ life_runs              life_events                 agent_memory_snapshots    │
+│ life_principals        life_transport_bindings      life_delivery_outbox     │
+│ life_turns             life_inputs                  life_runs                │
+│ life_events            existing checkpoints/snapshots                       │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
               ┌────────────────────────┼────────────────────────┐
               │                        │                        │
               ▼                        ▼                        ▼
      ┌─────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-     │ Web HTTP/UI     │      │ Web Life Runtime │      │ Transport adapters│
-     │ /life           │      │ executor+worker  │      │ Telegram/Linux/   │
-     │ SSE/read/write  │      │ poller+reaper    │      │ Android/system    │
+     │ Web /life UI    │      │ Web Life Runtime │      │ Transport adapters│
+     │ read/write/SSE  │      │ executor+worker  │      │ Telegram/Linux/   │
+     │                 │      │ poller+reaper    │      │ Android/system    │
      └─────────────────┘      └──────────────────┘      └──────────────────┘
 ```
 
-### 4.2. Stable life scope
+### 6.2. Submit flow
 
-```
-AgentMemoryScope(
-    user_id     = principal_user_id,
-    context_key = "life",
-    flow_id     = "main",
-)
-```
-
-Гидрируется из `agent_memory_snapshots` в начале каждого run, коммитится синхронно в конце. Этот scope не зависит от transport-а.
-
-### 4.3. Open transport identity contract
-
-Canonical identity link:
-
-```text
-life_transport_identities
-  transport_id       TEXT       -- "web", "telegram", "linux", "android", "system", ...
-  provider_subject   TEXT       -- stable subject within that transport namespace
-  principal_user_id  BIGINT
-  verified_at        BIGINT
-  created_at         BIGINT
-  updated_at         BIGINT
-  PRIMARY KEY (transport_id, provider_subject)
-```
-
-Examples:
-
-```text
-web       subject="42"                 → principal=42
-telegram  subject="telegram_user:4242" → principal=42
-android   subject="device_owner:abc"   → principal=42
-linux     subject="local_user:stfu"    → principal=42
-```
-
-Transport submit contract:
+Transport adapter submits only what it actually knows:
 
 ```text
 submit_life_input(
   transport_id,
-  provider_subject,
+  inbound_address,
   source_ref,
   content,
   attachments,
-  transport_metadata,
-  sensitivity
+  metadata
 )
 ```
 
-Sender knows only its local subject and message metadata. Receiver (`LifeGateway`) resolves principal. Sender never supplies `principal_user_id`.
+Core resolves `transport_id + inbound_address` through configured bindings to the solo principal.
 
-### 4.4. Separate delivery endpoints
+No adapter sends arbitrary `principal_user_id`.
 
-Delivery endpoint is not identity.
+### 6.3. Delivery outbox
 
-```text
-life_delivery_endpoints
-  endpoint_id        UUID PRIMARY KEY
-  principal_user_id  BIGINT
-  transport_id       TEXT
-  endpoint_address   JSONB      -- transport-owned address, e.g. chat_id/thread_id/push token/socket id
-  enabled            BOOLEAN
-  created_at         BIGINT
-  updated_at         BIGINT
-  UNIQUE(principal_user_id, transport_id, endpoint_address)
-```
-
-Examples:
-
-```json
-{"transport_id":"telegram","endpoint_address":{"chat_id":424242,"thread_id":null}}
-{"transport_id":"android","endpoint_address":{"device_id":"pixel-8","push_token_ref":"storage:fcm/pixel-8"}}
-{"transport_id":"linux","endpoint_address":{"channel":"local-daemon","instance_id":"workstation"}}
-```
-
-### 4.5. Durable delivery outbox
-
-Assistant turn persistence enqueues delivery work; executor does not call external APIs.
+Assistant turn persistence enqueues delivery work for enabled bindings:
 
 ```text
 life_delivery_outbox
   delivery_id        UUID PRIMARY KEY
   turn_id            UUID NOT NULL
-  principal_user_id  BIGINT NOT NULL
-  endpoint_id        UUID NOT NULL
+  binding_id         UUID NOT NULL
   transport_id       TEXT NOT NULL
   status             TEXT CHECK IN ('queued','claimed','delivered','failed','dead')
   attempt_count      INT
@@ -291,190 +328,137 @@ life_delivery_outbox
   updated_at         BIGINT
 ```
 
-Per-transport delivery worker:
+Transport delivery worker:
 
 ```text
-claim queued outbox rows for transport_id
-→ load endpoint_address + turn content
-→ deliver using transport-specific API
+claim outbox rows for transport_id
+→ load binding.delivery_address + assistant turn content
+→ send via transport API
 → mark delivered/failed/dead
 ```
 
-This supports Telegram today and Android/Linux later without changing executor.
+This is the core bridge: once assistant output exists, all enabled interfaces can receive/sync it.
 
-### 4.6. Runtime queue contract
+## 7. Data flows
 
-Preferred contract:
-
-```text
-one queued life_input = one agent run
-```
-
-If a principal has active run:
-
-- new input remains `queued`
-- poller wakes it after active run finishes
-- no input is marked `consumed` unless its content is actually executed
-
-This removes silent loss of follow-up messages and gives deterministic ordering across transports.
-
-### 4.7. Run lease/reaper contract
-
-Running run must have a lease:
+### 7.1. Telegram → Web + Telegram
 
 ```text
-life_runs
-  lease_owner TEXT
-  lease_expires_at BIGINT
-  heartbeat_at BIGINT
-```
-
-Rules:
-
-- worker renews lease while executing
-- startup/poller marks expired `running` runs as `failed`/`interrupted`
-- queued inputs remain processable
-- claimed-but-not-executed inputs must have explicit recovery policy
-
-No process-local state may be required to recover Life Mode after restart.
-
-## 5. Replacement implementation plan
-
-The old T1-T5 Telegram-special-case plan is superseded. Do not implement `TelegramLifeNotifier` inside `LifeAgentExecutor`.
-
-### S1: Open transport namespace
-
-- Replace `LifeIdentityProvider` enum with `TransportId` newtype.
-- Replace `LifeSourceTransport` enum with open `TransportId`/`TurnSource` model.
-- Remove SQL CHECKs that enumerate concrete transports.
-- Keep `internal` as reserved source id for system/assistant turns.
-
-### S2: Split identity and delivery
-
-- Rename/model identity links as transport identities.
-- Add `life_delivery_endpoints`.
-- Add env/bootstrap path that creates both:
-  - `web` identity for existing web user
-  - `telegram` identity for Telegram user id
-  - `telegram` delivery endpoint for chat/thread target
-
-### S3: Narrow submit contract
-
-- Submit requires existing identity.
-- Unknown identity returns `UnlinkedIdentity`.
-- Principal creation/linking moves to explicit privileged bootstrap/linking operations.
-
-### S4: Fix queue semantics
-
-- Remove “drain queued inputs and mark consumed without executing content”.
-- Implement one-input-one-run ordering, or pass all drained content into executor as ordered batch. Preferred: one-input-one-run.
-- Add tests proving multiple messages across transports are executed exactly once and in order.
-
-### S5: Add run lease and reaper
-
-- Add run lease fields.
-- Worker heartbeats.
-- Startup/poller reaps expired running runs.
-- Tests: crash after run claimed does not permanently block principal.
-
-### S6: Add delivery outbox
-
-- Assistant turn persistence enqueues outbox rows for enabled endpoints.
-- No external HTTP calls from `LifeAgentExecutor`.
-- Add delivery claim/retry/dead status transitions.
-
-### S7: Telegram adapter over generic delivery
-
-- Telegram `/life <text>` remains thin submit client.
-- Telegram delivery worker claims `transport_id='telegram'` outbox rows.
-- `sendMessage` plain text, split into <=4096 char chunks.
-- No `parse_mode=MarkdownV2` until deterministic renderer exists.
-- Ack: `💭 Обрабатываю...`.
-
-### S8: Future transports
-
-Linux/system app:
-
-- submit via local daemon or HTTP API using `transport_id='linux'`
-- read transcript via REST/SSE or local delivery endpoint
-- optional local notification delivery worker
-
-Android app:
-
-- submit via authenticated API using `transport_id='android'`
-- read transcript via REST/SSE/poll
-- optional push endpoint in `life_delivery_endpoints`
-
-No executor/runtime/memory changes should be needed for either.
-
-## 6. Telegram bridge after redesign
-
-### 6.1. Env bootstrap
-
-```env
-LIFE_WEB_USER_LOGIN=alice
-LIFE_TELEGRAM_USER_ID=424242
-LIFE_TELEGRAM_CHAT_ID=424242
-LIFE_TELEGRAM_THREAD_ID=
-LIFE_TELEGRAM_BOT_TOKEN=123456:ABC...
-
-TELEGRAM_TOKEN=123456:ABC...
-```
-
-`LIFE_TELEGRAM_USER_ID` is identity. `LIFE_TELEGRAM_CHAT_ID` is delivery. They may be equal for private DM, but the contract must not depend on equality.
-
-### 6.2. Telegram → Life → all endpoints
-
-```
-Telegram DM: "Привет"
+Telegram dedicated Life bot receives DM text from chat_id=424242
   │
-  ▼ submit_life_input(transport_id="telegram", subject="telegram_user:424242")
-  │  → resolve principal via life_transport_identities
+  ▼ adapter checks chat_id == LIFE_TELEGRAM_CHAT_ID
+  │
+  ▼ submit_life_input(transport_id="telegram", inbound_address={chat_id:424242})
+  │  → resolve binding → principal
   │  → INSERT life_turns(role=user, source_transport=telegram, source_ref=message_id)
   │  → INSERT life_inputs(status=queued)
   │
-  ▼ ack "💭 Обрабатываю..."
+  ▼ Telegram ack: "💭 Обрабатываю..."
   │
-  ▼ Web poller claims queued input
+  ▼ Web runtime/poller claims queued input
   │  → one input = one run
   │
-  ▼ LifeAgentExecutor
-  │  → hydrate memory
-  │  → execute ordinary AgentExecutor
-  │  → persist assistant turn(source=internal)
-  │  → enqueue delivery outbox rows
+  ▼ AgentExecutor runs ordinary chat turn
   │
-  ▼ Delivery workers
-     ├─ Web sees turn via SSE/Postgres polling
-     └─ Telegram worker sends plain text chunks to chat_id
+  ▼ persist assistant turn(source=internal)
+  │  → enqueue outbox for enabled bindings
+  │
+  ├─ Web UI sees user+assistant turns through SSE/Postgres polling
+  └─ Telegram delivery worker sends assistant response to chat_id=424242
 ```
 
-### 6.3. Web → Life → all endpoints
+### 7.2. Web → Web + Telegram
 
-```
-Web /life: "Что нового?"
+```text
+Web /life submit by authenticated LIFE_OWNER_WEB_LOGIN user
   │
-  ▼ submit_life_input(transport_id="web", subject="42")
-  │
-  ▼ Web runtime claims input immediately
-  │
-  ▼ LifeAgentExecutor persists assistant turn + outbox
+  ▼ INSERT life_turns(role=user, source_transport=web)
+  ▼ INSERT life_inputs(status=queued)
+  ▼ runtime claims input immediately
+  ▼ AgentExecutor runs ordinary chat turn
+  ▼ assistant turn persisted + outbox enqueued
   │
   ├─ Web UI receives SSE turn
-  └─ Telegram worker sends to configured Telegram endpoint
+  └─ Telegram delivery worker sends assistant response to configured chat_id
 ```
 
-## 7. Validation
+### 7.3. Future Linux/Android
+
+Future transports follow the same pattern:
+
+```text
+new transport config/binding
+→ adapter maps local input to submit_life_input
+→ shared queue/executor/transcript
+→ delivery worker or client polling reads outputs
+```
+
+No changes to executor semantics should be required.
+
+## 8. Implementation plan
+
+### B1: Bridge-first terminology and config
+
+- Rename docs/config from memory-first wording to bridge/chat wording.
+- Introduce `LIFE_OWNER_WEB_LOGIN`.
+- Dedicated Telegram bot uses `LIFE_TELEGRAM_BOT_TOKEN` + `LIFE_TELEGRAM_CHAT_ID`.
+- Remove command-prefixed input requirement for dedicated Telegram bot.
+
+### B2: Open transport id
+
+- Replace closed provider/source enums with open `TransportId` newtype/reserved `internal` source.
+- Remove SQL CHECKs that enumerate concrete transports.
+
+### B3: Solo transport bindings
+
+- Add/load `life_transport_bindings` from env/config at web startup.
+- Web login binding resolves owner principal.
+- Telegram chat binding maps configured chat id to same principal.
+- Unknown Telegram chat id is denied/ignored, not auto-linked.
+
+### B4: Narrow submit path
+
+- Submit resolves existing binding.
+- No accidental principal allocation from random transport input.
+- Web submit remains direct for authenticated owner but still maps into same principal/binding model.
+
+### B5: Queue correctness
+
+- Implement one-input-one-run or ordered batch execution.
+- Preferred: one-input-one-run.
+- Add tests: two fast Telegram messages are both executed exactly once and in order.
+
+### B6: Run lease/reaper
+
+- Add lease fields and heartbeat.
+- Startup/poller reaps expired running runs.
+- Tests: crashed active run does not block later inputs.
+
+### B7: Delivery outbox
+
+- Assistant turn persistence enqueues outbox rows for enabled transport bindings.
+- Executor does not call external transport APIs.
+- Delivery workers claim/send/retry/dead-letter.
+
+### B8: Dedicated Telegram adapter
+
+- Every non-command private DM from configured chat id is Life input.
+- Commands: `/start`, `/help`, `/status`.
+- Ack: `💭 Обрабатываю...`.
+- Delivery: plain text chunks <= 4096 chars.
+- No MarkdownV2 in first milestone.
+
+## 9. Validation
 
 ### Design validation
 
-- New transport can be added without SQL enum/CHECK migration.
-- New transport can be added without changing `LifeAgentExecutor`.
-- Identity subject and delivery endpoint are separate values.
-- Submitter never supplies principal id.
-- Unknown identity cannot silently create a new principal.
-- Queued input cannot be marked consumed unless executed or explicitly dead-lettered.
-- Expired running run cannot block principal forever.
+- User can write in Telegram and see the turn in Web transcript.
+- User can write in Web and receive assistant response in Telegram.
+- Telegram dedicated bot does not require `/life`.
+- Unknown Telegram chat cannot create a hidden new principal.
+- New future transport can be added by config/binding + adapter, not executor rewrite.
+- Queued input cannot be consumed unless executed or dead-lettered.
+- Expired running run cannot block the solo principal forever.
 
 ### Code gates
 
@@ -485,35 +469,32 @@ Web /life: "Что нового?"
 - If touching web UI: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`
 - If touching web UI: `trunk build --release` from `crates/oxide-agent-web-ui`
 
-## 8. Границы
+## 10. Scope
 
 ### В scope
 
-- Web permanent chat: `/life` UI, transcript, composer, activity, paging, SSE
-- Transport-scalable identity model
-- Transport-scalable delivery outbox
-- Telegram bridge as first non-web adapter
-- Future Linux/Android/system transports without executor changes
-- Postgres-backed runtime: turns, inputs, runs, events, memory snapshots
+- Web permanent chat `/life` as full console.
+- Dedicated Telegram Life bot with no `/life` command requirement.
+- Solo-owner env/config bindings.
+- Cross-interface transcript sync.
+- Durable input queue and delivery outbox.
+- Future Linux/Android/system transports via same bridge pattern.
 
-### Out of scope (намеренно удалено)
+### Out of scope for bridge milestone
 
-- Engram / derived memory index / recall engine
-- Post-run memory curator (LLM classification)
-- Memory generations (build/compare/activate/rollback)
-- Canonical memory ledger (`life_memory_items`)
-- Task resume packets (`life_task_states`)
-- Friction patterns / support protocols
-- Context overrides with TTL
-- AuDHD operating profile / operating contract
-- Profile state / settings inspector
-- Memory inspector / editor / conflict review
-- User-facing token linking flow (`/link`) — bootstrap/env link is enough for personal use until multi-user linking is explicitly designed
-- Cross-transport reminders — reminder delivery needs separate transport-neutral notifier design
+- Engram / derived memory index / recall engine.
+- Post-run memory curator.
+- Memory generations.
+- Memory inspector/editor/conflict review.
+- User-facing token linking flow.
+- Multi-user SaaS account/device linking.
+- Telegram groups/multi-chat routing.
+- Rich Telegram Markdown rendering.
+- Cross-transport reminders.
 
-Эти компоненты могут вернуться в будущих goals, но не как часть core transport-scalable Life bridge.
+These can be separate goals after the bridge is correct.
 
-## 9. История коммитов
+## 11. История коммитов
 
 | Checkpoint | Commit | Описание |
 |-----------|--------|----------|
@@ -528,5 +509,6 @@ Web /life: "Что нового?"
 | C9 | `5307e91e` | Restart survival audit for read paths |
 | Cleanup | `f71ed6ac` | Dead code removal (-7765 lines, 15→6 tables) |
 | PRD rewrite | `75ae9bb9` | Replace old Engram PRD with current Life chat + initial Telegram plan |
+| Scalable PRD | `c29d15df` | Redesign around scalable transports/outbox |
 
 Goal doc: `docs/goals/2026-06-28-web-permanent-chat.md` (status: complete for C1-C9)
