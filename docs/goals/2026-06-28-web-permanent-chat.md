@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 00:00
+Last updated: 2026-06-28 C2
 
 ## Objective
 
@@ -94,8 +94,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §12.1, §12.6 step 1-2; current `life_routes.rs` returns `run_id: None`.
   - Acceptance: submit resolves principal, writes user turn, queues input, and wakes the life runtime so a run is claimed/started; response carries a non-None `run_id` when a run is active or started; follow-up inputs during an active run are queued and drained at safe boundaries, not lost.
   - Evidence required: route/worker integration test proving `run_id` is populated and queued follow-up input is drained; grep proving no transport-side executor construction.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `LifeRuntimeHandle::wake` claims input + starts run, links originating turn, returns `WakeOutcome::Started { run_id, claimed }` or `WakeOutcome::AttachedToActive { run_id }`. Runtime tests: `wake_starts_new_run_and_links_turn`, `wake_returns_active_run_when_already_running`, `wake_errors_when_not_claimed_and_no_active_run`, `wake_propagates_storage_errors`. Route handler `submit_life_input_for_user` calls `wake` after gateway submit and spawns `worker.execute_claimed_run(*claimed)` — `run_id` is populated from the wake outcome. NoopLifeRunExecutor is a placeholder (no transport-side AgentExecutor construction; real executor is C3). SQLx test `sqlx_life_find_active_run_and_link_turn_to_run` proves `find_active_run` returns the running run and `life_turns.run_id` is populated after `link_turn_to_run` on real Postgres. Full HTTP integration test deferred to C9 (requires Postgres).
 
 - G3: `LifeRunExecutor` runs the ordinary `AgentExecutor` with stable life scope and same tools.
   - Source: PRD §12.3, §12.5; user requirement "same tools as ordinary agents, only without chat reset".
@@ -108,8 +108,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §9.1 `life_turns.run_id`; current gateway leaves `run_id = None`.
   - Acceptance: when the worker claims an input and starts a run, `life_turns.run_id` is set to the run id for both the originating user turn and any follow-up inputs drained into that run.
   - Evidence required: storage/worker test proving `life_turns.run_id` is populated after claim and after drain.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `LifeRuntimeHandle::wake` calls `store.link_turn_to_run(turn_id, run_id)` for the originating turn after claim. `LifeWorker::execute_claimed_run` drains follow-up inputs and calls `store.link_turn_to_run` for each drained input's turn. SQLx test `sqlx_life_find_active_run_and_link_turn_to_run` verifies `life_turns.run_id` is NULL before linking, set to the run UUID after `link_turn_to_run` for both originating and follow-up turns, on real Postgres. Worker test `execute_claimed_run_drains_follow_up_inputs_and_links_turns` verifies the drain + link behavior.
 
 - G5: AgentEvents are persisted to `life_events` and available to the UI.
   - Source: PRD §9.4, §12.3 "stream AgentEvents -> life_events".
@@ -393,6 +393,20 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo test -p oxide-agent-life`, `cargo test -p oxide-agent-web-contracts`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`.
   - Audit IDs updated: G1 → verified, G6 → verified.
   - Next: checkpoint C2 (runtime wake + run-bound turn linkage).
+
+- 2026-06-28 C2: Runtime wake + run-bound turn linkage.
+  - Changed:
+    - `crates/oxide-agent-life/src/storage/repository.rs`: added `find_active_run` and `link_turn_to_run` to `LifeStorageRepository` trait.
+    - `crates/oxide-agent-life/src/storage/sqlx.rs`: implemented `find_active_run` (SELECT running run by principal) and `link_turn_to_run` (UPDATE life_turns SET run_id); added `run_from_row` + `run_status_from_str` helpers; added `sqlx_life_find_active_run_and_link_turn_to_run` real-Postgres test.
+    - `crates/oxide-agent-life/src/worker/mod.rs`: added `drain_queued_inputs_for_run` and `link_turn_to_run` to `LifeWorkerStore` trait + blanket impl; added `execute_claimed_run` method (drains follow-up inputs, links turns, executes, checkpoints, completes); refactored `process_principal_input` to claim then delegate to `execute_claimed_run`; added `impl LifeRunExecutor for Arc<dyn LifeRunExecutor>`; updated `FakeWorkerStore` with new fields/methods; added `execute_claimed_run_drains_follow_up_inputs_and_links_turns` test.
+    - `crates/oxide-agent-life/src/runtime.rs` (new): `LifeRuntimeHandle`, `WakeOutcome` (Started/AttachedToActive), `LifeRuntimeStore` trait + blanket impl, `LifeRuntimeError`; `wake` method claims input, starts run, links originating turn, returns outcome; 4 runtime tests.
+    - `crates/oxide-agent-life/src/lib.rs`: added `pub mod runtime;`.
+    - `crates/oxide-agent-transport-web/src/server/types.rs`: added `life_runtime` and `life_worker` fields to `AppState` (cfg storage-sqlx); added type aliases `LifeExecutor`, `LifeWorkerHandle`, `LifeRuntimeHandleType`; added accessor methods; added `NoopLifeRunExecutor` placeholder; constructed runtime handle + worker in `new_with_sqlx_web_store`.
+    - `crates/oxide-agent-transport-web/src/server/life_routes.rs`: `submit_life_input_for_user` now calls `state.life_runtime().wake()` after gateway submit, spawns `worker.execute_claimed_run(*claimed)` for started runs, populates `run_id` from wake outcome; added `life_runtime_error_response`.
+  - Evidence: `cargo test -p oxide-agent-life` 36/36 pass (incl. real-Postgres `sqlx_life_find_active_run_and_link_turn_to_run`). `cargo test -p oxide-agent-web-contracts` 13/13 pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` 7 pass, 23 ignored. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-life --all-targets -- -D warnings` pass. `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` pass.
+  - Commands: `cargo test -p oxide-agent-life`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
+  - Audit IDs updated: G2 → verified, G4 → verified.
+  - Next: checkpoint C3 (real LifeRunExecutor over AgentExecutor).
 
 ## Risks and Blockers
 

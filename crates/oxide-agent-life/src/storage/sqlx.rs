@@ -1169,6 +1169,45 @@ impl LifeStorageRepository for SqlxLifeStorage {
         rows.into_iter().map(input_from_row).collect()
     }
 
+    async fn find_active_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<Option<LifeRun>> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_runs
+            WHERE principal_user_id = $1 AND status = 'running'
+            LIMIT 1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        row.map(run_from_row).transpose()
+    }
+
+    async fn link_turn_to_run(
+        &self,
+        turn_id: crate::domain::TurnId,
+        run_id: RunId,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_turns
+            SET run_id = $2
+            WHERE turn_id = $1
+            "#,
+        )
+        .bind(turn_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
     async fn append_event(&self, event: &LifeEvent) -> LifeStorageResult<()> {
         query::<Postgres>(
             r#"
@@ -1771,6 +1810,38 @@ fn input_status_from_str(value: &str) -> LifeStorageResult<LifeInputStatus> {
         "dead" => Ok(LifeInputStatus::Dead),
         other => unknown_enum("life_input_status", other),
     }
+}
+
+fn run_status_from_str(value: &str) -> LifeStorageResult<LifeRunStatus> {
+    match value {
+        "queued" => Ok(LifeRunStatus::Queued),
+        "running" => Ok(LifeRunStatus::Running),
+        "completed" => Ok(LifeRunStatus::Completed),
+        "failed" => Ok(LifeRunStatus::Failed),
+        "cancelled" => Ok(LifeRunStatus::Cancelled),
+        other => unknown_enum("life_run_status", other),
+    }
+}
+
+fn run_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeRun> {
+    Ok(LifeRun {
+        run_id: RunId::from_uuid(row.get("run_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        memory_generation_id: MemoryGenerationId::from_uuid(row.get("memory_generation_id")),
+        status: run_status_from_str(row.get::<&str, _>("status"))?,
+        started_at: row
+            .get::<Option<i64>, _>("started_at")
+            .map(TimestampMillis::new),
+        finished_at: row
+            .get::<Option<i64>, _>("finished_at")
+            .map(TimestampMillis::new),
+        last_checkpoint_at: row
+            .get::<Option<i64>, _>("last_checkpoint_at")
+            .map(TimestampMillis::new),
+        error_text: row.get("error_text"),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
 }
 
 fn generation_status_as_str(status: MemoryGenerationStatus) -> &'static str {
@@ -3255,6 +3326,177 @@ mod tests {
         );
         assert_eq!(checkpoint.get::<i32, _>("schema_version"), 1);
         assert_eq!(checkpoint.get::<i64, _>("updated_at"), now.get() + 5);
+    }
+
+    #[tokio::test]
+    async fn sqlx_life_find_active_run_and_link_turn_to_run() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_100_000);
+        must(
+            storage
+                .upsert_principal(&LifePrincipal {
+                    principal_user_id,
+                    profile_state: json!({}),
+                    operating_profile: json!({}),
+                    settings: json!({}),
+                    schema_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "upsert principal",
+        );
+        let memory_gen = generation(principal_user_id, 1, MemoryGenerationStatus::Building, now);
+        must(
+            storage.insert_memory_generation(&memory_gen).await,
+            "insert generation",
+        );
+        must(
+            storage
+                .activate_memory_generation(
+                    principal_user_id,
+                    memory_gen.memory_generation_id,
+                    now,
+                    "test",
+                )
+                .await,
+            "activate generation",
+        );
+
+        // No active run before claiming.
+        let no_run = must(
+            storage.find_active_run(principal_user_id).await,
+            "find active run before claim",
+        );
+        assert!(no_run.is_none());
+
+        // Create a user turn and queue an input.
+        let turn = user_turn(principal_user_id, "hello", now);
+        must(storage.append_turn(&turn).await, "append turn");
+        let input = queued_input(principal_user_id, turn.turn_id, now);
+        must(storage.enqueue_input(&input).await, "enqueue input");
+
+        // Claim the input and start a run.
+        let run_id = RunId::new_v4();
+        let _claimed = must(
+            storage
+                .claim_input_and_start_run(
+                    principal_user_id,
+                    input.input_id,
+                    run_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 1),
+                )
+                .await,
+            "claim input and start run",
+        )
+        .expect("input should be claimed");
+
+        // find_active_run should now return the running run.
+        let active = must(
+            storage.find_active_run(principal_user_id).await,
+            "find active run after claim",
+        )
+        .expect("active run should exist");
+        assert_eq!(active.run_id, run_id);
+        assert_eq!(active.status, LifeRunStatus::Running);
+
+        // life_turns.run_id should be NULL before linking.
+        let turn_row_before = must(
+            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
+                .bind(turn.turn_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load turn before link",
+        );
+        assert!(turn_row_before.get::<Option<Uuid>, _>("run_id").is_none());
+
+        // Link the originating turn to the run.
+        must(
+            storage.link_turn_to_run(turn.turn_id, run_id).await,
+            "link turn to run",
+        );
+
+        // life_turns.run_id should now be set.
+        let turn_row_after = must(
+            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
+                .bind(turn.turn_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load turn after link",
+        );
+        assert_eq!(
+            turn_row_after.get::<Option<Uuid>, _>("run_id"),
+            Some(run_id.as_uuid())
+        );
+
+        // Queue a follow-up input, drain it, and link its turn.
+        let follow_up_turn = user_turn(
+            principal_user_id,
+            "follow-up",
+            TimestampMillis::new(now.get() + 2),
+        );
+        must(
+            storage.append_turn(&follow_up_turn).await,
+            "append follow-up turn",
+        );
+        let follow_up_input = queued_input(
+            principal_user_id,
+            follow_up_turn.turn_id,
+            TimestampMillis::new(now.get() + 2),
+        );
+        must(
+            storage.enqueue_input(&follow_up_input).await,
+            "enqueue follow-up",
+        );
+        let drained = must(
+            storage
+                .drain_queued_inputs_for_run(
+                    principal_user_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 3),
+                )
+                .await,
+            "drain follow-up",
+        );
+        assert_eq!(drained.len(), 1);
+        must(
+            storage
+                .link_turn_to_run(follow_up_turn.turn_id, run_id)
+                .await,
+            "link follow-up turn",
+        );
+        let follow_up_row = must(
+            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
+                .bind(follow_up_turn.turn_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load follow-up turn after link",
+        );
+        assert_eq!(
+            follow_up_row.get::<Option<Uuid>, _>("run_id"),
+            Some(run_id.as_uuid())
+        );
+
+        // Complete the run; find_active_run should return None.
+        must(
+            storage
+                .complete_run(
+                    run_id,
+                    TimestampMillis::new(now.get() + 4),
+                    TimestampMillis::new(now.get() + 4),
+                )
+                .await,
+            "complete run",
+        );
+        let no_active = must(
+            storage.find_active_run(principal_user_id).await,
+            "find active run after complete",
+        );
+        assert!(no_active.is_none());
     }
 
     async fn sqlx_test_storage() -> Option<SqlxLifeStorage> {

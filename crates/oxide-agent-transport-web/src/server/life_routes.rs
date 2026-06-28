@@ -236,12 +236,37 @@ async fn submit_life_input_for_user(
         .await
         .map_err(life_gateway_error_response)?;
 
+    // Wake the life runtime to claim the input and start/attach a run.
+    let run_id = if let Some(runtime) = state.life_runtime() {
+        let outcome = runtime
+            .wake(result.principal_user_id, result.input_id)
+            .await
+            .map_err(life_runtime_error_response)?;
+        let run_id = match outcome {
+            oxide_agent_life::runtime::WakeOutcome::Started { run_id, claimed } => {
+                // Spawn the worker to execute the claimed run.
+                if let Some(worker) = state.life_worker() {
+                    tokio::spawn(async move {
+                        if let Err(error) = worker.execute_claimed_run(*claimed).await {
+                            tracing::error!("life run execution failed: {error}");
+                        }
+                    });
+                }
+                run_id
+            }
+            oxide_agent_life::runtime::WakeOutcome::AttachedToActive { run_id } => run_id,
+        };
+        Some(run_id.to_string())
+    } else {
+        None
+    };
+
     Ok(Json(ApiLifeSubmitResponse {
         principal_user_id: result.principal_user_id.get(),
         memory_generation_id: result.memory_scope.memory_generation_id.to_string(),
         turn_id: result.turn_id.to_string(),
         input_id: result.input_id.to_string(),
-        run_id: result.run_id.map(|run_id| run_id.to_string()),
+        run_id,
     }))
 }
 
@@ -869,6 +894,29 @@ fn life_gateway_error_response(error: LifeGatewayError) -> (StatusCode, Json<Err
             StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::Internal,
             error,
+            true,
+        ),
+    }
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn life_runtime_error_response(
+    error: oxide_agent_life::runtime::LifeRuntimeError,
+) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        oxide_agent_life::runtime::LifeRuntimeError::Storage(error) => {
+            life_storage_error_response(error)
+        }
+        oxide_agent_life::runtime::LifeRuntimeError::Clock(msg) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::Internal,
+            msg,
+            true,
+        ),
+        oxide_agent_life::runtime::LifeRuntimeError::NotClaimedAndNoActiveRun { .. } => api_error(
+            StatusCode::CONFLICT,
+            ErrorCode::Internal,
+            error.to_string(),
             true,
         ),
     }

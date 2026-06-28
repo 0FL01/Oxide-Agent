@@ -198,6 +198,19 @@ pub trait LifeStorageRepository: Send + Sync {
         now: TimestampMillis,
     ) -> LifeStorageResult<Vec<LifeInput>>;
 
+    /// Finds the currently running run for a principal, if any.
+    async fn find_active_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeStorageResult<Option<LifeRun>>;
+
+    /// Links a transcript turn to a run by setting `life_turns.run_id`.
+    async fn link_turn_to_run(
+        &self,
+        turn_id: crate::domain::TurnId,
+        run_id: RunId,
+    ) -> LifeStorageResult<()>;
+
     /// Appends a transport-neutral run event.
     async fn append_event(&self, event: &LifeEvent) -> LifeStorageResult<()>;
 

@@ -15,7 +15,11 @@ use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::{config::AgentSettings, llm::LlmClient};
 #[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::runtime::LifeRuntimeHandle;
+#[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::storage::SqlxLifeStorage;
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::worker::{LifeRunExecutor, LifeWorker, SystemLifeWorkerClock};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
@@ -195,6 +199,20 @@ impl std::error::Error for WebStartupError {}
 // App state
 // ---------------------------------------------------------------------------
 
+/// Type alias for the life run executor trait object.
+#[cfg(feature = "storage-sqlx")]
+pub(crate) type LifeExecutor = Arc<dyn LifeRunExecutor>;
+
+/// Type alias for the life worker handle.
+#[cfg(feature = "storage-sqlx")]
+pub(crate) type LifeWorkerHandle =
+    Arc<LifeWorker<SqlxLifeStorage, LifeExecutor, SystemLifeWorkerClock>>;
+
+/// Type alias for the life runtime handle.
+#[cfg(feature = "storage-sqlx")]
+pub(crate) type LifeRuntimeHandleType =
+    Arc<LifeRuntimeHandle<SqlxLifeStorage, SystemLifeWorkerClock>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
@@ -221,6 +239,14 @@ pub struct AppState {
     pub storage: Option<Arc<dyn StorageProvider>>,
     #[cfg(feature = "storage-sqlx")]
     pub life_storage: Option<Arc<SqlxLifeStorage>>,
+    /// Life runtime handle for waking the worker on submit.
+    /// `Some` when `WebStoreKind::Sqlx`, `None` otherwise.
+    #[cfg(feature = "storage-sqlx")]
+    pub life_runtime: Option<LifeRuntimeHandleType>,
+    /// Life worker for executing claimed runs.
+    /// `Some` when `WebStoreKind::Sqlx`, `None` otherwise.
+    #[cfg(feature = "storage-sqlx")]
+    pub life_worker: Option<LifeWorkerHandle>,
 }
 
 impl AppState {
@@ -280,6 +306,10 @@ impl AppState {
             storage: None,
             #[cfg(feature = "storage-sqlx")]
             life_storage: None,
+            #[cfg(feature = "storage-sqlx")]
+            life_runtime: None,
+            #[cfg(feature = "storage-sqlx")]
+            life_worker: None,
         }
     }
 
@@ -291,6 +321,20 @@ impl AppState {
         let storage_provider: Arc<dyn StorageProvider> =
             Arc::clone(&sqlx_storage) as Arc<dyn StorageProvider>;
         let life_storage = Arc::new(SqlxLifeStorage::new(sqlx_storage.pool().clone()));
+
+        // Construct the life runtime handle and worker for permanent chat.
+        // The executor is a noop stub until C3 wires the real AgentExecutor adapter.
+        let executor: LifeExecutor = Arc::new(NoopLifeRunExecutor);
+        let life_worker: LifeWorkerHandle = Arc::new(LifeWorker::new(
+            life_storage.as_ref().clone(),
+            executor,
+            "web-life-worker",
+        ));
+        let life_runtime: LifeRuntimeHandleType = Arc::new(LifeRuntimeHandle::new(
+            life_storage.as_ref().clone(),
+            "web-life-worker",
+        ));
+
         let mut state = Self::new_with_web_store_kind(
             session_manager,
             Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
@@ -298,6 +342,8 @@ impl AppState {
         );
         state.storage = Some(storage_provider);
         state.life_storage = Some(life_storage);
+        state.life_runtime = Some(life_runtime);
+        state.life_worker = Some(life_worker);
         state
     }
 
@@ -364,6 +410,18 @@ impl AppState {
     #[must_use]
     pub fn life_storage(&self) -> Option<Arc<SqlxLifeStorage>> {
         self.life_storage.clone()
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    #[must_use]
+    pub(crate) fn life_runtime(&self) -> Option<LifeRuntimeHandleType> {
+        self.life_runtime.clone()
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    #[must_use]
+    pub(crate) fn life_worker(&self) -> Option<LifeWorkerHandle> {
+        self.life_worker.clone()
     }
 
     #[must_use]
@@ -691,4 +749,41 @@ pub(crate) fn is_production_run_mode() -> bool {
         let value = value.trim().to_ascii_lowercase();
         value == "prod" || value == "production"
     })
+}
+
+// ---------------------------------------------------------------------------
+// Noop life run executor (placeholder until C3 wires the real AgentExecutor)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::domain::TimestampMillis;
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_life::worker::{
+    LifeRunExecutionOutcome, LifeWorkerError, LifeWorkerResult, LifeWorkerRunContext,
+};
+
+/// Placeholder executor that completes immediately with an empty checkpoint.
+/// This will be replaced by a real `AgentExecutor` adapter in checkpoint C3.
+#[cfg(feature = "storage-sqlx")]
+#[derive(Default)]
+struct NoopLifeRunExecutor;
+
+#[cfg(feature = "storage-sqlx")]
+#[async_trait]
+impl LifeRunExecutor for NoopLifeRunExecutor {
+    async fn execute_life_run(
+        &self,
+        _context: LifeWorkerRunContext,
+    ) -> LifeWorkerResult<LifeRunExecutionOutcome> {
+        let duration = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| LifeWorkerError::Clock(error.to_string()))?;
+        let millis = i64::try_from(duration.as_millis())
+            .map_err(|error| LifeWorkerError::Clock(error.to_string()))?;
+        Ok(LifeRunExecutionOutcome {
+            final_checkpoint_at: TimestampMillis::new(millis),
+            final_memory: serde_json::json!({}),
+            final_memory_schema_version: 1,
+        })
+    }
 }
