@@ -19,6 +19,7 @@ sha2 = "0.10.9"
 sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"] }
 sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"] }
 thiserror = "2.0.17"
+tokio = { version = "1.48", features = ["macros", "time"] }
 uuid = { version = "1.19.0", features = ["serde", "v4"] }
 
 [dev-dependencies]

@@ -9,6 +9,13 @@ use crate::domain::{
     LifeTransportId, LifeTurn, PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
+/// Durable running-run lease duration.
+///
+/// Claims and heartbeats extend a run by this amount from the storage-observed
+/// timestamp. Expired leases are reaped before any new claim for the same
+/// principal, so a crashed worker cannot block the queue indefinitely.
+pub const LIFE_RUN_LEASE_MILLIS: i64 = 15 * 60 * 1000;
+
 /// Result alias for life storage operations.
 pub type LifeStorageResult<T> = Result<T, LifeStorageError>;
 
@@ -137,6 +144,14 @@ pub trait LifeStorageRepository: Send + Sync {
         worker_id: &str,
         now: TimestampMillis,
     ) -> LifeStorageResult<Option<ClaimedLifeInputRun>>;
+
+    /// Extends the lease for a running run owned by `worker_id`.
+    async fn heartbeat_run_lease(
+        &self,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<bool>;
 
     /// Finds the currently running run for a principal, if any.
     async fn find_active_run(

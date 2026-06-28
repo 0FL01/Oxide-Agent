@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::domain::{
     EventId, InputId, LifeEvent, LifeInput, PrincipalUserId, RunId, TimestampMillis, TurnId,
 };
+use crate::storage::LIFE_RUN_LEASE_MILLIS;
 use crate::storage::{ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository};
 
 /// Stable life context key for hot-memory checkpoints.
@@ -19,6 +20,12 @@ pub const LIFE_CONTEXT_KEY: &str = "life";
 
 /// Stable life flow id for the main permanent-life thread.
 pub const LIFE_FLOW_ID: &str = "main";
+
+/// Heartbeat interval for active run leases.
+///
+/// The interval is intentionally shorter than the durable lease duration so a
+/// live worker refreshes ownership before another claim can reap it.
+pub const LIFE_RUN_HEARTBEAT_INTERVAL_MILLIS: u64 = (LIFE_RUN_LEASE_MILLIS as u64) / 3;
 
 /// Command to process a queued principal input.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +129,12 @@ pub enum LifeWorkerError {
     /// Executor failed.
     #[error("life worker executor error: {0}")]
     Executor(String),
+    /// The running lease is no longer owned by this worker.
+    #[error("life worker run lease lost for run {run_id}")]
+    LostLease {
+        /// Run whose lease could not be extended.
+        run_id: RunId,
+    },
 }
 
 /// Result alias for worker operations.
@@ -198,6 +211,14 @@ pub trait LifeWorkerStore: Send + Sync {
         worker_id: &str,
         now: TimestampMillis,
     ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>>;
+
+    /// Extends a running run lease owned by `worker_id`.
+    async fn heartbeat_run_lease(
+        &self,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeWorkerResult<bool>;
 
     /// Links a transcript turn to a run by setting `life_turns.run_id`.
     async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()>;
@@ -285,6 +306,17 @@ where
         )
         .await
         .map_err(Into::into)
+    }
+
+    async fn heartbeat_run_lease(
+        &self,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeWorkerResult<bool> {
+        LifeStorageRepository::heartbeat_run_lease(self, run_id, worker_id, now)
+            .await
+            .map_err(Into::into)
     }
 
     async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {
@@ -447,7 +479,24 @@ where
                 run: claimed_run.clone(),
             };
 
-            match self.executor.execute_life_run(context).await {
+            let mut execution = std::pin::pin!(self.executor.execute_life_run(context));
+            let execution_result = loop {
+                tokio::select! {
+                    result = &mut execution => break result,
+                    () = tokio::time::sleep(std::time::Duration::from_millis(LIFE_RUN_HEARTBEAT_INTERVAL_MILLIS)) => {
+                        let heartbeat_at = self.clock.now()?;
+                        let still_owned = self
+                            .store
+                            .heartbeat_run_lease(claimed_run.run_id, &self.worker_id, heartbeat_at)
+                            .await?;
+                        if !still_owned {
+                            return Err(LifeWorkerError::LostLease { run_id: claimed_run.run_id });
+                        }
+                    }
+                }
+            };
+
+            match execution_result {
                 Ok(outcome) => {
                     let finished_at = self.clock.now()?;
                     // The adapter is responsible for durable memory checkpoint
@@ -657,6 +706,9 @@ mod tests {
                     finished_at: None,
                     last_checkpoint_at: None,
                     error_text: None,
+                    lease_owner: Some("worker-a".to_owned()),
+                    lease_expires_at: Some(TimestampMillis::new(20 + LIFE_RUN_LEASE_MILLIS)),
+                    last_heartbeat_at: Some(TimestampMillis::new(20)),
                     created_at: TimestampMillis::new(20),
                     updated_at: TimestampMillis::new(20),
                 },
@@ -740,6 +792,9 @@ mod tests {
                 finished_at: None,
                 last_checkpoint_at: None,
                 error_text: None,
+                lease_owner: Some("worker-a".to_owned()),
+                lease_expires_at: Some(TimestampMillis::new(now.get() + LIFE_RUN_LEASE_MILLIS)),
+                last_heartbeat_at: Some(now),
                 created_at: now,
                 updated_at: now,
             };
@@ -817,6 +872,15 @@ mod tests {
             _now: TimestampMillis,
         ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>> {
             Ok(self.queued_claims.lock().expect("lock").pop())
+        }
+
+        async fn heartbeat_run_lease(
+            &self,
+            _run_id: RunId,
+            _worker_id: &str,
+            _now: TimestampMillis,
+        ) -> LifeWorkerResult<bool> {
+            Ok(true)
         }
 
         async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {

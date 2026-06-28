@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B5 queue correctness
+Last updated: 2026-06-28 B6 run lease/reaper
 
 ## Objective
 
@@ -105,8 +105,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §5.4, §8 B6, §9 validation.
   - Acceptance: running `life_runs` have lease owner/expiry/heartbeat; expired running runs are marked interrupted/failed and do not block later queued inputs for the solo principal.
   - Evidence required: migration/storage/runtime tests for lease acquisition, heartbeat, expiry/reap, and subsequent input claim.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B6 added `lease_owner`, `lease_expires_at`, and `last_heartbeat_at` to `life_runs`, plus a running-row CHECK requiring lease fields and `life_runs_running_lease_idx`. SQLx claim paths now reap expired or legacy-null-lease running rows under the principal advisory transaction lock before checking for an active run or inserting a new run. New claims set lease owner/expiry/heartbeat, and `heartbeat_run_lease` extends the lease only for the owning worker while it is still unexpired. `LifeWorker` refreshes the lease during executor execution via a heartbeat select loop backed by an explicit `tokio` runtime dependency and returns `LostLease` if ownership is gone. `sqlx_life_run_lease_heartbeat_and_expiry_unblock_claims` verifies lease fields on claim, successful owner heartbeat, failed wrong-owner heartbeat, active non-expired run blocking follow-up claim, expired run reaped to `failed` with `run lease expired`, and subsequent queued input claimed as a new run. `cargo test -p oxide-agent-life --lib` passed (21 tests); workspace `cargo check` and `cargo test --workspace ... --no-run` passed with pre-existing core/web warnings only.
 
 - G7: Assistant delivery uses durable outbox, not executor-owned external API calls.
   - Source: PRD §5.5, §6.3, §8 B7.
@@ -157,7 +157,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
   - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
   - Status: in_progress
-  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. B5 preserves the Web route wake contract: fast follow-up submits that receive `WakeOutcome::AttachedToActive` remain queued, and the active worker claims them as separate runs after completion. `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` passed with pre-existing core/web warnings only. Full Q3 remains open for route/runtime/UI checks after B6-B8 behavior changes.
+  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. B5 preserves the Web route wake contract: fast follow-up submits that receive `WakeOutcome::AttachedToActive` remain queued, and the active worker claims them as separate runs after completion. B6 preserves the same wake/worker route boundary while adding storage-owned lease reaping to claim paths, so an expired crashed run unblocks later Web/Telegram queued input instead of changing the HTTP/SSE contract. `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` passed through B5 with pre-existing core/web warnings only; B6 targeted `cargo test -p oxide-agent-life --lib` passed (21 tests). Full Q3 remains open for route/runtime/UI checks after B7-B8 behavior changes.
 
 - Q4: Validation breadth is monorepo-wide before completion.
   - Source: repo instructions P0.6; PRD §9 code gates.
@@ -269,6 +269,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: `life_transport_bindings` stores only observable routing addresses (`inbound_address`, `delivery_address`) and never transport credentials. `LIFE_TELEGRAM_BOT_TOKEN` remains an adapter/runtime secret for B7/B8 delivery, not durable Life state.
 - 2026-06-28: Life submit is receiver-resolved by enabled `life_transport_bindings`; transport adapters submit only observed inbound address plus source reference. Principal allocation is outside the submit contract, so an unknown Telegram chat/Linux instance/Android device cannot create hidden Life state.
 - 2026-06-28: Life queue progression is one input per run. A worker may claim the next queued input only after the current run is completed, and `mark_input_consumed` is narrowed to claimed rows only, so queued follow-ups cannot be silently consumed without their content crossing the executor boundary.
+- 2026-06-28: Life run liveness is a storage-owned lease invariant, not a trust assumption about prior workers. Claim transactions reap expired running rows under the principal advisory lock before active-run checks; workers heartbeat their own running lease during executor execution.
 
 ## Progress Log
 
@@ -314,6 +315,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
   - Audit IDs updated: G5 verified; Q3 in progress.
   - Next: commit B5; compress; start B6 run lease/reaper.
+
+- 2026-06-28 B6 run lease/reaper
+  - Changed: added lease owner/expiry/heartbeat fields and index to `life_runs`; claim paths now reap expired running rows before active-run checks; running claims set leases; `LifeWorker` heartbeats active runs during executor execution; storage exposes `heartbeat_run_lease`.
+  - Evidence: SQLx test `sqlx_life_run_lease_heartbeat_and_expiry_unblock_claims` verifies lease acquisition, owner heartbeat, wrong-owner denial, non-expired active-run blocking, expired-run reaping to failed, and subsequent queued input claim. Blast-radius grep shows lease symbols confined to `oxide-agent-life` and migration.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (21 passed); `git diff --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G6 verified; Q3 in progress.
+  - Next: run broader B6 validation, commit B6; compress; start B7 delivery outbox.
 
 ## Risks and Blockers
 

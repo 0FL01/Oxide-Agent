@@ -36,6 +36,12 @@ pub struct LifeRun {
     pub last_checkpoint_at: Option<TimestampMillis>,
     /// Error text for failed runs.
     pub error_text: Option<String>,
+    /// Worker/process that currently owns the running lease.
+    pub lease_owner: Option<String>,
+    /// Lease expiry timestamp for running runs.
+    pub lease_expires_at: Option<TimestampMillis>,
+    /// Last successful lease heartbeat timestamp.
+    pub last_heartbeat_at: Option<TimestampMillis>,
     /// Creation timestamp.
     pub created_at: TimestampMillis,
     /// Last update timestamp.

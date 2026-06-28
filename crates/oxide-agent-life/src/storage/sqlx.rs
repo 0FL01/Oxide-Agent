@@ -16,7 +16,8 @@ use crate::domain::{
     PrincipalUserId, ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use crate::storage::{
-    ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository, LifeStorageResult,
+    ClaimedLifeInputRun, LIFE_RUN_LEASE_MILLIS, LifeStorageError, LifeStorageRepository,
+    LifeStorageResult,
 };
 
 /// SQLx-backed life storage repository.
@@ -71,6 +72,35 @@ impl SqlxLifeStorage {
             .await
             .map_err(db_error)?;
         Ok(())
+    }
+
+    async fn reap_expired_running_runs_in_tx(
+        tx: &mut sqlx_core::transaction::Transaction<'_, Postgres>,
+        principal_user_id: PrincipalUserId,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            UPDATE life_runs
+            SET status = 'failed',
+                finished_at = $2,
+                error_text = COALESCE(error_text, 'run lease expired'),
+                updated_at = $2
+            WHERE principal_user_id = $1
+              AND status = 'running'
+              AND (lease_expires_at IS NULL OR lease_expires_at <= $2)
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .bind(now.get())
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn lease_expires_at(now: TimestampMillis) -> TimestampMillis {
+        TimestampMillis::new(now.get() + LIFE_RUN_LEASE_MILLIS)
     }
 
     /// Lists recent canonical transcript turns for a principal.
@@ -754,6 +784,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
     ) -> LifeStorageResult<Option<ClaimedLifeInputRun>> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
+        Self::reap_expired_running_runs_in_tx(&mut tx, principal_user_id, now).await?;
 
         let running_row = query::<Postgres>(
             r#"
@@ -798,18 +829,23 @@ impl LifeStorageRepository for SqlxLifeStorage {
         };
         let user_content: String = input_row.get("user_content");
 
+        let lease_expires_at = Self::lease_expires_at(now);
         query::<Postgres>(
             r#"
             INSERT INTO life_runs (
                 run_id, principal_user_id, status,
-                started_at, finished_at, last_checkpoint_at, error_text, created_at, updated_at
+                started_at, finished_at, last_checkpoint_at, error_text,
+                lease_owner, lease_expires_at, last_heartbeat_at,
+                created_at, updated_at
             )
-            VALUES ($1, $2, 'running', $3, NULL, NULL, NULL, $3, $3)
+            VALUES ($1, $2, 'running', $3, NULL, NULL, NULL, $4, $5, $3, $3, $3)
             "#,
         )
         .bind(run_id.as_uuid())
         .bind(principal_user_id.get())
         .bind(now.get())
+        .bind(worker_id)
+        .bind(lease_expires_at.get())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -826,6 +862,9 @@ impl LifeStorageRepository for SqlxLifeStorage {
                 finished_at: None,
                 last_checkpoint_at: None,
                 error_text: None,
+                lease_owner: Some(worker_id.to_owned()),
+                lease_expires_at: Some(lease_expires_at),
+                last_heartbeat_at: Some(now),
                 created_at: now,
                 updated_at: now,
             },
@@ -862,6 +901,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
     ) -> LifeStorageResult<Option<ClaimedLifeInputRun>> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
+        Self::reap_expired_running_runs_in_tx(&mut tx, principal_user_id, now).await?;
 
         let running_row = query::<Postgres>(
             r#"
@@ -913,18 +953,23 @@ impl LifeStorageRepository for SqlxLifeStorage {
         };
         let user_content: String = input_row.get("user_content");
 
+        let lease_expires_at = Self::lease_expires_at(now);
         query::<Postgres>(
             r#"
             INSERT INTO life_runs (
                 run_id, principal_user_id, status,
-                started_at, finished_at, last_checkpoint_at, error_text, created_at, updated_at
+                started_at, finished_at, last_checkpoint_at, error_text,
+                lease_owner, lease_expires_at, last_heartbeat_at,
+                created_at, updated_at
             )
-            VALUES ($1, $2, 'running', $3, NULL, NULL, NULL, $3, $3)
+            VALUES ($1, $2, 'running', $3, NULL, NULL, NULL, $4, $5, $3, $3, $3)
             "#,
         )
         .bind(run_id.as_uuid())
         .bind(principal_user_id.get())
         .bind(now.get())
+        .bind(worker_id)
+        .bind(lease_expires_at.get())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -941,11 +986,43 @@ impl LifeStorageRepository for SqlxLifeStorage {
                 finished_at: None,
                 last_checkpoint_at: None,
                 error_text: None,
+                lease_owner: Some(worker_id.to_owned()),
+                lease_expires_at: Some(lease_expires_at),
+                last_heartbeat_at: Some(now),
                 created_at: now,
                 updated_at: now,
             },
             user_content,
         }))
+    }
+
+    async fn heartbeat_run_lease(
+        &self,
+        run_id: RunId,
+        worker_id: &str,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<bool> {
+        let lease_expires_at = Self::lease_expires_at(now);
+        let result = query::<Postgres>(
+            r#"
+            UPDATE life_runs
+            SET lease_expires_at = $3,
+                last_heartbeat_at = $2,
+                updated_at = $2
+            WHERE run_id = $1
+              AND status = 'running'
+              AND lease_owner = $4
+              AND (lease_expires_at IS NULL OR lease_expires_at > $2)
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(now.get())
+        .bind(lease_expires_at.get())
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn find_active_run(
@@ -1151,6 +1228,13 @@ fn run_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeRun> {
             .get::<Option<i64>, _>("last_checkpoint_at")
             .map(TimestampMillis::new),
         error_text: row.get("error_text"),
+        lease_owner: row.get("lease_owner"),
+        lease_expires_at: row
+            .get::<Option<i64>, _>("lease_expires_at")
+            .map(TimestampMillis::new),
+        last_heartbeat_at: row
+            .get::<Option<i64>, _>("last_heartbeat_at")
+            .map(TimestampMillis::new),
         created_at: TimestampMillis::new(row.get("created_at")),
         updated_at: TimestampMillis::new(row.get("updated_at")),
     })
@@ -1638,6 +1722,146 @@ mod tests {
         );
         assert_eq!(checkpoint.get::<i32, _>("schema_version"), 1);
         assert_eq!(checkpoint.get::<i64, _>("updated_at"), now.get() + 5);
+    }
+
+    #[tokio::test]
+    async fn sqlx_life_run_lease_heartbeat_and_expiry_unblock_claims() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_050_000);
+        must(
+            storage
+                .upsert_principal(&LifePrincipal {
+                    principal_user_id,
+                    profile_state: json!({}),
+                    operating_profile: json!({}),
+                    settings: json!({}),
+                    schema_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "upsert principal",
+        );
+
+        let first_turn = user_turn(principal_user_id, "first", now);
+        must(storage.append_turn(&first_turn).await, "append first turn");
+        let first_input = queued_input(principal_user_id, first_turn.turn_id, now);
+        must(storage.enqueue_input(&first_input).await, "enqueue first");
+
+        let first_run_id = RunId::new_v4();
+        let claimed = must(
+            storage
+                .claim_input_and_start_run(
+                    principal_user_id,
+                    first_input.input_id,
+                    first_run_id,
+                    "worker-a",
+                    TimestampMillis::new(now.get() + 1),
+                )
+                .await,
+            "claim first input",
+        )
+        .expect("first input should claim");
+        assert_eq!(claimed.run.lease_owner.as_deref(), Some("worker-a"));
+        assert_eq!(
+            claimed.run.last_heartbeat_at,
+            Some(TimestampMillis::new(now.get() + 1))
+        );
+        assert_eq!(
+            claimed.run.lease_expires_at,
+            Some(TimestampMillis::new(now.get() + 1 + LIFE_RUN_LEASE_MILLIS))
+        );
+
+        let heartbeat_at = TimestampMillis::new(now.get() + 2);
+        assert!(must(
+            storage
+                .heartbeat_run_lease(first_run_id, "worker-a", heartbeat_at)
+                .await,
+            "heartbeat owned run",
+        ));
+        assert!(!must(
+            storage
+                .heartbeat_run_lease(
+                    first_run_id,
+                    "other-worker",
+                    TimestampMillis::new(now.get() + 3)
+                )
+                .await,
+            "heartbeat from wrong owner",
+        ));
+
+        let second_turn = user_turn(
+            principal_user_id,
+            "second",
+            TimestampMillis::new(now.get() + 4),
+        );
+        must(
+            storage.append_turn(&second_turn).await,
+            "append second turn",
+        );
+        let second_input = queued_input(
+            principal_user_id,
+            second_turn.turn_id,
+            TimestampMillis::new(now.get() + 4),
+        );
+        must(storage.enqueue_input(&second_input).await, "enqueue second");
+
+        let before_expiry = TimestampMillis::new(heartbeat_at.get() + LIFE_RUN_LEASE_MILLIS - 1);
+        assert!(
+            must(
+                storage
+                    .claim_next_queued_input_and_start_run(
+                        principal_user_id,
+                        RunId::new_v4(),
+                        "worker-b",
+                        before_expiry,
+                    )
+                    .await,
+                "claim before lease expiry",
+            )
+            .is_none(),
+            "non-expired lease still blocks duplicate running run"
+        );
+
+        let after_expiry = TimestampMillis::new(heartbeat_at.get() + LIFE_RUN_LEASE_MILLIS + 1);
+        let second_run_id = RunId::new_v4();
+        let claimed_second = must(
+            storage
+                .claim_next_queued_input_and_start_run(
+                    principal_user_id,
+                    second_run_id,
+                    "worker-b",
+                    after_expiry,
+                )
+                .await,
+            "claim after lease expiry",
+        )
+        .expect("expired first run should be reaped and second input claimed");
+        assert_eq!(claimed_second.input.input_id, second_input.input_id);
+        assert_eq!(claimed_second.run.run_id, second_run_id);
+        assert_eq!(claimed_second.run.lease_owner.as_deref(), Some("worker-b"));
+
+        let first_run_row = must(
+            query::<Postgres>(
+                "SELECT status, finished_at, error_text FROM life_runs WHERE run_id = $1",
+            )
+            .bind(first_run_id.as_uuid())
+            .fetch_one(storage.pool())
+            .await,
+            "load reaped first run",
+        );
+        assert_eq!(first_run_row.get::<String, _>("status"), "failed");
+        assert_eq!(
+            first_run_row.get::<i64, _>("finished_at"),
+            after_expiry.get()
+        );
+        assert_eq!(
+            first_run_row.get::<String, _>("error_text"),
+            "run lease expired"
+        );
     }
 
     #[tokio::test]

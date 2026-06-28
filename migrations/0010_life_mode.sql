@@ -69,8 +69,20 @@ CREATE TABLE life_runs (
     finished_at BIGINT,
     last_checkpoint_at BIGINT,
     error_text TEXT,
+    lease_owner TEXT,
+    lease_expires_at BIGINT,
+    last_heartbeat_at BIGINT,
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    CHECK (
+        status <> 'running'
+        OR (
+            lease_owner IS NOT NULL
+            AND btrim(lease_owner) <> ''
+            AND lease_expires_at IS NOT NULL
+            AND last_heartbeat_at IS NOT NULL
+        )
+    )
 );
 
 CREATE INDEX life_runs_principal_status_idx
@@ -78,6 +90,10 @@ CREATE INDEX life_runs_principal_status_idx
 
 CREATE UNIQUE INDEX life_runs_one_running_per_principal_idx
     ON life_runs (principal_user_id)
+    WHERE status = 'running';
+
+CREATE INDEX life_runs_running_lease_idx
+    ON life_runs (principal_user_id, lease_expires_at)
     WHERE status = 'running';
 
 CREATE TABLE life_inputs (
