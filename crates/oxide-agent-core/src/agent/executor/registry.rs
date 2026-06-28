@@ -88,9 +88,37 @@ use crate::agent::tool_runtime::YtdlpToolModule;
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::agent::tool_runtime::{
     BrowserSessionCleanup, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolExecutor,
-    ToolModule, ToolModuleContext, ToolModuleContextParts, ToolName,
-    ToolRegistry as RuntimeToolRegistry, ToolSurfaceHandle, ToolVisibility,
+    ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
+    ToolSurfaceHandle, ToolVisibility,
 };
+#[cfg(any(
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_sandbox_recreate,
+    oxide_module_manager_control_plane,
+    oxide_module_integration_ssh_mcp,
+    oxide_module_integration_mcp_jira,
+    oxide_module_integration_mcp_mattermost,
+    oxide_module_tool_agents_md,
+    oxide_module_tool_compression,
+    oxide_module_tool_delegation,
+    oxide_module_tool_retrieve_tools,
+    oxide_module_tool_file_delivery,
+    oxide_module_tool_media_audio,
+    oxide_module_tool_media_image,
+    oxide_module_tool_media_video,
+    oxide_module_tool_reminder,
+    oxide_module_tool_browser_live,
+    oxide_module_tool_stack_logs,
+    oxide_module_tool_todos,
+    oxide_module_tool_tts_kokoro,
+    oxide_module_tool_tts_silero,
+    oxide_module_tool_web_search,
+    oxide_module_tool_webfetch_md,
+    oxide_module_tool_wiki_memory,
+    oxide_module_tool_ytdlp
+))]
+use crate::agent::tool_runtime::{ToolModule, ToolName};
 use crate::capabilities::ModuleId;
 #[cfg(test)]
 use crate::config::ModelInfo;
@@ -189,7 +217,7 @@ impl AgentExecutor {
             oxide_module_tool_wiki_memory,
             oxide_module_tool_ytdlp
         )))]
-        let _ = (registry, ctx);
+        let _ = (registry, catalog, ctx);
 
         #[cfg(oxide_module_tool_agents_md)]
         self.register_tool_runtime_module(registry, catalog, &AgentsMdToolModule, ctx);

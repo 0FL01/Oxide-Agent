@@ -2049,6 +2049,7 @@ mod capability_mapping_tests {
     /// - Deferred ⇒ `Some(group)`
     #[test]
     #[allow(clippy::vec_init_then_push)]
+    #[allow(unused_mut)]
     fn compiled_modules_have_consistent_group_and_visibility() {
         let mut checks: Vec<(&str, Option<CapabilityGroup>, ToolVisibility)> = Vec::new();
 

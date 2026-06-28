@@ -28,6 +28,8 @@ mod life_bootstrap;
 #[cfg(feature = "storage-sqlx")]
 mod life_executor;
 mod life_routes;
+#[cfg(feature = "storage-sqlx")]
+mod life_telegram_delivery;
 mod model_routes;
 mod router;
 mod search_probe;

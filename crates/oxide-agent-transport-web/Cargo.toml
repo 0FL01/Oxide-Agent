@@ -41,6 +41,7 @@ base64 = "0.22.1"
 sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
 sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
 moka = { version = "0.12", features = ["future"] }
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
 
 [features]
 default = []
@@ -61,7 +62,6 @@ compression_e2e = ["oxide-agent-core/tool-compression"]
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.13.4", features = ["json", "stream"] }
 bytes = "1"
 
 [[test]]

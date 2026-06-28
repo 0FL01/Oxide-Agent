@@ -11,13 +11,15 @@ use futures_util::stream::Stream;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::ApiLifeInputSensitivity;
 #[cfg(feature = "storage-sqlx")]
+use oxide_agent_web_contracts::TaskAttachment;
+#[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::{
     ApiLifeEventResponse, ApiLifeRunSummary, ApiLifeSseKeepalive, ApiLifeSseRunStatus,
     ApiLifeSseSnapshot, ApiLifeTurnResponse,
 };
 use oxide_agent_web_contracts::{
     ApiLifeEventsResponse, ApiLifeLargeInputRequest, ApiLifeStateResponse, ApiLifeSubmitRequest,
-    ApiLifeSubmitResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope, TaskAttachment,
+    ApiLifeSubmitResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope,
     UploadTaskAttachmentsResponse,
 };
 use serde::Deserialize;
@@ -119,6 +121,7 @@ pub(crate) async fn api_privacy_hard_wipe_life(
 // ---------------------------------------------------------------------------
 
 /// Query parameters for `GET /api/v1/life/stream`.
+#[cfg(feature = "storage-sqlx")]
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct LifeSseQuery {
     /// Opaque cursor: last turn position the client has seen.
@@ -361,9 +364,13 @@ pub(crate) struct LifeEventsQuery {
     pub limit: Option<i64>,
 }
 
+#[cfg(feature = "storage-sqlx")]
 const DEFAULT_LIFE_TURNS_PAGE_LIMIT: i64 = 50;
+#[cfg(feature = "storage-sqlx")]
 const MAX_LIFE_TURNS_PAGE_LIMIT: i64 = 200;
+#[cfg(feature = "storage-sqlx")]
 const DEFAULT_LIFE_EVENTS_PAGE_LIMIT: i64 = 100;
+#[cfg(feature = "storage-sqlx")]
 const MAX_LIFE_EVENTS_PAGE_LIMIT: i64 = 500;
 
 #[cfg(feature = "storage-sqlx")]
@@ -566,8 +573,9 @@ async fn list_life_turns_for_user(
 async fn list_life_turns_for_user(
     _state: &AppState,
     _web_user_id: i64,
-    _query: LifeTurnsQuery,
+    query: LifeTurnsQuery,
 ) -> Result<Json<ApiLifeTurnsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let _ = (query.cursor, query.limit);
     Err(life_storage_unavailable_response())
 }
 
@@ -609,8 +617,9 @@ async fn list_life_events_for_user(
 async fn list_life_events_for_user(
     _state: &AppState,
     _web_user_id: i64,
-    _query: LifeEventsQuery,
+    query: LifeEventsQuery,
 ) -> Result<Json<ApiLifeEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let _ = (query.run_id, query.cursor, query.limit);
     Err(life_storage_unavailable_response())
 }
 

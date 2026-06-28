@@ -17,11 +17,21 @@ use crate::agent::runner::{
     run_with_timeout,
 };
 use crate::agent::session::AgentMemoryScope;
+#[cfg(any(
+    oxide_module_tool_sandbox_exec,
+    oxide_module_tool_sandbox_fileops,
+    oxide_module_tool_browser_live,
+    oxide_module_tool_retrieve_tools,
+    oxide_module_tool_todos,
+    oxide_module_tool_web_search,
+    oxide_module_tool_webfetch_md,
+    oxide_module_tool_ytdlp
+))]
+use crate::agent::tool_runtime::ToolCatalogEntry;
 use crate::agent::tool_runtime::{
-    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolCatalog,
-    ToolCatalogEntry, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
-    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
-    ToolSurfaceHandle,
+    BrowserLiveModuleContext, BrowserSessionCleanup, OutputNormalizer, ToolCatalog, ToolExecutor,
+    ToolInvocation, ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
+    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError, ToolSurfaceHandle,
 };
 use crate::config::{
     AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
@@ -1197,13 +1207,17 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .iter()
             .map(|executor| executor.name().into_inner())
             .collect();
-        let mut allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
+        let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
 
         // retrieve_tools is a bootstrap control tool — always available to
         // sub-agents so the lazy surface protocol works.  It is not a
         // capability and not in the blocked set.
         #[cfg(oxide_module_tool_retrieve_tools)]
-        allowed.insert("retrieve_tools".to_string());
+        let allowed = {
+            let mut allowed = allowed;
+            allowed.insert("retrieve_tools".to_string());
+            allowed
+        };
 
         // Filter the catalog to the allowed whitelist, then derive the
         // execution registry and surface handle from the filtered catalog.

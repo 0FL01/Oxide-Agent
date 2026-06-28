@@ -5,6 +5,7 @@
 mod execution;
 mod hooks;
 #[cfg(test)]
+#[cfg(oxide_module_tool_retrieve_tools)]
 mod lazy_tests;
 mod llm_calls;
 mod loop_detection;
