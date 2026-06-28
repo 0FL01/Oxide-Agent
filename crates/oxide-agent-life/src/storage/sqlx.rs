@@ -842,7 +842,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
             r#"
             UPDATE life_inputs
             SET status = 'consumed', updated_at = $2
-            WHERE input_id = $1 AND status IN ('claimed', 'queued')
+            WHERE input_id = $1 AND status = 'claimed'
             "#,
         )
         .bind(input_id.as_uuid())
@@ -853,30 +853,99 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
-    async fn drain_queued_inputs_for_run(
+    async fn claim_next_queued_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
+        run_id: RunId,
         worker_id: &str,
         now: TimestampMillis,
-    ) -> LifeStorageResult<Vec<LifeInput>> {
+    ) -> LifeStorageResult<Option<ClaimedLifeInputRun>> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
-        let rows = query::<Postgres>(
+
+        let running_row = query::<Postgres>(
             r#"
-            UPDATE life_inputs
-            SET status = 'consumed', claimed_by = $2, claimed_at = $3, updated_at = $3
-            WHERE principal_user_id = $1 AND status = 'queued'
-            RETURNING *
+            SELECT run_id
+            FROM life_runs
+            WHERE principal_user_id = $1 AND status = 'running'
+            LIMIT 1
+            "#,
+        )
+        .bind(principal_user_id.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if running_row.is_some() {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(None);
+        }
+
+        let input_row = query::<Postgres>(
+            r#"
+            WITH next_input AS (
+                SELECT input_id
+                FROM life_inputs
+                WHERE principal_user_id = $1 AND status = 'queued'
+                ORDER BY created_at ASC, input_id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            ), claimed AS (
+                UPDATE life_inputs
+                SET status = 'claimed', claimed_by = $2, claimed_at = $3, updated_at = $3
+                WHERE input_id = (SELECT input_id FROM next_input)
+                RETURNING *
+            )
+            SELECT claimed.*, lt.content AS user_content
+            FROM claimed
+            JOIN life_turns lt ON lt.turn_id = claimed.turn_id
             "#,
         )
         .bind(principal_user_id.get())
         .bind(worker_id)
         .bind(now.get())
-        .fetch_all(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(db_error)?;
+
+        let Some(input_row) = input_row else {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(None);
+        };
+        let user_content: String = input_row.get("user_content");
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_runs (
+                run_id, principal_user_id, status,
+                started_at, finished_at, last_checkpoint_at, error_text, created_at, updated_at
+            )
+            VALUES ($1, $2, 'running', $3, NULL, NULL, NULL, $3, $3)
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .bind(now.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
         tx.commit().await.map_err(db_error)?;
-        rows.into_iter().map(input_from_row).collect()
+
+        Ok(Some(ClaimedLifeInputRun {
+            input: input_from_row(input_row)?,
+            run: LifeRun {
+                run_id,
+                principal_user_id,
+                status: LifeRunStatus::Running,
+                started_at: Some(now),
+                finished_at: None,
+                last_checkpoint_at: None,
+                error_text: None,
+                created_at: now,
+                updated_at: now,
+            },
+            user_content,
+        }))
     }
 
     async fn find_active_run(
@@ -1375,7 +1444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlx_life_worker_claim_start_complete_and_drain_are_db_backed() {
+    async fn sqlx_life_worker_claim_start_complete_and_claim_next_are_db_backed() {
         let Some(storage) = sqlx_test_storage().await else {
             return;
         };
@@ -1467,19 +1536,25 @@ mod tests {
             TimestampMillis::new(now.get() + 3),
         );
         must(storage.enqueue_input(&follow_up).await, "enqueue follow-up");
-        let drained = must(
+        let blocked_next = must(
             storage
-                .drain_queued_inputs_for_run(
+                .claim_next_queued_input_and_start_run(
                     principal_user_id,
+                    RunId::new_v4(),
                     "worker-sqlx",
                     TimestampMillis::new(now.get() + 4),
                 )
                 .await,
-            "drain queued inputs",
+            "claim next while first run is still running",
         );
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].input_id, follow_up.input_id);
-        assert_eq!(drained[0].status, LifeInputStatus::Consumed);
+        assert!(blocked_next.is_none(), "running run blocks follow-up claim");
+
+        must(
+            storage
+                .mark_input_consumed(follow_up.input_id, TimestampMillis::new(now.get() + 4))
+                .await,
+            "queued follow-up cannot be consumed by mark_input_consumed",
+        );
 
         must(
             storage
@@ -1497,6 +1572,24 @@ mod tests {
                 .await,
             "complete run",
         );
+
+        let follow_up_run_id = RunId::new_v4();
+        let claimed_follow_up = must(
+            storage
+                .claim_next_queued_input_and_start_run(
+                    principal_user_id,
+                    follow_up_run_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 7),
+                )
+                .await,
+            "claim follow-up after first run completed",
+        )
+        .expect("follow-up should remain queued until its own run");
+        assert_eq!(claimed_follow_up.input.input_id, follow_up.input_id);
+        assert_eq!(claimed_follow_up.input.status, LifeInputStatus::Claimed);
+        assert_eq!(claimed_follow_up.run.run_id, follow_up_run_id);
+        assert_eq!(claimed_follow_up.user_content, "follow-up");
 
         let run_status = must(
             query::<Postgres>("SELECT status, last_checkpoint_at FROM life_runs WHERE run_id = $1")
@@ -1637,7 +1730,7 @@ mod tests {
             Some(run_id.as_uuid())
         );
 
-        // Queue a follow-up input, drain it, and link its turn.
+        // Queue a follow-up input while the first run is active.
         let follow_up_turn = user_turn(
             principal_user_id,
             "follow-up",
@@ -1656,34 +1749,18 @@ mod tests {
             storage.enqueue_input(&follow_up_input).await,
             "enqueue follow-up",
         );
-        let drained = must(
+        let blocked_follow_up = must(
             storage
-                .drain_queued_inputs_for_run(
+                .claim_next_queued_input_and_start_run(
                     principal_user_id,
+                    RunId::new_v4(),
                     "worker-sqlx",
                     TimestampMillis::new(now.get() + 3),
                 )
                 .await,
-            "drain follow-up",
+            "claim follow-up while first run is active",
         );
-        assert_eq!(drained.len(), 1);
-        must(
-            storage
-                .link_turn_to_run(follow_up_turn.turn_id, run_id)
-                .await,
-            "link follow-up turn",
-        );
-        let follow_up_row = must(
-            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
-                .bind(follow_up_turn.turn_id.as_uuid())
-                .fetch_one(storage.pool())
-                .await,
-            "load follow-up turn after link",
-        );
-        assert_eq!(
-            follow_up_row.get::<Option<Uuid>, _>("run_id"),
-            Some(run_id.as_uuid())
-        );
+        assert!(blocked_follow_up.is_none());
 
         // Complete the run; find_active_run should return None.
         must(
@@ -1701,6 +1778,39 @@ mod tests {
             "find active run after complete",
         );
         assert!(no_active.is_none());
+
+        let follow_up_run_id = RunId::new_v4();
+        let claimed_follow_up = must(
+            storage
+                .claim_next_queued_input_and_start_run(
+                    principal_user_id,
+                    follow_up_run_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 5),
+                )
+                .await,
+            "claim follow-up after first run complete",
+        )
+        .expect("follow-up should claim after active run completes");
+        assert_eq!(claimed_follow_up.input.input_id, follow_up_input.input_id);
+        assert_eq!(claimed_follow_up.user_content, "follow-up");
+        must(
+            storage
+                .link_turn_to_run(follow_up_turn.turn_id, follow_up_run_id)
+                .await,
+            "link follow-up turn to its own run",
+        );
+        let follow_up_row = must(
+            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
+                .bind(follow_up_turn.turn_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load follow-up turn after link",
+        );
+        assert_eq!(
+            follow_up_row.get::<Option<Uuid>, _>("run_id"),
+            Some(follow_up_run_id.as_uuid())
+        );
     }
 
     async fn sqlx_test_storage() -> Option<SqlxLifeStorage> {

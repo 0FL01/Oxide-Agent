@@ -129,13 +129,14 @@ pub trait LifeStorageRepository: Send + Sync {
         now: TimestampMillis,
     ) -> LifeStorageResult<()>;
 
-    /// Drains queued inputs for a principal at a runtime safe boundary.
-    async fn drain_queued_inputs_for_run(
+    /// Atomically claims the oldest queued input for a principal and starts a running life run.
+    async fn claim_next_queued_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
+        run_id: RunId,
         worker_id: &str,
         now: TimestampMillis,
-    ) -> LifeStorageResult<Vec<LifeInput>>;
+    ) -> LifeStorageResult<Option<ClaimedLifeInputRun>>;
 
     /// Finds the currently running run for a principal, if any.
     async fn find_active_run(

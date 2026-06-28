@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B4 narrowed submit path
+Last updated: 2026-06-28 B5 queue correctness
 
 ## Objective
 
@@ -98,8 +98,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §5.3, §8 B5, §9 validation.
   - Acceptance: later inputs are not marked consumed merely because a run is active; two fast Telegram messages are both executed exactly once and in order, or explicitly dead-lettered with evidence.
   - Evidence required: unit/SQLx worker tests for two queued inputs; code review of worker drain/claim semantics.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B5 removed the old worker/storage drain contract that marked queued follow-up inputs consumed without executing their content. `LifeWorker::execute_claimed_run` now executes exactly one claimed input, marks only that claimed input consumed after executor success, completes that run, then claims the oldest remaining queued input as a separate run. `worker::tests::execute_claimed_run_executes_follow_up_inputs_as_separate_runs` verifies two queued inputs are passed to the executor in order and both input ids are consumed exactly once. SQLx storage now exposes `claim_next_queued_input_and_start_run` instead of `drain_queued_inputs_for_run`; `sqlx_life_worker_claim_start_complete_and_claim_next_are_db_backed` verifies a follow-up remains queued while a run is active, cannot be consumed by `mark_input_consumed` while queued, and is claimed with its own run/content after the first run completes. Full-repo grep found no `drain_queued_inputs_for_run` or queued-drain wording left in Rust.
 
 - G6: Running runs have leases and expired runs are reaped.
   - Source: PRD §5.4, §8 B6, §9 validation.
@@ -157,7 +157,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
   - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
   - Status: in_progress
-  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run` and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` compiled `oxide-agent-transport-web` with pre-existing warnings only. Full Q3 remains open for route/runtime/UI checks after B5-B8 behavior changes.
+  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. B5 preserves the Web route wake contract: fast follow-up submits that receive `WakeOutcome::AttachedToActive` remain queued, and the active worker claims them as separate runs after completion. `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` passed with pre-existing core/web warnings only. Full Q3 remains open for route/runtime/UI checks after B6-B8 behavior changes.
 
 - Q4: Validation breadth is monorepo-wide before completion.
   - Source: repo instructions P0.6; PRD §9 code gates.
@@ -268,6 +268,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: `LifeTransportId` is an open non-empty string newtype, not an enum. Concrete ids such as `web`, `telegram`, future `linux`/`android`, and internal source id `internal` are values at the transport/binding layer, so adding a transport does not require a Rust enum or SQL CHECK edit.
 - 2026-06-28: `life_transport_bindings` stores only observable routing addresses (`inbound_address`, `delivery_address`) and never transport credentials. `LIFE_TELEGRAM_BOT_TOKEN` remains an adapter/runtime secret for B7/B8 delivery, not durable Life state.
 - 2026-06-28: Life submit is receiver-resolved by enabled `life_transport_bindings`; transport adapters submit only observed inbound address plus source reference. Principal allocation is outside the submit contract, so an unknown Telegram chat/Linux instance/Android device cannot create hidden Life state.
+- 2026-06-28: Life queue progression is one input per run. A worker may claim the next queued input only after the current run is completed, and `mark_input_consumed` is narrowed to claimed rows only, so queued follow-ups cannot be silently consumed without their content crossing the executor boundary.
 
 ## Progress Log
 
@@ -306,6 +307,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with pre-existing core/web warnings only).
   - Audit IDs updated: G3 verified; G4 verified; Q3 in progress.
   - Next: commit B4; compress; start B5 queue correctness.
+
+- 2026-06-28 B5 queue correctness
+  - Changed: replaced follow-up drain/consume semantics with `claim_next_queued_input_and_start_run`; `LifeWorker` now executes one claimed input per run, consumes only that claimed input after executor success, then claims queued follow-ups as separate runs. `mark_input_consumed` now only updates `claimed` rows, not `queued` rows.
+  - Evidence: worker unit test verifies two fast inputs are executed in order as two runs and both consumed exactly once; SQLx storage test verifies follow-up cannot be claimed while a run is active, cannot be consumed while queued, and is claimed with its own content/run after completion. Blast-radius grep found no old drain API or queued-drain wording left in Rust.
+  - Commands: `cargo fmt --all`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G5 verified; Q3 in progress.
+  - Next: commit B5; compress; start B6 run lease/reaper.
 
 ## Risks and Blockers
 

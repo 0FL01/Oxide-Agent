@@ -2,7 +2,7 @@
 //!
 //! The gateway writes turns and queues inputs. The runtime handle wakes the
 //! worker by claiming the input and starting a run. If a run is already active,
-//! the input is queued for draining and the active run id is returned.
+//! the input remains queued and the active run id is returned.
 //!
 //! The handle does not spawn execution — it returns [`WakeOutcome::Started`]
 //! with the claimed run so the caller (transport binary) can spawn the worker
@@ -28,10 +28,11 @@ pub enum WakeOutcome {
         /// enum small since `ClaimedLifeInputRun` is a large struct.
         claimed: Box<ClaimedLifeInputRun>,
     },
-    /// The input was queued for an already-active run. Follow-up inputs are
-    /// drained at the next safe boundary inside the active run.
+    /// The input remains queued because another run is already active. The
+    /// active worker will claim it as a separate run after the current run
+    /// completes.
     AttachedToActive {
-        /// Active run id that will drain this input.
+        /// Active run id after which this input can be claimed as its own run.
         run_id: RunId,
     },
 }
@@ -388,7 +389,7 @@ mod tests {
         };
         assert_eq!(run_id, active_run_id);
 
-        // No turn should be linked (input stays queued for drain).
+        // No turn should be linked (input stays queued for a later run).
         assert!(store.linked_turns().is_empty());
     }
 

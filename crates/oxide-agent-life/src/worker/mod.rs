@@ -190,13 +190,14 @@ pub trait LifeWorkerStore: Send + Sync {
         now: TimestampMillis,
     ) -> LifeWorkerResult<()>;
 
-    /// Drains queued inputs for a principal at a runtime safe boundary.
-    async fn drain_queued_inputs_for_run(
+    /// Atomically claims the oldest queued input for a principal and starts a new running run.
+    async fn claim_next_queued_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
+        run_id: RunId,
         worker_id: &str,
         now: TimestampMillis,
-    ) -> LifeWorkerResult<Vec<LifeInput>>;
+    ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>>;
 
     /// Links a transcript turn to a run by setting `life_turns.run_id`.
     async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()>;
@@ -268,15 +269,22 @@ where
             .map_err(Into::into)
     }
 
-    async fn drain_queued_inputs_for_run(
+    async fn claim_next_queued_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
+        run_id: RunId,
         worker_id: &str,
         now: TimestampMillis,
-    ) -> LifeWorkerResult<Vec<LifeInput>> {
-        LifeStorageRepository::drain_queued_inputs_for_run(self, principal_user_id, worker_id, now)
-            .await
-            .map_err(Into::into)
+    ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>> {
+        LifeStorageRepository::claim_next_queued_input_and_start_run(
+            self,
+            principal_user_id,
+            run_id,
+            worker_id,
+            now,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {
@@ -407,73 +415,84 @@ where
     ///
     /// This is the entry point for the runtime handle path: the handle claims
     /// the input and starts the run, then the caller spawns this method.
-    /// The method drains follow-up queued inputs at the start of the run,
-    /// links their turns, executes via the executor seam, persists the final
-    /// checkpoint, and marks the run completed.
+    /// The method executes exactly one claimed input, marks only that input
+    /// consumed after executor success, then claims any queued follow-up as a
+    /// separate run. This preserves the one-input-one-run boundary and makes
+    /// silent follow-up consumption impossible.
     pub async fn execute_claimed_run(
         &self,
         claimed: ClaimedLifeInputRun,
     ) -> LifeWorkerResult<LifeWorkerProcessResult> {
-        let started_at = match claimed.run.started_at {
-            Some(ts) => ts,
-            None => self.clock.now()?,
-        };
-        let claimed_run = ClaimedLifeRun::from(claimed);
-        let principal_user_id = claimed_run.input.principal_user_id;
+        let mut claimed = claimed;
+        loop {
+            let started_at = match claimed.run.started_at {
+                Some(ts) => ts,
+                None => self.clock.now()?,
+            };
+            let claimed_run = ClaimedLifeRun::from(claimed);
+            let principal_user_id = claimed_run.input.principal_user_id;
 
-        // Drain follow-up inputs queued while the run was being claimed.
-        // Each drained input's turn is linked to this run for activity rendering.
-        let drained = self
-            .store
-            .drain_queued_inputs_for_run(principal_user_id, &self.worker_id, started_at)
-            .await?;
-        for drained_input in &drained {
             self.store
-                .link_turn_to_run(drained_input.turn_id, claimed_run.run_id)
+                .link_turn_to_run(claimed_run.input.turn_id, claimed_run.run_id)
                 .await?;
-        }
 
-        self.append_event(claimed_run.run_id, "run_started", started_at)
-            .await?;
+            self.append_event(claimed_run.run_id, "run_started", started_at)
+                .await?;
 
-        let context = LifeWorkerRunContext {
-            command: ProcessPrincipalInput {
-                principal_user_id,
-                input_id: claimed_run.input.input_id,
-            },
-            run: claimed_run.clone(),
-        };
+            let context = LifeWorkerRunContext {
+                command: ProcessPrincipalInput {
+                    principal_user_id,
+                    input_id: claimed_run.input.input_id,
+                },
+                run: claimed_run.clone(),
+            };
 
-        match self.executor.execute_life_run(context).await {
-            Ok(outcome) => {
-                let finished_at = self.clock.now()?;
-                // The adapter is responsible for durable memory checkpoint
-                // persistence (via StorageFlowCheckpoint + forced
-                // persist_memory_checkpoint). The worker does NOT call
-                // save_life_memory_checkpoint — that would be a double-write
-                // bypassing the proper AgentMemory serialization path.
-                self.store
-                    .mark_input_consumed(claimed_run.input.input_id, finished_at)
-                    .await?;
-                self.store
-                    .complete_run(claimed_run.run_id, finished_at, outcome.final_checkpoint_at)
-                    .await?;
-                self.append_event(claimed_run.run_id, "run_completed", finished_at)
-                    .await?;
-                Ok(LifeWorkerProcessResult::Completed {
-                    run_id: claimed_run.run_id,
-                    stable_memory_scope: claimed_run.stable_memory_scope,
-                })
-            }
-            Err(error) => {
-                let error_text = error.to_string();
-                let finished_at = self.clock.now()?;
-                self.store
-                    .fail_run(claimed_run.run_id, finished_at, &error_text)
-                    .await?;
-                self.append_event(claimed_run.run_id, "run_failed", finished_at)
-                    .await?;
-                Err(LifeWorkerError::Executor(error_text))
+            match self.executor.execute_life_run(context).await {
+                Ok(outcome) => {
+                    let finished_at = self.clock.now()?;
+                    // The adapter is responsible for durable memory checkpoint
+                    // persistence (via StorageFlowCheckpoint + forced
+                    // persist_memory_checkpoint). The worker does NOT call
+                    // save_life_memory_checkpoint — that would be a double-write
+                    // bypassing the proper AgentMemory serialization path.
+                    self.store
+                        .mark_input_consumed(claimed_run.input.input_id, finished_at)
+                        .await?;
+                    self.store
+                        .complete_run(claimed_run.run_id, finished_at, outcome.final_checkpoint_at)
+                        .await?;
+                    self.append_event(claimed_run.run_id, "run_completed", finished_at)
+                        .await?;
+
+                    let completed = LifeWorkerProcessResult::Completed {
+                        run_id: claimed_run.run_id,
+                        stable_memory_scope: claimed_run.stable_memory_scope,
+                    };
+                    let next_run_id = RunId::new_v4();
+                    let Some(next_claimed) = self
+                        .store
+                        .claim_next_queued_input_and_start_run(
+                            principal_user_id,
+                            next_run_id,
+                            &self.worker_id,
+                            finished_at,
+                        )
+                        .await?
+                    else {
+                        return Ok(completed);
+                    };
+                    claimed = next_claimed;
+                }
+                Err(error) => {
+                    let error_text = error.to_string();
+                    let finished_at = self.clock.now()?;
+                    self.store
+                        .fail_run(claimed_run.run_id, finished_at, &error_text)
+                        .await?;
+                    self.append_event(claimed_run.run_id, "run_failed", finished_at)
+                        .await?;
+                    return Err(LifeWorkerError::Executor(error_text));
+                }
             }
         }
     }
@@ -606,13 +625,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_claimed_run_drains_follow_up_inputs_and_links_turns() {
+    async fn execute_claimed_run_executes_follow_up_inputs_as_separate_runs() {
         let principal = PrincipalUserId::new(100503).expect("positive principal");
         let input_id = InputId::new_v4();
         let store = FakeWorkerStore::with_claim(principal, input_id);
 
-        // Simulate a follow-up input that was queued while the run was being claimed.
+        // Simulate a follow-up input that was queued while the first run was active.
         let follow_up_turn_id = TurnId::new_v4();
+        let follow_up_run_id = RunId::new_v4();
         let follow_up_input = LifeInput {
             input_id: InputId::new_v4(),
             principal_user_id: principal,
@@ -624,10 +644,24 @@ mod tests {
             updated_at: TimestampMillis::new(12),
         };
         store
-            .drained_inputs
+            .queued_claims
             .lock()
             .expect("lock")
-            .push(follow_up_input);
+            .push(ClaimedLifeInputRun {
+                input: follow_up_input.clone(),
+                run: LifeRun {
+                    run_id: follow_up_run_id,
+                    principal_user_id: principal,
+                    status: crate::domain::LifeRunStatus::Running,
+                    started_at: Some(TimestampMillis::new(20)),
+                    finished_at: None,
+                    last_checkpoint_at: None,
+                    error_text: None,
+                    created_at: TimestampMillis::new(20),
+                    updated_at: TimestampMillis::new(20),
+                },
+                user_content: "follow-up content".to_owned(),
+            });
 
         // Extract the claimed run for direct execute_claimed_run call.
         let claimed = store
@@ -638,10 +672,12 @@ mod tests {
             .expect("claim should be present");
         let expected_run_id = claimed.run.run_id;
 
+        let executor = RecordingExecutor::success(TimestampMillis::new(30));
+        let seen_contexts = Arc::clone(&executor.seen_contexts);
         let worker = LifeWorker::new_with_clock(
             store.clone(),
-            RecordingExecutor::success(TimestampMillis::new(30)),
-            FixedWorkerClock::new([TimestampMillis::new(20)]),
+            executor,
+            FixedWorkerClock::new([TimestampMillis::new(20), TimestampMillis::new(40)]),
             "worker-a",
         );
 
@@ -653,15 +689,32 @@ mod tests {
         let LifeWorkerProcessResult::Completed { run_id, .. } = result else {
             panic!("expected completed result");
         };
-        assert_eq!(run_id, expected_run_id);
+        assert_eq!(run_id, follow_up_run_id);
 
-        // Follow-up input's turn should be linked to the run.
+        // Each input is linked to and executed by its own run.
         let linked = store.linked_turns.lock().expect("lock").clone();
-        assert_eq!(linked.len(), 1);
-        assert_eq!(linked[0].0, follow_up_turn_id);
+        assert_eq!(linked.len(), 2);
         assert_eq!(linked[0].1, expected_run_id);
+        assert_eq!(linked[1].0, follow_up_turn_id);
+        assert_eq!(linked[1].1, follow_up_run_id);
 
-        assert_eq!(store.event_kinds(), vec!["run_started", "run_completed"]);
+        let consumed = store.consumed_inputs.lock().expect("lock").clone();
+        assert_eq!(consumed, vec![input_id, follow_up_input.input_id]);
+
+        let contexts = seen_contexts.lock().expect("lock").clone();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0].run.user_content, "test user content");
+        assert_eq!(contexts[1].run.user_content, "follow-up content");
+
+        assert_eq!(
+            store.event_kinds(),
+            vec![
+                "run_started",
+                "run_completed",
+                "run_started",
+                "run_completed"
+            ]
+        );
     }
 
     #[derive(Clone)]
@@ -672,7 +725,7 @@ mod tests {
         failed_runs: Arc<Mutex<Vec<RunId>>>,
         consumed_inputs: Arc<Mutex<Vec<InputId>>>,
         checkpoints: Arc<Mutex<Vec<RecordedCheckpoint>>>,
-        drained_inputs: Arc<Mutex<Vec<LifeInput>>>,
+        queued_claims: Arc<Mutex<Vec<ClaimedLifeInputRun>>>,
         linked_turns: Arc<Mutex<Vec<(TurnId, RunId)>>>,
     }
 
@@ -719,7 +772,7 @@ mod tests {
                 failed_runs: Arc::new(Mutex::new(Vec::new())),
                 consumed_inputs: Arc::new(Mutex::new(Vec::new())),
                 checkpoints: Arc::new(Mutex::new(Vec::new())),
-                drained_inputs: Arc::new(Mutex::new(Vec::new())),
+                queued_claims: Arc::new(Mutex::new(Vec::new())),
                 linked_turns: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -756,19 +809,14 @@ mod tests {
             Ok(())
         }
 
-        async fn drain_queued_inputs_for_run(
+        async fn claim_next_queued_input_and_start_run(
             &self,
             _principal_user_id: PrincipalUserId,
+            _run_id: RunId,
             _worker_id: &str,
             _now: TimestampMillis,
-        ) -> LifeWorkerResult<Vec<LifeInput>> {
-            let drained = self
-                .drained_inputs
-                .lock()
-                .expect("lock")
-                .drain(..)
-                .collect();
-            Ok(drained)
+        ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>> {
+            Ok(self.queued_claims.lock().expect("lock").pop())
         }
 
         async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {
@@ -829,6 +877,7 @@ mod tests {
     struct RecordingExecutor {
         outcome: Result<LifeRunExecutionOutcome, LifeWorkerError>,
         seen_context: Arc<Mutex<Option<LifeWorkerRunContext>>>,
+        seen_contexts: Arc<Mutex<Vec<LifeWorkerRunContext>>>,
     }
 
     impl RecordingExecutor {
@@ -840,6 +889,7 @@ mod tests {
                     final_memory_schema_version: 1,
                 }),
                 seen_context: Arc::new(Mutex::new(None)),
+                seen_contexts: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -847,6 +897,7 @@ mod tests {
             Self {
                 outcome: Err(LifeWorkerError::Executor(message.to_owned())),
                 seen_context: Arc::new(Mutex::new(None)),
+                seen_contexts: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -858,6 +909,13 @@ mod tests {
             context: LifeWorkerRunContext,
         ) -> LifeWorkerResult<LifeRunExecutionOutcome> {
             *self.seen_context.lock().expect("lock") = Some(context);
+            self.seen_contexts.lock().expect("lock").push(
+                self.seen_context
+                    .lock()
+                    .expect("lock")
+                    .clone()
+                    .expect("context"),
+            );
             match &self.outcome {
                 Ok(outcome) => Ok(outcome.clone()),
                 Err(error) => Err(LifeWorkerError::Executor(error.to_string())),
