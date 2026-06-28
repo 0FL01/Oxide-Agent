@@ -1,0 +1,296 @@
+# Goal: Life Solo Bridge Chat
+
+Date started: 2026-06-28
+Status: active
+Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
+Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
+Goal doc owner: Codex
+Last updated: 2026-06-28 initial contract
+
+## Objective
+
+Implement the bridge-first Life Mode redesign from `docs/prd/PRD-perm.md`: one ordinary chat agent synchronized across Web `/life` and a dedicated Telegram Life bot, with open transport bindings, durable queue correctness, crash recovery, and delivery outbox.
+
+Done when every required Completion Audit item below is verified by its listed evidence, each completed phase is committed separately, and the bridge remains scoped to solo-owner configuration rather than multi-user linking or memory UX.
+
+## Scope
+
+In scope:
+- `docs/prd/PRD-perm.md` as the source contract.
+- `migrations/0010_life_mode.sql` and life SQLx storage/repository code.
+- `crates/oxide-agent-life/`: domain types, gateway submit contract, runtime wake/claim, worker queue semantics, run leases/reaper, delivery outbox repository.
+- `crates/oxide-agent-transport-web/src/server/`: Life routes, runtime bootstrap, env/config binding bootstrap, outbox delivery orchestration.
+- `crates/oxide-agent-transport-telegram/`: dedicated Life bot input behavior, owner chat filtering, `/start`/`/help`/`/status`, plain-text delivery constraints if implemented there.
+- `crates/oxide-agent-web-contracts/` and `crates/oxide-agent-web-ui/` only where contract/UI labels need open transport ids or bridge status.
+- Tests, docs, and validation evidence proving audit items.
+
+Out of scope:
+- Engram, memory curator, memory generations, memory inspector/editor, recall UX.
+- User-facing token linking flow, multi-user SaaS linking, account/device discovery.
+- Telegram group/multi-chat routing.
+- Rich Telegram MarkdownV2 rendering in the first bridge milestone.
+- Cross-transport reminders.
+- Replacing ordinary web sessions or existing non-Life Telegram flows beyond the dedicated Life bot path.
+
+## Missing Inputs
+
+None at goal creation. Secrets are intentionally not documented here. Runtime validation that requires a real Telegram token/chat may be recorded as manual evidence with redacted identifiers.
+
+## Repository Context
+
+- Source PRD highlights:
+  - PRD §1: first focus is ordinary chat-agent bridge, not memory UX.
+  - PRD §4: solo owner via env/config bindings (`LIFE_OWNER_WEB_LOGIN`, `LIFE_TELEGRAM_BOT_TOKEN`, `LIFE_TELEGRAM_CHAT_ID`).
+  - PRD §5: verified mines are closed transport enums/checks, accidental principal allocation, follow-up input consumption, missing run crash recovery, delivery in executor, Telegram MarkdownV2 risk.
+  - PRD §6: target architecture uses `life_transport_bindings` and `life_delivery_outbox`.
+  - PRD §8: implementation phases B1-B8.
+- Existing entry points:
+  - `crates/oxide-agent-life/src/domain/` — life ids/enums/status domain.
+  - `crates/oxide-agent-life/src/gateway/` — current submit path.
+  - `crates/oxide-agent-life/src/storage/` — repository trait and SQLx backend.
+  - `crates/oxide-agent-life/src/runtime/` and `worker/` — wake, run lifecycle, input execution.
+  - `crates/oxide-agent-transport-web/src/server/life_executor.rs` — ordinary `AgentExecutor` adapter; must not own external delivery.
+  - `crates/oxide-agent-transport-web/src/server/life_routes.rs` — Web submit/read/SSE.
+  - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/runner.rs` — current Telegram life command path.
+- Existing validation commands from repo guidance:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`
+  - `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run`
+  - `cargo test -p oxide-agent-life` for life storage/runtime tests.
+  - `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` for web routes where profile-specific.
+  - If touching web UI: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` and `trunk build --release` from `crates/oxide-agent-web-ui`.
+  - If touching module/profile wiring: `cargo run -p xtask -- module-registry check`.
+
+## Completion Audit
+
+### Functional requirements (G*)
+
+- G1: Bridge terminology/config is implemented and memory-first scope is not reintroduced.
+  - Source: PRD §1, §8 B1, §10 out of scope.
+  - Acceptance: config/docs/code use bridge/chat ownership wording; `LIFE_OWNER_WEB_LOGIN`, `LIFE_TELEGRAM_BOT_TOKEN`, and `LIFE_TELEGRAM_CHAT_ID` are the configured solo bridge inputs; no new Engram/curator/memory-generation code is introduced.
+  - Evidence required: diff/code review; grep for removed memory-first bridge paths; relevant config docs/tests.
+  - Status: pending
+  - Evidence collected:
+
+- G2: Life core uses an open transport id contract.
+  - Source: PRD §5.1, §8 B2.
+  - Acceptance: life input/source/binding code supports arbitrary transport ids like `linux`/`android` without Rust enum edits; `internal` remains reserved for assistant/system source where needed; SQL no longer enumerates concrete transports in CHECK constraints.
+  - Evidence required: migration/schema diff; grep proving closed `LifeIdentityProvider::{Web, Telegram}` / transport CHECKs are gone or no longer authoritative; tests with a non-web/non-telegram transport id.
+  - Status: pending
+  - Evidence collected:
+
+- G3: Solo transport bindings are durable and env/bootstrap driven.
+  - Source: PRD §4.4, §8 B3.
+  - Acceptance: `life_transport_bindings` exists with principal, transport id, inbound address, delivery address, enabled, timestamps; web startup can bind owner web login and Telegram chat id to the same principal; unknown Telegram chat id cannot create a hidden principal.
+  - Evidence required: SQLx storage tests for binding insert/update/resolve; startup/bootstrap test or code review; negative test for unknown inbound address.
+  - Status: pending
+  - Evidence collected:
+
+- G4: Submit path is narrowed to known binding resolution.
+  - Source: PRD §5.2, §6.2, §8 B4.
+  - Acceptance: transport adapters submit `transport_id + inbound_address + source_ref + content + attachments + metadata`; core resolves an existing binding/principal; no random transport input auto-allocates a new principal. Authenticated Web `/life` remains mapped to the owner principal/binding model.
+  - Evidence required: gateway API diff; tests for accepted configured binding and denied unknown binding; grep/code review proving accidental principal allocation is not used for bridge submit.
+  - Status: pending
+  - Evidence collected:
+
+- G5: Queue semantics are one-input-one-run or otherwise execute every consumed input exactly once in order.
+  - Source: PRD §5.3, §8 B5, §9 validation.
+  - Acceptance: later inputs are not marked consumed merely because a run is active; two fast Telegram messages are both executed exactly once and in order, or explicitly dead-lettered with evidence.
+  - Evidence required: unit/SQLx worker tests for two queued inputs; code review of worker drain/claim semantics.
+  - Status: pending
+  - Evidence collected:
+
+- G6: Running runs have leases and expired runs are reaped.
+  - Source: PRD §5.4, §8 B6, §9 validation.
+  - Acceptance: running `life_runs` have lease owner/expiry/heartbeat; expired running runs are marked interrupted/failed and do not block later queued inputs for the solo principal.
+  - Evidence required: migration/storage/runtime tests for lease acquisition, heartbeat, expiry/reap, and subsequent input claim.
+  - Status: pending
+  - Evidence collected:
+
+- G7: Assistant delivery uses durable outbox, not executor-owned external API calls.
+  - Source: PRD §5.5, §6.3, §8 B7.
+  - Acceptance: assistant turn persistence enqueues delivery rows for enabled bindings; workers claim/send/retry/dead-letter rows; `LifeAgentExecutor` only persists canonical assistant output and does not call Telegram/Linux/Android APIs.
+  - Evidence required: schema/storage tests for outbox enqueue/claim/status transitions; grep proving executor has no Telegram/API delivery calls; delivery worker tests with mocked sender.
+  - Status: pending
+  - Evidence collected:
+
+- G8: Dedicated Telegram adapter does not require `/life`.
+  - Source: PRD §3.2, §7.1, §8 B8.
+  - Acceptance: every non-command private DM from configured `LIFE_TELEGRAM_CHAT_ID` is submitted as Life input; other chats are ignored/denied; `/start`, `/help`, `/status` exist; ack is `💭 Обрабатываю...`.
+  - Evidence required: Telegram handler tests or focused route/handler tests; code review of command matching; manual/runtime verification if practical.
+  - Status: pending
+  - Evidence collected:
+
+- G9: Telegram delivery is plain text chunked to Bot API limits for the first milestone.
+  - Source: PRD §5.6, §8 B8.
+  - Acceptance: delivery does not use raw MarkdownV2; outbound text is split into valid chunks no larger than Telegram `sendMessage` text limit with deterministic ordering.
+  - Evidence required: formatter/chunker tests around 4096-char boundary and markdown-looking text; verification skeleton/raw Telegram API facts recorded before implementation if live API behavior is touched.
+  - Status: pending
+  - Evidence collected:
+
+- G10: Cross-interface synchronization works through Postgres source of truth.
+  - Source: PRD §7, §9 validation.
+  - Acceptance: Telegram write appears in Web transcript; Web write enqueues delivery to Telegram; future transport can be represented by binding + adapter without executor semantic changes.
+  - Evidence required: integration/unit tests covering Telegram-like binding to Web transcript and Web assistant turn to outbox; code review for future `linux`/`android` transport id test case.
+  - Status: pending
+  - Evidence collected:
+
+### Quality/compatibility constraints (Q*)
+
+- Q1: Core/runtime architecture boundaries are preserved.
+  - Source: `AGENTS.md` architectural invariants; PRD §6.
+  - Acceptance: `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; `oxide-agent-life` remains transport-agnostic; Telegram SDK stays out of web/core/life.
+  - Evidence required: `cargo tree`/grep or code review plus workspace check.
+  - Status: pending
+  - Evidence collected:
+
+- Q2: No hidden secret leakage.
+  - Source: `AGENTS.md` secret refs/instructions.
+  - Acceptance: bot tokens/env values are read from config/env, never written to prompts, memory, logs, docs, tests, or goal evidence.
+  - Evidence required: code review/grep for token logging or persistence; tests use fake/redacted values.
+  - Status: pending
+  - Evidence collected:
+
+- Q3: Existing Web `/life` behavior remains functional.
+  - Source: PRD §2, §3.1.
+  - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
+  - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
+  - Status: pending
+  - Evidence collected:
+
+- Q4: Validation breadth is monorepo-wide before completion.
+  - Source: repo instructions P0.6; PRD §9 code gates.
+  - Acceptance: final pass runs broad checks or classifies failures with evidence.
+  - Evidence required: command outputs/summaries for fmt, clippy, cargo check, tests; failure classification by revert/import evidence if any fail.
+  - Status: pending
+  - Evidence collected:
+
+### Non-goals (N*)
+
+- N1: Do not reintroduce Engram/curator/memory-generation bridge work.
+  - Source: PRD §1, §10.
+  - Must preserve: bridge milestone remains ordinary chat synchronization.
+  - Evidence required: diff/grep review.
+  - Status: pending
+  - Evidence collected:
+
+- N2: Do not implement multi-user linking/token exchange.
+  - Source: PRD §4.1, §10.
+  - Must preserve: solo owner env/config binding model only.
+  - Evidence required: diff/code review.
+  - Status: pending
+  - Evidence collected:
+
+- N3: Do not require `/life` in the dedicated Telegram bot.
+  - Source: PRD §3.2, user correction.
+  - Must preserve: ordinary private DM text is Life input.
+  - Evidence required: handler tests/code review.
+  - Status: pending
+  - Evidence collected:
+
+- N4: Do not add rich Telegram MarkdownV2 rendering in this milestone.
+  - Source: PRD §5.6, §10.
+  - Must preserve: plain text delivery with safe chunking only.
+  - Evidence required: delivery tests/code review.
+  - Status: pending
+  - Evidence collected:
+
+## Implementation Plan
+
+1. B1 — Bridge terminology/config contract
+   - Audit IDs: G1, Q2, N1, N2.
+   - Expected changes: config/docs/constants for `LIFE_OWNER_WEB_LOGIN`, `LIFE_TELEGRAM_BOT_TOKEN`, `LIFE_TELEGRAM_CHAT_ID`; remove command-prefixed dedicated-bot assumptions where isolated.
+   - Validation: targeted grep/tests; `cargo fmt --all -- --check`; relevant `cargo check`.
+   - Exit condition: bridge config contract is present and documented without memory-first scope.
+
+2. B2 — Open transport id
+   - Audit IDs: G2, Q1, Q3.
+   - Expected changes: open `TransportId`/source model; migration removes concrete transport CHECKs.
+   - Validation: life domain/storage tests including `linux` or `android` id; cargo fmt/check.
+   - Exit condition: adding a new transport id requires binding/adapter, not enum/schema edits.
+
+3. B3 — Solo transport bindings
+   - Audit IDs: G3, Q2, N2.
+   - Expected changes: `life_transport_bindings` schema/repository/bootstrap from owner web login and Telegram chat id.
+   - Validation: SQLx tests for upsert/resolve/deny unknown; bootstrap tests where practical.
+   - Exit condition: configured Web and Telegram identities resolve to same principal.
+
+4. B4 — Narrow submit path
+   - Audit IDs: G4, G10, Q3.
+   - Expected changes: submit API moves from provider_subject principal allocation to binding resolution; Web submit remains authenticated and owner-scoped.
+   - Validation: gateway tests for known/unknown binding; route tests for Web submit.
+   - Exit condition: unknown transport input cannot create a hidden transcript.
+
+5. B5 — Queue correctness
+   - Audit IDs: G5, Q3.
+   - Expected changes: worker/runtime no longer consume follow-up inputs unless executed; one-input-one-run preferred.
+   - Validation: tests for two fast inputs executed exactly once and in order.
+   - Exit condition: no queued input is silently drained without execution/dead-letter.
+
+6. B6 — Run lease/reaper
+   - Audit IDs: G6, Q3.
+   - Expected changes: lease fields, heartbeat, reaper on startup/poller path.
+   - Validation: storage/runtime tests for expired run unblocking later input.
+   - Exit condition: crashed active run cannot block the solo principal forever.
+
+7. B7 — Delivery outbox
+   - Audit IDs: G7, G10, Q1, Q2.
+   - Expected changes: outbox schema/repository/enqueue on assistant turn; worker claim/retry/dead-letter with transport sender boundary.
+   - Validation: outbox storage tests; mocked sender tests; grep proving executor does not call external APIs.
+   - Exit condition: assistant output is durable delivery work for enabled bindings.
+
+8. B8 — Dedicated Telegram adapter
+   - Audit IDs: G8, G9, G10, N3, N4.
+   - Expected changes: dedicated bot non-command DM submit, owner chat filter, `/start`/`/help`/`/status`, plain chunked delivery.
+   - Validation: Telegram handler/chunker tests; runtime/manual check if token/chat available.
+   - Exit condition: Telegram and Web are synchronized without `/life` and without MarkdownV2 rendering.
+
+9. Final audit
+   - Audit IDs: all.
+   - Expected changes: goal doc evidence complete; no code changes unless audit finds gaps.
+   - Validation: broad repo gates from Validation Contract.
+   - Exit condition: every audit item verified or exact blocker recorded.
+
+## Validation Contract
+
+- Per phase: run the smallest meaningful targeted tests/checks before committing the phase.
+- Before final completion: run broad available gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, and a workspace/profile test gate or no-run compilation gate appropriate to feature constraints.
+- If touching Web UI: also run wasm check and `trunk build --release`.
+- If touching external Telegram API behavior: first record a verification skeleton and raw factual evidence for request/response/limits, then design/code against those facts.
+- Done when: all G/Q/N items are verified by current repo evidence, all phase commits exist, and no unclassified validation failure remains.
+
+## Decisions
+
+- 2026-06-28: Goal source is `docs/prd/PRD-perm.md` after commit `ce2d4492`; older memory-first PRD content is not authoritative for this bridge milestone.
+- 2026-06-28: Use one durable goal with atomic checkpoints B1-B8 because the PRD changes a cross-cutting bridge contract; each checkpoint must be separately validated and committed.
+- 2026-06-28: Delivery belongs behind a durable outbox boundary, not in `LifeAgentExecutor`, so adding Linux/Android later does not require executor changes.
+
+## Progress Log
+
+- 2026-06-28 initial contract
+  - Changed: created this goal document from `docs/prd/PRD-perm.md`.
+  - Evidence: PRD read and mapped to G1-G10, Q1-Q4, N1-N4, checkpoints B1-B8.
+  - Commands: `git status --short` before writing was clean; `git diff --check` passed.
+  - Commit: `docs(life): add solo bridge goal contract`.
+  - Audit IDs updated: none verified yet.
+  - Next: create in-session goal pointing to this document; start B1 verification/design.
+
+## Risks and Blockers
+
+- Telegram runtime verification may require a real bot token/chat id.
+  - Impact: live end-to-end delivery evidence may be unavailable in CI/local checks.
+  - Evidence: secrets are not stored in repo and must not be logged.
+  - Mitigation: use deterministic handler/chunker/outbox tests; record manual evidence only with redacted ids if the user provides a live environment.
+  - Audit IDs affected: G8, G9, G10.
+
+## Final Verification
+
+Filled only when complete.
+
+- Completion Audit result:
+- Commands run:
+- Artifacts inspected:
+- Remaining gaps:
+- User-accepted exceptions:
+- Final status:
