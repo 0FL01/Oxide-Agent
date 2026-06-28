@@ -15,6 +15,7 @@ struct DeleteTarget {
 #[component]
 pub fn SessionSidebar(
     selected: Memo<Option<String>>,
+    is_life: Memo<bool>,
     sessions: ReadSignal<Vec<SessionSummary>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
@@ -136,6 +137,22 @@ pub fn SessionSidebar(
                 />
             </div>
             <ErrorBanner message=error />
+            <div class="sidebar-permanent">
+                <a
+                    class=move || if is_life.get() { "permanent-entry active" } else { "permanent-entry" }
+                    href="/life"
+                >
+                    <span class="permanent-icon">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2.2"
+                             stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18.178 8c5.296 6.661-11.047 13.817-14.356 6.661C.376 7.555 13.834-2.824 18.178 8z"/>
+                            <path d="M5.822 16c-5.296-6.661 11.047-13.817 14.356-6.661C23.624 16.445 10.166 26.824 5.822 16z"/>
+                        </svg>
+                    </span>
+                    <span class="permanent-label">"Permanent"</span>
+                </a>
+            </div>
             <div class="sessions-list">
                 {move || {
                     if loading.get() && sessions.get().is_empty() {

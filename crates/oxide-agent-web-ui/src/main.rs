@@ -8,6 +8,8 @@ mod auth;
 mod components;
 #[cfg(target_arch = "wasm32")]
 mod confirm_dialog;
+#[cfg(target_arch = "wasm32")]
+mod life;
 #[cfg(any(target_arch = "wasm32", test))]
 mod markdown;
 #[cfg(target_arch = "wasm32")]

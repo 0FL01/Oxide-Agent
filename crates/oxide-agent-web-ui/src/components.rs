@@ -1,3 +1,4 @@
+use crate::life::LifeConsole;
 use crate::routes::AppRoute;
 use crate::sessions::SessionSidebar;
 use crate::tasks::TaskConsole;
@@ -18,22 +19,34 @@ pub fn AppLayout(route: ReadSignal<AppRoute>) -> impl IntoView {
         _ => None,
     });
 
+    // `Life` route renders the permanent chat console instead of `TaskConsole`.
+    let is_life = Memo::new(move |_| matches!(route.get(), AppRoute::Life));
+
     view! {
         <div class="app-layout">
             <SessionSidebar
                 selected=session_id
+                is_life=is_life
                 sessions=sessions
                 set_sessions=set_sessions
             />
             <main class="workspace-main">
-                <TaskConsole
-                    session_id=session_id
-                    events=events
-                    progress=progress
-                    set_events=set_events
-                    set_progress=set_progress
-                    set_sessions=set_sessions
-                />
+                {move || {
+                    if is_life.get() {
+                        view! { <LifeConsole /> }.into_any()
+                    } else {
+                        view! {
+                            <TaskConsole
+                                session_id=session_id
+                                events=events
+                                progress=progress
+                                set_events=set_events
+                                set_progress=set_progress
+                                set_sessions=set_sessions
+                            />
+                        }.into_any()
+                    }
+                }}
             </main>
         </div>
     }

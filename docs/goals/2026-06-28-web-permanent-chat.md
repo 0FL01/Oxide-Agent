@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 C6
+Last updated: 2026-06-28 C7
 
 ## Objective
 
@@ -136,8 +136,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §14.1, §19 "новый `/life` UI path".
   - Acceptance: `AppRoute::Life` is an authenticated app route; sidebar shows a fixed "Permanent" entry above ordinary sessions; ordinary session list/behavior unchanged.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` passes; route test or manual verification that `/life` renders the life console and `/app` still renders the session sidebar.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `AppRoute::Life` added to routes.rs; `from_path` maps `/life` → `Life`; `is_app_route` memo includes `Life` (renders `AppLayout`); `route_requires_auth` includes `Life` (redirects to `/login` if unauthenticated); `SessionSidebar` gains a fixed "Permanent" entry (infinity icon + label) above ordinary sessions with active state when on `/life`; `AppLayout` renders `<LifeConsole />` placeholder for `/life` and `<TaskConsole />` for ordinary routes. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass. `trunk build --release` success. `cargo test -p oxide-agent-web-ui` 21 pass. Diff audit: ordinary session sidebar/search/rename/delete behavior unchanged — only additive changes.
 
 - G9: Life chat UI renders transcript, composer, activity, and paging.
   - Source: user requirement "chat with agent (activity, paging and etc)".
@@ -224,8 +224,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §1, §19.
   - Must preserve: `/app/session/*` routes, `SessionSidebar`, `TaskConsole` behavior unchanged.
   - Evidence required: diff audit.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: C7 diff shows only additive changes to `sessions.rs` (new `is_life` parameter + "Permanent" entry HTML — no changes to session list rendering, search, rename, delete logic) and `components.rs` (new `is_life` branch — `TaskConsole` rendering path identical for non-Life routes). `routes.rs` adds `Life` variant without modifying existing `App`/`Session` parsing. `app.rs` adds `Life` to `is_app_route` and `route_requires_auth` without removing existing variants. No changes to `tasks/` module or `TaskConsole` component. `trunk build --release` success confirms ordinary UI still compiles.
 
 ## Implementation Plan
 
@@ -455,6 +455,22 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::tests`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-web-contracts --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
   - Audit IDs updated: G10 → verified.
   - Next: checkpoint C7 (/life route + sidebar entry).
+
+- 2026-06-28 C7: /life route + sidebar entry.
+  - Changed:
+    - `crates/oxide-agent-web-ui/src/routes.rs`: added `AppRoute::Life` variant; `from_path` maps `"/life"` → `Life`.
+    - `crates/oxide-agent-web-ui/src/app.rs`: `is_app_route` memo includes `AppRoute::Life` (so `AppLayout` renders for `/life`); `route_requires_auth` includes `Life` (unauthenticated → redirect to `/login`).
+    - `crates/oxide-agent-web-ui/src/components.rs`: `AppLayout` derives `is_life: Memo<bool>` from route; when `is_life`, renders `<LifeConsole />` in the main area instead of `<TaskConsole />`; passes `is_life` to `SessionSidebar`. Ordinary routes (`App`/`Session`) unchanged — `TaskConsole` still renders with same signals.
+    - `crates/oxide-agent-web-ui/src/sessions.rs`: `SessionSidebar` gains `is_life: Memo<bool>` parameter; adds a fixed "Permanent" entry (infinity icon + label) above the ordinary sessions list, linking to `/life` with active state when `is_life`. Ordinary session list/search/delete/rename behavior unchanged.
+    - `crates/oxide-agent-web-ui/src/life/mod.rs` (new): `pub mod console; pub use console::LifeConsole;`.
+    - `crates/oxide-agent-web-ui/src/life/console.rs` (new): minimal `LifeConsole` placeholder component (C8 will replace with full transcript + composer + activity + paging UI).
+    - `crates/oxide-agent-web-ui/src/main.rs`: added `#[cfg(target_arch = "wasm32")] mod life;`.
+    - `crates/oxide-agent-web-ui/src/styles/03-shell.css`: `.sidebar-permanent`, `.permanent-entry`, `.permanent-icon`, `.permanent-label` styles (reuse `--surface-hover`/`--accent` tokens, same active style as `.session-item.active`).
+    - `crates/oxide-agent-web-ui/src/styles/09-pages.css`: `.life-console`, `.life-placeholder` styles for the placeholder.
+  - Evidence: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass. `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings` pass (pre-existing `duplicate_mod` error on `--all-targets` confirmed on clean HEAD — not introduced by this change). `cargo fmt --all -- --check` pass. `cargo test -p oxide-agent-web-ui` 21 pass. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `trunk build --release` success (full frontend gate).
+  - Commands: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`, `cargo fmt --all -- --check`, `cargo test -p oxide-agent-web-ui`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `trunk build --release`.
+  - Audit IDs updated: G8 → verified, N5 → verified (ordinary session routes/sidebar/TaskConsole behavior unchanged — diff shows only additive changes to sessions.rs and components.rs branch).
+  - Next: checkpoint C8 (life chat UI — transcript + composer + activity + paging).
 
 ## Risks and Blockers
 

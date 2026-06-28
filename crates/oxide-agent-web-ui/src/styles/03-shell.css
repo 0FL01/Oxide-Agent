@@ -97,6 +97,47 @@
   border-color: var(--accent-blue);
 }
 
+.sidebar-permanent {
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.permanent-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  text-decoration: none;
+  transition: background 0.1s;
+}
+
+.permanent-entry:hover {
+  background: var(--surface-hover);
+}
+
+.permanent-entry.active {
+  background: rgba(16, 163, 127, 0.08);
+  border-left: 2px solid var(--accent);
+}
+
+.permanent-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.permanent-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .sessions-list {
   flex: 1;
   min-height: 0;

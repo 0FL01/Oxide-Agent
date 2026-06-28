@@ -14,6 +14,7 @@ pub enum AppRoute {
     Bootstrap,
     App,
     Session(String),
+    Life,
     Settings,
     NotFound,
 }
@@ -23,6 +24,7 @@ impl AppRoute {
     pub fn from_path(path: &str) -> Self {
         match path {
             "/" | "/app" => Self::App,
+            "/life" => Self::Life,
             "/login" => Self::Login,
             "/register" => Self::Register,
             "/bootstrap" => Self::Bootstrap,

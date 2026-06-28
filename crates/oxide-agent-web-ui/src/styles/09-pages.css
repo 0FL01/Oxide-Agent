@@ -216,3 +216,31 @@
   font-weight: 600;
   letter-spacing: -0.01em;
 }
+
+/* === LIFE CONSOLE === */
+.life-console {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.life-placeholder {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.life-placeholder h2 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.life-placeholder p {
+  margin: 0;
+  font-size: 13px;
+}

@@ -78,8 +78,12 @@ pub fn App() -> impl IntoView {
     // `is_app_route` stays `true` across `App ↔ Session(_)` transitions.
     // The view closure depends on this Memo, not on `route` directly,
     // so `AppLayout` stays mounted when switching between welcome and chat.
-    let is_app_route =
-        Memo::new(move |_| matches!(route.get(), AppRoute::App | AppRoute::Session(_)));
+    let is_app_route = Memo::new(move |_| {
+        matches!(
+            route.get(),
+            AppRoute::App | AppRoute::Session(_) | AppRoute::Life
+        )
+    });
 
     view! {
         <div class="root" on:click=move |ev| intercept_in_app_click(&ev)>
@@ -126,7 +130,7 @@ pub fn App() -> impl IntoView {
 fn route_requires_auth(route: &AppRoute) -> bool {
     matches!(
         route,
-        AppRoute::App | AppRoute::Session(_) | AppRoute::Settings
+        AppRoute::App | AppRoute::Session(_) | AppRoute::Life | AppRoute::Settings
     )
 }
 
