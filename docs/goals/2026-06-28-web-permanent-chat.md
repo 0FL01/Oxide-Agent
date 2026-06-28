@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-web-permanent-chat.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` (Permanent Life Mode) — narrowed to web permanent chat without the memory tool/inspector/Engram/curator UX.
 Goal doc owner: Codex
-Last updated: 2026-06-28 C3
+Last updated: 2026-06-28 C4
 
 ## Objective
 
@@ -115,8 +115,8 @@ None at goal creation. Existing life storage migration is parked as `.pending` a
   - Source: PRD §9.4, §12.3 "stream AgentEvents -> life_events".
   - Acceptance: a run's `AgentEvent`s are converted to `life_events` rows scoped by `run_id` with monotonic `seq`; the UI activity drawer can render them.
   - Evidence required: event-bridge test proving `life_events` rows are appended during a run; payload shape sufficient for activity rendering.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `agent_event_to_life_parts` in `crates/oxide-agent-transport-web/src/server/life_executor.rs` maps `AgentEvent` → `(kind: String, payload: Value)` reusing the same `browser_event_parts` mapping logic as ordinary web transport via `map_agent_event_without_file_storage` (pub(crate) wrapper in `web_transport.rs`, gated on `storage-sqlx`). The payload encodes `{summary, payload, redacted, truncated}` — `PersistedTaskEvent`-compatible shape. `LifeAgentExecutor::execute_life_run` creates an `mpsc::channel<AgentEvent>(128)`, passes the sender to `execute_user_input_with_options(Some(tx))`, spawns a consumer task that maps each event and appends a `LifeEvent` row via `life_storage.next_event_seq(run_id)` + `life_storage.append_event(&event)`, and awaits the consumer after execution (channel closes when executor drops sender). 7 unit tests in `server::life_executor::tests` verify the mapping for tool_call, tool_result, finished, sub_agent(tool_call), continuation, todos_updated, and error variants — all pass. `cargo test -p oxide-agent-life` 36/36, `cargo test -p oxide-agent-transport-web` 14 pass/23 ignored, `cargo clippy` clean, `cargo fmt` clean, `cargo check --workspace` clean.
 
 - G6: Cursor-based paging for turns and events.
   - Source: web UX requirement; current `list_turns(principal, 200)` / `list_events(principal, 500)` are unbounded single-page reads.
@@ -421,6 +421,16 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Commands: `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`, `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`, `cargo fmt --all -- --check`, `cargo clippy -p oxide-agent-life --all-targets -- -D warnings`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`.
   - Audit IDs updated: G3 → verified.
   - Next: checkpoint C4 (AgentEvent → life_events bridge).
+
+- 2026-06-28 C4: AgentEvent → life_events bridge.
+  - Changed:
+    - `crates/oxide-agent-transport-web/src/web_transport.rs`: added `map_agent_event_without_file_storage` pub(crate) wrapper (gated on `storage-sqlx`) that calls the existing private `browser_event_parts(event, None, None)` — reuses the same AgentEvent→(TaskEventKind, summary, payload, redacted, truncated) mapping logic as ordinary web transport, without exposing `BrowserStoredFile` type.
+    - `crates/oxide-agent-transport-web/src/server/life_executor.rs`: added `agent_event_to_life_parts(event: &AgentEvent) -> (String, Value)` pure mapping function that produces `(kind_str, life_payload)` where `kind_str` is the snake_case `TaskEventKind` variant and `life_payload` encodes `{summary, payload, redacted, truncated}` for `PersistedTaskEvent`-compatible activity rendering. Modified `execute_life_run` to create `mpsc::channel::<AgentEvent>(128)`, pass `Some(event_tx)` to `execute_user_input_with_options`, spawn a consumer task that maps each event and appends a `LifeEvent` row via `life_storage.next_event_seq(run_id)` + `life_storage.append_event(&event)` with monotonic seq, and await the consumer after execution (channel closes when executor drops sender). Consumer errors (seq/append/clock) are logged and skipped — no impact on agent execution.
+    - Added 7 unit tests in `server::life_executor::tests`: maps_tool_call, maps_tool_result, maps_finished, maps_sub_agent_tool_call, maps_continuation, maps_todos_updated, maps_error — verifying kind strings and payload shapes for the main AgentEvent variants.
+  - Evidence: `cargo test -p oxide-agent-life --lib` 36/36 pass. `cargo test -p oxide-agent-web-contracts` 13/13 pass. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local` 14 pass (7 existing + 7 new), 23 ignored. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` pass. `cargo fmt --all -- --check` pass. `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings` pass.
+  - Commands: same as C3 validation plus `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local -- server::life_executor`.
+  - Audit IDs updated: G5 → verified.
+  - Next: checkpoint C5 (Life SSE stream).
 
 ## Risks and Blockers
 

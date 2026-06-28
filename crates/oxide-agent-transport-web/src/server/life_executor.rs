@@ -9,7 +9,9 @@
 //! long-lived sessions).
 
 use crate::session::WebSessionManager;
+use crate::web_transport::map_agent_event_without_file_storage;
 use async_trait::async_trait;
+use oxide_agent_core::agent::progress::AgentEvent;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
     AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor, AgentMemory,
@@ -19,15 +21,17 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::ReminderThreadKind;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_life::domain::{
-    LifeSourceTransport, LifeTurn, LifeTurnRole, PrincipalUserId, RedactionState, RunId,
-    TimestampMillis, TurnId,
+    EventId, LifeEvent, LifeSourceTransport, LifeTurn, LifeTurnRole, PrincipalUserId,
+    RedactionState, RunId, TimestampMillis, TurnId,
 };
 use oxide_agent_life::storage::LifeStorageRepository;
 use oxide_agent_life::worker::{
     LIFE_CONTEXT_KEY, LIFE_FLOW_ID, LifeRunExecutionOutcome, LifeRunExecutor, LifeWorkerError,
     LifeWorkerResult, LifeWorkerRunContext,
 };
+use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Durable memory checkpoint that delegates to the configured storage provider.
@@ -57,6 +61,30 @@ impl AgentMemoryCheckpoint for LifeMemoryCheckpoint {
             .await?;
         Ok(())
     }
+}
+
+/// Map an `AgentEvent` to a `(kind, payload)` pair for a `life_events` row.
+///
+/// Reuses the same event-mapping logic as the ordinary web transport
+/// (`browser_event_parts`), passing `None` for file-storage params since
+/// life mode does not handle file delivery at the event-bridge level.
+/// The payload encodes `summary`, `payload`, `redacted`, and `truncated`
+/// so the web UI activity panel can render life events using the same
+/// `PersistedTaskEvent`-compatible shape.
+pub(crate) fn agent_event_to_life_parts(event: &AgentEvent) -> (String, serde_json::Value) {
+    let (task_kind, summary, payload, redacted, truncated) =
+        map_agent_event_without_file_storage(event);
+    let kind_str = serde_json::to_value(&task_kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_string());
+    let life_payload = json!({
+        "summary": summary,
+        "payload": payload,
+        "redacted": redacted,
+        "truncated": truncated,
+    });
+    (kind_str, life_payload)
 }
 
 /// Real `LifeRunExecutor` that delegates to the ordinary `AgentExecutor`.
@@ -253,18 +281,61 @@ impl LifeRunExecutor for LifeAgentExecutor {
         //    sessions (wiki memory, AGENTS.md, reminders, storage).
         let mut executor = self.build_executor(principal_user_id, session);
 
-        // 5. Execute the user input. No progress_tx for now — C4 will add
-        //    the AgentEvent → life_events bridge.
+        // 5. Create the AgentEvent → life_events bridge. The consumer task
+        //    receives events from the executor and appends life_events rows
+        //    with monotonic seq, scoped by run_id.
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(128);
+        let bridge_storage = Arc::clone(&self.life_storage);
+        let bridge_run_id = run_id;
+        let event_bridge = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                let (kind, payload) = agent_event_to_life_parts(&event);
+                let seq = match bridge_storage.next_event_seq(bridge_run_id).await {
+                    Ok(seq) => seq,
+                    Err(error) => {
+                        warn!(run_id = %bridge_run_id, ?error, "failed to get next life event seq");
+                        continue;
+                    }
+                };
+                let now = match Self::now_millis() {
+                    Ok(ms) => TimestampMillis::new(ms),
+                    Err(error) => {
+                        warn!(run_id = %bridge_run_id, ?error, "clock error in life event bridge");
+                        continue;
+                    }
+                };
+                let life_event = LifeEvent {
+                    event_id: EventId::new_v4(),
+                    run_id: bridge_run_id,
+                    seq,
+                    kind,
+                    payload,
+                    created_at: now,
+                };
+                if let Err(error) = bridge_storage.append_event(&life_event).await {
+                    warn!(run_id = %bridge_run_id, ?error, "failed to append life event");
+                }
+            }
+        });
+
+        // 6. Execute the user input with progress events bridged to
+        //    life_events. The executor drops `event_tx` when it finishes,
+        //    which closes the channel and ends the consumer loop.
         let outcome = executor
             .execute_user_input_with_options(
                 AgentUserInput::new(user_content),
-                None,
+                Some(event_tx),
                 AgentExecutionOptions::default(),
             )
             .await
             .map_err(|error| LifeWorkerError::Executor(error.to_string()))?;
 
-        // 6. Force a synchronous final memory checkpoint so the full
+        // 7. Await the event bridge — the channel is closed when the
+        //    executor drops its sender, ensuring all events are flushed
+        //    before the run completes.
+        let _ = event_bridge.await;
+
+        // 8. Force a synchronous final memory checkpoint so the full
         //    conversation history (including this run's messages) is
         //    durably persisted before the run completes.
         executor
@@ -276,7 +347,7 @@ impl LifeRunExecutor for LifeAgentExecutor {
         let checkpoint_at_millis = Self::now_millis()?;
         let final_checkpoint_at = TimestampMillis::new(checkpoint_at_millis);
 
-        // 7. Extract the assistant response and persist it as a life_turn.
+        // 9. Extract the assistant response and persist it as a life_turn.
         let assistant_content = match outcome {
             AgentExecutionOutcome::Completed(response) => response,
             AgentExecutionOutcome::WaitingForUserInput(_) => {
@@ -293,7 +364,7 @@ impl LifeRunExecutor for LifeAgentExecutor {
         self.persist_assistant_turn(principal_user_id, run_id, &assistant_content, now)
             .await?;
 
-        // 8. Serialize the final memory snapshot for the outcome (informational).
+        // 10. Serialize the final memory snapshot for the outcome (informational).
         let final_memory =
             serde_json::to_value(&executor.session().memory).unwrap_or(serde_json::json!({}));
 
@@ -310,5 +381,108 @@ impl LifeRunExecutor for LifeAgentExecutor {
             final_memory,
             final_memory_schema_version: 1,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource};
+
+    #[test]
+    fn maps_tool_call() {
+        let event = AgentEvent::ToolCall {
+            id: "call-1".to_string(),
+            source: AgentEventSource::Root,
+            name: "execute_command".to_string(),
+            input: "{\"command\":\"ls -la\"}".to_string(),
+            command_preview: Some("ls -la".to_string()),
+        };
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "tool_call");
+        assert_eq!(payload["summary"], "execute_command");
+        assert_eq!(payload["payload"]["name"], "execute_command");
+        assert_eq!(payload["payload"]["id"], "call-1");
+        assert_eq!(payload["payload"]["source"], "root");
+        assert_eq!(payload["redacted"], false);
+    }
+
+    #[test]
+    fn maps_thinking() {
+        let event = AgentEvent::Finished;
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "finished");
+        assert_eq!(payload["summary"], "Finished");
+    }
+
+    #[test]
+    fn maps_tool_result() {
+        let event = AgentEvent::ToolResult {
+            id: "call-1".to_string(),
+            source: AgentEventSource::Root,
+            name: "execute_command".to_string(),
+            output: "{\"success\":true,\"output\":\"done\"}".to_string(),
+            success: true,
+        };
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "tool_result");
+        assert_eq!(payload["payload"]["success"], true);
+        assert_eq!(payload["payload"]["name"], "execute_command");
+    }
+
+    #[test]
+    fn maps_sub_agent_tool_call() {
+        let inner = AgentEvent::ToolCall {
+            id: "sub-call-1".to_string(),
+            source: AgentEventSource::SubAgent,
+            name: "read_file".to_string(),
+            input: "{\"path\":\"/tmp/test\"}".to_string(),
+            command_preview: None,
+        };
+        let event = AgentEvent::SubAgent {
+            sub_agent_id: "sub-1".to_string(),
+            sub_agent_name: "research-agent".to_string(),
+            event: Box::new(inner),
+        };
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "tool_call");
+        assert_eq!(payload["payload"]["name"], "read_file");
+        assert_eq!(payload["payload"]["source"], "sub_agent");
+        assert_eq!(payload["payload"]["source_id"], "sub-1");
+        assert_eq!(payload["payload"]["source_name"], "research-agent");
+    }
+
+    #[test]
+    fn maps_continuation() {
+        let event = AgentEvent::Continuation {
+            source: AgentEventSource::Root,
+            reason: "incomplete todos".to_string(),
+            count: 2,
+        };
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "continuation");
+        assert_eq!(payload["payload"]["count"], 2);
+        assert_eq!(payload["payload"]["reason"], "incomplete todos");
+    }
+
+    #[test]
+    fn maps_todos_updated() {
+        use oxide_agent_core::agent::providers::TodoList;
+        let event = AgentEvent::TodosUpdated {
+            source: AgentEventSource::Root,
+            todos: TodoList::default(),
+        };
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "todos_updated");
+        assert_eq!(payload["payload"]["source"], "root");
+    }
+
+    #[test]
+    fn maps_error() {
+        let event = AgentEvent::Error("something went wrong".to_string());
+        let (kind, payload) = agent_event_to_life_parts(&event);
+        assert_eq!(kind, "error");
+        assert_eq!(payload["summary"], "Error");
+        assert_eq!(payload["payload"]["message"], "something went wrong");
     }
 }

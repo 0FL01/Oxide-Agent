@@ -63,6 +63,16 @@ fn effective_agent_event(event: &AgentEvent) -> &AgentEvent {
     }
 }
 
+/// Map an `AgentEvent` to `(TaskEventKind, summary, payload, redacted, truncated)`
+/// without file-storage context. Used by the life event bridge where file
+/// delivery is not handled at the event-bridge level.
+#[cfg(feature = "storage-sqlx")]
+pub(crate) fn map_agent_event_without_file_storage(
+    event: &AgentEvent,
+) -> (TaskEventKind, String, Value, bool, bool) {
+    browser_event_parts(event, None, None)
+}
+
 const WEB_EVENT_SCHEMA_VERSION: u32 = 1;
 const EVENT_SUMMARY_MAX_CHARS: usize = 160;
 const EVENT_PREVIEW_MAX_CHARS: usize = 4_000;
