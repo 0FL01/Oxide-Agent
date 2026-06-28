@@ -15,16 +15,11 @@ use crate::config::{
 use oxide_agent_core::{llm, storage};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
-    domain::{LifeTransportId, PrincipalUserId, ProviderSubject, TELEGRAM_TRANSPORT_ID},
-    gateway::{
-        LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
-        LifePrincipalAllocator,
-    },
+    domain::{LifeTransportId, TELEGRAM_TRANSPORT_ID},
+    gateway::{LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission},
     storage::SqlxLifeStorage,
 };
 use std::sync::Arc;
-#[cfg(feature = "storage-sqlx")]
-use std::sync::atomic::{AtomicI64, Ordering};
 #[cfg(feature = "storage-sqlx")]
 use teloxide::dispatching::UpdateHandler;
 #[cfg(feature = "storage-sqlx")]
@@ -237,8 +232,7 @@ async fn handle_life_command(
         return respond(());
     }
 
-    let allocator = TelegramLifePrincipalAllocator;
-    let gateway = LifeGateway::new(life_storage.as_ref().clone(), allocator);
+    let gateway = LifeGateway::new(life_storage.as_ref().clone());
     let submit_result = gateway
         .submit_life_input(LifeInputSubmission {
             transport_id: match LifeTransportId::new(TELEGRAM_TRANSPORT_ID) {
@@ -250,19 +244,13 @@ async fn handle_life_command(
                     return respond(());
                 }
             },
-            provider_subject: match ProviderSubject::new(user.id.0.to_string()) {
-                Ok(subject) => subject,
-                Err(error) => {
-                    error!("Telegram life provider subject invalid: {error}");
-                    bot.send_message(msg.chat.id, "Life mode rejected this identity.")
-                        .await?;
-                    return respond(());
-                }
-            },
+            inbound_address: serde_json::json!({ "chat_id": msg.chat.id.0 }),
+            source_ref: Some(msg.id.0.to_string()),
             content: payload.trim().to_string(),
             attachments: serde_json::json!([]),
             metadata: serde_json::json!({
                 "chat_id": msg.chat.id.0,
+                "from_user_id": user.id.0,
                 "message_id": msg.id.0,
                 "transport": "telegram_private_dm"
             }),
@@ -286,6 +274,9 @@ async fn handle_life_command(
                     "Private secrets must be stored in the private secret store, not life memory."
                         .to_string()
                 }
+                LifeGatewayError::UnboundTransport { .. } => {
+                    "This chat is not configured for Life mode.".to_string()
+                }
                 _ => "Life mode backend is unavailable. Try again later.".to_string(),
             };
             bot.send_message(msg.chat.id, message).await?;
@@ -305,32 +296,6 @@ fn life_command_payload(text: Option<&str>) -> Option<&str> {
         Some(payload)
     } else {
         None
-    }
-}
-
-#[cfg(feature = "storage-sqlx")]
-#[derive(Default)]
-struct TelegramLifePrincipalAllocator;
-
-#[cfg(feature = "storage-sqlx")]
-static TELEGRAM_LIFE_PRINCIPAL_COUNTER: AtomicI64 = AtomicI64::new(0);
-
-#[cfg(feature = "storage-sqlx")]
-#[async_trait::async_trait]
-impl LifePrincipalAllocator for TelegramLifePrincipalAllocator {
-    async fn allocate_principal_user_id(&self) -> Result<PrincipalUserId, LifeGatewayError> {
-        let now_millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| LifeGatewayError::Clock(error.to_string()))?
-            .as_millis();
-        let now_millis = i64::try_from(now_millis)
-            .map_err(|error| LifeGatewayError::Clock(error.to_string()))?;
-        let counter = TELEGRAM_LIFE_PRINCIPAL_COUNTER.fetch_add(1, Ordering::Relaxed) % 1000;
-        let candidate = now_millis
-            .saturating_mul(1000)
-            .saturating_add(counter)
-            .abs();
-        PrincipalUserId::new(candidate).map_err(LifeGatewayError::Domain)
     }
 }
 

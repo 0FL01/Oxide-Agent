@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B3 solo transport bindings
+Last updated: 2026-06-28 B4 narrowed submit path
 
 ## Objective
 
@@ -84,15 +84,15 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §4.4, §8 B3.
   - Acceptance: `life_transport_bindings` exists with principal, transport id, inbound address, delivery address, enabled, timestamps; web startup can bind owner web login and Telegram chat id to the same principal; unknown Telegram chat id cannot create a hidden principal.
   - Evidence required: SQLx storage tests for binding insert/update/resolve; startup/bootstrap test or code review; negative test for unknown inbound address.
-  - Status: in_progress
-  - Evidence collected: B3 added `life_transport_bindings` to `migrations/0010_life_mode.sql` with `binding_id`, `principal_user_id`, open `transport_id`, JSONB `inbound_address`, JSONB `delivery_address`, `enabled`, and timestamps. `LifeTransportBinding` plus `upsert_transport_binding` / `resolve_transport_binding` are implemented in `oxide-agent-life` SQLx storage. `sqlx_transport_bindings_resolve_open_enabled_addresses` verifies enabled Telegram binding resolution, disabled binding denial, and a future `linux` binding without enum/schema edits. Web SQLx startup now runs `bootstrap_life_solo_bridge_from_env`: it resolves `LIFE_OWNER_WEB_LOGIN` through the existing Web login index, upserts the Life principal, links Web `user_id` and Telegram `chat_id` identities to the same principal, and stores Web/Telegram bindings. Bootstrap config tests verify unconfigured no-op, Telegram env requiring an owner login, and no bot token value exposure. Full hidden-principal prevention remains open until B4 narrows submit away from gateway auto-allocation.
+  - Status: verified
+  - Evidence collected: B3 added `life_transport_bindings` to `migrations/0010_life_mode.sql` with `binding_id`, `principal_user_id`, open `transport_id`, JSONB `inbound_address`, JSONB `delivery_address`, `enabled`, and timestamps. `LifeTransportBinding` plus `upsert_transport_binding` / `resolve_transport_binding` are implemented in `oxide-agent-life` SQLx storage. `sqlx_transport_bindings_resolve_open_enabled_addresses` verifies enabled Telegram binding resolution, disabled binding denial, and a future `linux` binding without enum/schema edits. Web SQLx startup now runs `bootstrap_life_solo_bridge_from_env`: it resolves `LIFE_OWNER_WEB_LOGIN` through the existing Web login index, upserts the Life principal, links Web `user_id` and Telegram `chat_id` identities to the same principal, and stores Web/Telegram bindings. Bootstrap config tests verify unconfigured no-op, Telegram env requiring an owner login, and no bot token value exposure. B4 removed gateway principal auto-allocation from submit and added `gateway::tests::submit_rejects_unknown_binding_before_persistence`, proving an unknown Telegram-like inbound address returns `UnboundTransport` before any turn/input is persisted.
 
 - G4: Submit path is narrowed to known binding resolution.
   - Source: PRD §5.2, §6.2, §8 B4.
   - Acceptance: transport adapters submit `transport_id + inbound_address + source_ref + content + attachments + metadata`; core resolves an existing binding/principal; no random transport input auto-allocates a new principal. Authenticated Web `/life` remains mapped to the owner principal/binding model.
   - Evidence required: gateway API diff; tests for accepted configured binding and denied unknown binding; grep/code review proving accidental principal allocation is not used for bridge submit.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B4 changed `LifeInputSubmission` to the binding contract: `transport_id`, `inbound_address`, `source_ref`, `content`, `attachments`, `metadata`, and sensitivity. `LifeGateway` now depends only on `resolve_transport_binding` plus append/enqueue, and no longer owns `LifePrincipalAllocator`, principal creation, or `link_identity` in the submit path. Web `/life` submits inbound `{ "user_id": web_user_id }`; Telegram submits inbound `{ "chat_id": msg.chat.id.0 }` and stores `message_id` as `source_ref`. `gateway::tests::submit_uses_configured_binding_for_turn_and_input` verifies configured binding submit; `submit_rejects_unknown_binding_before_persistence` verifies no hidden principal/turn/input for unknown inbound; `submit_accepts_future_transport_without_enum_or_schema_change` keeps the future `linux` binding case. Grep after B4 found no `LifePrincipalAllocator`, `TelegramLifePrincipalAllocator`, `FixedPrincipalAllocator`, or gateway submit `provider_subject` call-sites outside the remaining identity-link bootstrap/storage API. `cargo test -p oxide-agent-life --lib`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed with pre-existing core/web warnings only.
 
 - G5: Queue semantics are one-input-one-run or otherwise execute every consumed input exactly once in order.
   - Source: PRD §5.3, §8 B5, §9 validation.
@@ -157,7 +157,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
   - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
   - Status: in_progress
-  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` compiled `oxide-agent-transport-web` with pre-existing warnings only. Full Q3 remains open for route/runtime/UI checks after B3-B8 behavior changes.
+  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. B4 preserves the existing authenticated Web route shape and runtime wake path while changing submit authorization to the B3 bootstrap binding `{ "user_id": web_user_id }`; unconfigured users now receive a clear 403 instead of hidden state allocation. `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run` and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` compiled `oxide-agent-transport-web` with pre-existing warnings only. Full Q3 remains open for route/runtime/UI checks after B5-B8 behavior changes.
 
 - Q4: Validation breadth is monorepo-wide before completion.
   - Source: repo instructions P0.6; PRD §9 code gates.
@@ -267,6 +267,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: Delivery belongs behind a durable outbox boundary, not in `LifeAgentExecutor`, so adding Linux/Android later does not require executor changes.
 - 2026-06-28: `LifeTransportId` is an open non-empty string newtype, not an enum. Concrete ids such as `web`, `telegram`, future `linux`/`android`, and internal source id `internal` are values at the transport/binding layer, so adding a transport does not require a Rust enum or SQL CHECK edit.
 - 2026-06-28: `life_transport_bindings` stores only observable routing addresses (`inbound_address`, `delivery_address`) and never transport credentials. `LIFE_TELEGRAM_BOT_TOKEN` remains an adapter/runtime secret for B7/B8 delivery, not durable Life state.
+- 2026-06-28: Life submit is receiver-resolved by enabled `life_transport_bindings`; transport adapters submit only observed inbound address plus source reference. Principal allocation is outside the submit contract, so an unknown Telegram chat/Linux instance/Android device cannot create hidden Life state.
 
 ## Progress Log
 
@@ -298,6 +299,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life_bootstrap --lib` (3 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
   - Audit IDs updated: G3 in progress; Q2 in progress; N2 remains verified.
   - Next: commit B3; compress; start B4 narrow submit path so unknown transport/chat cannot auto-create hidden principals.
+
+- 2026-06-28 B4 narrowed submit path
+  - Changed: replaced gateway submit `provider_subject`/auto-allocation with `transport_id + inbound_address + source_ref`; removed `LifePrincipalAllocator`; Web submits inbound `{user_id}` and Telegram submits inbound `{chat_id}`; unknown bindings return `UnboundTransport` before transcript/input persistence.
+  - Evidence: gateway tests cover configured Web binding, denied unknown Telegram-like binding, future `linux` binding, empty/private-secret prechecks, and redacted transcript preservation. Grep confirms no gateway submit allocator/provider-subject call-sites remain; identity-link `ProviderSubject` remains only for B3 bootstrap/storage compatibility.
+  - Commands: `cargo fmt --all`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G3 verified; G4 verified; Q3 in progress.
+  - Next: commit B4; compress; start B5 queue correctness.
 
 ## Risks and Blockers
 

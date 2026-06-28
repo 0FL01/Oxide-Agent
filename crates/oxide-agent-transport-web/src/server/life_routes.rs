@@ -40,17 +40,12 @@ use oxide_agent_core::agent::preprocessor::Preprocessor;
 use oxide_agent_core::sandbox::SandboxScope;
 
 #[cfg(feature = "storage-sqlx")]
-use async_trait::async_trait;
-#[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
     domain::{
-        LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject,
-        RedactionState, RunId, WEB_TRANSPORT_ID,
+        LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, RedactionState, RunId,
+        WEB_TRANSPORT_ID,
     },
-    gateway::{
-        LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
-        LifePrincipalAllocator,
-    },
+    gateway::{LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission},
     storage::{
         LifeStorageError, LifeStorageRepository, SqlxLifeStorage, encode_event_cursor,
         encode_turn_cursor,
@@ -380,17 +375,13 @@ async fn submit_life_input_for_user(
     let life_storage = state
         .life_storage()
         .ok_or_else(life_storage_unavailable_response)?;
-    let principal = PrincipalUserId::new(web_user_id).map_err(life_domain_error_response)?;
-    let gateway = LifeGateway::new(
-        life_storage.as_ref().clone(),
-        FixedPrincipalAllocator { principal },
-    );
+    let gateway = LifeGateway::new(life_storage.as_ref().clone());
     let result = gateway
         .submit_life_input(LifeInputSubmission {
             transport_id: LifeTransportId::new(WEB_TRANSPORT_ID)
                 .map_err(life_domain_error_response)?,
-            provider_subject: ProviderSubject::new(web_user_id.to_string())
-                .map_err(life_domain_error_response)?,
+            inbound_address: serde_json::json!({ "user_id": web_user_id }),
+            source_ref: None,
             content: request.content,
             attachments: serde_json::to_value(&request.attachments).unwrap_or_default(),
             metadata: request.metadata,
@@ -699,19 +690,6 @@ async fn life_state_for_user(
     Err(life_storage_unavailable_response())
 }
 
-#[cfg(feature = "storage-sqlx")]
-struct FixedPrincipalAllocator {
-    principal: PrincipalUserId,
-}
-
-#[cfg(feature = "storage-sqlx")]
-#[async_trait]
-impl LifePrincipalAllocator for FixedPrincipalAllocator {
-    async fn allocate_principal_user_id(&self) -> Result<PrincipalUserId, LifeGatewayError> {
-        Ok(self.principal)
-    }
-}
-
 fn life_storage_unavailable_response() -> (StatusCode, Json<ErrorEnvelope>) {
     api_error(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -735,6 +713,12 @@ fn life_gateway_error_response(error: LifeGatewayError) -> (StatusCode, Json<Err
             ErrorCode::ValidationError,
             error.to_string(),
             false,
+        ),
+        LifeGatewayError::UnboundTransport { .. } => api_error(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Unauthorized,
+            "Life mode is not configured for this authenticated user.",
+            true,
         ),
         LifeGatewayError::Storage(error) => life_storage_error_response(error),
         LifeGatewayError::Domain(error) => life_domain_error_response(error),

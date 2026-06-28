@@ -4,13 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    InputId, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal, LifeTransportId,
-    LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject, RedactionState, RunId,
-    TimestampMillis, TurnId,
+    InputId, LifeInput, LifeInputStatus, LifeTransportBinding, LifeTransportId, LifeTurn,
+    LifeTurnRole, PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use crate::errors::LifeDomainError;
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
@@ -20,8 +19,10 @@ use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult}
 pub struct LifeInputSubmission {
     /// Transport namespace.
     pub transport_id: LifeTransportId,
-    /// Transport-local subject.
-    pub provider_subject: ProviderSubject,
+    /// Transport-local inbound address observed by the adapter.
+    pub inbound_address: Value,
+    /// Optional transport-local source reference, such as a message id.
+    pub source_ref: Option<String>,
     /// User content.
     pub content: String,
     /// Attachment references.
@@ -68,6 +69,12 @@ pub enum LifeGatewayError {
     /// Raw private secrets must not enter transcript/memory/outbox.
     #[error("private secrets must be stored in the private secret store, not life memory")]
     PrivateSecretRefused,
+    /// The inbound transport address is not owner-approved.
+    #[error("life transport binding is not configured for transport '{transport_id}'")]
+    UnboundTransport {
+        /// Transport namespace.
+        transport_id: LifeTransportId,
+    },
     /// System clock is before unix epoch.
     #[error("life gateway clock error: {0}")]
     Clock(String),
@@ -85,18 +92,12 @@ pub type LifeGatewayResult<T> = Result<T, LifeGatewayError>;
 /// Gateway-specific store boundary.
 #[async_trait]
 pub trait LifeGatewayStore: Send + Sync {
-    /// Resolves a transport subject to a canonical principal.
-    async fn resolve_identity(
+    /// Resolves an enabled owner-approved binding by inbound address.
+    async fn resolve_transport_binding(
         &self,
         transport_id: &LifeTransportId,
-        provider_subject: &ProviderSubject,
-    ) -> LifeStorageResult<Option<PrincipalUserId>>;
-
-    /// Upserts a principal envelope.
-    async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()>;
-
-    /// Links a transport subject to a principal.
-    async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()>;
+        inbound_address: &Value,
+    ) -> LifeStorageResult<Option<LifeTransportBinding>>;
 
     /// Appends a canonical turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
@@ -110,20 +111,12 @@ impl<T> LifeGatewayStore for T
 where
     T: LifeStorageRepository + Send + Sync,
 {
-    async fn resolve_identity(
+    async fn resolve_transport_binding(
         &self,
         transport_id: &LifeTransportId,
-        provider_subject: &ProviderSubject,
-    ) -> LifeStorageResult<Option<PrincipalUserId>> {
-        LifeStorageRepository::resolve_identity(self, transport_id, provider_subject).await
-    }
-
-    async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()> {
-        LifeStorageRepository::upsert_principal(self, principal).await
-    }
-
-    async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()> {
-        LifeStorageRepository::link_identity(self, link).await
+        inbound_address: &Value,
+    ) -> LifeStorageResult<Option<LifeTransportBinding>> {
+        LifeStorageRepository::resolve_transport_binding(self, transport_id, inbound_address).await
     }
 
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
@@ -133,13 +126,6 @@ where
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
         LifeStorageRepository::enqueue_input(self, input).await
     }
-}
-
-/// Receiver-owned allocator for internal life principal ids.
-#[async_trait]
-pub trait LifePrincipalAllocator: Send + Sync {
-    /// Allocates a new canonical principal id.
-    async fn allocate_principal_user_id(&self) -> LifeGatewayResult<PrincipalUserId>;
 }
 
 /// Clock boundary for deterministic gateway tests.
@@ -165,40 +151,33 @@ impl LifeClock for SystemLifeClock {
 }
 
 /// Transport-neutral life gateway.
-pub struct LifeGateway<S, A, C = SystemLifeClock> {
+pub struct LifeGateway<S, C = SystemLifeClock> {
     store: S,
-    allocator: A,
     clock: C,
 }
 
-impl<S, A> LifeGateway<S, A, SystemLifeClock> {
+impl<S> LifeGateway<S, SystemLifeClock> {
     /// Creates a gateway using the system clock.
     #[must_use]
-    pub const fn new(store: S, allocator: A) -> Self {
+    pub const fn new(store: S) -> Self {
         Self {
             store,
-            allocator,
             clock: SystemLifeClock,
         }
     }
 }
 
-impl<S, A, C> LifeGateway<S, A, C> {
+impl<S, C> LifeGateway<S, C> {
     /// Creates a gateway with an explicit clock.
     #[must_use]
-    pub const fn with_clock(store: S, allocator: A, clock: C) -> Self {
-        Self {
-            store,
-            allocator,
-            clock,
-        }
+    pub const fn with_clock(store: S, clock: C) -> Self {
+        Self { store, clock }
     }
 }
 
-impl<S, A, C> LifeGateway<S, A, C>
+impl<S, C> LifeGateway<S, C>
 where
     S: LifeGatewayStore,
-    A: LifePrincipalAllocator,
     C: LifeClock,
 {
     /// Submits a life input through the narrow transport contract.
@@ -214,7 +193,8 @@ where
         }
 
         let now = self.clock.now()?;
-        let principal_user_id = self.resolve_or_create_principal(&submission, now).await?;
+        let binding = self.resolve_binding(&submission).await?;
+        let principal_user_id = binding.principal_user_id;
         let turn_id = TurnId::new_v4();
         let input_id = InputId::new_v4();
 
@@ -224,7 +204,7 @@ where
             run_id: None,
             role: LifeTurnRole::User,
             source_transport: submission.transport_id.clone(),
-            source_ref: None,
+            source_ref: submission.source_ref,
             content: submission.content,
             attachments: submission.attachments,
             transport_metadata: submission.metadata,
@@ -257,82 +237,56 @@ where
         })
     }
 
-    async fn resolve_or_create_principal(
+    async fn resolve_binding(
         &self,
         submission: &LifeInputSubmission,
-        now: TimestampMillis,
-    ) -> LifeGatewayResult<PrincipalUserId> {
-        if let Some(principal_user_id) = self
-            .store
-            .resolve_identity(&submission.transport_id, &submission.provider_subject)
+    ) -> LifeGatewayResult<LifeTransportBinding> {
+        self.store
+            .resolve_transport_binding(&submission.transport_id, &submission.inbound_address)
             .await?
-        {
-            return Ok(principal_user_id);
-        }
-
-        let principal_user_id = self.allocator.allocate_principal_user_id().await?;
-        let principal = LifePrincipal {
-            principal_user_id,
-            profile_state: json!({}),
-            operating_profile: json!({}),
-            settings: json!({}),
-            schema_version: 1,
-            created_at: now,
-            updated_at: now,
-        };
-        self.store.upsert_principal(&principal).await?;
-
-        let link = LifeIdentityLink {
-            transport_id: submission.transport_id.clone(),
-            provider_subject: submission.provider_subject.clone(),
-            principal_user_id,
-            verified_at: Some(now),
-            created_at: now,
-            updated_at: now,
-        };
-        self.store.link_identity(&link).await?;
-        Ok(principal_user_id)
+            .ok_or_else(|| LifeGatewayError::UnboundTransport {
+                transport_id: submission.transport_id.clone(),
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
 
-    use crate::domain::{TELEGRAM_TRANSPORT_ID, WEB_TRANSPORT_ID};
+    use crate::domain::{BindingId, TELEGRAM_TRANSPORT_ID, WEB_TRANSPORT_ID};
     use serde_json::json;
 
     use super::*;
 
     #[tokio::test]
-    async fn submit_creates_principal_turn_and_input() {
+    async fn submit_uses_configured_binding_for_turn_and_input() {
         let store = FakeGatewayStore::default();
-        let allocated_principal = principal(100500);
-        let gateway = LifeGateway::with_clock(
-            store.clone(),
-            QueueAllocator::new(vec![allocated_principal]),
-            FixedClock(TimestampMillis::new(42)),
+        let configured_principal = principal(100500);
+        store.seed_binding(
+            WEB_TRANSPORT_ID,
+            json!({"user_id": 100500}),
+            configured_principal,
         );
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(42)));
 
         let result = gateway
             .submit_life_input(submission(
                 WEB_TRANSPORT_ID,
-                "web-user-1",
+                json!({"user_id": 100500}),
                 "start life mode",
             ))
             .await
             .expect("submit should succeed");
 
-        assert_eq!(result.principal_user_id, allocated_principal);
+        assert_eq!(result.principal_user_id, configured_principal);
         assert!(result.run_id.is_none());
 
         let snapshot = store.snapshot();
-        assert!(snapshot.principals.contains_key(&allocated_principal));
-        assert_eq!(snapshot.identities.len(), 1);
         assert_eq!(snapshot.inputs.len(), 1);
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(snapshot.turns[0].content, "start life mode");
+        assert_eq!(snapshot.turns[0].source_ref.as_deref(), Some("test-ref"));
         assert_eq!(
             snapshot.turns[0].source_transport.as_str(),
             WEB_TRANSPORT_ID
@@ -347,49 +301,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_reuses_existing_identity() {
+    async fn submit_rejects_unknown_binding_before_persistence() {
         let store = FakeGatewayStore::default();
-        let existing_principal = principal(200600);
-        store.seed_identity(TELEGRAM_TRANSPORT_ID, "telegram-user-1", existing_principal);
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(43)));
 
-        let gateway = LifeGateway::with_clock(
-            store.clone(),
-            PanicAllocator,
-            FixedClock(TimestampMillis::new(43)),
-        );
-
-        let result = gateway
+        let error = gateway
             .submit_life_input(submission(
                 TELEGRAM_TRANSPORT_ID,
-                "telegram-user-1",
-                "continue",
+                json!({"chat_id": 424242}),
+                "unknown chat",
             ))
             .await
-            .expect("submit should reuse existing identity");
+            .expect_err("unknown inbound address must fail");
 
-        assert_eq!(result.principal_user_id, existing_principal);
+        assert!(matches!(error, LifeGatewayError::UnboundTransport { .. }));
         let snapshot = store.snapshot();
-        assert_eq!(snapshot.turns.len(), 1);
-        assert_eq!(
-            snapshot.turns[0].source_transport.as_str(),
-            TELEGRAM_TRANSPORT_ID
-        );
+        assert!(snapshot.turns.is_empty());
+        assert!(snapshot.inputs.is_empty());
     }
 
     #[tokio::test]
     async fn submit_accepts_future_transport_without_enum_or_schema_change() {
         let store = FakeGatewayStore::default();
         let existing_principal = principal(200601);
-        store.seed_identity("linux", "machine-local-user", existing_principal);
-
-        let gateway = LifeGateway::with_clock(
-            store.clone(),
-            PanicAllocator,
-            FixedClock(TimestampMillis::new(43)),
+        store.seed_binding(
+            "linux",
+            json!({"instance_id": "desktop-1"}),
+            existing_principal,
         );
 
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(43)));
+
         let result = gateway
-            .submit_life_input(submission("linux", "machine-local-user", "from linux"))
+            .submit_life_input(submission(
+                "linux",
+                json!({"instance_id": "desktop-1"}),
+                "from linux",
+            ))
             .await
             .expect("open transport id should be accepted");
 
@@ -399,15 +347,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_rejects_empty_content_before_allocating_principal() {
+    async fn submit_rejects_empty_content_before_resolving_binding() {
         let gateway = LifeGateway::with_clock(
             FakeGatewayStore::default(),
-            PanicAllocator,
             FixedClock(TimestampMillis::new(44)),
         );
 
         let error = gateway
-            .submit_life_input(submission(WEB_TRANSPORT_ID, "web-user-2", "   "))
+            .submit_life_input(submission(WEB_TRANSPORT_ID, json!({"user_id": 2}), "   "))
             .await
             .expect_err("empty content must fail");
 
@@ -417,12 +364,8 @@ mod tests {
     #[tokio::test]
     async fn submit_refuses_private_secret_before_principal_or_turn_persistence() {
         let store = FakeGatewayStore::default();
-        let gateway = LifeGateway::with_clock(
-            store.clone(),
-            PanicAllocator,
-            FixedClock(TimestampMillis::new(45)),
-        );
-        let mut submission = submission(WEB_TRANSPORT_ID, "web-user-secret", "token raw");
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(45)));
+        let mut submission = submission(WEB_TRANSPORT_ID, json!({"user_id": 3}), "token raw");
         submission.sensitivity = LifeInputSensitivity::PrivateSecret;
 
         let error = gateway
@@ -432,7 +375,6 @@ mod tests {
 
         assert!(matches!(error, LifeGatewayError::PrivateSecretRefused));
         let snapshot = store.snapshot();
-        assert!(snapshot.principals.is_empty());
         assert!(snapshot.turns.is_empty());
         assert!(snapshot.inputs.is_empty());
     }
@@ -440,13 +382,14 @@ mod tests {
     #[tokio::test]
     async fn submit_preserves_redacted_transcript_state() {
         let store = FakeGatewayStore::default();
-        let allocated_principal = principal(300700);
-        let gateway = LifeGateway::with_clock(
-            store.clone(),
-            QueueAllocator::new(vec![allocated_principal]),
-            FixedClock(TimestampMillis::new(46)),
+        let configured_principal = principal(300700);
+        store.seed_binding(
+            WEB_TRANSPORT_ID,
+            json!({"user_id": 300700}),
+            configured_principal,
         );
-        let mut submission = submission(WEB_TRANSPORT_ID, "web-user-redacted", "[REDACTED]");
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(46)));
+        let mut submission = submission(WEB_TRANSPORT_ID, json!({"user_id": 300700}), "[REDACTED]");
         submission.sensitivity = LifeInputSensitivity::Redacted;
 
         gateway
@@ -466,28 +409,34 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct FakeState {
-        identities: HashMap<(LifeTransportId, String), PrincipalUserId>,
-        principals: HashMap<PrincipalUserId, LifePrincipal>,
+        bindings: Vec<LifeTransportBinding>,
         turns: Vec<LifeTurn>,
         inputs: Vec<LifeInput>,
     }
 
     impl FakeGatewayStore {
-        fn seed_identity(
+        fn seed_binding(
             &self,
             transport_id: &str,
-            provider_subject: &str,
+            inbound_address: Value,
             principal_user_id: PrincipalUserId,
         ) {
+            let now = TimestampMillis::new(1);
             let transport_id = transport(transport_id);
             self.inner
                 .lock()
                 .expect("fake store lock")
-                .identities
-                .insert(
-                    (transport_id, provider_subject.to_owned()),
+                .bindings
+                .push(LifeTransportBinding {
+                    binding_id: BindingId::new_v4(),
                     principal_user_id,
-                );
+                    transport_id,
+                    inbound_address: inbound_address.clone(),
+                    delivery_address: inbound_address,
+                    enabled: true,
+                    created_at: now,
+                    updated_at: now,
+                });
         }
 
         fn snapshot(&self) -> FakeState {
@@ -497,42 +446,23 @@ mod tests {
 
     #[async_trait]
     impl LifeGatewayStore for FakeGatewayStore {
-        async fn resolve_identity(
+        async fn resolve_transport_binding(
             &self,
             transport_id: &LifeTransportId,
-            provider_subject: &ProviderSubject,
-        ) -> LifeStorageResult<Option<PrincipalUserId>> {
+            inbound_address: &Value,
+        ) -> LifeStorageResult<Option<LifeTransportBinding>> {
             Ok(self
                 .inner
                 .lock()
                 .expect("fake store lock")
-                .identities
-                .get(&(transport_id.clone(), provider_subject.as_str().to_owned()))
-                .copied())
-        }
-
-        async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()> {
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .principals
-                .insert(principal.principal_user_id, principal.clone());
-            Ok(())
-        }
-
-        async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()> {
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .identities
-                .insert(
-                    (
-                        link.transport_id.clone(),
-                        link.provider_subject.as_str().to_owned(),
-                    ),
-                    link.principal_user_id,
-                );
-            Ok(())
+                .bindings
+                .iter()
+                .find(|binding| {
+                    binding.enabled
+                        && &binding.transport_id == transport_id
+                        && &binding.inbound_address == inbound_address
+                })
+                .cloned())
         }
 
         async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
@@ -554,38 +484,6 @@ mod tests {
         }
     }
 
-    struct QueueAllocator {
-        principals: Mutex<VecDeque<PrincipalUserId>>,
-    }
-
-    impl QueueAllocator {
-        fn new(principals: Vec<PrincipalUserId>) -> Self {
-            Self {
-                principals: Mutex::new(principals.into()),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl LifePrincipalAllocator for QueueAllocator {
-        async fn allocate_principal_user_id(&self) -> LifeGatewayResult<PrincipalUserId> {
-            self.principals
-                .lock()
-                .expect("allocator lock")
-                .pop_front()
-                .ok_or_else(|| LifeGatewayError::Clock("test allocator exhausted".to_owned()))
-        }
-    }
-
-    struct PanicAllocator;
-
-    #[async_trait]
-    impl LifePrincipalAllocator for PanicAllocator {
-        async fn allocate_principal_user_id(&self) -> LifeGatewayResult<PrincipalUserId> {
-            panic!("allocator must not be called")
-        }
-    }
-
     #[derive(Debug, Copy, Clone)]
     struct FixedClock(TimestampMillis);
 
@@ -601,12 +499,13 @@ mod tests {
 
     fn submission(
         transport_id: &str,
-        provider_subject: &str,
+        inbound_address: Value,
         content: &str,
     ) -> LifeInputSubmission {
         LifeInputSubmission {
             transport_id: transport(transport_id),
-            provider_subject: ProviderSubject::new(provider_subject).expect("provider subject"),
+            inbound_address,
+            source_ref: Some("test-ref".to_owned()),
             content: content.to_owned(),
             attachments: json!([{"kind": "document"}]),
             metadata: json!({"source": "test"}),
