@@ -576,10 +576,15 @@ pub async fn build_sqlx_backed_app_state(
     let storage_provider: Arc<dyn StorageProvider> = provider_storage;
     let session_manager =
         WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
-    Ok(AppState::new_with_sqlx_web_store(
-        Arc::new(session_manager),
-        sqlx_storage,
-    ))
+    let state = AppState::new_with_sqlx_web_store(Arc::new(session_manager), sqlx_storage);
+    if let Some(life_storage) = state.life_storage() {
+        super::life_bootstrap::bootstrap_life_solo_bridge_from_env(
+            state.web_store().as_ref(),
+            life_storage.as_ref(),
+        )
+        .await?;
+    }
+    Ok(state)
 }
 
 // ---------------------------------------------------------------------------

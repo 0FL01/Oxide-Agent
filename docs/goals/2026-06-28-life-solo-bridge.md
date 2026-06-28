@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B2 open transport id
+Last updated: 2026-06-28 B3 solo transport bindings
 
 ## Objective
 
@@ -84,8 +84,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §4.4, §8 B3.
   - Acceptance: `life_transport_bindings` exists with principal, transport id, inbound address, delivery address, enabled, timestamps; web startup can bind owner web login and Telegram chat id to the same principal; unknown Telegram chat id cannot create a hidden principal.
   - Evidence required: SQLx storage tests for binding insert/update/resolve; startup/bootstrap test or code review; negative test for unknown inbound address.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: B3 added `life_transport_bindings` to `migrations/0010_life_mode.sql` with `binding_id`, `principal_user_id`, open `transport_id`, JSONB `inbound_address`, JSONB `delivery_address`, `enabled`, and timestamps. `LifeTransportBinding` plus `upsert_transport_binding` / `resolve_transport_binding` are implemented in `oxide-agent-life` SQLx storage. `sqlx_transport_bindings_resolve_open_enabled_addresses` verifies enabled Telegram binding resolution, disabled binding denial, and a future `linux` binding without enum/schema edits. Web SQLx startup now runs `bootstrap_life_solo_bridge_from_env`: it resolves `LIFE_OWNER_WEB_LOGIN` through the existing Web login index, upserts the Life principal, links Web `user_id` and Telegram `chat_id` identities to the same principal, and stores Web/Telegram bindings. Bootstrap config tests verify unconfigured no-op, Telegram env requiring an owner login, and no bot token value exposure. Full hidden-principal prevention remains open until B4 narrows submit away from gateway auto-allocation.
 
 - G4: Submit path is narrowed to known binding resolution.
   - Source: PRD §5.2, §6.2, §8 B4.
@@ -150,7 +150,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Acceptance: bot tokens/env values are read from config/env, never written to prompts, memory, logs, docs, tests, or goal evidence.
   - Evidence required: code review/grep for token logging or persistence; tests use fake/redacted values.
   - Status: in_progress
-  - Evidence collected: B1 documents only placeholder/redacted values (`YOUR_DEDICATED_LIFE_BOT_TOKEN`, numeric example chat ids) and does not add token logging or persistence. Real env secrets remain outside repo. Full Q2 remains open for B3/B7/B8 code paths that will read and deliver with the token.
+  - Evidence collected: B1 documents only placeholder/redacted values (`YOUR_DEDICATED_LIFE_BOT_TOKEN`, numeric example chat ids) and does not add token logging or persistence. B3 reads only whether `LIFE_TELEGRAM_BOT_TOKEN` is configured; it never stores the token in `life_transport_bindings`, identity links, logs, or goal evidence. `bootstrap_config_never_exposes_bot_token_value` verifies startup error text does not include a fake token secret. Full Q2 remains open for B7/B8 delivery code paths that will read and use the token.
 
 - Q3: Existing Web `/life` behavior remains functional.
   - Source: PRD §2, §3.1.
@@ -266,6 +266,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: Use one durable goal with atomic checkpoints B1-B8 because the PRD changes a cross-cutting bridge contract; each checkpoint must be separately validated and committed.
 - 2026-06-28: Delivery belongs behind a durable outbox boundary, not in `LifeAgentExecutor`, so adding Linux/Android later does not require executor changes.
 - 2026-06-28: `LifeTransportId` is an open non-empty string newtype, not an enum. Concrete ids such as `web`, `telegram`, future `linux`/`android`, and internal source id `internal` are values at the transport/binding layer, so adding a transport does not require a Rust enum or SQL CHECK edit.
+- 2026-06-28: `life_transport_bindings` stores only observable routing addresses (`inbound_address`, `delivery_address`) and never transport credentials. `LIFE_TELEGRAM_BOT_TOKEN` remains an adapter/runtime secret for B7/B8 delivery, not durable Life state.
 
 ## Progress Log
 
@@ -290,6 +291,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `git diff --check`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (19 passed); `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (both passed with pre-existing core/web warnings only).
   - Audit IDs updated: G2 verified; Q1 in progress; Q3 in progress.
   - Next: commit B2; compress; start B3 solo transport bindings.
+
+- 2026-06-28 B3 solo transport bindings
+  - Changed: added durable `life_transport_bindings` schema; added `BindingId`/`LifeTransportBinding`; added SQLx upsert/resolve binding repository methods; added Web SQLx startup bootstrap from `LIFE_OWNER_WEB_LOGIN` and optional `LIFE_TELEGRAM_CHAT_ID`; kept `LIFE_TELEGRAM_BOT_TOKEN` out of durable state.
+  - Evidence: `sqlx_transport_bindings_resolve_open_enabled_addresses` verifies Telegram binding resolution, disabled binding denial, and future `linux` transport binding. `life_bootstrap` tests verify no-op when unconfigured, owner-login requirement for Telegram binding env, and no bot token value leakage. Blast-radius grep found new binding/token symbols confined to life storage/domain, web bootstrap, docs, and tests.
+  - Commands: `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (20 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local life_bootstrap --lib` (3 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib --no-run`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (workspace gates passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G3 in progress; Q2 in progress; N2 remains verified.
+  - Next: commit B3; compress; start B4 narrow submit path so unknown transport/chat cannot auto-create hidden principals.
 
 ## Risks and Blockers
 

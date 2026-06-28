@@ -73,6 +73,7 @@ uuid_id!(TurnId);
 uuid_id!(InputId);
 uuid_id!(RunId);
 uuid_id!(EventId);
+uuid_id!(BindingId);
 
 /// Non-empty provider-local identity subject.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

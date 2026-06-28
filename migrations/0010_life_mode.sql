@@ -26,6 +26,24 @@ CREATE TABLE life_identity_links (
 CREATE INDEX life_identity_links_principal_idx
     ON life_identity_links (principal_user_id, transport_id);
 
+CREATE TABLE life_transport_bindings (
+    binding_id UUID PRIMARY KEY,
+    principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
+    transport_id TEXT NOT NULL CHECK (btrim(transport_id) <> ''),
+    inbound_address JSONB NOT NULL CHECK (jsonb_typeof(inbound_address) = 'object'),
+    delivery_address JSONB NOT NULL CHECK (jsonb_typeof(delivery_address) = 'object'),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE (transport_id, inbound_address)
+);
+
+CREATE INDEX life_transport_bindings_principal_idx
+    ON life_transport_bindings (principal_user_id, transport_id);
+
+CREATE INDEX life_transport_bindings_enabled_idx
+    ON life_transport_bindings (transport_id, enabled);
+
 CREATE TABLE life_turns (
     turn_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,

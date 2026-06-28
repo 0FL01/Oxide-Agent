@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use serde_json::Value;
 use sqlx_core::migrate::Migrator;
 use sqlx_core::query::query;
 use sqlx_core::row::Row;
@@ -10,9 +11,9 @@ use sqlx_postgres::{PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::domain::{
-    InputId, LifeEvent, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal, LifeRun,
-    LifeRunStatus, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject,
-    RedactionState, RunId, TimestampMillis, TurnId,
+    BindingId, InputId, LifeEvent, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal,
+    LifeRun, LifeRunStatus, LifeTransportBinding, LifeTransportId, LifeTurn, LifeTurnRole,
+    PrincipalUserId, ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use crate::storage::{
     ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository, LifeStorageResult,
@@ -604,6 +605,60 @@ impl LifeStorageRepository for SqlxLifeStorage {
             .map_err(Into::into)
     }
 
+    async fn upsert_transport_binding(
+        &self,
+        binding: &LifeTransportBinding,
+    ) -> LifeStorageResult<()> {
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_transport_bindings (
+                binding_id, principal_user_id, transport_id, inbound_address,
+                delivery_address, enabled, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (transport_id, inbound_address) DO UPDATE
+            SET principal_user_id = EXCLUDED.principal_user_id,
+                delivery_address = EXCLUDED.delivery_address,
+                enabled = EXCLUDED.enabled,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(binding.binding_id.as_uuid())
+        .bind(binding.principal_user_id.get())
+        .bind(binding.transport_id.as_str())
+        .bind(&binding.inbound_address)
+        .bind(&binding.delivery_address)
+        .bind(binding.enabled)
+        .bind(binding.created_at.get())
+        .bind(binding.updated_at.get())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(())
+    }
+
+    async fn resolve_transport_binding(
+        &self,
+        transport_id: &LifeTransportId,
+        inbound_address: &Value,
+    ) -> LifeStorageResult<Option<LifeTransportBinding>> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_transport_bindings
+            WHERE transport_id = $1 AND inbound_address = $2 AND enabled = TRUE
+            "#,
+        )
+        .bind(transport_id.as_str())
+        .bind(inbound_address)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(binding_from_row).transpose()
+    }
+
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
         query::<Postgres>(
             r#"
@@ -1063,6 +1118,19 @@ fn principal_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifePrinci
     })
 }
 
+fn binding_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeTransportBinding> {
+    Ok(LifeTransportBinding {
+        binding_id: BindingId::from_uuid(row.get("binding_id")),
+        principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
+        transport_id: LifeTransportId::new(row.get::<&str, _>("transport_id"))?,
+        inbound_address: row.get("inbound_address"),
+        delivery_address: row.get("delivery_address"),
+        enabled: row.get("enabled"),
+        created_at: TimestampMillis::new(row.get("created_at")),
+        updated_at: TimestampMillis::new(row.get("updated_at")),
+    })
+}
+
 fn input_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeInput> {
     Ok(LifeInput {
         input_id: InputId::from_uuid(row.get("input_id")),
@@ -1215,6 +1283,96 @@ mod tests {
     use super::*;
 
     static USER_COUNTER: AtomicI64 = AtomicI64::new(1);
+
+    #[tokio::test]
+    async fn sqlx_transport_bindings_resolve_open_enabled_addresses() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_020_000);
+        let principal = LifePrincipal {
+            principal_user_id,
+            profile_state: json!({}),
+            operating_profile: json!({}),
+            settings: json!({}),
+            schema_version: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_principal(&principal).await,
+            "upsert principal",
+        );
+
+        let telegram = LifeTransportId::new("telegram").expect("telegram transport id");
+        let inbound = json!({ "chat_id": "424242" });
+        let binding = LifeTransportBinding {
+            binding_id: BindingId::new_v4(),
+            principal_user_id,
+            transport_id: telegram.clone(),
+            inbound_address: inbound.clone(),
+            delivery_address: json!({ "chat_id": "424242" }),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_transport_binding(&binding).await,
+            "upsert telegram binding",
+        );
+
+        let resolved = must(
+            storage.resolve_transport_binding(&telegram, &inbound).await,
+            "resolve telegram binding",
+        )
+        .expect("enabled binding should resolve");
+        assert_eq!(resolved.principal_user_id, principal_user_id);
+        assert_eq!(resolved.transport_id.as_str(), "telegram");
+        assert_eq!(resolved.inbound_address, inbound);
+
+        let linux = LifeTransportId::new("linux").expect("future transport id");
+        let linux_binding = LifeTransportBinding {
+            binding_id: BindingId::new_v4(),
+            principal_user_id,
+            transport_id: linux.clone(),
+            inbound_address: json!({ "instance_id": "desktop-1" }),
+            delivery_address: json!({ "instance_id": "desktop-1" }),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        must(
+            storage.upsert_transport_binding(&linux_binding).await,
+            "upsert linux binding",
+        );
+        assert!(
+            must(
+                storage
+                    .resolve_transport_binding(&linux, &json!({ "instance_id": "desktop-1" }))
+                    .await,
+                "resolve linux binding",
+            )
+            .is_some()
+        );
+
+        let disabled = LifeTransportBinding {
+            enabled: false,
+            updated_at: TimestampMillis::new(now.get() + 1),
+            ..binding
+        };
+        must(
+            storage.upsert_transport_binding(&disabled).await,
+            "disable telegram binding",
+        );
+        assert!(
+            must(
+                storage.resolve_transport_binding(&telegram, &inbound).await,
+                "resolve disabled telegram binding",
+            )
+            .is_none()
+        );
+    }
 
     #[tokio::test]
     async fn sqlx_life_worker_claim_start_complete_and_drain_are_db_backed() {

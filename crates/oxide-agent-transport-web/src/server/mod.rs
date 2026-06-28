@@ -24,6 +24,8 @@ mod auth_routes;
 mod auto_title;
 mod converters;
 #[cfg(feature = "storage-sqlx")]
+mod life_bootstrap;
+#[cfg(feature = "storage-sqlx")]
 mod life_executor;
 mod life_routes;
 mod model_routes;

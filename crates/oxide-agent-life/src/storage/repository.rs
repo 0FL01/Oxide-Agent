@@ -5,8 +5,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    LifeEvent, LifeIdentityLink, LifeInput, LifePrincipal, LifeRun, LifeTransportId, LifeTurn,
-    PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
+    LifeEvent, LifeIdentityLink, LifeInput, LifePrincipal, LifeRun, LifeTransportBinding,
+    LifeTransportId, LifeTurn, PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -81,6 +81,19 @@ pub trait LifeStorageRepository: Send + Sync {
         transport_id: &LifeTransportId,
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>>;
+
+    /// Stores an owner-approved transport binding.
+    async fn upsert_transport_binding(
+        &self,
+        binding: &LifeTransportBinding,
+    ) -> LifeStorageResult<()>;
+
+    /// Resolves an enabled owner-approved transport binding by inbound address.
+    async fn resolve_transport_binding(
+        &self,
+        transport_id: &LifeTransportId,
+        inbound_address: &Value,
+    ) -> LifeStorageResult<Option<LifeTransportBinding>>;
 
     /// Appends a canonical transcript turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
