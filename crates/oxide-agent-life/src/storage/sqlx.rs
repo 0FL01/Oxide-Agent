@@ -10,9 +10,9 @@ use sqlx_postgres::{PgPool, Postgres};
 use uuid::Uuid;
 
 use crate::domain::{
-    InputId, LifeEvent, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus,
-    LifePrincipal, LifeRun, LifeRunStatus, LifeSourceTransport, LifeTurn, LifeTurnRole,
-    PrincipalUserId, ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId,
+    InputId, LifeEvent, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal, LifeRun,
+    LifeRunStatus, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject,
+    RedactionState, RunId, TimestampMillis, TurnId,
 };
 use crate::storage::{
     ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository, LifeStorageResult,
@@ -552,17 +552,17 @@ impl LifeStorageRepository for SqlxLifeStorage {
         let row = query::<Postgres>(
             r#"
             INSERT INTO life_identity_links (
-                provider, provider_subject, principal_user_id, verified_at, created_at, updated_at
+                transport_id, provider_subject, principal_user_id, verified_at, created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (provider, provider_subject) DO UPDATE
+            ON CONFLICT (transport_id, provider_subject) DO UPDATE
             SET verified_at = EXCLUDED.verified_at,
                 updated_at = EXCLUDED.updated_at
             WHERE life_identity_links.principal_user_id = EXCLUDED.principal_user_id
             RETURNING principal_user_id
             "#,
         )
-        .bind(link.provider.as_str())
+        .bind(link.transport_id.as_str())
         .bind(link.provider_subject.as_str())
         .bind(link.principal_user_id.get())
         .bind(link.verified_at.map(TimestampMillis::get))
@@ -574,7 +574,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
 
         if row.is_none() {
             return Err(LifeStorageError::IdentityLinkConflict {
-                provider: link.provider,
+                transport_id: link.transport_id.clone(),
                 provider_subject: link.provider_subject.clone(),
             });
         }
@@ -583,17 +583,17 @@ impl LifeStorageRepository for SqlxLifeStorage {
 
     async fn resolve_identity(
         &self,
-        provider: LifeIdentityProvider,
+        transport_id: &LifeTransportId,
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>> {
         let row = query::<Postgres>(
             r#"
             SELECT principal_user_id
             FROM life_identity_links
-            WHERE provider = $1 AND provider_subject = $2
+            WHERE transport_id = $1 AND provider_subject = $2
             "#,
         )
-        .bind(provider.as_str())
+        .bind(transport_id.as_str())
         .bind(provider_subject.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -619,7 +619,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .bind(turn.principal_user_id.get())
         .bind(turn.run_id.map(crate::domain::RunId::as_uuid))
         .bind(turn_role_as_str(turn.role))
-        .bind(source_transport_as_str(turn.source_transport))
+        .bind(turn.source_transport.as_str())
         .bind(&turn.source_ref)
         .bind(&turn.content)
         .bind(&turn.attachments)
@@ -955,14 +955,6 @@ fn turn_role_as_str(role: LifeTurnRole) -> &'static str {
     }
 }
 
-fn source_transport_as_str(source_transport: LifeSourceTransport) -> &'static str {
-    match source_transport {
-        LifeSourceTransport::Web => "web",
-        LifeSourceTransport::Telegram => "telegram",
-        LifeSourceTransport::Internal => "internal",
-    }
-}
-
 fn redaction_state_as_str(redaction_state: RedactionState) -> &'static str {
     match redaction_state {
         RedactionState::Clean => "clean",
@@ -987,15 +979,6 @@ fn turn_role_from_str(value: &str) -> LifeStorageResult<LifeTurnRole> {
         "system" => Ok(LifeTurnRole::System),
         "tool" => Ok(LifeTurnRole::Tool),
         other => unknown_enum("life_turn_role", other),
-    }
-}
-
-fn source_transport_from_str(value: &str) -> LifeStorageResult<LifeSourceTransport> {
-    match value {
-        "web" => Ok(LifeSourceTransport::Web),
-        "telegram" => Ok(LifeSourceTransport::Telegram),
-        "internal" => Ok(LifeSourceTransport::Internal),
-        other => unknown_enum("life_source_transport", other),
     }
 }
 
@@ -1101,7 +1084,7 @@ fn turn_from_row(row: sqlx_postgres::PgRow) -> LifeStorageResult<LifeTurn> {
         principal_user_id: PrincipalUserId::new(row.get("principal_user_id"))?,
         run_id: row.get::<Option<Uuid>, _>("run_id").map(RunId::from_uuid),
         role: turn_role_from_str(row.get::<&str, _>("role"))?,
-        source_transport: source_transport_from_str(row.get::<&str, _>("source_transport"))?,
+        source_transport: LifeTransportId::new(row.get::<&str, _>("source_transport"))?,
         source_ref: row.get("source_ref"),
         content: row.get("content"),
         attachments: row.get("attachments"),
@@ -1227,7 +1210,7 @@ mod tests {
     use serde_json::json;
     use sqlx_postgres::PgPoolOptions;
 
-    use crate::domain::EventId;
+    use crate::domain::{EventId, INTERNAL_TRANSPORT_ID};
 
     use super::*;
 
@@ -1627,7 +1610,8 @@ mod tests {
                 principal_user_id,
                 run_id: None,
                 role: LifeTurnRole::User,
-                source_transport: LifeSourceTransport::Internal,
+                source_transport: LifeTransportId::new(INTERNAL_TRANSPORT_ID)
+                    .expect("internal transport id"),
                 source_ref: None,
                 content: format!("turn-{i}"),
                 attachments: json!([]),
@@ -1765,7 +1749,8 @@ mod tests {
             principal_user_id,
             run_id: None,
             role: LifeTurnRole::User,
-            source_transport: LifeSourceTransport::Internal,
+            source_transport: LifeTransportId::new(INTERNAL_TRANSPORT_ID)
+                .expect("internal transport id"),
             source_ref: None,
             content: content.to_owned(),
             attachments: json!([]),

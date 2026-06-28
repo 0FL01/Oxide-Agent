@@ -14,24 +14,24 @@ CREATE TABLE life_principals (
 );
 
 CREATE TABLE life_identity_links (
-    provider TEXT NOT NULL CHECK (provider IN ('web', 'telegram')),
+    transport_id TEXT NOT NULL CHECK (btrim(transport_id) <> ''),
     provider_subject TEXT NOT NULL,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
     verified_at BIGINT,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
-    PRIMARY KEY (provider, provider_subject)
+    PRIMARY KEY (transport_id, provider_subject)
 );
 
 CREATE INDEX life_identity_links_principal_idx
-    ON life_identity_links (principal_user_id, provider);
+    ON life_identity_links (principal_user_id, transport_id);
 
 CREATE TABLE life_turns (
     turn_id UUID PRIMARY KEY,
     principal_user_id BIGINT NOT NULL REFERENCES life_principals(principal_user_id) ON DELETE CASCADE,
     run_id UUID,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
-    source_transport TEXT NOT NULL CHECK (source_transport IN ('web', 'telegram', 'internal')),
+    source_transport TEXT NOT NULL CHECK (btrim(source_transport) <> ''),
     source_ref TEXT,
     content TEXT NOT NULL,
     attachments JSONB NOT NULL DEFAULT '[]'::jsonb,

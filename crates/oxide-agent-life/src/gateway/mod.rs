@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    InputId, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus, LifePrincipal,
-    LifeSourceTransport, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject, RedactionState,
-    RunId, TimestampMillis, TurnId,
+    InputId, LifeIdentityLink, LifeInput, LifeInputStatus, LifePrincipal, LifeTransportId,
+    LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject, RedactionState, RunId,
+    TimestampMillis, TurnId,
 };
 use crate::errors::LifeDomainError;
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
@@ -18,9 +18,9 @@ use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult}
 /// Narrow submit contract used by Web/Telegram transports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LifeInputSubmission {
-    /// Provider namespace.
-    pub provider: LifeIdentityProvider,
-    /// Provider-local subject.
+    /// Transport namespace.
+    pub transport_id: LifeTransportId,
+    /// Transport-local subject.
     pub provider_subject: ProviderSubject,
     /// User content.
     pub content: String,
@@ -85,17 +85,17 @@ pub type LifeGatewayResult<T> = Result<T, LifeGatewayError>;
 /// Gateway-specific store boundary.
 #[async_trait]
 pub trait LifeGatewayStore: Send + Sync {
-    /// Resolves a provider subject to a canonical principal.
+    /// Resolves a transport subject to a canonical principal.
     async fn resolve_identity(
         &self,
-        provider: LifeIdentityProvider,
+        transport_id: &LifeTransportId,
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>>;
 
     /// Upserts a principal envelope.
     async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()>;
 
-    /// Links a provider subject to a principal.
+    /// Links a transport subject to a principal.
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()>;
 
     /// Appends a canonical turn.
@@ -112,10 +112,10 @@ where
 {
     async fn resolve_identity(
         &self,
-        provider: LifeIdentityProvider,
+        transport_id: &LifeTransportId,
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>> {
-        LifeStorageRepository::resolve_identity(self, provider, provider_subject).await
+        LifeStorageRepository::resolve_identity(self, transport_id, provider_subject).await
     }
 
     async fn upsert_principal(&self, principal: &LifePrincipal) -> LifeStorageResult<()> {
@@ -223,7 +223,7 @@ where
             principal_user_id,
             run_id: None,
             role: LifeTurnRole::User,
-            source_transport: source_transport_for_provider(submission.provider),
+            source_transport: submission.transport_id.clone(),
             source_ref: None,
             content: submission.content,
             attachments: submission.attachments,
@@ -264,7 +264,7 @@ where
     ) -> LifeGatewayResult<PrincipalUserId> {
         if let Some(principal_user_id) = self
             .store
-            .resolve_identity(submission.provider, &submission.provider_subject)
+            .resolve_identity(&submission.transport_id, &submission.provider_subject)
             .await?
         {
             return Ok(principal_user_id);
@@ -283,7 +283,7 @@ where
         self.store.upsert_principal(&principal).await?;
 
         let link = LifeIdentityLink {
-            provider: submission.provider,
+            transport_id: submission.transport_id.clone(),
             provider_subject: submission.provider_subject.clone(),
             principal_user_id,
             verified_at: Some(now),
@@ -295,18 +295,12 @@ where
     }
 }
 
-const fn source_transport_for_provider(provider: LifeIdentityProvider) -> LifeSourceTransport {
-    match provider {
-        LifeIdentityProvider::Web => LifeSourceTransport::Web,
-        LifeIdentityProvider::Telegram => LifeSourceTransport::Telegram,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
 
+    use crate::domain::{TELEGRAM_TRANSPORT_ID, WEB_TRANSPORT_ID};
     use serde_json::json;
 
     use super::*;
@@ -323,7 +317,7 @@ mod tests {
 
         let result = gateway
             .submit_life_input(submission(
-                LifeIdentityProvider::Web,
+                WEB_TRANSPORT_ID,
                 "web-user-1",
                 "start life mode",
             ))
@@ -339,7 +333,10 @@ mod tests {
         assert_eq!(snapshot.inputs.len(), 1);
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(snapshot.turns[0].content, "start life mode");
-        assert_eq!(snapshot.turns[0].source_transport, LifeSourceTransport::Web);
+        assert_eq!(
+            snapshot.turns[0].source_transport.as_str(),
+            WEB_TRANSPORT_ID
+        );
         assert_eq!(snapshot.turns[0].attachments, json!([{"kind": "document"}]));
         assert_eq!(
             snapshot.turns[0].transport_metadata,
@@ -353,11 +350,7 @@ mod tests {
     async fn submit_reuses_existing_identity() {
         let store = FakeGatewayStore::default();
         let existing_principal = principal(200600);
-        store.seed_identity(
-            LifeIdentityProvider::Telegram,
-            "telegram-user-1",
-            existing_principal,
-        );
+        store.seed_identity(TELEGRAM_TRANSPORT_ID, "telegram-user-1", existing_principal);
 
         let gateway = LifeGateway::with_clock(
             store.clone(),
@@ -367,7 +360,7 @@ mod tests {
 
         let result = gateway
             .submit_life_input(submission(
-                LifeIdentityProvider::Telegram,
+                TELEGRAM_TRANSPORT_ID,
                 "telegram-user-1",
                 "continue",
             ))
@@ -378,9 +371,31 @@ mod tests {
         let snapshot = store.snapshot();
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(
-            snapshot.turns[0].source_transport,
-            LifeSourceTransport::Telegram
+            snapshot.turns[0].source_transport.as_str(),
+            TELEGRAM_TRANSPORT_ID
         );
+    }
+
+    #[tokio::test]
+    async fn submit_accepts_future_transport_without_enum_or_schema_change() {
+        let store = FakeGatewayStore::default();
+        let existing_principal = principal(200601);
+        store.seed_identity("linux", "machine-local-user", existing_principal);
+
+        let gateway = LifeGateway::with_clock(
+            store.clone(),
+            PanicAllocator,
+            FixedClock(TimestampMillis::new(43)),
+        );
+
+        let result = gateway
+            .submit_life_input(submission("linux", "machine-local-user", "from linux"))
+            .await
+            .expect("open transport id should be accepted");
+
+        assert_eq!(result.principal_user_id, existing_principal);
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.turns[0].source_transport.as_str(), "linux");
     }
 
     #[tokio::test]
@@ -392,7 +407,7 @@ mod tests {
         );
 
         let error = gateway
-            .submit_life_input(submission(LifeIdentityProvider::Web, "web-user-2", "   "))
+            .submit_life_input(submission(WEB_TRANSPORT_ID, "web-user-2", "   "))
             .await
             .expect_err("empty content must fail");
 
@@ -407,7 +422,7 @@ mod tests {
             PanicAllocator,
             FixedClock(TimestampMillis::new(45)),
         );
-        let mut submission = submission(LifeIdentityProvider::Web, "web-user-secret", "token raw");
+        let mut submission = submission(WEB_TRANSPORT_ID, "web-user-secret", "token raw");
         submission.sensitivity = LifeInputSensitivity::PrivateSecret;
 
         let error = gateway
@@ -431,8 +446,7 @@ mod tests {
             QueueAllocator::new(vec![allocated_principal]),
             FixedClock(TimestampMillis::new(46)),
         );
-        let mut submission =
-            submission(LifeIdentityProvider::Web, "web-user-redacted", "[REDACTED]");
+        let mut submission = submission(WEB_TRANSPORT_ID, "web-user-redacted", "[REDACTED]");
         submission.sensitivity = LifeInputSensitivity::Redacted;
 
         gateway
@@ -452,7 +466,7 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct FakeState {
-        identities: HashMap<(LifeIdentityProvider, String), PrincipalUserId>,
+        identities: HashMap<(LifeTransportId, String), PrincipalUserId>,
         principals: HashMap<PrincipalUserId, LifePrincipal>,
         turns: Vec<LifeTurn>,
         inputs: Vec<LifeInput>,
@@ -461,15 +475,19 @@ mod tests {
     impl FakeGatewayStore {
         fn seed_identity(
             &self,
-            provider: LifeIdentityProvider,
+            transport_id: &str,
             provider_subject: &str,
             principal_user_id: PrincipalUserId,
         ) {
+            let transport_id = transport(transport_id);
             self.inner
                 .lock()
                 .expect("fake store lock")
                 .identities
-                .insert((provider, provider_subject.to_owned()), principal_user_id);
+                .insert(
+                    (transport_id, provider_subject.to_owned()),
+                    principal_user_id,
+                );
         }
 
         fn snapshot(&self) -> FakeState {
@@ -481,7 +499,7 @@ mod tests {
     impl LifeGatewayStore for FakeGatewayStore {
         async fn resolve_identity(
             &self,
-            provider: LifeIdentityProvider,
+            transport_id: &LifeTransportId,
             provider_subject: &ProviderSubject,
         ) -> LifeStorageResult<Option<PrincipalUserId>> {
             Ok(self
@@ -489,7 +507,7 @@ mod tests {
                 .lock()
                 .expect("fake store lock")
                 .identities
-                .get(&(provider, provider_subject.as_str().to_owned()))
+                .get(&(transport_id.clone(), provider_subject.as_str().to_owned()))
                 .copied())
         }
 
@@ -508,7 +526,10 @@ mod tests {
                 .expect("fake store lock")
                 .identities
                 .insert(
-                    (link.provider, link.provider_subject.as_str().to_owned()),
+                    (
+                        link.transport_id.clone(),
+                        link.provider_subject.as_str().to_owned(),
+                    ),
                     link.principal_user_id,
                 );
             Ok(())
@@ -579,17 +600,21 @@ mod tests {
     }
 
     fn submission(
-        provider: LifeIdentityProvider,
+        transport_id: &str,
         provider_subject: &str,
         content: &str,
     ) -> LifeInputSubmission {
         LifeInputSubmission {
-            provider,
+            transport_id: transport(transport_id),
             provider_subject: ProviderSubject::new(provider_subject).expect("provider subject"),
             content: content.to_owned(),
             attachments: json!([{"kind": "document"}]),
             metadata: json!({"source": "test"}),
             sensitivity: LifeInputSensitivity::Normal,
         }
+    }
+
+    fn transport(value: &str) -> LifeTransportId {
+        LifeTransportId::new(value).expect("transport id")
     }
 }

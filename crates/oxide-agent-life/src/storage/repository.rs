@@ -5,7 +5,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    LifeEvent, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifePrincipal, LifeRun, LifeTurn,
+    LifeEvent, LifeIdentityLink, LifeInput, LifePrincipal, LifeRun, LifeTransportId, LifeTurn,
     PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
@@ -28,11 +28,11 @@ pub enum LifeStorageError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     /// A provider subject is already linked to another principal.
-    #[error("life identity link conflict for {provider}:{provider_subject}")]
+    #[error("life identity link conflict for {transport_id}:{provider_subject}")]
     IdentityLinkConflict {
-        /// Provider namespace.
-        provider: LifeIdentityProvider,
-        /// Provider-local subject.
+        /// Transport namespace.
+        transport_id: LifeTransportId,
+        /// Transport-local subject.
         provider_subject: ProviderSubject,
     },
     /// A closed enum contained an unknown stored value.
@@ -72,13 +72,13 @@ pub trait LifeStorageRepository: Send + Sync {
         principal_user_id: PrincipalUserId,
     ) -> LifeStorageResult<Option<LifePrincipal>>;
 
-    /// Stores a provider-subject link to a canonical principal.
+    /// Stores a transport-subject link to a canonical principal.
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()>;
 
-    /// Resolves a provider-local subject to a canonical principal.
+    /// Resolves a transport-local subject to a canonical principal.
     async fn resolve_identity(
         &self,
-        provider: LifeIdentityProvider,
+        transport_id: &LifeTransportId,
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>>;
 

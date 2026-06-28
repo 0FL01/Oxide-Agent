@@ -21,8 +21,8 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::ReminderThreadKind;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_life::domain::{
-    EventId, LifeEvent, LifeSourceTransport, LifeTurn, LifeTurnRole, PrincipalUserId,
-    RedactionState, RunId, TimestampMillis, TurnId,
+    EventId, INTERNAL_TRANSPORT_ID, LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole,
+    PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use oxide_agent_life::storage::LifeStorageRepository;
 use oxide_agent_life::worker::{
@@ -229,7 +229,8 @@ impl LifeAgentExecutor {
             principal_user_id,
             run_id: Some(run_id),
             role: LifeTurnRole::Assistant,
-            source_transport: LifeSourceTransport::Web,
+            source_transport: LifeTransportId::new(INTERNAL_TRANSPORT_ID)
+                .expect("internal transport id"),
             source_ref: None,
             content: content.to_owned(),
             attachments: serde_json::json!([]),

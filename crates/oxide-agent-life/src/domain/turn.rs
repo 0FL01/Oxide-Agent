@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{PrincipalUserId, RunId, TimestampMillis, TurnId};
+use crate::domain::{LifeTransportId, PrincipalUserId, RunId, TimestampMillis, TurnId};
 
 /// Role stored in `life_turns`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,17 +16,6 @@ pub enum LifeTurnRole {
     System,
     /// Tool observation.
     Tool,
-}
-
-/// Transport provenance for a life turn.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LifeSourceTransport {
-    /// Web console `/life` entry point.
-    Web,
-    /// Telegram private-DM life entry point.
-    Telegram,
-    /// Internal/system generated turn.
-    Internal,
 }
 
 /// Redaction state for transcript content.
@@ -52,7 +41,7 @@ pub struct LifeTurn {
     /// Turn role.
     pub role: LifeTurnRole,
     /// Source transport.
-    pub source_transport: LifeSourceTransport,
+    pub source_transport: LifeTransportId,
     /// Transport-local reference.
     pub source_ref: Option<String>,
     /// Turn content.

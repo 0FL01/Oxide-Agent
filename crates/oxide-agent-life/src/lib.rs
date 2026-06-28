@@ -17,17 +17,31 @@ pub use errors::{LifeDomainError, LifeResult};
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{LifeIdentityProvider, PrincipalUserId};
+    use crate::domain::{
+        LifeTransportId, PrincipalUserId, TELEGRAM_TRANSPORT_ID, WEB_TRANSPORT_ID,
+    };
 
     #[test]
-    fn provider_wire_values_are_canonical() {
-        assert_eq!(LifeIdentityProvider::Web.as_str(), "web");
-        assert_eq!(LifeIdentityProvider::Telegram.as_str(), "telegram");
+    fn transport_ids_are_open_but_non_empty() {
         assert_eq!(
-            "web".parse::<LifeIdentityProvider>().expect("web provider"),
-            LifeIdentityProvider::Web
+            LifeTransportId::new(WEB_TRANSPORT_ID)
+                .expect("web transport")
+                .as_str(),
+            "web"
         );
-        assert!("forum".parse::<LifeIdentityProvider>().is_err());
+        assert_eq!(
+            LifeTransportId::new(TELEGRAM_TRANSPORT_ID)
+                .expect("telegram transport")
+                .as_str(),
+            "telegram"
+        );
+        assert_eq!(
+            LifeTransportId::new("linux")
+                .expect("future transport")
+                .as_str(),
+            "linux"
+        );
+        assert!(LifeTransportId::new(" ").is_err());
     }
 
     #[test]

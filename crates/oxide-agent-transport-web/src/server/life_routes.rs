@@ -44,8 +44,8 @@ use async_trait::async_trait;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
     domain::{
-        LifeEvent, LifeIdentityProvider, LifeSourceTransport, LifeTurn, LifeTurnRole,
-        PrincipalUserId, ProviderSubject, RedactionState, RunId,
+        LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject,
+        RedactionState, RunId, WEB_TRANSPORT_ID,
     },
     gateway::{
         LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
@@ -387,7 +387,8 @@ async fn submit_life_input_for_user(
     );
     let result = gateway
         .submit_life_input(LifeInputSubmission {
-            provider: LifeIdentityProvider::Web,
+            transport_id: LifeTransportId::new(WEB_TRANSPORT_ID)
+                .map_err(life_domain_error_response)?,
             provider_subject: ProviderSubject::new(web_user_id.to_string())
                 .map_err(life_domain_error_response)?,
             content: request.content,
@@ -784,7 +785,7 @@ fn api_turn(turn: LifeTurn) -> ApiLifeTurnResponse {
         turn_id: turn.turn_id.to_string(),
         run_id: turn.run_id.map(|run_id| run_id.to_string()),
         role: turn_role(turn.role).to_owned(),
-        source_transport: source_transport(turn.source_transport).to_owned(),
+        source_transport: turn.source_transport.as_str().to_owned(),
         source_ref: turn.source_ref,
         content: turn.content,
         attachments: turn.attachments,
@@ -813,15 +814,6 @@ const fn turn_role(role: LifeTurnRole) -> &'static str {
         LifeTurnRole::Assistant => "assistant",
         LifeTurnRole::System => "system",
         LifeTurnRole::Tool => "tool",
-    }
-}
-
-#[cfg(feature = "storage-sqlx")]
-const fn source_transport(transport: LifeSourceTransport) -> &'static str {
-    match transport {
-        LifeSourceTransport::Web => "web",
-        LifeSourceTransport::Telegram => "telegram",
-        LifeSourceTransport::Internal => "internal",
     }
 }
 

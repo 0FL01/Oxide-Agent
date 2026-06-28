@@ -1,59 +1,55 @@
 //! Transport-neutral life identity links.
 
-use std::{fmt, str::FromStr};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{PrincipalUserId, ProviderSubject, TimestampMillis};
 use crate::errors::{LifeDomainError, LifeResult};
 
-/// Transport/provider namespace used for explicit life identity links.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum LifeIdentityProvider {
-    /// Web console user id namespace.
-    Web,
-    /// Telegram user id namespace.
-    Telegram,
-}
+/// Canonical Web transport id.
+pub const WEB_TRANSPORT_ID: &str = "web";
+/// Canonical Telegram transport id.
+pub const TELEGRAM_TRANSPORT_ID: &str = "telegram";
+/// Canonical internal/system source id.
+pub const INTERNAL_TRANSPORT_ID: &str = "internal";
 
-impl LifeIdentityProvider {
-    /// Canonical DB/wire value.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Web => "web",
-            Self::Telegram => "telegram",
+/// Open transport namespace used for life identity links and turn provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LifeTransportId(String);
+
+impl LifeTransportId {
+    /// Creates a non-empty transport id.
+    pub fn new(value: impl Into<String>) -> LifeResult<Self> {
+        let value = value.into().trim().to_owned();
+        if value.is_empty() {
+            Err(LifeDomainError::EmptyField {
+                field: "transport_id",
+            })
+        } else {
+            Ok(Self(value))
         }
+    }
+
+    /// Returns the canonical transport id string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-impl fmt::Display for LifeIdentityProvider {
+impl fmt::Display for LifeTransportId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-impl FromStr for LifeIdentityProvider {
-    type Err = LifeDomainError;
-
-    fn from_str(value: &str) -> LifeResult<Self> {
-        match value {
-            "web" => Ok(Self::Web),
-            "telegram" => Ok(Self::Telegram),
-            other => Err(LifeDomainError::UnknownEnumValue {
-                type_name: "life identity provider",
-                value: other.to_owned(),
-            }),
-        }
-    }
-}
-
-/// Link from a provider-local subject to a canonical life principal.
+/// Link from a transport-local subject to a canonical life principal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifeIdentityLink {
-    /// Provider namespace.
-    pub provider: LifeIdentityProvider,
-    /// Provider-local user id/subject.
+    /// Transport namespace.
+    pub transport_id: LifeTransportId,
+    /// Transport-local user id/subject.
     pub provider_subject: ProviderSubject,
     /// Canonical life principal.
     pub principal_user_id: PrincipalUserId,

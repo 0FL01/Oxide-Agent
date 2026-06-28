@@ -15,7 +15,7 @@ use crate::config::{
 use oxide_agent_core::{llm, storage};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
-    domain::{LifeIdentityProvider, PrincipalUserId, ProviderSubject},
+    domain::{LifeTransportId, PrincipalUserId, ProviderSubject, TELEGRAM_TRANSPORT_ID},
     gateway::{
         LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission,
         LifePrincipalAllocator,
@@ -241,7 +241,15 @@ async fn handle_life_command(
     let gateway = LifeGateway::new(life_storage.as_ref().clone(), allocator);
     let submit_result = gateway
         .submit_life_input(LifeInputSubmission {
-            provider: LifeIdentityProvider::Telegram,
+            transport_id: match LifeTransportId::new(TELEGRAM_TRANSPORT_ID) {
+                Ok(transport_id) => transport_id,
+                Err(error) => {
+                    error!("Telegram life transport id invalid: {error}");
+                    bot.send_message(msg.chat.id, "Life mode transport is misconfigured.")
+                        .await?;
+                    return respond(());
+                }
+            },
             provider_subject: match ProviderSubject::new(user.id.0.to_string()) {
                 Ok(subject) => subject,
                 Err(error) => {

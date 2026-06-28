@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement `docs/goals/2026-06-28-life-solo-bridge.md` until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals from `docs/prd/PRD-perm.md`. Work checkpoint by checkpoint (B1-B8), update the goal doc after each meaningful verification, commit after each completed checkpoint, compress before starting the next checkpoint or when context is high/critical, and stop only on verified completion or an exact blocker with required evidence and the smallest external action needed.
 Source spec: `docs/prd/PRD-perm.md` — Permanent Life Mode: Solo Bridge Chat
 Goal doc owner: Codex
-Last updated: 2026-06-28 B1 bridge config contract
+Last updated: 2026-06-28 B2 open transport id
 
 ## Objective
 
@@ -51,7 +51,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - `crates/oxide-agent-life/src/runtime/` and `worker/` — wake, run lifecycle, input execution.
   - `crates/oxide-agent-transport-web/src/server/life_executor.rs` — ordinary `AgentExecutor` adapter; must not own external delivery.
   - `crates/oxide-agent-transport-web/src/server/life_routes.rs` — Web submit/read/SSE.
-  - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/runner.rs` — current Telegram life command path.
+  - `crates/oxide-agent-transport-telegram/src/runner.rs` — current Telegram life command path.
 - Existing validation commands from repo guidance:
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
@@ -77,8 +77,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §5.1, §8 B2.
   - Acceptance: life input/source/binding code supports arbitrary transport ids like `linux`/`android` without Rust enum edits; `internal` remains reserved for assistant/system source where needed; SQL no longer enumerates concrete transports in CHECK constraints.
   - Evidence required: migration/schema diff; grep proving closed `LifeIdentityProvider::{Web, Telegram}` / transport CHECKs are gone or no longer authoritative; tests with a non-web/non-telegram transport id.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: B2 replaced closed `LifeIdentityProvider` and `LifeSourceTransport` enums with open validated `LifeTransportId`; `grep` found no remaining `LifeIdentityProvider|LifeSourceTransport|source_transport_as_str|source_transport_from_str` Rust references. `migrations/0010_life_mode.sql` now stores `life_identity_links.transport_id TEXT NOT NULL CHECK (btrim(transport_id) <> '')` and `life_turns.source_transport TEXT NOT NULL CHECK (btrim(source_transport) <> '')`, so SQL no longer enumerates `web`/`telegram`/`internal`. `gateway::tests::submit_accepts_future_transport_without_enum_or_schema_change` verifies a `linux` transport id resolves and persists as source transport without enum/schema edits. `tests::transport_ids_are_open_but_non_empty` verifies `web`, `telegram`, and `linux` are accepted and blank ids are rejected. `cargo test -p oxide-agent-life --lib` passed (19 tests). `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` and `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` passed with pre-existing core/web warnings only.
 
 - G3: Solo transport bindings are durable and env/bootstrap driven.
   - Source: PRD §4.4, §8 B3.
@@ -142,8 +142,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: `AGENTS.md` architectural invariants; PRD §6.
   - Acceptance: `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; `oxide-agent-life` remains transport-agnostic; Telegram SDK stays out of web/core/life.
   - Evidence required: `cargo tree`/grep or code review plus workspace check.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: B2 kept the open transport id in `oxide-agent-life` domain/storage/gateway and updated web/telegram call-sites without adding transport crate dependencies to core/runtime/life. Telegram SDK remains confined to `oxide-agent-transport-telegram`; web executor stores `source_transport="internal"` via `LifeTransportId` and still has no external delivery API. Full Q1 remains open until B7/B8 delivery boundaries are implemented and audited.
 
 - Q2: No hidden secret leakage.
   - Source: `AGENTS.md` secret refs/instructions.
@@ -156,8 +156,8 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Source: PRD §2, §3.1.
   - Acceptance: transcript, composer, attachments, activity, paging, SSE continue to work after bridge changes.
   - Evidence required: relevant web/life tests and checks; UI wasm/trunk checks if UI touched.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: B2 preserved the Web `/life` REST response contract because `ApiLifeTurnResponse.source_transport` was already a `String`; `life_routes.rs` now forwards `turn.source_transport.as_str()` directly. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` compiled `oxide-agent-transport-web` with pre-existing warnings only. Full Q3 remains open for route/runtime/UI checks after B3-B8 behavior changes.
 
 - Q4: Validation breadth is monorepo-wide before completion.
   - Source: repo instructions P0.6; PRD §9 code gates.
@@ -265,6 +265,7 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
 - 2026-06-28: Goal source is `docs/prd/PRD-perm.md` after commit `ce2d4492`; older memory-first PRD content is not authoritative for this bridge milestone.
 - 2026-06-28: Use one durable goal with atomic checkpoints B1-B8 because the PRD changes a cross-cutting bridge contract; each checkpoint must be separately validated and committed.
 - 2026-06-28: Delivery belongs behind a durable outbox boundary, not in `LifeAgentExecutor`, so adding Linux/Android later does not require executor changes.
+- 2026-06-28: `LifeTransportId` is an open non-empty string newtype, not an enum. Concrete ids such as `web`, `telegram`, future `linux`/`android`, and internal source id `internal` are values at the transport/binding layer, so adding a transport does not require a Rust enum or SQL CHECK edit.
 
 ## Progress Log
 
@@ -282,6 +283,13 @@ None at goal creation. Secrets are intentionally not documented here. Runtime va
   - Commands: `git diff --check`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` (passed with pre-existing core/web warnings only).
   - Audit IDs updated: G1 verified; N1 verified; N2 verified; Q2 in progress with B1 no-secret-doc evidence.
   - Next: commit B1; compress; start B2 open transport id.
+
+- 2026-06-28 B2 open transport id
+  - Changed: replaced closed life identity/source enums with `LifeTransportId`; changed `life_identity_links.provider` to open `transport_id`; removed concrete transport SQL CHECK values from `life_identity_links` and `life_turns`; updated Web and Telegram submit call-sites plus assistant turn source to use explicit transport id values.
+  - Evidence: full-repo grep found no `LifeIdentityProvider`/`LifeSourceTransport` Rust references; migration grep shows only non-empty transport checks; Web API still exposes `source_transport` as string.
+  - Commands: `git diff --check`; `cargo fmt --all -- --check`; `cargo test -p oxide-agent-life --lib` (19 passed); `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo test --workspace --no-default-features --features profile-embedded-opencode-local --no-run` (both passed with pre-existing core/web warnings only).
+  - Audit IDs updated: G2 verified; Q1 in progress; Q3 in progress.
+  - Next: commit B2; compress; start B3 solo transport bindings.
 
 ## Risks and Blockers
 
