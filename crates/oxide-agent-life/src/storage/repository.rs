@@ -5,11 +5,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, LifeContextOverride, LifeEngramOutboxRow, LifeEvent,
-    LifeFrictionPattern, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeMemoryGeneration,
-    LifeMemoryItem, LifePrincipal, LifeRun, LifeSupportProtocol, LifeTaskState, LifeTurn,
-    MemoryGenerationId, MemoryItemId, MemoryScope, OutboxId, PrincipalUserId, ProviderSubject,
-    RunId, TimestampMillis,
+    LifeEvent, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifePrincipal, LifeRun, LifeTurn,
+    PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Result alias for life storage operations.
@@ -30,32 +27,6 @@ pub enum LifeStorageError {
     /// JSON serialization failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// A generation operation targeted a missing or wrong-principal generation.
-    #[error(
-        "life memory generation {generation_id} does not belong to principal {principal_user_id}"
-    )]
-    GenerationNotOwned {
-        /// Expected principal.
-        principal_user_id: PrincipalUserId,
-        /// Target generation.
-        generation_id: MemoryGenerationId,
-    },
-    /// A generation operation tried to use an active generation where only inactive generations are valid.
-    #[error("life memory generation {generation_id} for principal {principal_user_id} is active")]
-    GenerationIsActive {
-        /// Principal owner.
-        principal_user_id: PrincipalUserId,
-        /// Target generation.
-        generation_id: MemoryGenerationId,
-    },
-    /// A generation operation targeted a deleted generation.
-    #[error("life memory generation {generation_id} for principal {principal_user_id} is deleted")]
-    GenerationDeleted {
-        /// Principal owner.
-        principal_user_id: PrincipalUserId,
-        /// Target generation.
-        generation_id: MemoryGenerationId,
-    },
     /// A provider subject is already linked to another principal.
     #[error("life identity link conflict for {provider}:{provider_subject}")]
     IdentityLinkConflict {
@@ -72,12 +43,6 @@ pub enum LifeStorageError {
         /// Stored value.
         value: String,
     },
-    /// A worker tried to start a run for a principal without an active generation.
-    #[error("life principal {principal_user_id} has no active memory generation")]
-    MissingActiveGeneration {
-        /// Principal without active generation.
-        principal_user_id: PrincipalUserId,
-    },
     /// A paging cursor was malformed or could not be parsed.
     #[error("invalid life paging cursor: {0}")]
     InvalidCursor(String),
@@ -93,21 +58,6 @@ pub struct ClaimedLifeInputRun {
     /// User turn content loaded from `life_turns` at claim time.
     /// Avoids a separate round-trip when the executor needs the user message.
     pub user_content: String,
-}
-
-/// Minimal repository boundary shared by future storage services.
-pub trait LifeGenerationReader {
-    /// Returns the active memory generation for a principal.
-    fn active_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> Option<ActiveMemoryGeneration>;
-
-    /// Converts a principal id to the mandatory active memory scope.
-    fn active_memory_scope(&self, principal_user_id: PrincipalUserId) -> Option<MemoryScope> {
-        self.active_generation(principal_user_id)
-            .map(|active| active.scope)
-    }
 }
 
 /// Async Postgres repository boundary for source-of-truth life state.
@@ -132,33 +82,6 @@ pub trait LifeStorageRepository: Send + Sync {
         provider_subject: &ProviderSubject,
     ) -> LifeStorageResult<Option<PrincipalUserId>>;
 
-    /// Inserts a memory generation row.
-    async fn insert_memory_generation(
-        &self,
-        generation: &LifeMemoryGeneration,
-    ) -> LifeStorageResult<()>;
-
-    /// Atomically activates a generation and archives the previously active generation, if any.
-    async fn activate_memory_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-        memory_generation_id: MemoryGenerationId,
-        activated_at: TimestampMillis,
-        activation_reason: &str,
-    ) -> LifeStorageResult<ActiveMemoryGeneration>;
-
-    /// Returns the active generation pointer for a principal.
-    async fn active_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<Option<ActiveMemoryGeneration>>;
-
-    /// Returns the next generation number for a principal.
-    async fn next_memory_generation_number(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<i64>;
-
     /// Appends a canonical transcript turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
 
@@ -176,7 +99,7 @@ pub trait LifeStorageRepository: Send + Sync {
         now: TimestampMillis,
     ) -> LifeStorageResult<()>;
 
-    /// Atomically claims a queued input and starts a running life run under the active generation.
+    /// Atomically claims a queued input and starts a running life run.
     async fn claim_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
@@ -235,90 +158,4 @@ pub trait LifeStorageRepository: Send + Sync {
         finished_at: TimestampMillis,
         error_text: &str,
     ) -> LifeStorageResult<()>;
-
-    /// Lists non-expired temporary context overrides for a principal.
-    async fn active_context_overrides(
-        &self,
-        principal_user_id: PrincipalUserId,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<Vec<LifeContextOverride>>;
-
-    /// Inserts or updates a canonical memory item.
-    async fn upsert_memory_item(&self, item: &LifeMemoryItem) -> LifeStorageResult<()>;
-
-    /// Inserts a derived-memory outbox projection.
-    async fn insert_engram_outbox(&self, row: &LifeEngramOutboxRow) -> LifeStorageResult<()>;
-
-    /// Claims due Engram outbox rows for exclusive flush attempts.
-    async fn claim_due_engram_outbox(
-        &self,
-        limit: i64,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<Vec<LifeEngramOutboxRow>>;
-
-    /// Marks a projected outbox row as flushed.
-    async fn mark_engram_outbox_flushed(
-        &self,
-        outbox_id: OutboxId,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<()>;
-
-    /// Requeues a failed outbox row for retry.
-    async fn mark_engram_outbox_retry(
-        &self,
-        outbox_id: OutboxId,
-        last_error: &str,
-        next_attempt_at: TimestampMillis,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<()>;
-
-    /// Marks a failed outbox row as permanently dead.
-    async fn mark_engram_outbox_dead(
-        &self,
-        outbox_id: OutboxId,
-        last_error: &str,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<()>;
-
-    /// Lists active canonical memory items from the explicit active scope.
-    async fn active_memory_items(
-        &self,
-        scope: MemoryScope,
-    ) -> LifeStorageResult<Vec<LifeMemoryItem>>;
-
-    /// Loads active canonical memory rows by ids from an explicit active generation scope.
-    async fn active_memory_items_by_ids(
-        &self,
-        scope: MemoryScope,
-        memory_ids: &[MemoryItemId],
-    ) -> LifeStorageResult<Vec<LifeMemoryItem>>;
-
-    /// Inserts or updates a task resume packet.
-    async fn upsert_task_state(&self, task_state: &LifeTaskState) -> LifeStorageResult<()>;
-
-    /// Lists active task resume packets from the explicit active scope.
-    async fn active_task_states(&self, scope: MemoryScope)
-    -> LifeStorageResult<Vec<LifeTaskState>>;
-
-    /// Inserts or updates a friction pattern.
-    async fn upsert_friction_pattern(&self, pattern: &LifeFrictionPattern)
-    -> LifeStorageResult<()>;
-
-    /// Lists active friction patterns from the explicit active scope.
-    async fn active_friction_patterns(
-        &self,
-        scope: MemoryScope,
-    ) -> LifeStorageResult<Vec<LifeFrictionPattern>>;
-
-    /// Inserts or updates a support protocol.
-    async fn upsert_support_protocol(
-        &self,
-        protocol: &LifeSupportProtocol,
-    ) -> LifeStorageResult<()>;
-
-    /// Lists active support protocols from the explicit active scope.
-    async fn active_support_protocols(
-        &self,
-        scope: MemoryScope,
-    ) -> LifeStorageResult<Vec<LifeSupportProtocol>>;
 }

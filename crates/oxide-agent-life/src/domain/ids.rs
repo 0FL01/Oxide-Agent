@@ -73,13 +73,6 @@ uuid_id!(TurnId);
 uuid_id!(InputId);
 uuid_id!(RunId);
 uuid_id!(EventId);
-uuid_id!(MemoryGenerationId);
-uuid_id!(MemoryItemId);
-uuid_id!(TaskStateId);
-uuid_id!(FrictionPatternId);
-uuid_id!(SupportProtocolId);
-uuid_id!(ContextOverrideId);
-uuid_id!(OutboxId);
 
 /// Non-empty provider-local identity subject.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

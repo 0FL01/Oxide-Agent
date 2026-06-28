@@ -1,9 +1,8 @@
 //! DB-backed life worker contracts and orchestration skeleton.
 //!
 //! The worker owns run state. Transports and the gateway submit only inputs; this
-//! module claims queued input from Postgres, starts a persisted run under the
-//! active generation, exposes the stable life hot-memory scope, and records
-//! transport-neutral run events.
+//! module claims queued input from Postgres, starts a persisted run, exposes the
+//! stable life hot-memory scope, and records transport-neutral run events.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,8 +10,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    EventId, InputId, LifeEvent, LifeInput, MemoryScope, PrincipalUserId, RunId, TimestampMillis,
-    TurnId,
+    EventId, InputId, LifeEvent, LifeInput, PrincipalUserId, RunId, TimestampMillis, TurnId,
 };
 use crate::storage::{ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository};
 
@@ -54,13 +52,11 @@ impl StableLifeMemoryScope {
     }
 }
 
-/// Claimed run context after the worker has loaded the active generation.
+/// Claimed run context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimedLifeRun {
     /// Run id.
     pub run_id: RunId,
-    /// Active scope for memory reads in this run.
-    pub memory_scope: MemoryScope,
     /// Stable hot-memory checkpoint scope.
     pub stable_memory_scope: StableLifeMemoryScope,
     /// Claimed input that started the run.
@@ -73,10 +69,6 @@ impl From<ClaimedLifeInputRun> for ClaimedLifeRun {
     fn from(value: ClaimedLifeInputRun) -> Self {
         Self {
             run_id: value.run.run_id,
-            memory_scope: MemoryScope::new(
-                value.run.principal_user_id,
-                value.run.memory_generation_id,
-            ),
             stable_memory_scope: StableLifeMemoryScope::for_principal(value.run.principal_user_id),
             input: value.input,
             user_content: value.user_content,
@@ -113,8 +105,6 @@ pub enum LifeWorkerProcessResult {
     Completed {
         /// Completed run id.
         run_id: RunId,
-        /// Active memory scope used by the run.
-        memory_scope: MemoryScope,
         /// Stable hot-memory checkpoint scope.
         stable_memory_scope: StableLifeMemoryScope,
     },
@@ -472,7 +462,6 @@ where
                     .await?;
                 Ok(LifeWorkerProcessResult::Completed {
                     run_id: claimed_run.run_id,
-                    memory_scope: claimed_run.memory_scope,
                     stable_memory_scope: claimed_run.stable_memory_scope,
                 })
             }
@@ -513,16 +502,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::domain::{LifeInputStatus, LifeRun, MemoryGenerationId, TurnId};
+    use crate::domain::{LifeInputStatus, LifeRun, TurnId};
 
     type RecordedCheckpoint = (StableLifeMemoryScope, Value, i32, TimestampMillis);
 
     #[tokio::test]
     async fn worker_claims_run_and_uses_stable_life_scope() {
         let principal = PrincipalUserId::new(100500).expect("positive principal");
-        let generation = MemoryGenerationId::new_v4();
         let input_id = InputId::new_v4();
-        let store = FakeWorkerStore::with_claim(principal, generation, input_id);
+        let store = FakeWorkerStore::with_claim(principal, input_id);
         let executor = RecordingExecutor::success(TimestampMillis::new(30));
         let seen_context = Arc::clone(&executor.seen_context);
         let worker = LifeWorker::new_with_clock(
@@ -541,14 +529,12 @@ mod tests {
             .expect("worker should process input");
 
         let LifeWorkerProcessResult::Completed {
-            memory_scope,
             stable_memory_scope,
             ..
         } = result
         else {
             panic!("expected completed result");
         };
-        assert_eq!(memory_scope, MemoryScope::new(principal, generation));
         assert_eq!(stable_memory_scope.user_id, principal.get());
         assert_eq!(stable_memory_scope.context_key, LIFE_CONTEXT_KEY);
         assert_eq!(stable_memory_scope.flow_id, LIFE_FLOW_ID);
@@ -564,10 +550,6 @@ mod tests {
             .expect("lock")
             .clone()
             .expect("executor should see context");
-        assert_eq!(
-            context.run.memory_scope,
-            MemoryScope::new(principal, generation)
-        );
         assert_eq!(
             context.run.stable_memory_scope.context_key,
             LIFE_CONTEXT_KEY
@@ -602,9 +584,8 @@ mod tests {
     #[tokio::test]
     async fn worker_marks_run_failed_when_executor_fails() {
         let principal = PrincipalUserId::new(100502).expect("positive principal");
-        let generation = MemoryGenerationId::new_v4();
         let input_id = InputId::new_v4();
-        let store = FakeWorkerStore::with_claim(principal, generation, input_id);
+        let store = FakeWorkerStore::with_claim(principal, input_id);
         let worker = LifeWorker::new_with_clock(
             store.clone(),
             RecordingExecutor::failure("executor boom"),
@@ -627,9 +608,8 @@ mod tests {
     #[tokio::test]
     async fn execute_claimed_run_drains_follow_up_inputs_and_links_turns() {
         let principal = PrincipalUserId::new(100503).expect("positive principal");
-        let generation = MemoryGenerationId::new_v4();
         let input_id = InputId::new_v4();
-        let store = FakeWorkerStore::with_claim(principal, generation, input_id);
+        let store = FakeWorkerStore::with_claim(principal, input_id);
 
         // Simulate a follow-up input that was queued while the run was being claimed.
         let follow_up_turn_id = TurnId::new_v4();
@@ -697,16 +677,11 @@ mod tests {
     }
 
     impl FakeWorkerStore {
-        fn with_claim(
-            principal_user_id: PrincipalUserId,
-            memory_generation_id: MemoryGenerationId,
-            input_id: InputId,
-        ) -> Self {
+        fn with_claim(principal_user_id: PrincipalUserId, input_id: InputId) -> Self {
             let now = TimestampMillis::new(10);
             let run = LifeRun {
                 run_id: RunId::new_v4(),
                 principal_user_id,
-                memory_generation_id,
                 status: crate::domain::LifeRunStatus::Running,
                 started_at: Some(now),
                 finished_at: None,

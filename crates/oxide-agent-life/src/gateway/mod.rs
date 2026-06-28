@@ -8,10 +8,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    ActiveMemoryGeneration, InputId, LifeIdentityLink, LifeIdentityProvider, LifeInput,
-    LifeInputStatus, LifeMemoryGeneration, LifePrincipal, LifeSourceTransport, LifeTurn,
-    LifeTurnRole, MemoryGenerationId, MemoryGenerationStatus, MemoryScope, PrincipalUserId,
-    ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId,
+    InputId, LifeIdentityLink, LifeIdentityProvider, LifeInput, LifeInputStatus, LifePrincipal,
+    LifeSourceTransport, LifeTurn, LifeTurnRole, PrincipalUserId, ProviderSubject, RedactionState,
+    RunId, TimestampMillis, TurnId,
 };
 use crate::errors::LifeDomainError;
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
@@ -52,8 +51,6 @@ pub enum LifeInputSensitivity {
 pub struct SubmitLifeInputResult {
     /// Resolved principal.
     pub principal_user_id: PrincipalUserId,
-    /// Active memory scope used for queue/run decisions.
-    pub memory_scope: MemoryScope,
     /// Canonical user turn id.
     pub turn_id: TurnId,
     /// Queued input id.
@@ -101,33 +98,6 @@ pub trait LifeGatewayStore: Send + Sync {
     /// Links a provider subject to a principal.
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()>;
 
-    /// Returns active memory generation pointer.
-    async fn active_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<Option<ActiveMemoryGeneration>>;
-
-    /// Returns the next generation number for a principal.
-    async fn next_memory_generation_number(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<i64>;
-
-    /// Inserts a memory generation.
-    async fn insert_memory_generation(
-        &self,
-        generation: &LifeMemoryGeneration,
-    ) -> LifeStorageResult<()>;
-
-    /// Activates a generation.
-    async fn activate_memory_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-        memory_generation_id: MemoryGenerationId,
-        activated_at: TimestampMillis,
-        activation_reason: &str,
-    ) -> LifeStorageResult<ActiveMemoryGeneration>;
-
     /// Appends a canonical turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
 
@@ -154,44 +124,6 @@ where
 
     async fn link_identity(&self, link: &LifeIdentityLink) -> LifeStorageResult<()> {
         LifeStorageRepository::link_identity(self, link).await
-    }
-
-    async fn active_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<Option<ActiveMemoryGeneration>> {
-        LifeStorageRepository::active_generation(self, principal_user_id).await
-    }
-
-    async fn next_memory_generation_number(
-        &self,
-        principal_user_id: PrincipalUserId,
-    ) -> LifeStorageResult<i64> {
-        LifeStorageRepository::next_memory_generation_number(self, principal_user_id).await
-    }
-
-    async fn insert_memory_generation(
-        &self,
-        generation: &LifeMemoryGeneration,
-    ) -> LifeStorageResult<()> {
-        LifeStorageRepository::insert_memory_generation(self, generation).await
-    }
-
-    async fn activate_memory_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-        memory_generation_id: MemoryGenerationId,
-        activated_at: TimestampMillis,
-        activation_reason: &str,
-    ) -> LifeStorageResult<ActiveMemoryGeneration> {
-        LifeStorageRepository::activate_memory_generation(
-            self,
-            principal_user_id,
-            memory_generation_id,
-            activated_at,
-            activation_reason,
-        )
-        .await
     }
 
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
@@ -283,9 +215,6 @@ where
 
         let now = self.clock.now()?;
         let principal_user_id = self.resolve_or_create_principal(&submission, now).await?;
-        let active_generation = self
-            .ensure_active_generation(principal_user_id, now)
-            .await?;
         let turn_id = TurnId::new_v4();
         let input_id = InputId::new_v4();
 
@@ -322,7 +251,6 @@ where
 
         Ok(SubmitLifeInputResult {
             principal_user_id,
-            memory_scope: active_generation.scope,
             turn_id,
             input_id,
             run_id: None,
@@ -365,45 +293,6 @@ where
         self.store.link_identity(&link).await?;
         Ok(principal_user_id)
     }
-
-    async fn ensure_active_generation(
-        &self,
-        principal_user_id: PrincipalUserId,
-        now: TimestampMillis,
-    ) -> LifeGatewayResult<ActiveMemoryGeneration> {
-        if let Some(active) = self.store.active_generation(principal_user_id).await? {
-            return Ok(active);
-        }
-
-        let generation_number = self
-            .store
-            .next_memory_generation_number(principal_user_id)
-            .await?;
-        let generation = LifeMemoryGeneration {
-            memory_generation_id: MemoryGenerationId::new_v4(),
-            principal_user_id,
-            generation_number,
-            status: MemoryGenerationStatus::Building,
-            source_generation_id: None,
-            build_reason: "initial life input".to_owned(),
-            build_policy: json!({"source": "life_gateway", "version": 1}),
-            source_scope: json!({"kind": "initial_generation"}),
-            comparison_report: json!({}),
-            activated_at: None,
-            created_at: now,
-            updated_at: now,
-        };
-        self.store.insert_memory_generation(&generation).await?;
-        Ok(self
-            .store
-            .activate_memory_generation(
-                principal_user_id,
-                generation.memory_generation_id,
-                now,
-                "initial life input",
-            )
-            .await?)
-    }
 }
 
 const fn source_transport_for_provider(provider: LifeIdentityProvider) -> LifeSourceTransport {
@@ -423,7 +312,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn submit_creates_principal_generation_turn_and_input() {
+    async fn submit_creates_principal_turn_and_input() {
         let store = FakeGatewayStore::default();
         let allocated_principal = principal(100500);
         let gateway = LifeGateway::with_clock(
@@ -442,13 +331,11 @@ mod tests {
             .expect("submit should succeed");
 
         assert_eq!(result.principal_user_id, allocated_principal);
-        assert_eq!(result.memory_scope.principal_user_id, allocated_principal);
         assert!(result.run_id.is_none());
 
         let snapshot = store.snapshot();
         assert!(snapshot.principals.contains_key(&allocated_principal));
         assert_eq!(snapshot.identities.len(), 1);
-        assert_eq!(snapshot.generations.len(), 1);
         assert_eq!(snapshot.inputs.len(), 1);
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(snapshot.turns[0].content, "start life mode");
@@ -463,20 +350,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_reuses_existing_identity_and_active_generation() {
+    async fn submit_reuses_existing_identity() {
         let store = FakeGatewayStore::default();
         let existing_principal = principal(200600);
-        let generation_id = MemoryGenerationId::new_v4();
-        let scope = MemoryScope::new(existing_principal, generation_id);
         store.seed_identity(
             LifeIdentityProvider::Telegram,
             "telegram-user-1",
             existing_principal,
         );
-        store.seed_active_generation(ActiveMemoryGeneration {
-            scope,
-            activated_at: TimestampMillis::new(7),
-        });
 
         let gateway = LifeGateway::with_clock(
             store.clone(),
@@ -494,9 +375,7 @@ mod tests {
             .expect("submit should reuse existing identity");
 
         assert_eq!(result.principal_user_id, existing_principal);
-        assert_eq!(result.memory_scope, scope);
         let snapshot = store.snapshot();
-        assert_eq!(snapshot.generations.len(), 0);
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(
             snapshot.turns[0].source_transport,
@@ -575,8 +454,6 @@ mod tests {
     struct FakeState {
         identities: HashMap<(LifeIdentityProvider, String), PrincipalUserId>,
         principals: HashMap<PrincipalUserId, LifePrincipal>,
-        generations: Vec<LifeMemoryGeneration>,
-        active: HashMap<PrincipalUserId, ActiveMemoryGeneration>,
         turns: Vec<LifeTurn>,
         inputs: Vec<LifeInput>,
     }
@@ -593,14 +470,6 @@ mod tests {
                 .expect("fake store lock")
                 .identities
                 .insert((provider, provider_subject.to_owned()), principal_user_id);
-        }
-
-        fn seed_active_generation(&self, active: ActiveMemoryGeneration) {
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .active
-                .insert(active.scope.principal_user_id, active);
         }
 
         fn snapshot(&self) -> FakeState {
@@ -643,68 +512,6 @@ mod tests {
                     link.principal_user_id,
                 );
             Ok(())
-        }
-
-        async fn active_generation(
-            &self,
-            principal_user_id: PrincipalUserId,
-        ) -> LifeStorageResult<Option<ActiveMemoryGeneration>> {
-            Ok(self
-                .inner
-                .lock()
-                .expect("fake store lock")
-                .active
-                .get(&principal_user_id)
-                .copied())
-        }
-
-        async fn next_memory_generation_number(
-            &self,
-            principal_user_id: PrincipalUserId,
-        ) -> LifeStorageResult<i64> {
-            let next = self
-                .inner
-                .lock()
-                .expect("fake store lock")
-                .generations
-                .iter()
-                .filter(|generation| generation.principal_user_id == principal_user_id)
-                .map(|generation| generation.generation_number)
-                .max()
-                .unwrap_or(0)
-                + 1;
-            Ok(next)
-        }
-
-        async fn insert_memory_generation(
-            &self,
-            generation: &LifeMemoryGeneration,
-        ) -> LifeStorageResult<()> {
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .generations
-                .push(generation.clone());
-            Ok(())
-        }
-
-        async fn activate_memory_generation(
-            &self,
-            principal_user_id: PrincipalUserId,
-            memory_generation_id: MemoryGenerationId,
-            activated_at: TimestampMillis,
-            _activation_reason: &str,
-        ) -> LifeStorageResult<ActiveMemoryGeneration> {
-            let active = ActiveMemoryGeneration {
-                scope: MemoryScope::new(principal_user_id, memory_generation_id),
-                activated_at,
-            };
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .active
-                .insert(principal_user_id, active);
-            Ok(active)
         }
 
         async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {

@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::domain::{MemoryGenerationId, PrincipalUserId};
+use crate::domain::PrincipalUserId;
 
 /// Result alias for life-mode domain and service contracts.
 pub type LifeResult<T> = Result<T, LifeDomainError>;
@@ -21,12 +21,6 @@ pub enum LifeDomainError {
     PrincipalMismatch {
         expected: PrincipalUserId,
         actual: PrincipalUserId,
-    },
-    /// A memory-owned row from a stale generation tried to enter the active read path.
-    #[error("life memory generation mismatch: expected {expected}, got {actual}")]
-    GenerationMismatch {
-        expected: MemoryGenerationId,
-        actual: MemoryGenerationId,
     },
     /// Unknown wire value for a closed domain enum.
     #[error("unknown {type_name} value '{value}'")]

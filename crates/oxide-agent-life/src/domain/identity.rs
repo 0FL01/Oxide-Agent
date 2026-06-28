@@ -64,20 +64,3 @@ pub struct LifeIdentityLink {
     /// Last update timestamp.
     pub updated_at: TimestampMillis,
 }
-
-/// One-time link token metadata. Token hashes are storage-owned and never exposed as raw tokens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LifeLinkToken {
-    /// Hash of the one-time token.
-    pub token_hash: String,
-    /// Principal that owns the token.
-    pub principal_user_id: PrincipalUserId,
-    /// Target provider this token can link.
-    pub target_provider: LifeIdentityProvider,
-    /// Expiration timestamp.
-    pub expires_at: TimestampMillis,
-    /// Consumption timestamp if already used.
-    pub consumed_at: Option<TimestampMillis>,
-    /// Creation timestamp.
-    pub created_at: TimestampMillis,
-}

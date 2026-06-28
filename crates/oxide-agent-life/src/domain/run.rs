@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{
-    GenerationScoped, MemoryGenerationId, PrincipalUserId, RunId, TimestampMillis,
-};
+use crate::domain::{PrincipalUserId, RunId, TimestampMillis};
 
 /// Life run status.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,15 +19,13 @@ pub enum LifeRunStatus {
     Cancelled,
 }
 
-/// Life run record. The generation id is the generation under which prompt context was built.
+/// Life run record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifeRun {
     /// Run id.
     pub run_id: RunId,
     /// Principal owner.
     pub principal_user_id: PrincipalUserId,
-    /// Memory generation used by this run.
-    pub memory_generation_id: MemoryGenerationId,
     /// Run status.
     pub status: LifeRunStatus,
     /// Start timestamp.
@@ -44,14 +40,4 @@ pub struct LifeRun {
     pub created_at: TimestampMillis,
     /// Last update timestamp.
     pub updated_at: TimestampMillis,
-}
-
-impl GenerationScoped for LifeRun {
-    fn principal_user_id(&self) -> PrincipalUserId {
-        self.principal_user_id
-    }
-
-    fn memory_generation_id(&self) -> MemoryGenerationId {
-        self.memory_generation_id
-    }
 }

@@ -216,9 +216,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::domain::{
-        LifeInput, LifeInputStatus, LifeRun, LifeRunStatus, MemoryGenerationId, TurnId,
-    };
+    use crate::domain::{LifeInput, LifeInputStatus, LifeRun, LifeRunStatus, TurnId};
     use crate::storage::LifeStorageError;
 
     type LinkedTurn = (TurnId, RunId);
@@ -297,7 +295,6 @@ mod tests {
     #[tokio::test]
     async fn wake_starts_new_run_and_links_turn() {
         let principal = PrincipalUserId::new(100500).expect("positive principal");
-        let generation = MemoryGenerationId::new_v4();
         let turn_id = TurnId::new_v4();
         let input_id = InputId::new_v4();
         let run_id = RunId::new_v4();
@@ -317,7 +314,6 @@ mod tests {
             run: LifeRun {
                 run_id,
                 principal_user_id: principal,
-                memory_generation_id: generation,
                 status: LifeRunStatus::Running,
                 started_at: Some(now),
                 finished_at: None,
@@ -360,14 +356,12 @@ mod tests {
     #[tokio::test]
     async fn wake_returns_active_run_when_already_running() {
         let principal = PrincipalUserId::new(100501).expect("positive principal");
-        let generation = MemoryGenerationId::new_v4();
         let active_run_id = RunId::new_v4();
         let now = TimestampMillis::new(42);
 
         let active_run = LifeRun {
             run_id: active_run_id,
             principal_user_id: principal,
-            memory_generation_id: generation,
             status: LifeRunStatus::Running,
             started_at: Some(now),
             finished_at: None,
