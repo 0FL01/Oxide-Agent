@@ -394,7 +394,7 @@ Checkpoints are commit-ready units. Commit after each checkpoint, update the Pro
   - Audit IDs updated: G1 → verified, G6 → verified.
   - Next: checkpoint C2 (runtime wake + run-bound turn linkage).
 
-- 2026-06-28 C2: Runtime wake + run-bound turn linkage.
+- 2026-06-28 C2: Runtime wake + run-bound turn linkage (commit `b74ee7a5`).
   - Changed:
     - `crates/oxide-agent-life/src/storage/repository.rs`: added `find_active_run` and `link_turn_to_run` to `LifeStorageRepository` trait.
     - `crates/oxide-agent-life/src/storage/sqlx.rs`: implemented `find_active_run` (SELECT running run by principal) and `link_turn_to_run` (UPDATE life_turns SET run_id); added `run_from_row` + `run_status_from_str` helpers; added `sqlx_life_find_active_run_and_link_turn_to_run` real-Postgres test.
