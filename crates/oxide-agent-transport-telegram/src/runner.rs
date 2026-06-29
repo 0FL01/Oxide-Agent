@@ -34,6 +34,8 @@ use tracing::info;
 
 #[cfg(feature = "storage-sqlx")]
 const LIFE_TELEGRAM_CHAT_ID_ENV: &str = "LIFE_TELEGRAM_CHAT_ID";
+#[cfg(feature = "storage-sqlx")]
+const LIFE_TELEGRAM_BOT_TOKEN_ENV: &str = "LIFE_TELEGRAM_BOT_TOKEN";
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
@@ -63,12 +65,34 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         let unauthorized_cache = init_unauthorized_cache();
         let handler = setup_handler();
 
+        // Start dedicated Life bot polling if LIFE_TELEGRAM_BOT_TOKEN is configured
+        // and distinct from the main bot token (same token would cause getUpdates conflict).
+        if let Some(life_token) = configured_life_telegram_bot_token() {
+            if life_token != settings.telegram.telegram_token {
+                let life_bot = Bot::new(life_token);
+                let life_handler = setup_life_handler();
+                let mut life_dispatcher = Dispatcher::builder(life_bot, life_handler)
+                    .dependencies(dptree::deps![life_storage.clone()])
+                    .build();
+                info!("Life bot is running with Telegram long polling...");
+                tokio::spawn(async move {
+                    life_dispatcher.dispatch().await;
+                });
+            } else {
+                info!(
+                    "LIFE_TELEGRAM_BOT_TOKEN equals TELEGRAM_TOKEN; \
+                     skipping dedicated Life bot to avoid polling conflict."
+                );
+            }
+        } else {
+            info!("LIFE_TELEGRAM_BOT_TOKEN not set; dedicated Life bot polling skipped.");
+        }
+
         info!("Bot is running with Telegram long polling...");
 
         Dispatcher::builder(bot, handler)
             .dependencies(dptree::deps![
                 storage,
-                life_storage,
                 llm_client,
                 settings,
                 bot_state,
@@ -148,11 +172,6 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .endpoint(handle_callback),
         )
         .branch(
-            Update::filter_message()
-                .filter(|msg: Message| life_dedicated_message_candidate(&msg))
-                .endpoint(handle_life_dedicated_message),
-        )
-        .branch(
             Update::filter_message().branch(
                 // Main branch for authorized users
                 dptree::filter(|msg: Message, settings: Arc<BotSettings>| {
@@ -205,6 +224,18 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                 .filter(|msg: Message| access_control_user_id(&msg).is_some())
                 .endpoint(handle_unauthorized),
         )
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn setup_life_handler() -> UpdateHandler<teloxide::RequestError> {
+    dptree::entry().branch(
+        Update::filter_message()
+            .filter(|msg: Message| {
+                matches!(msg.chat.kind, teloxide::types::ChatKind::Private(_))
+                    && msg.text().is_some()
+            })
+            .endpoint(handle_life_dedicated_message),
+    )
 }
 
 #[cfg(feature = "storage-sqlx")]
@@ -369,15 +400,16 @@ fn classify_life_telegram_text(text: &str) -> LifeTelegramInput {
 }
 
 #[cfg(feature = "storage-sqlx")]
-fn life_dedicated_message_candidate(msg: &Message) -> bool {
-    configured_life_telegram_chat_id().is_some()
-        && matches!(msg.chat.kind, teloxide::types::ChatKind::Private(_))
-        && msg.text().is_some()
+fn configured_life_telegram_chat_id() -> Option<String> {
+    std::env::var(LIFE_TELEGRAM_CHAT_ID_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(feature = "storage-sqlx")]
-fn configured_life_telegram_chat_id() -> Option<String> {
-    std::env::var(LIFE_TELEGRAM_CHAT_ID_ENV)
+fn configured_life_telegram_bot_token() -> Option<String> {
+    std::env::var(LIFE_TELEGRAM_BOT_TOKEN_ENV)
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())

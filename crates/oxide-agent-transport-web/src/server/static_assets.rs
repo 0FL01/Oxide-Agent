@@ -72,6 +72,7 @@ fn static_path_is_browser_route(path: &str) -> bool {
     path == "/"
         || path == "/app"
         || path.starts_with("/app/")
+        || path == "/life"
         || path == "/login"
         || path == "/register"
         || path == "/bootstrap"

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "crates_oxide-agent-web-ui_src_sessions_empty_state", "label": "Sessions Sidebar Empty State (No sessions)", "file_type": "code", "source_file": "crates/oxide-agent-web-ui/src/sessions.rs", "source_location": "lines 158-167", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

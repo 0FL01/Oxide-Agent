@@ -1,0 +1,1 @@
+{"nodes": [{"id": "docker_searxng_settings_searxngconfig", "label": "SearXNG Configuration", "file_type": "concept", "source_file": "docker/searxng/settings.yml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}
