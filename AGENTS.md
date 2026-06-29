@@ -1,8 +1,8 @@
 # Oxide Agent
 
-Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
+Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console (Life Mode), and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 2024 edition, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with OpenRouter, Anthropic Messages (generic, covers MiniMax), OpenAI-Base (covers ZAI/Mistral/custom), ChatGPT/Codex OAuth, and OpenCode Go/Zen. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -28,26 +28,15 @@ Default branch: `main`.
 - `oxide-agent-core` - agent domain: execution, hooks, compaction, storage facade, LLM providers, sandbox, wiki memory, reminder/SSH/manager providers.
 - `oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress.
 - `oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress, topic/thread integration.
-- `oxide-agent-transport-web` - Web console backend and E2E test transport: HTTP API (axum), scripted LLM, SSE streaming.
-- `oxide-agent-web-contracts` - Shared web API types: auth, config, events, sessions, tasks.
-- `oxide-agent-web-ui` - Leptos web console frontend: components, SSE streaming, markdown rendering, dark theme.
+- `oxide-agent-transport-web` - Web console backend and E2E test transport: HTTP API (axum), scripted LLM, SSE streaming, Life Mode executor/routes.
+- `oxide-agent-web-contracts` - Shared web API types: auth, config, events, sessions, tasks, life.
+- `oxide-agent-web-ui` - Leptos web console frontend: components, SSE streaming, markdown rendering, dark theme, Life Mode UI.
 - `oxide-agent-sandboxd` - Docker sandbox broker daemon; Unix socket, Docker access.
 - `oxide-agent-telegram-bot` - Telegram bot binary.
 - `oxide-browser-contracts` - Shared REST contract types between the native browser sidecar and the core browser-live client; independent of core/runtime internals.
 - `oxide-browser-sidecar` - Native Rust Chromium sidecar binary; talks CDP directly, serves the browser-live REST API (sessions, actions, snapshots, screenshots).
 
-## Where To Look
-
-- `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, compaction, wiki memory, providers, prompt composition.
-- `crates/oxide-agent-core/src/storage/` - storage facade, SQLx backend, domain records (control-plane, reminders, flows).
-- `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
-- `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker (`broker.rs`).
-- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
-- `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs` (`auth_routes.rs`, `session_routes.rs`, `task_routes.rs`, `settings_routes.rs`), with `agent_profiles.rs`, `auto_title.rs`, `converters.rs`, `model_routes.rs`, `search_probe.rs`, `sse.rs`, `static_assets.rs`, `task_executor.rs`, `auth_helpers.rs`, and `types.rs` for streaming/assets/execution/state.
-- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `06-activity.css`, `08-markdown.css` through `10-responsive.css`).
-- `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
-- `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
-- `docs/` - detailed documentation for hooks, integrations, sandbox, wiki memory, and TTS.
+For the current file structure inside any crate, run `graphify query "<area>"` against the knowledge graph in `graphify-out/`.
 
 ## Architectural invariants
 
@@ -60,16 +49,17 @@ Default branch: `main`.
 - Topic-aware and thread-aware by default for agent mode and manager functions.
 - Context-scoped storage is mandatory for transport contexts; legacy fallback only for DM compatibility.
 - Topic-scoped `AGENTS.md` is stored separately, pinned during flow bootstrap, live-synced after `agents_md_update`, inherited by sub-agents.
-- Sandbox backend is always the sandboxd broker (`SANDBOX_BACKEND` env var removed). The daemon owns direct Docker access; agent processes connect via Unix socket.
+- Sandbox backend is always the sandboxd broker for agent processes. `DockerSandboxManager` exists only inside the sandboxd daemon; agent processes connect via Unix socket to the daemon.
 - Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
 - `storage-sqlx` is the production durable storage. Local filesystem is transient only.
 - Gemini models are valid only through OpenRouter; no direct Gemini provider is maintained.
 
 ## Key Subsystems
 
+For current file/module structure inside any subsystem, run `graphify query "<subsystem name>"`.
+
 ### Agent execution
 - Runner in `agent/runner/`; executor slices in `agent/executor/`.
-- Runner modules: `execution.rs`, `llm_calls.rs`, `model_routes.rs`, `response_dispatch.rs`, `responses.rs`, `runtime_compaction.rs`, `token_snapshots.rs`, `hooks.rs`, `loop_detection.rs`, `tools.rs`, `types.rs`, `test_support.rs`.
 - Tool calls run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
@@ -85,6 +75,10 @@ Default branch: `main`.
 - Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`. Browser tools available via `allowed_tools` whitelist with RAII cleanup on run end.
 - Do not reintroduce embedding-selected skills.
 
+### Compaction
+- Runner-integrated: typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, LLM summarization sidecar.
+- Architecture details: `docs/compaction-architecture.md`.
+
 ### Prompt cache hit
 - Static prefix + dynamic suffix; provider-specific details and smoke test in `docs/tips/cache-hit.md`.
 
@@ -97,12 +91,12 @@ Default branch: `main`.
 - Manager control plane in `agent/providers/manager_control_plane/`; CRUD for topics, bindings, contexts, AGENTS.md, infra, sandboxes, profiles, controls, audit trail, rollback.
 - Stack logs: Docker Compose log access, requires `topic_infra`, blocked for sub-agents.
 - Reminders: `agent/providers/reminder.rs` + storage; in-memory scheduler wakes the original topic/flow.
-- SSH: native upstream tools used directly; approval flow disabled.
 
 ### Sandbox and SSH
-- Facade: `sandbox/manager.rs`; backends: direct Docker, broker (`broker.rs`).
+- Facade: `sandbox/manager.rs` → `BrokerSandboxManager` → `SandboxBrokerClient` (Unix socket to sandboxd daemon). `DockerSandboxManager` is daemon-internal only.
 - `SandboxScope` provides stable identity for persistent sandbox reuse.
-- SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
+- SSH: external `ssh-mcp` binary spawned as a child process, communicated with via MCP protocol (rmcp, stdio). Binary path: `OXIDE_SSH_MCP_BINARY` (default `/usr/local/bin/ssh-mcp`). Session is lazy, reused across tool calls, killed on timeout/error/cancel. Approval flow disabled (YOLO mode).
+- SSH tools: `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`, `ssh_send_file_to_user`.
 - Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
 
 ### Browser Live
@@ -113,15 +107,30 @@ Default branch: `main`.
 - RAII session cleanup: `close_all_sessions` runs after every agent run end (parent and sub-agent) on any outcome (success/timeout/cancel/error) to prevent Chromium process leaks.
 - Sidecar session cap: `BROWSER_AGENT_SIDECAR_MAX_SESSIONS` (default 8) rejects new sessions at capacity with `sidecar_at_capacity` error.
 
+### Life Mode
+- Permanent chat console with stable memory scope `(principal, "life", "main")`; runs reuse the same `AgentExecutor` path as ordinary web sessions.
+- Contracts in `oxide-agent-web-contracts/src/life.rs`; executor/routes in `oxide-agent-transport-web/src/server/life_*.rs`; UI in `oxide-agent-web-ui/src/life/`.
+- Sensitivity gate: `ApiLifeInputSensitivity` controls whether input is stored durably.
+- Delivery: life runs can deliver files and messages back to Telegram via `life_telegram_delivery.rs`.
+
 ### Storage and LLM
 - Storage facade and SQLx/Postgres backend in `storage/`; context-scoped APIs for transport state.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
-- Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
+- Six provider modules: `openai-chatgpt` (OAuth/Codex Responses streaming), `anthropic` (generic Anthropic Messages, covers MiniMax), `openai-base` (OpenAI-compatible, covers ZAI/Mistral/custom), `opencode-go`, `opencode-zen`, `openrouter`. `opencode-go` and `opencode-zen` share one cargo feature (`llm-opencode-go`).
+- Anthropic Messages transport (`messages/`) is shared by `anthropic` and `opencode_go` providers.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
+- Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
+
 ### Tool providers
 
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox (split into `sandbox-fileops`: `read_file`/`write_file`/`apply_file_edit`/`list_files`, `sandbox-exec`: `execute_command`, `sandbox-recreate`: `recreate_sandbox`), todos, tavily, brave-search, webfetch_md, crw, browser_live (`browser_start`/`browser_observe`/`browser_execute`/`browser_extract`/`browser_debug`/`browser_save_screenshot`/`browser_close` over CDP sidecar), media (audio transcription, image description, video description), jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
-- `webfetch_md` is feature-controlled and registered by default when compiled. `OXIDE_WEB_CRAWLER_MERGE=true` hides the split lightweight URL fetch tool and exposes `web_crawler`, a unified fetch tool with explicit render modes: `render:"http"` (default, lightweight HTTP), `render:"lightpanda"` (lightweight JS), `render:"playwright"` (full browser). No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true; unset/false keeps `web_markdown` split in other entrypoints.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated via the module registry.
+- Sandbox: `sandbox-fileops` (`read_file`/`write_file`/`apply_file_edit`/`list_files`), `sandbox-exec` (`execute_command`), `sandbox-recreate` (`recreate_sandbox`).
+- Search: `web_search` (one tool, multiple backends: CRW, Tavily, Brave), `crw` (scrape), `retrieve-tools` (tool group activation).
+- Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with explicit render modes: `render:"http"` (default), `render:"lightpanda"`, `render:"playwright"`. No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true.
+- Browser: `browser_live` tools (see Browser Live above).
+- Media: `media-audio` (transcription), `media-image` (description), `media-video` (description).
+- Integrations: `jira-mcp`, `mattermost-mcp` (runtime-disabled, enabled via `topic_agent_tools_enable`), `ssh-mcp`.
+- Agent ops: `delegation`, `manager_control_plane`, `reminder`, `agents_md`, `wiki_memory`, `stack_logs` (disabled for topic agents, blocked for sub-agents), `compression`, `file_delivery`, `path`, `todos`, `tts` (Kokoro EN + Silero RU), `ytdlp`.
 
 ## Configuration
 
@@ -182,16 +191,32 @@ feat(sources): add bybit proof of reserves source
 - `docs/tips/cache-hit.md` - prompt cache hit analysis: architecture, assembly order, telemetry, production validation.
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
 - `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
+- `docs/compaction-architecture.md` - compaction architecture: engine, admission, renderer, blocks.
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.
 - `docs/stack-logs.md` - stack logs tool: Docker Compose log access.
 - `docs/deploy.md` - concise deploy guide, optional external services, local service overlays, operations.
 - `docs/browser-live.md` - Browser Live agent: sidecar setup, REST/CDP contract, actions, security model.
+- `docs/lazy-tool-migration.md` - lazy tool registration migration guide.
 - `README.md` - product overview and user-facing setup notes.
 - `.env.example` - runtime configuration examples.
+- For codebase structure questions, use `graphify query "<question>"` against `graphify-out/graph.json` instead of browsing source files.
 
 ## System extension
 
 - New transport: `crates/oxide-agent-transport-<name>`; SDK and handlers inside the transport crate.
 - Runtime/core must not depend on a specific transport SDK.
 - Separate `oxide-agent-<name>-bot` binary if needed.
+
+## graphify
+
+This project has a knowledge graph at `graphify-out/` with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- Dirty `graphify-out/` files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
