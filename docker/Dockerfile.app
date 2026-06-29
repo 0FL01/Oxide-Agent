@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install cargo-chef && \
     cargo install --version 0.21.14 trunk && \
     cargo install --version 0.2.122 wasm-bindgen-cli
@@ -27,8 +27,8 @@ ARG BINARIES="oxide-agent-telegram-bot"
 ARG BUILD_WEB_UI="false"
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,target=/app/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/app/target,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     if [ -n "${CARGO_FEATURES}" ]; then \
       cargo chef cook --release --workspace --no-default-features --features "${CARGO_FEATURES}" --recipe-path recipe.json; \
     else \
@@ -36,9 +36,9 @@ RUN --mount=type=cache,target=/app/target \
     fi
 
 COPY . .
-RUN --mount=type=cache,target=/app/target \
-    --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/app/target,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     set -eux; \
     package_args=""; \
     for package in ${PACKAGES}; do package_args="${package_args} -p ${package}"; done; \
