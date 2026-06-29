@@ -115,8 +115,17 @@ pub trait LifeStorageRepository: Send + Sync {
     /// Appends a canonical transcript turn.
     async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
 
-    /// Atomically appends an assistant turn and enqueues delivery rows for enabled bindings.
+    /// Atomically appends an assistant turn and enqueues delivery rows for all enabled bindings.
     async fn append_assistant_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>>;
+
+    /// Atomically appends a user turn and enqueues delivery rows for enabled
+    /// bindings **other than the source transport** — the user already sees
+    /// their own message on the transport they typed it from.
+    async fn append_user_turn_and_enqueue_deliveries(
         &self,
         turn: &LifeTurn,
         now: TimestampMillis,

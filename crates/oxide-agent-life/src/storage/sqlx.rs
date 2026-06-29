@@ -803,6 +803,92 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(deliveries)
     }
 
+    async fn append_user_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>> {
+        if turn.role != LifeTurnRole::User {
+            return Err(LifeStorageError::InvalidOperation(
+                "user turn deliveries can only be enqueued for user turns".to_owned(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        query::<Postgres>(
+            r#"
+            INSERT INTO life_turns (
+                turn_id, principal_user_id, run_id, role, source_transport,
+                source_ref, content, attachments, transport_metadata,
+                redaction_state, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "#,
+        )
+        .bind(turn.turn_id.as_uuid())
+        .bind(turn.principal_user_id.get())
+        .bind(turn.run_id.map(crate::domain::RunId::as_uuid))
+        .bind(turn_role_as_str(turn.role))
+        .bind(turn.source_transport.as_str())
+        .bind(&turn.source_ref)
+        .bind(&turn.content)
+        .bind(&turn.attachments)
+        .bind(&turn.transport_metadata)
+        .bind(redaction_state_as_str(turn.redaction_state))
+        .bind(turn.created_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let binding_rows = query::<Postgres>(
+            r#"
+            SELECT *
+            FROM life_transport_bindings
+            WHERE principal_user_id = $1 AND enabled = TRUE AND transport_id <> $2
+            ORDER BY transport_id ASC, binding_id ASC
+            "#,
+        )
+        .bind(turn.principal_user_id.get())
+        .bind(turn.source_transport.as_str())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let mut deliveries = Vec::with_capacity(binding_rows.len());
+        for row in binding_rows {
+            let binding = binding_from_row(row)?;
+            let delivery_id = DeliveryId::new_v4();
+            let inserted = query::<Postgres>(
+                r#"
+                INSERT INTO life_delivery_outbox (
+                    delivery_id, turn_id, binding_id, principal_user_id, transport_id,
+                    delivery_address, status, attempt_count, claimed_by, claimed_at,
+                    claim_expires_at, next_attempt_at, last_error, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'queued', 0, NULL, NULL, NULL, $7, NULL, $7, $7)
+                ON CONFLICT (turn_id, binding_id) DO NOTHING
+                RETURNING *
+                "#,
+            )
+            .bind(delivery_id.as_uuid())
+            .bind(turn.turn_id.as_uuid())
+            .bind(binding.binding_id.as_uuid())
+            .bind(binding.principal_user_id.get())
+            .bind(binding.transport_id.as_str())
+            .bind(&binding.delivery_address)
+            .bind(now.get())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            if let Some(row) = inserted {
+                deliveries.push(delivery_from_row(row)?);
+            }
+        }
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(deliveries)
+    }
+
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
         query::<Postgres>(
             r#"

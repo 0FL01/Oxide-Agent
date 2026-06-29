@@ -8,8 +8,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::domain::{
-    InputId, LifeInput, LifeInputStatus, LifeTransportBinding, LifeTransportId, LifeTurn,
-    LifeTurnRole, PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
+    InputId, LifeDeliveryOutbox, LifeInput, LifeInputStatus, LifeTransportBinding, LifeTransportId,
+    LifeTurn, LifeTurnRole, PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use crate::errors::LifeDomainError;
 use crate::storage::{LifeStorageError, LifeStorageRepository, LifeStorageResult};
@@ -99,8 +99,12 @@ pub trait LifeGatewayStore: Send + Sync {
         inbound_address: &Value,
     ) -> LifeStorageResult<Option<LifeTransportBinding>>;
 
-    /// Appends a canonical turn.
-    async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()>;
+    /// Atomically appends a user turn and enqueues cross-transport deliveries.
+    async fn append_user_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>>;
 
     /// Queues a life input.
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
@@ -119,8 +123,12 @@ where
         LifeStorageRepository::resolve_transport_binding(self, transport_id, inbound_address).await
     }
 
-    async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
-        LifeStorageRepository::append_turn(self, turn).await
+    async fn append_user_turn_and_enqueue_deliveries(
+        &self,
+        turn: &LifeTurn,
+        now: TimestampMillis,
+    ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>> {
+        LifeStorageRepository::append_user_turn_and_enqueue_deliveries(self, turn, now).await
     }
 
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
@@ -215,7 +223,9 @@ where
             },
             created_at: now,
         };
-        self.store.append_turn(&turn).await?;
+        self.store
+            .append_user_turn_and_enqueue_deliveries(&turn, now)
+            .await?;
 
         let input = LifeInput {
             input_id,
@@ -298,6 +308,81 @@ mod tests {
         );
         assert_eq!(snapshot.inputs[0].status, LifeInputStatus::Queued);
         assert_eq!(snapshot.inputs[0].turn_id, result.turn_id);
+    }
+
+    #[tokio::test]
+    async fn submit_enqueues_delivery_to_other_transports_only() {
+        let store = FakeGatewayStore::default();
+        let configured_principal = principal(100600);
+        // Web binding — source transport
+        store.seed_binding(
+            WEB_TRANSPORT_ID,
+            json!({"user_id": 100600}),
+            configured_principal,
+        );
+        // Telegram binding — should receive the delivery
+        store.seed_binding(
+            TELEGRAM_TRANSPORT_ID,
+            json!({"chat_id": 999}),
+            configured_principal,
+        );
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(77)));
+
+        let result = gateway
+            .submit_life_input(submission(
+                WEB_TRANSPORT_ID,
+                json!({"user_id": 100600}),
+                "cross-transport message",
+            ))
+            .await
+            .expect("submit should succeed");
+
+        let snapshot = store.snapshot();
+        // User turn persisted
+        assert_eq!(snapshot.turns.len(), 1);
+        assert_eq!(snapshot.turns[0].content, "cross-transport message");
+
+        // Exactly one delivery — to Telegram, not back to Web
+        assert_eq!(snapshot.deliveries.len(), 1);
+        assert_eq!(
+            snapshot.deliveries[0].transport_id.as_str(),
+            TELEGRAM_TRANSPORT_ID
+        );
+        assert_eq!(snapshot.deliveries[0].turn_id, result.turn_id);
+    }
+
+    #[tokio::test]
+    async fn submit_from_telegram_enqueues_delivery_to_web_only() {
+        let store = FakeGatewayStore::default();
+        let configured_principal = principal(100700);
+        store.seed_binding(
+            WEB_TRANSPORT_ID,
+            json!({"user_id": 100700}),
+            configured_principal,
+        );
+        store.seed_binding(
+            TELEGRAM_TRANSPORT_ID,
+            json!({"chat_id": 777}),
+            configured_principal,
+        );
+        let gateway = LifeGateway::with_clock(store.clone(), FixedClock(TimestampMillis::new(88)));
+
+        let result = gateway
+            .submit_life_input(submission(
+                TELEGRAM_TRANSPORT_ID,
+                json!({"chat_id": 777}),
+                "from telegram",
+            ))
+            .await
+            .expect("submit should succeed");
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.deliveries.len(), 1);
+        assert_eq!(
+            snapshot.deliveries[0].transport_id.as_str(),
+            WEB_TRANSPORT_ID
+        );
+        assert_eq!(snapshot.deliveries[0].turn_id, result.turn_id);
     }
 
     #[tokio::test]
@@ -412,6 +497,7 @@ mod tests {
         bindings: Vec<LifeTransportBinding>,
         turns: Vec<LifeTurn>,
         inputs: Vec<LifeInput>,
+        deliveries: Vec<LifeDeliveryOutbox>,
     }
 
     impl FakeGatewayStore {
@@ -465,13 +551,42 @@ mod tests {
                 .cloned())
         }
 
-        async fn append_turn(&self, turn: &LifeTurn) -> LifeStorageResult<()> {
-            self.inner
-                .lock()
-                .expect("fake store lock")
-                .turns
-                .push(turn.clone());
-            Ok(())
+        async fn append_user_turn_and_enqueue_deliveries(
+            &self,
+            turn: &LifeTurn,
+            now: TimestampMillis,
+        ) -> LifeStorageResult<Vec<LifeDeliveryOutbox>> {
+            let mut state = self.inner.lock().expect("fake store lock");
+            state.turns.push(turn.clone());
+            let cross_bindings: Vec<LifeTransportBinding> = state
+                .bindings
+                .iter()
+                .filter(|b| b.enabled && b.transport_id != turn.source_transport)
+                .cloned()
+                .collect();
+            let mut deliveries = Vec::with_capacity(cross_bindings.len());
+            for binding in cross_bindings {
+                let delivery = LifeDeliveryOutbox {
+                    delivery_id: crate::domain::DeliveryId::new_v4(),
+                    turn_id: turn.turn_id,
+                    binding_id: binding.binding_id,
+                    principal_user_id: binding.principal_user_id,
+                    transport_id: binding.transport_id.clone(),
+                    delivery_address: binding.delivery_address.clone(),
+                    status: crate::domain::LifeDeliveryStatus::Queued,
+                    attempt_count: 0,
+                    claimed_by: None,
+                    claimed_at: None,
+                    claim_expires_at: None,
+                    next_attempt_at: now,
+                    last_error: None,
+                    created_at: now,
+                    updated_at: now,
+                };
+                state.deliveries.push(delivery.clone());
+                deliveries.push(delivery);
+            }
+            Ok(deliveries)
         }
 
         async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()> {
