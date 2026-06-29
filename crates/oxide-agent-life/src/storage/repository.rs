@@ -162,6 +162,11 @@ pub trait LifeStorageRepository: Send + Sync {
         now: TimestampMillis,
     ) -> LifeStorageResult<Option<ClaimedLifeInputRun>>;
 
+    /// Returns distinct principals that have at least one queued input.
+    /// Used by the background polling worker to discover inputs submitted
+    /// by transports other than the web UI (e.g. Telegram).
+    async fn find_principals_with_queued_inputs(&self) -> LifeStorageResult<Vec<PrincipalUserId>>;
+
     /// Extends the lease for a running run owned by `worker_id`.
     async fn heartbeat_run_lease(
         &self,

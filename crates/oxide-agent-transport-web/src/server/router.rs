@@ -197,6 +197,8 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
     auto_title::spawn_retry_worker(state.clone());
     #[cfg(feature = "storage-sqlx")]
     super::life_telegram_delivery::spawn_telegram_delivery_worker_from_env(state.clone());
+    #[cfg(feature = "storage-sqlx")]
+    super::life_run_worker::spawn_life_run_worker(state.clone());
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -29,6 +29,8 @@ mod life_bootstrap;
 mod life_executor;
 mod life_routes;
 #[cfg(feature = "storage-sqlx")]
+mod life_run_worker;
+#[cfg(feature = "storage-sqlx")]
 mod life_telegram_delivery;
 mod model_routes;
 mod router;

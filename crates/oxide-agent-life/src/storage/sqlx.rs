@@ -1082,6 +1082,26 @@ impl LifeStorageRepository for SqlxLifeStorage {
         }))
     }
 
+    async fn find_principals_with_queued_inputs(&self) -> LifeStorageResult<Vec<PrincipalUserId>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT DISTINCT principal_user_id
+            FROM life_inputs
+            WHERE status = 'queued'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let raw: i64 = row.get("principal_user_id");
+                PrincipalUserId::new(raw).map_err(LifeStorageError::from)
+            })
+            .collect()
+    }
+
     async fn heartbeat_run_lease(
         &self,
         run_id: RunId,
