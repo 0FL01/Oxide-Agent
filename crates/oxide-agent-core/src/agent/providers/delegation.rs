@@ -16,7 +16,6 @@ use crate::agent::runner::{
     AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
     run_with_timeout,
 };
-use crate::agent::session::AgentMemoryScope;
 #[cfg(any(
     oxide_module_tool_sandbox_exec,
     oxide_module_tool_sandbox_fileops,
@@ -166,7 +165,6 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "reminder_schedule",
     "reminder_list",
     "reminder_manage",
-    "wiki_memory_delete",
     // Jira write operations blocked for sub-agents (read-only access allowed)
     "jira_write",
 ];
@@ -738,13 +736,11 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
-        memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> SubAgentToolBuild {
         let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
         let mut catalog = ToolCatalog::new();
-        let module_ctx =
-            self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
+        let module_ctx = self.build_sub_agent_tool_module_context(todos_arc, progress_tx);
 
         #[cfg(not(any(
             oxide_module_tool_sandbox_exec,
@@ -885,7 +881,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     fn build_sub_agent_tool_module_context(
         &self,
         todos_arc: Arc<Mutex<TodoList>>,
-        _memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolModuleContext {
         let sandbox_runtime = if let Some(tx) = progress_tx {
@@ -905,8 +900,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             ssh_mcp_context: None,
             browser_live_context: self.browser_live_context.clone(),
             reminder_context: None,
-            wiki_memory_store: None,
-            memory_scope: _memory_scope,
             progress_tx: progress_tx.cloned(),
             inherited_model: None,
             tool_surface_handle: Arc::new(ToolSurfaceHandle::new()),
@@ -1199,7 +1192,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             spawn_sub_agent_progress_relay(progress_tx, task_id.clone(), name.clone());
         let tool_build = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
-            AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
             sub_agent_progress_tx.as_ref(),
         );
         let available_tools: HashSet<String> = tool_build
@@ -1790,7 +1782,7 @@ mod tests {
     use crate::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
-    use crate::agent::session::{AgentMemoryScope, PendingUserInput, UserInputKind};
+    use crate::agent::session::{PendingUserInput, UserInputKind};
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
@@ -1836,10 +1828,6 @@ mod tests {
             created_at: now,
             started_at: Some(now),
         }
-    }
-
-    fn test_memory_scope() -> AgentMemoryScope {
-        AgentMemoryScope::new(77, "test-topic", "sub-agent-test")
     }
 
     #[test]
@@ -2400,8 +2388,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let build =
-            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
+        let build = provider.build_sub_agent_tool_runtime_executors(todos, None);
         let tools: HashSet<String> = build
             .executors
             .iter()
@@ -2417,8 +2404,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let build =
-            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
+        let build = provider.build_sub_agent_tool_runtime_executors(todos, None);
         let tools: HashSet<String> = build
             .executors
             .iter()
@@ -2435,15 +2421,6 @@ mod tests {
         for tool in ["write_file", "read_file", "apply_file_edit", "list_files"] {
             assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
         }
-    }
-
-    #[test]
-    fn build_sub_agent_wiki_memory_policy_keeps_read_only_tools_available() {
-        let blocked: HashSet<&str> = super::BLOCKED_SUB_AGENT_TOOLS.iter().copied().collect();
-
-        assert!(!blocked.contains("wiki_memory_list"));
-        assert!(!blocked.contains("wiki_memory_read"));
-        assert!(blocked.contains("wiki_memory_delete"));
     }
 
     #[test]

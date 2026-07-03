@@ -3,9 +3,6 @@
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
-const WIKI_MEMORY_LOOKUP_TOOLS: &[&str] =
-    &["wiki_memory_list", "wiki_memory_read", "wiki_memory_search"];
-
 const BROWSER_LIVE_TOOLS: &[&str] = &[
     "browser_start",
     "browser_observe",
@@ -15,14 +12,6 @@ const BROWSER_LIVE_TOOLS: &[&str] = &[
     "browser_close",
     "browser_save_screenshot",
 ];
-
-/// Return whether scoped durable wiki lookup tools are actually exposed to this run.
-#[must_use]
-pub fn wiki_memory_lookup_available(tools: &[ToolDefinition]) -> bool {
-    WIKI_MEMORY_LOOKUP_TOOLS
-        .iter()
-        .all(|required| tools.iter().any(|tool| tool.name == *required))
-}
 
 /// Return whether a tool name belongs to the Browser Live provider.
 #[must_use]
@@ -337,17 +326,7 @@ pub struct BudgetEstimate {
 mod tests {
     use super::{
         AgentMessageKind, BudgetState, CompactionPolicy, CompactionRetention, resolve_retention,
-        wiki_memory_lookup_available,
     };
-    use crate::llm::ToolDefinition;
-
-    fn tool(name: &str) -> ToolDefinition {
-        ToolDefinition {
-            name: name.to_string(),
-            description: "test tool".to_string(),
-            parameters: serde_json::json!({"type": "object"}),
-        }
-    }
 
     #[test]
     fn topic_agents_md_is_pinned() {
@@ -375,23 +354,6 @@ mod tests {
             resolve_retention(AgentMessageKind::ToolResult, Some("ssh_exec")),
             CompactionRetention::PrunableArtifact
         );
-    }
-
-    #[test]
-    fn wiki_memory_lookup_requires_actual_lookup_tool_definitions() {
-        let tools = vec![
-            tool("wiki_memory_list"),
-            tool("wiki_memory_read"),
-            tool("wiki_memory_search"),
-            tool("wiki_memory_delete"),
-        ];
-        assert!(wiki_memory_lookup_available(&tools));
-
-        let missing_search = vec![tool("wiki_memory_list"), tool("wiki_memory_read")];
-        assert!(!wiki_memory_lookup_available(&missing_search));
-
-        let no_wiki = vec![tool("read_file")];
-        assert!(!wiki_memory_lookup_available(&no_wiki));
     }
 
     #[test]

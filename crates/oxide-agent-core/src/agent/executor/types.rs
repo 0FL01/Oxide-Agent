@@ -70,7 +70,6 @@ impl PreparedExecution {
     ) -> AgentRunnerContext<'a> {
         let session_id = Some(session.session_id.to_string());
         let memory_scope = Some(session.memory_scope().clone());
-        let memory_behavior = Some(session.memory_behavior_runtime());
         let mut ctx = AgentRunnerContext::new_base(
             AgentRunnerContextBase {
                 task,
@@ -89,7 +88,6 @@ impl PreparedExecution {
 
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
-        ctx.memory_behavior = memory_behavior;
         ctx.storage = storage;
         ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
         ctx = ctx.with_tool_surface(

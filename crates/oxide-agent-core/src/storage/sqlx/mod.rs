@@ -29,7 +29,6 @@ use super::{
 use crate::agent::memory::AgentMemory;
 
 use super::SqlxStorageConfig;
-use crate::agent::wiki_memory::wiki_context_id;
 
 /// Shared SQLx/Postgres handle for durable storage.
 #[derive(Clone)]
@@ -116,50 +115,6 @@ impl SqlxStorage {
             .run(&self.pool)
             .await
             .map_err(|error| StorageError::DatabaseMigration(error.to_string()))
-    }
-
-    /// Deletes expired wiki rows in a bounded, idempotent batch.
-    ///
-    /// Retention timestamps are Unix seconds. A zero `limit` is a no-op so
-    /// operators cannot accidentally issue an unbounded cleanup.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError::Database`] when the cleanup query fails.
-    pub async fn cleanup_expired_wiki_pages(
-        &self,
-        now_unix_secs: u64,
-        limit: usize,
-    ) -> Result<u64, StorageError> {
-        if limit == 0 {
-            return Ok(0);
-        }
-        let result = query::<Postgres>(
-            r#"
-            DELETE FROM wiki_pages
-            WHERE ctid IN (
-                SELECT ctid
-                FROM wiki_pages
-                WHERE retention_expires_at IS NOT NULL
-                  AND retention_expires_at <= $1
-                ORDER BY retention_expires_at ASC,
-                         storage_prefix ASC,
-                         scope_kind ASC,
-                         context_id ASC,
-                         path ASC
-                LIMIT $2
-            )
-            "#,
-        )
-        .bind(u64_to_i64(
-            now_unix_secs,
-            "wiki retention cleanup timestamp",
-        )?)
-        .bind(usize_to_i64(limit, "wiki retention cleanup limit")?)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(result.rows_affected())
     }
 
     async fn save_agent_memory_scope(
@@ -626,73 +581,6 @@ impl StorageProvider for SqlxStorage {
         Ok(record)
     }
 
-    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
-        let address = parse_wiki_storage_key(&storage_key)?;
-        let row = query::<Postgres>(
-            r#"
-            SELECT content
-            FROM wiki_pages
-            WHERE storage_prefix = $1
-              AND scope_kind = $2
-              AND context_id = $3
-              AND path = $4
-            "#,
-        )
-        .bind(&address.storage_prefix)
-        .bind(address.scope_kind.as_str())
-        .bind(&address.context_id)
-        .bind(&address.path)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        row.map(|row| row_value::<String>(&row, "content"))
-            .transpose()
-    }
-
-    async fn save_wiki_text(
-        &self,
-        storage_key: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        let address = parse_wiki_storage_key(&storage_key)?;
-        validate_wiki_content_size(&address, &content)?;
-        let now = current_timestamp_unix_secs();
-        let content_bytes = usize_to_i64(content.len(), "wiki content_bytes")?;
-
-        query::<Postgres>(
-            r#"
-            INSERT INTO wiki_pages (
-                storage_prefix, scope_kind, context_id, item_kind, path, content,
-                content_bytes, retention_expires_at, version, schema_version,
-                created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 1, $8, $9, $9)
-            ON CONFLICT (storage_prefix, scope_kind, context_id, path) DO UPDATE
-            SET item_kind = EXCLUDED.item_kind,
-                content = EXCLUDED.content,
-                content_bytes = EXCLUDED.content_bytes,
-                schema_version = EXCLUDED.schema_version,
-                version = wiki_pages.version + 1,
-                updated_at = EXCLUDED.updated_at
-            WHERE wiki_pages.content IS DISTINCT FROM EXCLUDED.content
-            "#,
-        )
-        .bind(&address.storage_prefix)
-        .bind(address.scope_kind.as_str())
-        .bind(&address.context_id)
-        .bind(address.item_kind.as_str())
-        .bind(&address.path)
-        .bind(content)
-        .bind(content_bytes)
-        .bind(WIKI_SCHEMA_VERSION)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
-    }
-
     async fn save_browser_artifact(
         &self,
         record: BrowserArtifactRecord,
@@ -828,46 +716,6 @@ impl StorageProvider for SqlxStorage {
         .await
         .map_err(db_error)?;
         Ok(result.rows_affected())
-    }
-
-    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
-        let address = parse_wiki_storage_key(&storage_key)?;
-        query::<Postgres>(
-            r#"
-            DELETE FROM wiki_pages
-            WHERE storage_prefix = $1
-              AND scope_kind = $2
-              AND context_id = $3
-              AND path = $4
-            "#,
-        )
-        .bind(&address.storage_prefix)
-        .bind(address.scope_kind.as_str())
-        .bind(&address.context_id)
-        .bind(&address.path)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
-    }
-
-    async fn delete_wiki_context(
-        &self,
-        user_id: i64,
-        context_key: String,
-    ) -> Result<(), StorageError> {
-        let context_id = wiki_context_id(user_id, &context_key);
-        query::<Postgres>(
-            r#"
-            DELETE FROM wiki_pages
-            WHERE scope_kind = 'context' AND context_id = $1
-            "#,
-        )
-        .bind(context_id)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
     }
 
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
@@ -1945,15 +1793,12 @@ use helpers::{
 };
 
 mod rows;
-mod wiki;
 
 use rows::{
     row_to_agent_flow, row_to_agent_profile, row_to_audit_event, row_to_reminder_job,
     row_to_topic_agents_md, row_to_topic_binding, row_to_topic_context, row_to_topic_infra_config,
     row_to_user_context,
 };
-use wiki::{WIKI_SCHEMA_VERSION, parse_wiki_storage_key, validate_wiki_content_size};
-
 mod reminder_tx;
 use reminder_tx::{insert_reminder_job_in_tx, mutate_reminder_job};
 

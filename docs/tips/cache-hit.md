@@ -4,23 +4,21 @@
 
 1.  ~~**date/time блок в начале system prompt.**~~ **FIXED.** `date_context` перенесён в конец system prompt (`composer.rs`). Regression tests: `test_date_context_at_end_of_main_agent_prompt`, `test_date_context_at_end_of_sub_agent_prompt`.
 
-2.  ~~**Wiki context вставляется до стабильных операционных блоков.**~~ **FIXED.** Wiki context перенесён после workflow guidance (`composer.rs`). Regression test: `test_wiki_context_after_workflow_guidance`.
+2.  ~~**Sub-agent включает task в system prompt.**~~ **FIXED.** `Your task: {task}` убран из system prompt sub-agent (`composer.rs`). Task доставляется исключительно через первый user message (`delegation.rs:904`), system prompt стабильный для одинаковых tool-sets. Regression test: `test_sub_agent_prompt_excludes_task`.
 
-3.  ~~**Sub-agent включает task в system prompt.**~~ **FIXED.** `Your task: {task}` убран из system prompt sub-agent (`composer.rs`). Task доставляется исключительно через первый user message (`delegation.rs:904`), system prompt стабильный для одинаковых tool-sets. Regression test: `test_sub_agent_prompt_excludes_task`.
+3.  ~~**System messages из history fold-ятся в prompt без разбора.**~~ **FIXED.** `fold_system_messages_into_prompt()` (`history.rs`) теперь разделяет system messages на stable (`[TOPIC_AGENTS_MD]`, `[OXIDE_COMPACTED_SUMMARY_V1]`) и volatile (retry notes, temporal context, infra status). Stable идут в cacheable prefix перед `date_suffix`, volatile — после. `ComposedPrompt` (base + date_suffix) заменяет единую строку system_prompt. Pipeline: `base + stable + date_suffix + volatile`.
 
-4.  ~~**System messages из history fold-ятся в prompt без разбора.**~~ **FIXED.** `fold_system_messages_into_prompt()` (`history.rs`) теперь разделяет system messages на stable (`[TOPIC_AGENTS_MD]`, `[OXIDE_COMPACTED_SUMMARY_V1]`) и volatile (retry notes, temporal context, infra status). Stable идут в cacheable prefix перед `date_suffix`, volatile — после. `ComposedPrompt` (base + date_suffix) заменяет единую строку system_prompt. Pipeline: `base + stable + date_suffix + volatile`.
+4.  **Provider-native prompt caching не используется.** Anthropic-compatible пути (MiniMax через `claudius`, OpenCode Go Anthropic path) не выставляют `cache_control` markers, хотя SDK их поддерживают. OpenAI/OpenRouter не имеют explicit cache markers в запросах.
 
-5.  **Provider-native prompt caching не используется.** Anthropic-compatible пути (MiniMax через `claudius`, OpenCode Go Anthropic path) не выставляют `cache_control` markers, хотя SDK их поддерживают. OpenAI/OpenRouter не имеют explicit cache markers в запросах.
+5.  ~~**Нет telemetry по cache read/write tokens.**~~ **FIXED.** `TokenUsage` расширена полями `cached_tokens: Option<u32>` и `cache_creation_tokens: Option<u32>` (`types.rs`). Все production parse sites обновлены (OpenCode Go, OpenRouter, ChatGPT, Mistral, MiniMax, ZAI). Метод `cache_hit_rate()` вычисляет miss как `prompt_tokens - cached_tokens`. Тесты: 6 unit tests в `types.rs`, 4 provider tests в `opencode_go.rs`. Commit: `20740c82`.
 
-6.  ~~**Нет telemetry по cache read/write tokens.**~~ **FIXED.** `TokenUsage` расширена полями `cached_tokens: Option<u32>` и `cache_creation_tokens: Option<u32>` (`types.rs`). Все production parse sites обновлены (OpenCode Go, OpenRouter, ChatGPT, Mistral, MiniMax, ZAI). Метод `cache_hit_rate()` вычисляет miss как `prompt_tokens - cached_tokens`. Тесты: 6 unit tests в `types.rs`, 4 provider tests в `opencode_go.rs`. Commit: `20740c82`.
+6.  ~~**Tool schemas дублируются в prompt text и native `tools[]`.**~~ **FIXED.** `build_structured_output_instructions()` (`composer.rs`) теперь рендерит только compact sorted tool-name list (`## Available Tools`). Полные schemas доставляются исключительно через native `tools[]` payload. Prompt: 2673→98 bytes (27x reduction), wire duplication: -48%.
 
-7.  ~~**Tool schemas дублируются в prompt text и native `tools[]`.**~~ **FIXED.** `build_structured_output_instructions()` (`composer.rs`) теперь рендерит только compact sorted tool-name list (`## Available Tools`). Полные schemas доставляются исключительно через native `tools[]` payload. Prompt: 2673→98 bytes (27x reduction), wire duplication: -48%.
+7.  ~~**Compacted summary содержит volatile metadata.**~~ **FIXED.** `format_compacted_summary()` (`memory.rs`) убрал volatile поля из prompt-visible текста. Оставлен только `generation`, нужный для compaction chain. Остальная metadata логируется через `log_runtime_compaction_success`. Regression tests: `compacted_summary_excludes_volatile_metadata`, `compacted_summary_differs_only_in_generation_across_metadata`.
 
-8.  ~~**Compacted summary содержит volatile metadata.**~~ **FIXED.** `format_compacted_summary()` (`memory.rs`) убрал 12 volatile полей из prompt-visible текста. Оставлены только `generation` (нужен для compaction chain) и `wiki_memory_lookup_available` (влияет на tool-use). Остальная metadata логируется через `log_runtime_compaction_success`. Regression tests: `compacted_summary_excludes_volatile_metadata`, `compacted_summary_differs_only_in_generation_across_metadata`.
+8.  **Compaction pin-ит stale `UserTask`/`RuntimeContext` впереди summary.** `is_pinned()` (`compaction/history.rs:333-342`) сохраняет `UserTask`, `RuntimeContext`, `ApprovalReplay`, `InfraStatus` как pinned messages. После compaction старые dynamic messages остаются в начале non-system history, сжимая reusable stable prefix. **ЧАСТИЧНО FIXED:** budget guard на `compress` tool (`tools.rs:327-335`) блокирует premature compaction (< 85% context utilization). Production: agent отработал 14 итераций до 65K/272K tokens без compaction, cache hit вырос до 99.7%. Commit: `7e599dac`. Pinning strategy пока без изменений.
 
-9.  **Compaction pin-ит stale `UserTask`/`RuntimeContext` впереди summary.** `is_pinned()` (`compaction/history.rs:333-342`) сохраняет `UserTask`, `RuntimeContext`, `ApprovalReplay`, `InfraStatus` как pinned messages. После compaction старые dynamic messages остаются в начале non-system history, сжимая reusable stable prefix. **ЧАСТИЧНО FIXED:** budget guard на `compress` tool (`tools.rs:327-335`) блокирует premature compaction (< 85% context utilization). Production: agent отработал 14 итераций до 65K/272K tokens без compaction, cache hit вырос до 99.7%. Commit: `7e599dac`. Pinning strategy пока без изменений.
-
-10. **Web-transport: предыдущая top-level задача остаётся в hot memory на старте новой.** Web-transport переиспользует один runtime executor и durable flow (`flow_id = "main"`) для всех задач в одном чате. `AgentMemory` аккумулирует все сообщения между задачами — assistant response, tool outputs, reasoning. Вторая top-level задача отправляет в LLM prompt: `system + date + вся история задачи 1 + новая задача 2`. Растущий меняющийся non-system prefix ломает provider-side cache. `cached_tokens` застревает на системном prefix (~5-6K), cache hit rate падает ниже 20% до прогрева внутри новой задачи. **DEFERRED** — см. секцию "Что не стоит делать" и "Закрытые проблемы: cross-task cache".
+9. **Web-transport: предыдущая top-level задача остаётся в hot memory на старте новой.** Web-transport переиспользует один runtime executor и durable flow (`flow_id = "main"`) для всех задач в одном чате. `AgentMemory` аккумулирует все сообщения между задачами — assistant response, tool outputs, reasoning. Вторая top-level задача отправляет в LLM prompt: `system + date + вся история задачи 1 + новая задача 2`. Растущий меняющийся non-system prefix ломает provider-side cache. `cached_tokens` застревает на системном prefix (~5-6K), cache hit rate падает ниже 20% до прогрева внутри новой задачи. **DEFERRED** — см. секцию "Что не стоит делать" и "Закрытые проблемы: cross-task cache".
 
 ---
 
@@ -35,14 +33,13 @@
 | Core fallback prompt | **Да** (полностью статичен) | Никогда |
 | Profile instructions | Зависит | Per-profile |
 | Workflow guidance | **Да** (стабилен для tool-set) | При смене tools |
-| Wiki context | **Нет** (зависит от keywords task) | Per-task |
 | Structured output JSON | **Да** (для tool-set) | При смене tools |
 | `### CURRENT DATE AND TIME` (timestamp) | **Нет** (меняет каждую секунду) | Каждый запрос |
 
 **Порядок сборки** (`composer.rs` — main agent):
 
 ```
-[fallback + instructions + workflow_guidance + wiki_context + structured_output] + [date_context]
+[fallback + instructions + workflow_guidance + structured_output] + [date_context]
 ```
 
 **Порядок сборки** (`composer.rs` — sub-agent):
@@ -51,7 +48,7 @@
 ["You are a lightweight sub-agent..." + extra_context + workflow + structured_output] + [date_context]
 ```
 
-Стабильные блоки (fallback, workflow, structured output) идут первыми, формируя cacheable prefix. Динамические (wiki, date/time) — в конце как suffix.
+Стабильные блоки (fallback, workflow, structured output) идут первыми, формируя cacheable prefix. Динамический date/time блок — в конце как suffix.
 
 ### 2. History folding
 
@@ -76,13 +73,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 
 `date_context` в конце (fixed). Task убран из system prompt (fixed) — доставляется только через user message. Prompt стабильный для одинаковых tool-sets.
 
-### 4. Wiki context
-
-**Файл:** `crates/oxide-agent-core/src/agent/executor/execution.rs:361,391-411`
-
-Собирается каждый execution: assembler с `WikiSessionCache`, селект кандидатов по keywords task, загрузка через `StorageProvider` (SQLx/Postgres в текущем durable профиле), рендер в `## Durable Wiki Memory` ~12KB. Селект кандидатов от task keywords (`wiki_memory/context.rs:70`). Рендер стабилен если task keywords ведут к тому же набору страниц.
-
-### 5. Provider-native cache markers не используются
+### 4. Provider-native cache markers не используются
 
 **Anthropic-compatible paths** (`claudius` SDK):
 
@@ -93,7 +84,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 
 **OpenAI-compatible paths:** ни один provider не выставляет `cache_key`, `session_id` или аналоги для OpenAI prefix caching (автоматически после 1024 токенов, но это не контролируется).
 
-### 6. TokenUsage: cache telemetry
+### 5. TokenUsage: cache telemetry
 
 **FIXED.** `TokenUsage` (`types.rs`) расширена: `cached_tokens: Option<u32>`, `cache_creation_tokens: Option<u32>`, метод `cache_hit_rate()`. `cache miss = prompt_tokens - cached_tokens` (computed).
 
@@ -115,16 +106,15 @@ Assembly order: `base + stable + date_suffix + volatile`
 | # | Улучшение | Статус | Профит | Стоимость | Почему не плацебо |
 |---:|---|---|---|---:|---|
 | 1 | **Перенести date/time в конец system prompt.** | **DONE** | Очень высокий | Низкая | Smoke test: static prefix → 67.5% cache hit, dynamic prefix → 0% hit. |
-| 2 | **Переставить wiki context после workflow guidance.** | **DONE** | Высокий (если wiki включена) | Низкая | Wiki dynamic — стабильные блоки кэшируются первыми. |
-| 3 | **Убрать task из sub-agent system prompt.** Task уже загружен как user message (`delegation.rs:904`). System prompt sub-agent стабильный на одинаковых tool-sets между вызовами. | **DONE** | Высокий (для delegation) | Низкая | Mirror main-agent approach (`_task`). Regression test: `test_sub_agent_prompt_excludes_task`. |
-| 4 | **Добавить cache telemetry.** Расширить `TokenUsage` до `cached_tokens`/`cache_creation_tokens`, парсить provider-specific поля. | **DONE** | Средний (как валидация) | Низкая | `TokenUsage` расширена. 9 parse sites обновлены. `cache_hit_rate()`. Commit: `20740c82`. |
-| 5 | **Выборочный fold system messages.** Fold-ить в prompt только `TopicAgentsMd` (pinned), `Summary` и стабильные блоки. `SystemContext`/temporal/repair оставлять в history. | **DONE** | Высокий (с TopicAgentsMd/Summary) | Средняя | `fold_system_messages_into_prompt` разделяет stable/volatile по prefix (stable перед date, volatile после). `ComposedPrompt` (base + date_suffix). Commit: `182e1ef5`. system_prompt_tokens: 2629→2544 (−85 tok date_context). Тесты: `fold_stable_before_date_volatile_after`, `fold_all_volatile_when_no_stable_prefixes`. |
-| 6 | **Provider-native cache_control для Anthropic-совместимых путей.** MiniMax (`claudius`), OpenCode Go Anthropic: маркировать system prompt как cacheable, tool definitions как cacheable, динамические суффиксы как non-cacheable. | TODO | Высокий для Anthropic-маршрутов | Высокая | Зависит от активных routes и SDK. |
-| 7 | **Удалить дублирование tool schemas из prompt text.** `build_structured_output_instructions()` заменён на compact sorted tool-name list. Полные schemas доставляются только через native `tools[]` payload. | **DONE** | Высокий | Низкая | Prompt: 2673→98 bytes (27x reduction). Wire: -48% дублирования. |
-| 8 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить `generation` (compaction chain) + `wiki_memory_lookup_available` (tool-use) + guidance text. | **DONE** | Средний | Низкая | 12 volatile полей → 2 стабильных. Summary stable для одинакового semantic content. |
-| 9 | **Сузить pinned messages после compaction.** Не pin-ить `UserTask`/`RuntimeContext` бессрочно; fold-ить их в summary вместо сохранения как front-of-history anchors. | ЧАСТИЧНО | Средний | Средняя | Budget guard предотвращает premature compaction (commit `7e599dac`). Pinning strategy без изменений. Production: 14 iter без compaction, 99.7% hit. |
-| 10 | **Добавить prompt-layout hashes в observability.** `static_prefix_hash`, `tools_hash`, `topic_agents_md_hash` — для корреляции cache behavior с конкретной layout. | TODO | Средний (как валидация) | Средняя | Невозможно отличить layout regression от provider-side noise. |
-| 11 | **Trim memory между top-level задачами в web-transport.** Перед новым task в том же web-чате заменять раздутую hot memory на короткий volatile handoff (предыдущий task input + final response preview + compact tool timeline). | DEFERRED | Высокий | Низкая | Предотвращает сброс cache prefix на второй задаче. Цена — потеря детального контекста предыдущей задачи в LLM prompt. |
+| 2 | **Убрать task из sub-agent system prompt.** Task уже загружен как user message (`delegation.rs:904`). System prompt sub-agent стабильный на одинаковых tool-sets между вызовами. | **DONE** | Высокий (для delegation) | Низкая | Mirror main-agent approach (`_task`). Regression test: `test_sub_agent_prompt_excludes_task`. |
+| 3 | **Добавить cache telemetry.** Расширить `TokenUsage` до `cached_tokens`/`cache_creation_tokens`, парсить provider-specific поля. | **DONE** | Средний (как валидация) | Низкая | `TokenUsage` расширена. 9 parse sites обновлены. `cache_hit_rate()`. Commit: `20740c82`. |
+| 4 | **Выборочный fold system messages.** Fold-ить в prompt только `TopicAgentsMd` (pinned), `Summary` и стабильные блоки. `SystemContext`/temporal/repair оставлять в history. | **DONE** | Высокий (с TopicAgentsMd/Summary) | Средняя | `fold_system_messages_into_prompt` разделяет stable/volatile по prefix (stable перед date, volatile после). `ComposedPrompt` (base + date_suffix). Commit: `182e1ef5`. system_prompt_tokens: 2629→2544 (−85 tok date_context). Тесты: `fold_stable_before_date_volatile_after`, `fold_all_volatile_when_no_stable_prefixes`. |
+| 5 | **Provider-native cache_control для Anthropic-совместимых путей.** MiniMax (`claudius`), OpenCode Go Anthropic: маркировать system prompt как cacheable, tool definitions как cacheable, динамические суффиксы как non-cacheable. | TODO | Высокий для Anthropic-маршрутов | Высокая | Зависит от активных routes и SDK. |
+| 6 | **Удалить дублирование tool schemas из prompt text.** `build_structured_output_instructions()` заменён на compact sorted tool-name list. Полные schemas доставляются только через native `tools[]` payload. | **DONE** | Высокий | Низкая | Prompt: 2673→98 bytes (27x reduction). Wire: -48% дублирования. |
+| 7 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить только `generation` для compaction chain. | **DONE** | Средний | Низкая | Summary stable для одинакового semantic content. |
+| 8 | **Сузить pinned messages после compaction.** Не pin-ить `UserTask`/`RuntimeContext` бессрочно; fold-ить их в summary вместо сохранения как front-of-history anchors. | ЧАСТИЧНО | Средний | Средняя | Budget guard предотвращает premature compaction (commit `7e599dac`). Pinning strategy без изменений. Production: 14 iter без compaction, 99.7% hit. |
+| 9 | **Добавить prompt-layout hashes в observability.** `static_prefix_hash`, `tools_hash`, `topic_agents_md_hash` — для корреляции cache behavior с конкретной layout. | TODO | Средний (как валидация) | Средняя | Невозможно отличить layout regression от provider-side noise. |
+| 10 | **Trim memory между top-level задачами в web-transport.** Перед новым task в том же web-чате заменять раздутую hot memory на короткий volatile handoff (предыдущий task input + final response preview + compact tool timeline). | DEFERRED | Высокий | Низкая | Предотвращает сброс cache prefix на второй задаче. Цена — потеря детального контекста предыдущей задачи в LLM prompt. |
 
 ---
 
@@ -258,7 +248,6 @@ Cacheable boundary sub-agent: `[STATIC_GLOBAL_V1]` + `[STATIC_PROFILE_SUB_V1]` +
 ### `[DYNAMIC_SESSION]` — меняется между сессиями
 
 - Scrubbed compacted summary (semantic text only, без `created_at`/route/provider metadata)
-- Wiki context (`## Durable Wiki Memory`) с стабильным заголовком
 - Recent dialogue tail
 - Active session-control notes
 
@@ -276,7 +265,6 @@ Cacheable boundary sub-agent: `[STATIC_GLOBAL_V1]` + `[STATIC_PROFILE_SUB_V1]` +
 
 - **Compaction summarizer**: `local_compaction_system_prompt()` (`compaction/prompt.rs:11-34`) — static global + dynamic session payload.
 - **Loop detection**: `SYSTEM_PROMPT` + static `USER_PROMPT` header (`loop_detection/llm_detector.rs:17-41`).
-- **Wiki-memory writer**: `wiki_memory_writer_system_prompt()` (`executor/execution.rs:744-745`).
 - **Completion check hook**: нет отдельного LLM вызова.
 
 ---

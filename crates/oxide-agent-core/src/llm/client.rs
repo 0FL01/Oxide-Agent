@@ -92,7 +92,6 @@ const SOURCE_ID_OPENAI_BASE: &str = "openai-base";
 pub(crate) enum InternalTextPurpose {
     CompactionSummary,
     LoopDetection,
-    WikiMemoryWriter,
     InputIntentClassification,
 }
 

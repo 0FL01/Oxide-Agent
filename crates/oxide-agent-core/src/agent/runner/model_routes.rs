@@ -294,7 +294,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
                 .with_model_provider("chatgpt")
@@ -353,7 +352,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
                 .with_model_provider("llm-provider/opencode-go")
@@ -425,7 +423,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("mimo-v2.5-free".to_string(), 8, 4, 60, 4096)
                 .with_model_provider("llm-provider/opencode-zen")

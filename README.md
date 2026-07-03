@@ -19,7 +19,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
 - **Sandbox Backends:** Docker broker isolation by default, with optional direct Docker access
-- **Wiki Memory:** SQLx/Postgres-backed persistent memory with optional LLM-assisted extraction
 - **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly with validated 80%+ cache hit rate on OpenCode Go
 </details>
 
@@ -43,7 +42,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **Durable Context:** Topic `AGENTS.md`, wiki memory, runtime injections, and enabled tools provide deterministic prompt context.
+    *   **Durable Context:** Topic `AGENTS.md`, runtime injections, and enabled tools provide deterministic prompt context.
     *   **File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
 
@@ -56,7 +55,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Search Budget Hook - prevents infinite loops in tool calls
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
-        - Episodic Extract / Retrieval Advisor - wiki memory integration hooks
         - Registry - centralized hook management
     *   **Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **Hierarchical Delegation:** The Main Agent spawns async Sub-Agents for parallel, independent subtasks. Each sub-agent runs in an isolated ephemeral session with a task-specific tool whitelist, inherits the topic AGENTS.md and parent cancellation, and returns results via background job tracking.
@@ -73,7 +71,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   Work with documents of various formats.
 *   **Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
 *   **Context Management:** Dialogue history saved in SQLx/Postgres with context-scoped isolation per topic.
-*   **Wiki Memory:** Persistent SQLx/Postgres-backed memory pages with optional LLM-assisted extraction and retrieval.
 *   **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly order maximizes cache hit rate, with validated 80%+ cache hit on OpenCode Go.
 
 ## Screenshots
@@ -156,7 +153,6 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 *   **Local Web Markdown** - lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Kokoro TTS Server** - optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** - optional for Russian voice message synthesis (`SILERO_TTS_URL`)
-*   **Wiki Memory Writer** - optional background LLM-assisted memory extraction (`WIKI_MEMORY_WRITER_ENABLED`)
 </details>
 
 ## Installation and Launch
@@ -225,12 +221,6 @@ OPENAI_BASE_PROVIDERS__1__PROFILE=zai
 # `web_search` appears only when at least one indexed backend key/endpoint is configured.
 # CRW also backs the rendered path of `web_crawler` when both CRW env vars are configured.
 
-# Wiki Memory (master switch, defaults to true)
-# WIKI_MEMORY_ENABLED=true
-# Wiki Memory Writer (background, optional LLM-assisted)
-# WIKI_MEMORY_WRITER_ENABLED=true
-# WIKI_MEMORY_WRITER_MODEL_ID="google/gemini-3-flash-preview"
-# WIKI_MEMORY_WRITER_MODEL_PROVIDER="openrouter"
 ```
 
 Plain `docker-compose.web.yml` is remote-Postgres friendly and expects `OXIDE_DATABASE_URL` from `.env` or the shell. Add `docker-compose.web.local-services.yml` when you want the bundled local Postgres. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` unless a separate migration job is guaranteed to finish before web startup.
@@ -380,7 +370,6 @@ SSML support: set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<pros
 - **Reminder Provider** (`tool-reminder`) - reminder scheduling with pause/resume/retry
 
 ### Memory
-- **Wiki Memory Provider** (`tool-wiki-memory`) - wiki memory list, read, delete
 - **Compression Provider** (`tool-compression`) - message compression tools
 - **Agents MD Provider** (`tool-agents-md`) - topic-scoped AGENTS.md editing
 
@@ -440,19 +429,6 @@ SSH tools run in YOLO mode for configured topic infra bindings. Restrict access 
 
 </details>
 
-## Wiki Memory
-
-Persistent SQLx/Postgres-backed memory pages with deterministic storage and optional LLM-assisted extraction.
-
-- **Storage:** Deterministic Markdown pages persisted as SQL rows keyed by `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`
-- **Background Planner:** Optionally uses LLM to extract structured memory after agent completion
-- **Tools:** `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents)
-- **Master Switch:** `WIKI_MEMORY_ENABLED=false` disables the entire subsystem (tools, prompt context injection, memory hooks). Defaults to `true`.
-- **Writer:** Enable with `WIKI_MEMORY_WRITER_ENABLED=true`; configure extraction model via `WIKI_MEMORY_WRITER_MODEL_ID` / `WIKI_MEMORY_WRITER_MODEL_PROVIDER`
-- **Memory Hooks:** `episodic_extract` and `retrieval_advisor` activate when `WIKI_MEMORY_ENABLED=true`
-
-Details: `docs/wiki-memory.md`
-
 ## Agent Architecture
 
 <details>
@@ -460,7 +436,7 @@ Details: `docs/wiki-memory.md`
 
 ### Deterministic Context
 - Topic-scoped `AGENTS.md`
-- SQLx/Postgres-backed wiki memory
+- SQLx/Postgres-backed runtime memory
 - Runtime context injections
 - Enabled tools and profile instructions
 
@@ -505,10 +481,8 @@ Extensible architecture for personalizing agent behavior:
 - **Sub-Agent Safety** - ensures safe execution environments for delegated tasks
 - **Search Budget** - limits search tool calls (10 per session)
 - **Timeout Report** - provides detailed timeout reporting
-- **Episodic Extract** - wiki memory extraction (active when wiki memory enabled)
-- **Retrieval Advisor** - wiki memory retrieval (active when wiki memory enabled)
 
-**Manageable Hooks:** `search_budget`, `timeout_report`, `retrieval_advisor`, `episodic_extract`
+**Manageable Hooks:** `search_budget`, `timeout_report`
 
 ### Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools. See [Tool Providers](#tool-providers) for the full list with configuration details.
@@ -601,10 +575,8 @@ crates/
 │       │   │   ├── tts/                  # Kokoro TTS
 │       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
-│       │   │   ├── wiki_memory.rs        # Wiki memory tools
 │       │   │   └── ...
 │       │   ├── tool_runtime/    # Typed tool registration and execution
-│       │   ├── wiki_memory/     # Wiki memory planner, storage
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
@@ -666,7 +638,6 @@ tests/                          # Integration and functional tests
 │   ├── reminder_tests.rs
 │   └── tool_latency_tests.rs
 docs/                           # Documentation
-├── wiki-memory.md              # Wiki memory system
 ├── silero-tts-api.md           # Silero TTS integration
 ├── stack-logs.md               # Stack logs tool
 ├── context-window-tracking.md  # Token budget management
@@ -703,7 +674,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | **Sandbox Backend** | `sandbox-backend-sandboxd-client` |
 | **Media** | `tool-audio-stt`, `tool-vision-image`, `tool-vision-video`, `tool-ytdlp` |
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
-| **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |
+| **Memory** | `tool-compression`, `tool-agents-md` |
 | **Integrations** | `integration-mcp-jira`, `integration-mcp-mattermost`, `integration-ssh-mcp` |
 | **Other** | `tool-todos`, `tool-delegation`, `tool-reminder`, `tool-browser-live`, `tool-file-delivery`, `tool-stack-logs`, `manager-control-plane` |
 

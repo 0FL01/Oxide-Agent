@@ -21,8 +21,6 @@ pub mod identity;
 pub mod input_intent;
 /// Memory management for agent conversation history
 pub mod memory;
-/// Task-local memory behavior signals for wiki updates.
-pub mod memory_behavior;
 /// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
 /// Execution profile parsing and policy helpers
@@ -39,15 +37,12 @@ pub mod runner;
 pub mod session;
 /// Structured output parsing and validation
 pub mod structured_output;
+/// Agent thought inference from tool calls
+pub mod thoughts;
 /// Deterministic summaries for noisy dead-end tool failures.
 pub(crate) mod tool_failure_summary;
 /// Async parallel tool runtime foundations.
 pub mod tool_runtime;
-/// Durable LLM Wiki memory primitives.
-pub mod wiki_memory;
-
-/// Agent thought inference from tool calls
-pub mod thoughts;
 
 /// Loop detection subsystem
 pub mod loop_detection;
@@ -77,9 +72,6 @@ pub use memory::{
     AgentMemory, AgentMessageAttachment, AgentMessageAttachmentKind, ExternalizedPayload,
     PrunedArtifact,
 };
-pub use memory_behavior::{
-    MemoryBehaviorRuntime, ToolDerivedMemoryDraft, ToolDerivedMemoryKind, TopicMemoryPolicy,
-};
 pub use profile::{
     AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile, ToolAccessPolicy,
     dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
@@ -93,4 +85,3 @@ pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,
     RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
-pub use wiki_memory::WikiStore;

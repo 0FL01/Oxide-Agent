@@ -27,8 +27,8 @@ use crate::bot::{
 };
 use crate::config::{BotSettings, TelegramSettings};
 use async_trait::async_trait;
+use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::agent::SessionId;
-use oxide_agent_core::agent::{AgentMemory, AgentSession};
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -1369,55 +1369,6 @@ async fn completed_response_delivery_commits_terminal_send_without_followups() {
     );
 
     clear_completed_response_delivery_state(&session_id).await;
-}
-
-#[tokio::test]
-async fn ensure_session_attaches_missing_wiki_store_to_cached_primary_session() {
-    let bot = Bot::new("token");
-    let chat_id = ChatId(-100_123);
-    let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
-    let settings = test_settings(None);
-    let llm = test_llm(&settings);
-    let keys = agent_mode_session_keys(77, chat_id, None, "flow-a");
-
-    remove_session(keys).await;
-
-    let executor_without_wiki_store = oxide_agent_core::agent::AgentExecutor::new(
-        llm.clone(),
-        AgentSession::new(keys.primary),
-        settings.agent.clone(),
-    );
-    SESSION_REGISTRY
-        .insert(keys.primary, executor_without_wiki_store)
-        .await;
-
-    let resolved_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
-        context_key: "topic-a".to_string(),
-        agent_flow_id: "flow-a".to_string(),
-        agent_flow_created: false,
-        sandbox_scope: test_sandbox_scope(77, "topic-a"),
-        user_id: 77,
-        bot: &bot,
-        transport_ctx: SessionTransportContext {
-            chat_id,
-            manager_default_chat_id: None,
-            thread_spec: resolve_thread_spec_from_context(true, false, None),
-        },
-        llm: &llm,
-        storage: &storage,
-        settings: &settings,
-    })
-    .await;
-
-    assert_eq!(resolved_session, keys.primary);
-    let executor_arc = SESSION_REGISTRY
-        .get(&keys.primary)
-        .await
-        .expect("cached session should remain registered");
-    assert!(executor_arc.read().await.has_wiki_memory_store());
-
-    remove_session(keys).await;
 }
 
 #[tokio::test]

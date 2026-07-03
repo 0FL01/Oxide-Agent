@@ -556,8 +556,8 @@ async fn topic_agent_hooks_get_reports_manageable_and_protected_hooks() {
 
     let parsed = parse_json_response(&response);
     assert_eq!(
-        parsed["hooks"]["active_hooks"].as_array().map(Vec::len),
-        Some(5)
+        parsed["hooks"]["active_hooks"],
+        json!(["completion_check", "timeout_report", "tool_access_policy"])
     );
     assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["search_budget"]));
     assert!(

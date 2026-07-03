@@ -109,13 +109,6 @@ provides = ["tool/reminder"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
-id = "tool/wiki-memory"
-cargo_feature = "tool-wiki-memory"
-kind = "Memory"
-provides = ["tool/wiki-memory"]
-profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
-
-[[modules]]
 id = "tool/webfetch-md"
 cargo_feature = "tool-webfetch-md"
 kind = "Search"

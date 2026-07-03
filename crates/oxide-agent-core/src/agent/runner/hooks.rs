@@ -23,7 +23,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -57,7 +56,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -93,7 +91,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -130,7 +127,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -164,7 +160,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -196,7 +191,6 @@ impl AgentRunner {
         .with_sub_agent(ctx.config.is_sub_agent)
         .with_available_tools(&ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
         .with_search_limit(ctx.config.search_limit)
         .with_token_usage(
             ctx.agent.memory().rendered_token_count(),
@@ -295,7 +289,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::default(),
         };

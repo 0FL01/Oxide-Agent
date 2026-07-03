@@ -40,7 +40,6 @@ src/agent/hooks/
 ├── registry.rs            # Hook trait, HookRegistry
 ├── completion.rs          # CompletionCheckHook
 ├── hot_context.rs         # HotContextHealthHook
-├── memory.rs              # EpisodicExtractHook, RetrievalAdvisorHook
 ├── tool_access.rs         # ToolAccessPolicyHook
 ├── sub_agent_safety.rs    # SubAgentSafetyHook
 ├── search_budget.rs       # SearchBudgetHook
@@ -53,14 +52,12 @@ src/agent/runner/
 
 ## Регистрация хуков
 
-### Основной агент (src/agent/executor/config.rs:42-51)
+### Основной агент (src/agent/executor/config.rs)
 
 ```rust
 let mut runner = AgentRunner::new(Arc::clone(&llm_client));
 runner.register_hook(Box::new(CompletionCheckHook::new()));
 runner.register_hook(Box::new(HotContextHealthHook::new()));
-runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
-runner.register_hook(Box::new(EpisodicExtractHook::new()));
 Self::register_policy_controlled_hook(
     &mut runner,
     SearchBudgetHook::new(get_agent_search_limit()),
@@ -76,9 +73,9 @@ Self::register_policy_controlled_hook(
 );
 ```
 
-> `register_policy_controlled_hook` оборачивает хук в `PolicyControlledHook`, который применяет флаги `HookAccessPolicy`. Memory-хуки регистрируются безусловно, но гейтятся внутренне; саб-агенты short-circuit'ятся через `is_sub_agent`.
+> `register_policy_controlled_hook` оборачивает хук в `PolicyControlledHook`, который применяет флаги `HookAccessPolicy`.
 
-### Саб-агент (src/agent/providers/delegation.rs:883-898)
+### Саб-агент (src/agent/providers/delegation.rs)
 
 ```rust
 fn create_sub_agent_runner_with_client(&self, ...) -> AgentRunner {
@@ -96,7 +93,7 @@ fn create_sub_agent_runner_with_client(&self, ...) -> AgentRunner {
 }
 ```
 
-> Саб-агенты не получают `RetrievalAdvisorHook`, `EpisodicExtractHook`, `ToolAccessPolicyHook`.
+> Саб-агенты не получают `ToolAccessPolicyHook`; `SubAgentSafetyHook` задает их отдельные safety-ограничения.
 
 ## Поток выполнения
 

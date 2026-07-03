@@ -14,8 +14,6 @@ use crate::agent::providers::SandboxFileOpsProvider;
 #[cfg(oxide_module_tool_sandbox_recreate)]
 use crate::agent::providers::SandboxLifecycleProvider;
 use crate::agent::providers::{SandboxRuntime, TodoList};
-use crate::agent::session::AgentMemoryScope;
-use crate::agent::wiki_memory::WikiStore;
 use crate::capabilities::ModuleId;
 use crate::config::AgentSettings;
 use crate::llm::LlmClient;
@@ -66,8 +64,6 @@ use crate::agent::providers::TodosProvider;
 use crate::agent::providers::WebFetchMdProvider;
 #[cfg(oxide_module_tool_web_search)]
 use crate::agent::providers::WebSearchProvider;
-#[cfg(oxide_module_tool_wiki_memory)]
-use crate::agent::providers::WikiMemoryProvider;
 #[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::providers::YtdlpProvider;
 #[cfg(oxide_module_integration_ssh_mcp)]
@@ -238,8 +234,6 @@ pub struct ToolModuleContext {
     ssh_mcp_context: Option<SshMcpModuleContext>,
     browser_live_context: Option<BrowserLiveModuleContext>,
     reminder_context: Option<ReminderContext>,
-    wiki_memory_store: Option<WikiStore>,
-    memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
     inherited_model: Option<crate::config::ModelInfo>,
     /// Shared tool surface handle for the lazy tool protocol.
@@ -272,10 +266,6 @@ pub struct ToolModuleContextParts {
     pub browser_live_context: Option<BrowserLiveModuleContext>,
     /// Optional reminder context.
     pub reminder_context: Option<ReminderContext>,
-    /// Optional durable wiki memory store.
-    pub wiki_memory_store: Option<WikiStore>,
-    /// Stable memory scope for wiki memory tools.
-    pub memory_scope: AgentMemoryScope,
     /// Optional progress sender.
     pub progress_tx: Option<Sender<AgentEvent>>,
     /// Parent session's effective model, inherited by sub-agents when no
@@ -302,8 +292,6 @@ impl ToolModuleContext {
             ssh_mcp_context: parts.ssh_mcp_context,
             browser_live_context: parts.browser_live_context,
             reminder_context: parts.reminder_context,
-            wiki_memory_store: parts.wiki_memory_store,
-            memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
             inherited_model: parts.inherited_model,
             tool_surface_handle: parts.tool_surface_handle,
@@ -373,20 +361,6 @@ impl ToolModuleContext {
     #[must_use]
     pub fn reminder_context(&self) -> Option<ReminderContext> {
         self.reminder_context.clone()
-    }
-
-    /// Optional durable wiki memory store.
-    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
-    #[must_use]
-    pub fn wiki_memory_store(&self) -> Option<WikiStore> {
-        self.wiki_memory_store.clone()
-    }
-
-    /// Stable memory scope used by wiki memory tools.
-    #[cfg_attr(not(oxide_module_tool_wiki_memory), allow(dead_code))]
-    #[must_use]
-    pub fn memory_scope(&self) -> AgentMemoryScope {
-        self.memory_scope.clone()
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -737,44 +711,6 @@ impl ToolModule for ReminderToolModule {
 
     fn capability_group(&self) -> Option<CapabilityGroup> {
         Some(CapabilityGroup::Reminders)
-    }
-
-    fn visibility(&self) -> ToolVisibility {
-        ToolVisibility::Deferred
-    }
-
-    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider(ctx)
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
-/// Capability module for scoped durable wiki memory tools.
-#[cfg(oxide_module_tool_wiki_memory)]
-pub struct WikiMemoryToolModule;
-
-#[cfg(oxide_module_tool_wiki_memory)]
-impl WikiMemoryToolModule {
-    fn provider(&self, ctx: &ToolModuleContext) -> Option<WikiMemoryProvider> {
-        let store = ctx.wiki_memory_store()?;
-        let scope = ctx.memory_scope();
-        Some(WikiMemoryProvider::new(
-            store,
-            scope.user_id,
-            scope.context_key,
-        ))
-    }
-}
-
-#[cfg(oxide_module_tool_wiki_memory)]
-impl ToolModule for WikiMemoryToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/wiki-memory")
-    }
-
-    fn capability_group(&self) -> Option<CapabilityGroup> {
-        Some(CapabilityGroup::Memory)
     }
 
     fn visibility(&self) -> ToolVisibility {
@@ -2114,13 +2050,6 @@ mod capability_mapping_tests {
             "reminder",
             ReminderToolModule.capability_group(),
             ReminderToolModule.visibility(),
-        ));
-
-        #[cfg(oxide_module_tool_wiki_memory)]
-        checks.push((
-            "wiki-memory",
-            WikiMemoryToolModule.capability_group(),
-            WikiMemoryToolModule.visibility(),
         ));
 
         #[cfg(oxide_module_tool_audio_stt)]

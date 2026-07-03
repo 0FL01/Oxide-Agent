@@ -81,8 +81,6 @@ pub use modules::WebCrawlerToolModule;
 pub use modules::WebFetchMdToolModule;
 #[cfg(oxide_module_tool_web_search)]
 pub use modules::WebSearchToolModule;
-#[cfg(oxide_module_tool_wiki_memory)]
-pub use modules::WikiMemoryToolModule;
 #[cfg(oxide_module_tool_ytdlp)]
 pub use modules::YtdlpToolModule;
 pub use modules::{ToolModule, ToolModuleContext};

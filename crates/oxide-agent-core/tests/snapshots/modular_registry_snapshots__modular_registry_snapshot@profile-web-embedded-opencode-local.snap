@@ -135,10 +135,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/webfetch-md"
       },
       {
-        "id": "tool/wiki-memory",
-        "module": "tool/wiki-memory"
-      },
-      {
         "id": "transport/web",
         "module": "transport/web"
       }
@@ -590,17 +586,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-wiki-memory",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/wiki-memory",
-        "kind": "memory",
-        "provides": [
-          "tool/wiki-memory"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "transport-web",
         "config_properties": [],
         "conflicts": [],
@@ -647,7 +632,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/web-crawler",
       "tool/web-search",
       "tool/webfetch-md",
-      "tool/wiki-memory",
       "transport/web"
     ],
     "modules": [
@@ -673,7 +657,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/web-crawler",
       "tool/web-search",
       "tool/webfetch-md",
-      "tool/wiki-memory",
       "transport/web"
     ]
   },

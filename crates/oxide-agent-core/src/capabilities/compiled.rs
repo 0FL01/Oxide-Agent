@@ -395,13 +395,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-wiki-memory",
-        "tool/wiki-memory",
-        Memory,
-        ["tool/wiki-memory"]
-    );
-    push_module!(
-        modules,
         "tool-webfetch-md",
         "tool/webfetch-md",
         Search,

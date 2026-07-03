@@ -96,12 +96,7 @@ const DM_ALLOWED_TOOLS_ENV: &str = "DM_ALLOWED_TOOLS";
 /// Environment variable for adding tools to DM blocklist (comma-separated).
 const DM_BLOCKED_TOOLS_ENV: &str = "DM_BLOCKED_TOOLS";
 
-const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
-    "search_budget",
-    "timeout_report",
-    "retrieval_advisor",
-    "episodic_extract",
-];
+const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &["search_budget", "timeout_report"];
 
 const TOPIC_AGENT_PROTECTED_HOOKS: &[&str] = &["completion_check", "tool_access_policy"];
 

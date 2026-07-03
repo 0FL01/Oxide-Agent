@@ -38,7 +38,6 @@ pub mod tts;
 pub mod web_search;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub mod webfetch_md;
-pub mod wiki_memory;
 pub mod ytdlp;
 
 #[cfg(oxide_module_tool_browser_live)]
@@ -102,7 +101,6 @@ pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
 pub use web_search::WebSearchProvider;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub use webfetch_md::WebFetchMdProvider;
-pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;
 
 #[cfg(oxide_module_tool_browser_live)]

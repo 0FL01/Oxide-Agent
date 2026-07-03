@@ -190,7 +190,6 @@ fn build_lazy_runner_context<'a>(
         compaction_controller: None,
         session_id: Some("42".to_string()),
         memory_scope: None,
-        memory_behavior: None,
         storage: None,
         config: RunnerConfig::new("deepseek-v4-flash".to_string(), 5, 1, 30, 1024)
             .with_model_provider("opencode-go")

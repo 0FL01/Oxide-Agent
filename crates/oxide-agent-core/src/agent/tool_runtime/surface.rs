@@ -47,9 +47,6 @@ pub enum CapabilityGroup {
     /// `browser_execute`, `browser_extract`, `browser_debug`,
     /// `browser_save_screenshot`, `browser_close`.
     Browser,
-    /// Wiki memory: `wiki_memory_list`, `wiki_memory_read`,
-    /// `wiki_memory_delete`.
-    Memory,
     /// Media analysis: `transcribe_audio_file`, `describe_image_file`,
     /// `describe_video_file`.
     Media,
@@ -86,7 +83,6 @@ impl CapabilityGroup {
             Self::Shell => "shell",
             Self::Web => "web",
             Self::Browser => "browser",
-            Self::Memory => "memory",
             Self::Media => "media",
             Self::Ytdlp => "ytdlp",
             Self::Tts => "tts",
@@ -111,7 +107,6 @@ impl std::str::FromStr for CapabilityGroup {
             "shell" => Ok(Self::Shell),
             "web" => Ok(Self::Web),
             "browser" => Ok(Self::Browser),
-            "memory" => Ok(Self::Memory),
             "media" => Ok(Self::Media),
             "ytdlp" => Ok(Self::Ytdlp),
             "tts" => Ok(Self::Tts),
@@ -137,7 +132,6 @@ impl CapabilityGroup {
             Self::Shell,
             Self::Web,
             Self::Browser,
-            Self::Memory,
             Self::Media,
             Self::Ytdlp,
             Self::Tts,

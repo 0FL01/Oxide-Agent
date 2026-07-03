@@ -39,10 +39,7 @@ pub(crate) use control_plane::{
 };
 pub use error::StorageError;
 pub use flows::AgentFlowRecord;
-pub use keys::{
-    generate_flow_id, wiki_context_inbox_key, wiki_context_key, wiki_context_page_key,
-    wiki_context_prefix, wiki_context_raw_key, wiki_global_key,
-};
+pub use keys::generate_flow_id;
 #[cfg(oxide_module_storage_sqlx)]
 pub use modules::{BuiltStorageBackend, StorageBackendModule, build_primary_storage};
 #[cfg(test)]

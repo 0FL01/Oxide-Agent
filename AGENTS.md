@@ -25,7 +25,7 @@ Default branch: `main`.
 ## Workspace Overview
 
 ### Main crates
-- `oxide-agent-core` - agent domain: execution, hooks, compaction, storage facade, LLM providers, sandbox, wiki memory, reminder/SSH/manager providers.
+- `oxide-agent-core` - agent domain: execution, hooks, compaction, storage facade, LLM providers, sandbox, reminder/SSH/manager providers.
 - `oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress.
 - `oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress, topic/thread integration.
 - `oxide-agent-transport-web` - Web console backend and E2E test transport: HTTP API (axum), scripted LLM, SSE streaming, Life Mode executor/routes.
@@ -63,14 +63,8 @@ For current file/module structure inside any subsystem, run `graphify query "<su
 - Tool calls run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
-### Wiki memory
-- Lives in `agent/wiki_memory/` -- no separate crate. Storage: SQLx/Postgres via the storage facade.
-- Pages are deterministic Markdown: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
-- Background planner (`planner.rs`) optionally uses LLM to extract structured memory.
-- Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
-
 ### Hooks and sub-agents
-- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) are registered only when `WIKI_MEMORY_ENABLED` is true (default) and gated internally by `HookAccessPolicy` flags; sub-agents are short-circuited. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
+- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
 - Loop detection has content, tool-sequence, and LLM layers; do not bypass in runner changes.
 - Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`. Browser tools available via `allowed_tools` whitelist with RAII cleanup on run end.
 - Do not reintroduce embedding-selected skills.
@@ -130,13 +124,13 @@ For current file/module structure inside any subsystem, run `graphify query "<su
 - Browser: `browser_live` tools (see Browser Live above).
 - Media: `audio-stt` (transcription), `vision-image` (description), `vision-video` (description).
 - Integrations: `jira-mcp`, `mattermost-mcp` (runtime-disabled, enabled via `topic_agent_tools_enable`), `ssh-mcp`.
-- Agent ops: `delegation`, `manager_control_plane`, `reminder`, `agents_md`, `wiki_memory`, `stack_logs` (disabled for topic agents, blocked for sub-agents), `compression`, `file_delivery`, `path`, `todos`, `tts` (Kokoro EN + Silero RU), `ytdlp`.
+- Agent ops: `delegation`, `manager_control_plane`, `reminder`, `agents_md`, `stack_logs` (disabled for topic agents, blocked for sub-agents), `compression`, `file_delivery`, `path`, `todos`, `tts` (Kokoro EN + Silero RU), `ytdlp`.
 
 ## Configuration
 
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
-- Key runtime: DuckDuckGo, model routes, temperature, compaction budget, Jira MCP, wiki memory writer.
+- Key runtime: DuckDuckGo, model routes, temperature, compaction budget, Jira MCP.
 - Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Build assets and service config in `docker/` (`Dockerfile.*`, `searxng/`, `consent-rules*`) are referenced by the root compose files.
 
 ## Development Practices
@@ -190,7 +184,6 @@ feat(sources): add bybit proof of reserves source
 
 - `docs/tips/cache-hit.md` - prompt cache hit analysis: architecture, assembly order, telemetry, production validation.
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
-- `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
 - `docs/compaction-architecture.md` - compaction architecture: engine, admission, renderer, blocks.
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.

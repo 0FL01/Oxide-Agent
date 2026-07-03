@@ -86,7 +86,6 @@ profile-full = [
     "tool-delegation",
     "tool-agents-md",
     "tool-reminder",
-    "tool-wiki-memory",
     "tool-webfetch-md",
     "tool-web-search",
     "tool-crw",
@@ -119,7 +118,6 @@ profile-embedded-opencode-local = [
     "tool-delegation",
     "tool-agents-md",
     "tool-reminder",
-    "tool-wiki-memory",
     "tool-webfetch-md",
     "tool-web-search",
     "tool-sandbox-fileops",
@@ -141,7 +139,6 @@ profile-web-embedded-opencode-local = [
     "tool-retrieve-tools",
     "tool-delegation",
     "tool-reminder",
-    "tool-wiki-memory",
     "tool-webfetch-md",
     "tool-web-search",
     "tool-crw",
@@ -179,7 +176,6 @@ tool-retrieve-tools = []
 tool-delegation = []
 tool-agents-md = []
 tool-reminder = []
-tool-wiki-memory = []
 tool-webfetch-md = ["dep:htmd", "http-client"]
 tool-web-search = ["http-client"]
 tool-crw = ["http-client"]

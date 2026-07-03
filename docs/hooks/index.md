@@ -40,8 +40,6 @@
 ```
 ✅ CompletionCheckHook
 ✅ HotContextHealthHook
-✅ RetrievalAdvisorHook (gated by HookAccessPolicy)
-✅ EpisodicExtractHook (gated by HookAccessPolicy)
 ✅ SearchBudgetHook (policy-controlled)
 ✅ ToolAccessPolicyHook
 ✅ TimeoutReportHook (policy-controlled)

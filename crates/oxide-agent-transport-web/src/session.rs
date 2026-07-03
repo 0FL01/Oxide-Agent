@@ -413,7 +413,7 @@ impl WebSessionManager {
     /// Create a new session manager using an explicit storage provider.
     ///
     /// Production web console setup passes the durable SQLx/Postgres provider here so
-    /// runtime memory, wiki memory, topic AGENTS.md and reminder context share
+    /// runtime memory, topic AGENTS.md and reminder context share
     /// the same storage backend as the rest of the application.
     pub fn new_with_storage(
         registry: SessionRegistry,
@@ -764,11 +764,6 @@ impl WebSessionManager {
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
                 .with_storage(self.storage());
-        if self.agent_settings.is_wiki_memory_enabled() {
-            executor = executor.with_wiki_memory_store(
-                oxide_agent_core::agent::WikiStore::from_storage_provider(self.storage(), ""),
-            );
-        }
         executor.set_agents_md_context(self.storage(), user_id, context_key.clone());
         executor.set_reminder_context(ReminderContext {
             storage: self.storage(),

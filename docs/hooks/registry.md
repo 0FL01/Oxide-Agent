@@ -143,12 +143,10 @@ Hook 2 → ForceIteration { reason: "..." }
 ### В AgentRunner
 
 ```rust
-// src/agent/executor/config.rs:42-51
+// src/agent/executor/config.rs
 let mut runner = AgentRunner::new(Arc::clone(&llm_client));
 runner.register_hook(Box::new(CompletionCheckHook::new()));
 runner.register_hook(Box::new(HotContextHealthHook::new()));
-runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
-runner.register_hook(Box::new(EpisodicExtractHook::new()));
 Self::register_policy_controlled_hook(
     &mut runner,
     SearchBudgetHook::new(get_agent_search_limit()),

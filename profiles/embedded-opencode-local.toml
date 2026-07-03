@@ -20,5 +20,4 @@ cargo_features = ["profile-embedded-opencode-local"]
 "tool/vision-video" = { enabled = true }
 "tool/web-search" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
-"tool/wiki-memory" = { enabled = true }
 "transport/telegram" = { enabled = true }

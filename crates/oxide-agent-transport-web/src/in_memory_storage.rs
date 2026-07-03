@@ -32,7 +32,6 @@ pub struct InMemoryStorage {
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
     flow_records: RwLock<HashMap<(i64, String, String), AgentFlowRecord>>,
-    wiki_objects: RwLock<HashMap<String, String>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
     agent_profiles: RwLock<HashMap<(i64, String), AgentProfileRecord>>,
@@ -48,7 +47,6 @@ impl InMemoryStorage {
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
             flow_records: RwLock::new(HashMap::new()),
-            wiki_objects: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
             agent_profiles: RwLock::new(HashMap::new()),
@@ -224,27 +222,6 @@ impl crate::api::StorageProvider for InMemoryStorage {
         _storage_key: String,
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
-    }
-
-    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
-        let objects = self.wiki_objects.read().await;
-        Ok(objects.get(&storage_key).cloned())
-    }
-
-    async fn save_wiki_text(
-        &self,
-        storage_key: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        let mut objects = self.wiki_objects.write().await;
-        objects.insert(storage_key, content);
-        Ok(())
-    }
-
-    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
-        let mut objects = self.wiki_objects.write().await;
-        objects.remove(&storage_key);
-        Ok(())
     }
 
     // --- Topic agents md ---

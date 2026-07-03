@@ -256,22 +256,6 @@ fn sandbox_manager_usage_stays_inside_sandbox_facades() {
 }
 
 #[test]
-fn wiki_memory_uses_storage_facade_not_concrete_r2() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let store = fs::read_to_string(manifest_dir.join("src/agent/wiki_memory/store.rs"))
-        .expect("read wiki memory store");
-
-    assert!(
-        !store.contains("SqlxStorage"),
-        "wiki memory must use StorageProvider-backed WikiObjectBackend, not a concrete storage backend"
-    );
-    assert!(
-        store.contains("StorageProviderWikiBackend"),
-        "wiki memory store should keep the storage facade adapter"
-    );
-}
-
-#[test]
 fn telegram_runner_uses_storage_module_factory_not_concrete_r2() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

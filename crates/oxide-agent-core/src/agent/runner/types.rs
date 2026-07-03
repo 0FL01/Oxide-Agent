@@ -2,7 +2,6 @@
 
 use crate::agent::compaction::CompactionController;
 use crate::agent::context::AgentContext;
-use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
@@ -164,8 +163,6 @@ pub struct AgentRunnerContext<'a> {
     pub session_id: Option<String>,
     /// Stable top-level memory scope when available.
     pub memory_scope: Option<AgentMemoryScope>,
-    /// Task-local Stage-14 memory behavior runtime.
-    pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
     /// Durable storage handle for Postgres-based image resolution.
     /// Set by the executor from `AgentExecutor.storage`. When `Some`,
     /// the runner resolves browser screenshot bytes from `browser_artifacts`
@@ -211,7 +208,6 @@ impl<'a> AgentRunnerContext<'a> {
             compaction_controller,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config,
         }

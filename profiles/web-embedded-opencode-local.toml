@@ -24,5 +24,4 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "tool/web-crawler" = { enabled = true }
 "tool/web-search" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
-"tool/wiki-memory" = { enabled = true }
 "transport/web" = { enabled = true }

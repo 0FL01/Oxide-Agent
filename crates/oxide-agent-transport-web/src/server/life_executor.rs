@@ -186,15 +186,6 @@ impl LifeAgentExecutor {
             AgentExecutor::new(Arc::clone(&self.llm), session, Arc::clone(&self.settings))
                 .with_storage(Arc::clone(&self.storage));
 
-        if self.settings.is_wiki_memory_enabled() {
-            executor = executor.with_wiki_memory_store(
-                oxide_agent_core::agent::WikiStore::from_storage_provider(
-                    Arc::clone(&self.storage),
-                    "",
-                ),
-            );
-        }
-
         executor.set_agents_md_context(
             Arc::clone(&self.storage),
             user_id,
@@ -286,7 +277,7 @@ impl LifeRunExecutor for LifeAgentExecutor {
         }));
 
         // 4. Build the executor with the same tool registration as ordinary
-        //    sessions (wiki memory, AGENTS.md, reminders, storage).
+        //    sessions (AGENTS.md, reminders, storage).
         let mut executor = self.build_executor(principal_user_id, session);
 
         // 5. Create the AgentEvent → life_events bridge. The consumer task

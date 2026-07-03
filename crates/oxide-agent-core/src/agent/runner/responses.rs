@@ -319,7 +319,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
@@ -391,7 +390,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 8192),
         };
@@ -455,7 +453,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
@@ -516,7 +513,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 16_384),
         };
@@ -586,7 +582,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 8192),
         };
@@ -642,7 +637,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };

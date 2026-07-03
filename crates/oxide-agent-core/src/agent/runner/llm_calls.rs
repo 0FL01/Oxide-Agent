@@ -1391,7 +1391,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("wide-model".to_string(), 1, 1, 30, 200_000),
         };
@@ -1474,7 +1473,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
         };
@@ -1561,7 +1559,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")
@@ -1668,7 +1665,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")

@@ -480,7 +480,6 @@ mod tests {
             compaction_controller: Some(&compaction_controller),
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256)
                 .with_model_routes(vec![ModelInfo {
@@ -570,7 +569,6 @@ mod tests {
             compaction_controller: Some(&compaction_controller),
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
@@ -624,7 +622,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
@@ -667,7 +664,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 16_000),
         };
@@ -737,7 +733,6 @@ mod tests {
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
-            memory_behavior: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 512),
         };

@@ -35,7 +35,6 @@ cargo_features = ["profile-full"]
 "tool/vision-video" = { enabled = true }
 "tool/web-search" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
-"tool/wiki-memory" = { enabled = true }
 "tool/ytdlp" = { enabled = true }
 "transport/telegram" = { enabled = true }
 "transport/web" = { enabled = true }

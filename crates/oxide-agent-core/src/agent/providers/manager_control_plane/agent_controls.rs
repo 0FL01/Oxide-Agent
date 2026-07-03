@@ -198,7 +198,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as search_budget, timeout_report, retrieval_advisor"
+                            "description": "Hook names such as search_budget or timeout_report"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -216,7 +216,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as search_budget, timeout_report, retrieval_advisor"
+                            "description": "Hook names such as search_budget or timeout_report"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },

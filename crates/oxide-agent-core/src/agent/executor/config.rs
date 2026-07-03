@@ -2,13 +2,12 @@ use super::AgentExecutor;
 use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
-    CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
-    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
+    CompletionCheckHook, HotContextHealthHook, SearchBudgetHook, TimeoutReportHook,
+    ToolAccessPolicyHook,
 };
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
-use crate::agent::wiki_memory::{WikiPromptContextProvider, WikiStore};
 use crate::config::ModelInfo;
 use crate::config::get_agent_search_limit;
 use crate::llm::LlmClient;
@@ -41,10 +40,6 @@ impl AgentExecutor {
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(HotContextHealthHook::new()));
-        if settings.is_wiki_memory_enabled() {
-            runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
-            runner.register_hook(Box::new(EpisodicExtractHook::new()));
-        }
         Self::register_policy_controlled_hook(
             &mut runner,
             SearchBudgetHook::new(get_agent_search_limit()),
@@ -81,51 +76,9 @@ impl AgentExecutor {
             tool_policy_state,
             hook_policy_state,
             compaction_controller,
-            dynamic_prompt_context_provider: None,
-            wiki_memory_store: None,
             last_topic_infra_preflight_summary: None,
             storage: None,
         }
-    }
-
-    /// Attach the durable LLM Wiki memory store used for bounded prompt context.
-    #[must_use]
-    pub fn with_wiki_memory_store(mut self, store: WikiStore) -> Self {
-        self.dynamic_prompt_context_provider =
-            Some(Arc::new(WikiPromptContextProvider::new(store.clone())));
-        self.wiki_memory_store = Some(store);
-        self
-    }
-
-    /// Attach a dynamic prompt context provider used for bounded per-run context blocks.
-    #[must_use]
-    pub fn with_dynamic_prompt_context_provider(
-        mut self,
-        provider: Arc<dyn crate::agent::prompt::DynamicPromptContextProvider>,
-    ) -> Self {
-        self.dynamic_prompt_context_provider = Some(provider);
-        self
-    }
-
-    /// Return whether durable LLM Wiki storage is configured for this executor.
-    #[must_use]
-    pub const fn has_wiki_memory_store(&self) -> bool {
-        self.wiki_memory_store.is_some()
-    }
-
-    /// Attach or replace the durable LLM Wiki memory store for this executor.
-    pub fn set_wiki_memory_store(&mut self, store: WikiStore) {
-        self.dynamic_prompt_context_provider =
-            Some(Arc::new(WikiPromptContextProvider::new(store.clone())));
-        self.wiki_memory_store = Some(store);
-    }
-
-    /// Attach or replace the dynamic prompt context provider for this executor.
-    pub fn set_dynamic_prompt_context_provider(
-        &mut self,
-        provider: Arc<dyn crate::agent::prompt::DynamicPromptContextProvider>,
-    ) {
-        self.dynamic_prompt_context_provider = Some(provider);
     }
 
     /// Apply the latest execution profile for the next task run.

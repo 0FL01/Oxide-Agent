@@ -178,36 +178,6 @@ pub trait StorageProvider: Send + Sync {
         let _ = max_bytes;
         Ok(0)
     }
-    /// Load a durable LLM Wiki Markdown object by deterministic storage key.
-    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
-        let _ = storage_key;
-        Ok(None)
-    }
-    /// Save a durable LLM Wiki Markdown object by deterministic storage key.
-    async fn save_wiki_text(
-        &self,
-        storage_key: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        let _ = storage_key;
-        let _ = content;
-        Ok(())
-    }
-    /// Delete a durable LLM Wiki Markdown object by deterministic storage key.
-    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
-        let _ = storage_key;
-        Err(StorageError::Config(
-            "wiki text deletion is not implemented for this storage provider".to_string(),
-        ))
-    }
-    /// Delete all wiki objects (pages, inbox, raw, core files) for a context.
-    async fn delete_wiki_context(
-        &self,
-        _user_id: i64,
-        _context_key: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
     /// Clear all context (history and memory) for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage.

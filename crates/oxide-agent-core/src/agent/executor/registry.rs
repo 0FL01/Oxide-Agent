@@ -71,7 +71,6 @@ use crate::agent::tool_runtime::VisionVideoToolModule;
     oxide_module_tool_tts_silero,
     oxide_module_tool_web_search,
     oxide_module_tool_webfetch_md,
-    oxide_module_tool_wiki_memory,
     oxide_module_tool_ytdlp,
 ))]
 #[cfg(oxide_module_tool_webfetch_md)]
@@ -80,8 +79,6 @@ use crate::agent::tool_runtime::WebCrawlerToolModule;
 use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(oxide_module_tool_web_search)]
 use crate::agent::tool_runtime::WebSearchToolModule;
-#[cfg(oxide_module_tool_wiki_memory)]
-use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(oxide_module_tool_ytdlp)]
 use crate::agent::tool_runtime::YtdlpToolModule;
 #[cfg(test)]
@@ -115,7 +112,6 @@ use crate::agent::tool_runtime::{
     oxide_module_tool_tts_silero,
     oxide_module_tool_web_search,
     oxide_module_tool_webfetch_md,
-    oxide_module_tool_wiki_memory,
     oxide_module_tool_ytdlp
 ))]
 use crate::agent::tool_runtime::{ToolModule, ToolName};
@@ -214,7 +210,6 @@ impl AgentExecutor {
             oxide_module_tool_tts_silero,
             oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
-            oxide_module_tool_wiki_memory,
             oxide_module_tool_ytdlp
         )))]
         let _ = (registry, catalog, ctx);
@@ -265,8 +260,6 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, catalog, &WebSearchToolModule, ctx);
         #[cfg(oxide_module_tool_webfetch_md)]
         self.register_tool_runtime_module(registry, catalog, &WebFetchMdToolModule, ctx);
-        #[cfg(oxide_module_tool_wiki_memory)]
-        self.register_tool_runtime_module(registry, catalog, &WikiMemoryToolModule, ctx);
         #[cfg(oxide_module_tool_ytdlp)]
         self.register_tool_runtime_module(registry, catalog, &YtdlpToolModule, ctx);
         #[cfg(oxide_module_tool_sandbox_exec)]
@@ -337,7 +330,6 @@ impl AgentExecutor {
         oxide_module_tool_tts_silero,
         oxide_module_tool_web_search,
         oxide_module_tool_webfetch_md,
-        oxide_module_tool_wiki_memory,
         oxide_module_tool_ytdlp
     ))]
     fn register_tool_runtime_module<M>(
@@ -399,7 +391,6 @@ impl AgentExecutor {
             oxide_module_tool_tts_silero,
             oxide_module_tool_web_search,
             oxide_module_tool_webfetch_md,
-            oxide_module_tool_wiki_memory,
             oxide_module_tool_ytdlp
         )),
         allow(dead_code)
@@ -498,8 +489,6 @@ impl AgentExecutor {
                 )
             }),
             reminder_context: self.reminder_context.clone(),
-            wiki_memory_store: self.wiki_memory_store.clone(),
-            memory_scope: self.session.memory_scope().clone(),
             progress_tx: progress_tx.cloned(),
             inherited_model: self
                 .model_routes_override()

@@ -5,7 +5,6 @@
 //! Documentation: `docs/hooks/types.md`
 
 use super::super::providers::TodoList;
-use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
 
@@ -117,8 +116,6 @@ pub struct HookContext<'a> {
     pub available_tools: &'a [ToolDefinition],
     /// Stable durable-memory scope when available.
     pub memory_scope: Option<&'a AgentMemoryScope>,
-    /// Task-local Stage-14 memory behavior runtime.
-    pub memory_behavior: Option<&'a MemoryBehaviorRuntime>,
     /// Search tool call budget for the current execution.
     pub search_limit: Option<usize>,
 }
@@ -145,7 +142,6 @@ impl<'a> HookContext<'a> {
             is_sub_agent: false,
             available_tools: &[],
             memory_scope: None,
-            memory_behavior: None,
             search_limit: None,
         }
     }
@@ -182,16 +178,6 @@ impl<'a> HookContext<'a> {
     #[must_use]
     pub const fn with_memory_scope(mut self, memory_scope: Option<&'a AgentMemoryScope>) -> Self {
         self.memory_scope = memory_scope;
-        self
-    }
-
-    /// Add the task-local Stage-14 memory behavior runtime to the hook context.
-    #[must_use]
-    pub const fn with_memory_behavior(
-        mut self,
-        memory_behavior: Option<&'a MemoryBehaviorRuntime>,
-    ) -> Self {
-        self.memory_behavior = memory_behavior;
         self
     }
 

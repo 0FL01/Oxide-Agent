@@ -150,38 +150,6 @@ pub(crate) async fn session_manager_control_plane_enabled(session_id: SessionId)
     Some(executor.manager_control_plane_enabled())
 }
 
-async fn ensure_cached_session_wiki_store(
-    session_id: SessionId,
-    storage: &Arc<dyn StorageProvider>,
-    wiki_enabled: bool,
-) {
-    if !wiki_enabled {
-        return;
-    }
-    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
-        return;
-    };
-    let Ok(mut executor) = executor_arc.try_write() else {
-        debug!(
-            session_id = %session_id,
-            "Cached session is busy; deferring wiki memory store attachment"
-        );
-        return;
-    };
-    if executor.has_wiki_memory_store() {
-        return;
-    }
-
-    executor.set_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
-        storage.clone(),
-        "",
-    ));
-    info!(
-        session_id = %session_id,
-        "Attached missing wiki memory store to cached agent session"
-    );
-}
-
 pub(crate) async fn reset_session(keys: AgentModeSessionKeys) -> ResetSessionOutcome {
     let primary_result = SESSION_REGISTRY.reset(&keys.primary).await;
 
@@ -228,12 +196,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
             session_manager_control_plane_enabled(existing_session_id).await
         {
             if existing_manager_enabled == manager_enabled {
-                ensure_cached_session_wiki_store(
-                    existing_session_id,
-                    ctx.storage,
-                    ctx.settings.agent.is_wiki_memory_enabled(),
-                )
-                .await;
                 debug!(session_id = %existing_session_id, "Session already exists in cache");
                 return existing_session_id;
             }
@@ -247,12 +209,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
                     "Session identity changed; recreating session"
                 );
             } else if SESSION_REGISTRY.contains(&existing_session_id).await {
-                ensure_cached_session_wiki_store(
-                    existing_session_id,
-                    ctx.storage,
-                    ctx.settings.agent.is_wiki_memory_enabled(),
-                )
-                .await;
                 debug!(
                     session_id = %existing_session_id,
                     previous_manager_enabled = existing_manager_enabled,
@@ -264,12 +220,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         } else {
             let removed = SESSION_REGISTRY.remove_if_idle(&existing_session_id).await;
             if !removed && SESSION_REGISTRY.contains(&existing_session_id).await {
-                ensure_cached_session_wiki_store(
-                    existing_session_id,
-                    ctx.storage,
-                    ctx.settings.agent.is_wiki_memory_enabled(),
-                )
-                .await;
                 debug!(
                     session_id = %existing_session_id,
                     "Session state unavailable while task is running; deferring refresh"
@@ -286,12 +236,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
 
     let session_id = ctx.session_keys.primary;
     if SESSION_REGISTRY.contains(&session_id).await {
-        ensure_cached_session_wiki_store(
-            session_id,
-            ctx.storage,
-            ctx.settings.agent.is_wiki_memory_enabled(),
-        )
-        .await;
         debug!(session_id = %session_id, "Session already exists in cache");
         return session_id;
     }
@@ -316,11 +260,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
 
     let mut executor = AgentExecutor::new(ctx.llm.clone(), session, ctx.settings.agent.clone())
         .with_storage(ctx.storage.clone());
-    if ctx.settings.agent.is_wiki_memory_enabled() {
-        executor = executor.with_wiki_memory_store(
-            oxide_agent_core::agent::WikiStore::from_storage_provider(ctx.storage.clone(), ""),
-        );
-    }
     executor.set_agents_md_context(ctx.storage.clone(), ctx.user_id, ctx.context_key.clone());
     if manager_enabled {
         let topic_lifecycle = Arc::new(TelegramManagerTopicLifecycle::new(

@@ -10,35 +10,6 @@ use crate::testing::{test_remove_env, test_set_env};
 #[cfg(oxide_module_tool_sandbox_exec)]
 use std::collections::HashSet;
 
-#[cfg(oxide_module_tool_wiki_memory)]
-#[derive(Default)]
-struct RegistryWikiBackend;
-
-#[cfg(oxide_module_tool_wiki_memory)]
-#[async_trait::async_trait]
-impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
-    async fn get_text(&self, _key: &str) -> Result<Option<String>, crate::storage::StorageError> {
-        Ok(None)
-    }
-
-    async fn put_text(
-        &self,
-        _key: &str,
-        _content: &str,
-    ) -> Result<(), crate::storage::StorageError> {
-        Ok(())
-    }
-
-    async fn delete_text(&self, _key: &str) -> Result<(), crate::storage::StorageError> {
-        Ok(())
-    }
-}
-
-#[cfg(oxide_module_tool_wiki_memory)]
-fn registry_wiki_store() -> crate::agent::wiki_memory::WikiStore {
-    crate::agent::wiki_memory::WikiStore::new(Arc::new(RegistryWikiBackend), "prod")
-}
-
 #[cfg(oxide_module_integration_ssh_mcp)]
 fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
     crate::storage::TopicInfraConfigRecord {
@@ -298,30 +269,6 @@ fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
         assert!(
             tool_names.contains(tool_name),
             "missing typed runtime SSH MCP tool: {tool_name}"
-        );
-    }
-}
-
-#[cfg(oxide_module_tool_wiki_memory)]
-#[test]
-fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
-    let executor = build_executor().with_wiki_memory_store(registry_wiki_store());
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    for tool_name in [
-        "wiki_memory_list",
-        "wiki_memory_read",
-        "wiki_memory_search",
-        "wiki_memory_delete",
-    ] {
-        assert!(
-            tool_names.contains(tool_name),
-            "missing typed runtime wiki memory tool: {tool_name}"
         );
     }
 }
