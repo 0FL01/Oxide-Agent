@@ -13,7 +13,7 @@ use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
 use anyhow::{Result, anyhow};
 use oxide_agent_core::agent::{AgentExecutionOutcome, SessionId, progress::AgentEvent};
-use oxide_agent_core::config::get_agent_max_iterations;
+use oxide_agent_core::config::{AgentSettings, get_agent_max_iterations};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -33,6 +33,7 @@ pub(crate) struct AgentTaskContext {
     pub(crate) msg: Message,
     pub(crate) storage: Arc<dyn StorageProvider>,
     pub(crate) llm: Arc<LlmClient>,
+    pub(crate) agent_settings: Arc<AgentSettings>,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,
     pub(crate) sandbox_scope: SandboxScope,
@@ -238,6 +239,7 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         &ctx.bot,
         &ctx.msg,
         &ctx.llm,
+        &ctx.agent_settings,
         &ctx.sandbox_scope,
         preserve_binary_uploads,
     )

@@ -24,9 +24,8 @@ mod tests {
         assert!(!p.capabilities.strict_tool_history());
         assert!(p.capabilities.supports_tool_calling);
         assert!(!p.capabilities.supports_structured_output);
-        assert!(!p.media_capabilities.supports_audio_transcription);
-        assert!(p.media_capabilities.supports_image_understanding);
-        assert!(!p.media_capabilities.supports_video_understanding);
+        assert!(p.vision_capabilities.supports_image_understanding);
+        assert!(!p.vision_capabilities.supports_video_understanding);
         assert!((p.temperatures.chat - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.tools - 0.95).abs() < f32::EPSILON);
         assert!((p.temperatures.reasoning - 0.95).abs() < f32::EPSILON);
@@ -61,9 +60,8 @@ mod tests {
         assert!(!p.capabilities.strict_tool_history());
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);
-        assert!(!p.media_capabilities.supports_audio_transcription);
-        assert!(p.media_capabilities.supports_image_understanding);
-        assert!(!p.media_capabilities.supports_video_understanding);
+        assert!(p.vision_capabilities.supports_image_understanding);
+        assert!(!p.vision_capabilities.supports_video_understanding);
         assert_eq!(p.response_content, ResponseContentPolicy::StringOnly);
         assert_eq!(p.parallel_tool_calls, None);
         assert_eq!(p.thinking, ThinkingPolicy::None);

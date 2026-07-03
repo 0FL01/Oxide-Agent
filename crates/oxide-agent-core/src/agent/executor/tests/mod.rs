@@ -129,9 +129,6 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
             Err(crate::llm::LlmError::unknown("Not implemented".to_string()))
         });
     provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
-    provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     let mut llm = LlmClient::new(settings.as_ref());

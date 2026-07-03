@@ -107,15 +107,6 @@ impl LlmProvider for BudgetProbeProvider {
         ))
     }
 
-    async fn transcribe_audio(
-        &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
-    ) -> Result<String, LlmError> {
-        unreachable!("delegation smoke test does not transcribe audio")
-    }
-
     async fn analyze_image(
         &self,
         _image_bytes: Vec<u8>,
@@ -165,15 +156,6 @@ impl LlmProvider for GatedProbeProvider {
         Err(LlmError::unknown(
             "delegation async test uses chat_with_tools".to_string(),
         ))
-    }
-
-    async fn transcribe_audio(
-        &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
-    ) -> Result<String, LlmError> {
-        unreachable!("delegation async test does not transcribe audio")
     }
 
     async fn analyze_image(

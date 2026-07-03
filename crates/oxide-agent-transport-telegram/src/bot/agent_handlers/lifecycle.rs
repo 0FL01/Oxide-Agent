@@ -246,6 +246,7 @@ pub async fn handle_agent_message(
         msg: msg.clone(),
         storage: storage.clone(),
         llm: llm.clone(),
+        agent_settings: settings.agent.clone(),
         context_key,
         agent_flow_id,
         sandbox_scope,

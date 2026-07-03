@@ -87,6 +87,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
+        "id": "tool/audio-stt-transcription",
+        "module": "tool/audio-stt"
+      },
+      {
         "id": "tool/browser-close",
         "module": "tool/browser-live"
       },
@@ -127,18 +131,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/file-delivery"
       },
       {
-        "id": "tool/media-audio-transcription",
-        "module": "tool/media-audio"
-      },
-      {
-        "id": "tool/media-image-description",
-        "module": "tool/media-image"
-      },
-      {
-        "id": "tool/media-video-description",
-        "module": "tool/media-video"
-      },
-      {
         "id": "tool/reminder",
         "module": "tool/reminder"
       },
@@ -177,6 +169,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/tts-silero",
         "module": "tool/tts-silero"
+      },
+      {
+        "id": "tool/vision-image-description",
+        "module": "tool/vision-image"
+      },
+      {
+        "id": "tool/vision-video-description",
+        "module": "tool/vision-video"
       },
       {
         "id": "tool/web-crawler",
@@ -576,6 +576,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "tool-audio-stt",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/audio-stt",
+        "kind": "media",
+        "provides": [
+          "tool/audio-stt-transcription"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-browser-live",
         "config_properties": [],
         "conflicts": [],
@@ -632,39 +643,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "file-delivery",
         "provides": [
           "tool/file-delivery"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-media-audio",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/media-audio",
-        "kind": "media",
-        "provides": [
-          "tool/media-audio-transcription"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-media-image",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/media-image",
-        "kind": "media",
-        "provides": [
-          "tool/media-image-description"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-media-video",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/media-video",
-        "kind": "media",
-        "provides": [
-          "tool/media-video-description"
         ],
         "requires": []
       },
@@ -797,6 +775,28 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "tool-vision-image",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/vision-image",
+        "kind": "media",
+        "provides": [
+          "tool/vision-image-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-vision-video",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/vision-video",
+        "kind": "media",
+        "provides": [
+          "tool/vision-video-description"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-webfetch-md",
         "config_properties": [],
         "conflicts": [],
@@ -912,6 +912,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/sqlx",
       "tool/agents-md",
+      "tool/audio-stt-transcription",
       "tool/browser-close",
       "tool/browser-debug",
       "tool/browser-observe",
@@ -922,9 +923,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/crw-scrape",
       "tool/delegation",
       "tool/file-delivery",
-      "tool/media-audio-transcription",
-      "tool/media-image-description",
-      "tool/media-video-description",
       "tool/reminder",
       "tool/retrieve-tools",
       "tool/sandbox-exec",
@@ -935,6 +933,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
+      "tool/vision-image-description",
+      "tool/vision-video-description",
       "tool/web-crawler",
       "tool/web-search",
       "tool/webfetch-md",
@@ -960,14 +960,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/sqlx",
       "tool/agents-md",
+      "tool/audio-stt",
       "tool/browser-live",
       "tool/compression",
       "tool/crw",
       "tool/delegation",
       "tool/file-delivery",
-      "tool/media-audio",
-      "tool/media-image",
-      "tool/media-video",
       "tool/reminder",
       "tool/retrieve-tools",
       "tool/sandbox-exec",
@@ -977,6 +975,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/todos",
       "tool/tts-kokoro",
       "tool/tts-silero",
+      "tool/vision-image",
+      "tool/vision-video",
       "tool/web-crawler",
       "tool/web-search",
       "tool/webfetch-md",

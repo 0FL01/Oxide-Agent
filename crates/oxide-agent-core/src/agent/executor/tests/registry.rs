@@ -448,12 +448,12 @@ fn typed_runtime_registry_exposes_tts_tools() {
 }
 
 #[cfg(all(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 #[test]
-fn typed_runtime_registry_exposes_media_tools() {
+fn typed_runtime_registry_exposes_audio_stt_and_vision_tools() {
     let executor = build_executor();
     let registry =
         executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
@@ -466,7 +466,7 @@ fn typed_runtime_registry_exposes_media_tools() {
     ] {
         assert!(
             tool_names.iter().any(|name| name == tool_name),
-            "missing typed runtime media tool: {tool_name}"
+            "missing typed runtime audio/vision tool: {tool_name}"
         );
         assert_eq!(
             tool_names.iter().filter(|name| *name == tool_name).count(),
@@ -607,12 +607,12 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     test_remove_env("KOKORO_TTS_URL");
 }
 
-#[cfg(oxide_module_tool_media_audio)]
+#[cfg(oxide_module_tool_audio_stt)]
 #[test]
-fn typed_runtime_registry_skips_disabled_media_audio_module() {
+fn typed_runtime_registry_skips_disabled_audio_stt_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
-            "tool/media-audio".to_string(),
+            "tool/audio-stt".to_string(),
             ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
@@ -632,12 +632,12 @@ fn typed_runtime_registry_skips_disabled_media_audio_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(oxide_module_tool_media_image)]
+#[cfg(oxide_module_tool_vision_image)]
 #[test]
-fn typed_runtime_registry_skips_disabled_media_image_module() {
+fn typed_runtime_registry_skips_disabled_vision_image_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
-            "tool/media-image".to_string(),
+            "tool/vision-image".to_string(),
             ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
@@ -657,12 +657,12 @@ fn typed_runtime_registry_skips_disabled_media_image_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(oxide_module_tool_media_video)]
+#[cfg(oxide_module_tool_vision_video)]
 #[test]
-fn typed_runtime_registry_skips_disabled_media_video_module() {
+fn typed_runtime_registry_skips_disabled_vision_video_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
-            "tool/media-video".to_string(),
+            "tool/vision-video".to_string(),
             ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()

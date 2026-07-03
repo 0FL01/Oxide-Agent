@@ -95,9 +95,9 @@ profile-full = [
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
     "tool-file-delivery",
-    "tool-media-audio",
-    "tool-media-image",
-    "tool-media-video",
+    "tool-audio-stt",
+    "tool-vision-image",
+    "tool-vision-video",
     "tool-ytdlp",
     "tool-tts-kokoro",
     "tool-tts-silero",
@@ -126,9 +126,9 @@ profile-embedded-opencode-local = [
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
     "tool-file-delivery",
-    "tool-media-audio",
-    "tool-media-image",
-    "tool-media-video",
+    "tool-audio-stt",
+    "tool-vision-image",
+    "tool-vision-video",
     "sandbox-backend-sandboxd-client"
 ]
 profile-web-embedded-opencode-local = [
@@ -150,9 +150,9 @@ profile-web-embedded-opencode-local = [
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
     "tool-file-delivery",
-    "tool-media-audio",
-    "tool-media-image",
-    "tool-media-video",
+    "tool-audio-stt",
+    "tool-vision-image",
+    "tool-vision-video",
     "sandbox-backend-sandboxd-client"
 ]
 # END OXIDE-REGISTRY: profiles
@@ -188,9 +188,9 @@ tool-sandbox-fileops = []
 tool-sandbox-exec = []
 tool-sandbox-recreate = []
 tool-file-delivery = []
-tool-media-audio = ["http-client"]
-tool-media-image = ["http-client"]
-tool-media-video = ["http-client"]
+tool-audio-stt = ["http-client"]
+tool-vision-image = ["http-client"]
+tool-vision-video = ["http-client"]
 tool-ytdlp = []
 tool-tts-kokoro = ["http-client"]
 tool-tts-silero = ["http-client"]

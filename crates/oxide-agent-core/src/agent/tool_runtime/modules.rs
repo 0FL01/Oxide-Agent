@@ -48,9 +48,9 @@ use crate::agent::providers::FileHosterProvider;
 use crate::agent::providers::ManagerControlPlaneProvider;
 use crate::agent::providers::ManagerTopicLifecycle;
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 use crate::agent::providers::MediaFileProvider;
 use crate::agent::providers::ReminderContext;
@@ -789,30 +789,37 @@ impl ToolModule for WikiMemoryToolModule {
 }
 
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
+    let audio_transcriber =
+        crate::audio_stt::build_audio_transcriber(&ctx.settings().audio_stt_config());
     match ctx.browser_live_context() {
         Some(live_ctx) => MediaFileProvider::from_runtime_with_storage(
             ctx.llm_client(),
+            audio_transcriber,
             ctx.sandbox_runtime(),
             live_ctx.storage(),
             live_ctx.user_id(),
         ),
-        None => MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime()),
+        None => MediaFileProvider::from_runtime(
+            ctx.llm_client(),
+            audio_transcriber,
+            ctx.sandbox_runtime(),
+        ),
     }
 }
 
 /// Capability module for audio file transcription.
-#[cfg(oxide_module_tool_media_audio)]
-pub struct MediaAudioToolModule;
+#[cfg(oxide_module_tool_audio_stt)]
+pub struct AudioSttToolModule;
 
-#[cfg(oxide_module_tool_media_audio)]
-impl ToolModule for MediaAudioToolModule {
+#[cfg(oxide_module_tool_audio_stt)]
+impl ToolModule for AudioSttToolModule {
     fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/media-audio")
+        ModuleId::new("tool/audio-stt")
     }
 
     fn capability_group(&self) -> Option<CapabilityGroup> {
@@ -829,13 +836,13 @@ impl ToolModule for MediaAudioToolModule {
 }
 
 /// Capability module for image file description.
-#[cfg(oxide_module_tool_media_image)]
-pub struct MediaImageToolModule;
+#[cfg(oxide_module_tool_vision_image)]
+pub struct VisionImageToolModule;
 
-#[cfg(oxide_module_tool_media_image)]
-impl ToolModule for MediaImageToolModule {
+#[cfg(oxide_module_tool_vision_image)]
+impl ToolModule for VisionImageToolModule {
     fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/media-image")
+        ModuleId::new("tool/vision-image")
     }
 
     fn capability_group(&self) -> Option<CapabilityGroup> {
@@ -852,13 +859,13 @@ impl ToolModule for MediaImageToolModule {
 }
 
 /// Capability module for video file description.
-#[cfg(oxide_module_tool_media_video)]
-pub struct MediaVideoToolModule;
+#[cfg(oxide_module_tool_vision_video)]
+pub struct VisionVideoToolModule;
 
-#[cfg(oxide_module_tool_media_video)]
-impl ToolModule for MediaVideoToolModule {
+#[cfg(oxide_module_tool_vision_video)]
+impl ToolModule for VisionVideoToolModule {
     fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/media-video")
+        ModuleId::new("tool/vision-video")
     }
 
     fn capability_group(&self) -> Option<CapabilityGroup> {
@@ -2116,25 +2123,25 @@ mod capability_mapping_tests {
             WikiMemoryToolModule.visibility(),
         ));
 
-        #[cfg(oxide_module_tool_media_audio)]
+        #[cfg(oxide_module_tool_audio_stt)]
         checks.push((
-            "media-audio",
-            MediaAudioToolModule.capability_group(),
-            MediaAudioToolModule.visibility(),
+            "audio-stt",
+            AudioSttToolModule.capability_group(),
+            AudioSttToolModule.visibility(),
         ));
 
-        #[cfg(oxide_module_tool_media_image)]
+        #[cfg(oxide_module_tool_vision_image)]
         checks.push((
-            "media-image",
-            MediaImageToolModule.capability_group(),
-            MediaImageToolModule.visibility(),
+            "vision-image",
+            VisionImageToolModule.capability_group(),
+            VisionImageToolModule.visibility(),
         ));
 
-        #[cfg(oxide_module_tool_media_video)]
+        #[cfg(oxide_module_tool_vision_video)]
         checks.push((
-            "media-video",
-            MediaVideoToolModule.capability_group(),
-            MediaVideoToolModule.visibility(),
+            "vision-video",
+            VisionVideoToolModule.capability_group(),
+            VisionVideoToolModule.visibility(),
         ));
 
         #[cfg(oxide_module_integration_mcp_jira)]

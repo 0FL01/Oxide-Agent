@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
-use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
+use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode, VisionCapabilities};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -135,9 +135,8 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
         self.capabilities()
     }
 
-    fn media_capabilities_for_model(&self, model_info: &ModelInfo) -> MediaCapabilities {
-        MediaCapabilities::new(
-            false,
+    fn vision_capabilities_for_model(&self, model_info: &ModelInfo) -> VisionCapabilities {
+        VisionCapabilities::new(
             super::discovery::supports_image_input_for_model_id(&model_info.id),
             false,
         )
@@ -202,9 +201,8 @@ impl LlmProviderModule for OpenCodeZenProviderModule {
         self.capabilities()
     }
 
-    fn media_capabilities_for_model(&self, model_info: &ModelInfo) -> MediaCapabilities {
-        MediaCapabilities::new(
-            false,
+    fn vision_capabilities_for_model(&self, model_info: &ModelInfo) -> VisionCapabilities {
+        VisionCapabilities::new(
             super::discovery::supports_image_input_for_model_id(&model_info.id),
             false,
         )

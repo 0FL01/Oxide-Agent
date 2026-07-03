@@ -211,17 +211,6 @@ impl LlmProvider for ChatGptProvider {
             .ok_or_else(|| empty_chatgpt_response_error(model_id, "chat_completion_post_parse"))
     }
 
-    async fn transcribe_audio(
-        &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
-    ) -> Result<String, LlmError> {
-        Err(LlmError::unknown(
-            "Audio transcription not implemented for ChatGPT OAuth".to_string(),
-        ))
-    }
-
     async fn analyze_image(
         &self,
         _image_bytes: Vec<u8>,

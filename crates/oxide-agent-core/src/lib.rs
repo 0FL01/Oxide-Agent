@@ -7,6 +7,8 @@
 
 /// Agent logic and tools.
 pub mod agent;
+/// Dedicated speech-to-text backend integration.
+pub mod audio_stt;
 /// Capability module manifests and registry scaffolding.
 pub mod capabilities;
 /// Configuration management.

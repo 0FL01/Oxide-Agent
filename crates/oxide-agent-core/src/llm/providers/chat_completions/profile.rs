@@ -1,6 +1,6 @@
 //! Profile and policy types for OpenAI-compatible Chat Completions providers.
 
-use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
+use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode, VisionCapabilities};
 
 #[allow(dead_code)]
 pub(crate) const OPENROUTER_HEADERS: &[(&str, &str)] = &[
@@ -79,7 +79,7 @@ pub struct ChatCompletionsProfile {
     pub(crate) rate_limit: RateLimitPolicy,
     pub(crate) response_content: ChatResponseContentPolicy,
     pub(crate) capabilities: ProviderCapabilities,
-    pub(crate) media_capabilities: MediaCapabilities,
+    pub(crate) vision_capabilities: VisionCapabilities,
     pub(crate) temperatures: ChatTemperatures,
     pub(crate) parallel_tool_calls: Option<bool>,
     pub(crate) parallel_tool_calls_only_with_tools: bool,
@@ -110,7 +110,7 @@ impl ChatCompletionsProfile {
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
-            media_capabilities: MediaCapabilities::new(false, true, false),
+            vision_capabilities: VisionCapabilities::new(true, false),
             temperatures: ChatTemperatures {
                 chat: 0.7,
                 tools: 0.7,
@@ -139,7 +139,7 @@ impl ChatCompletionsProfile {
             rate_limit: RateLimitPolicy::ZaiFlushTime,
             response_content: ChatResponseContentPolicy::StringOrChunkArrayWithReasoning,
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
-            media_capabilities: MediaCapabilities::new(false, true, false),
+            vision_capabilities: VisionCapabilities::new(true, false),
             temperatures: ChatTemperatures {
                 chat: 0.95,
                 tools: 0.95,
@@ -169,7 +169,7 @@ impl ChatCompletionsProfile {
             rate_limit: RateLimitPolicy::OpenRouterResetMetadata,
             response_content: ChatResponseContentPolicy::StringOnly,
             capabilities: ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false),
-            media_capabilities: MediaCapabilities::new(false, false, false),
+            vision_capabilities: VisionCapabilities::new(false, false),
             temperatures: ChatTemperatures {
                 chat: 0.7,
                 tools: 0.7,
@@ -200,7 +200,7 @@ impl ChatCompletionsProfile {
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
             capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
-            media_capabilities: MediaCapabilities::new(false, true, false),
+            vision_capabilities: VisionCapabilities::new(true, false),
             temperatures: ChatTemperatures {
                 chat: 0.7,
                 tools: 0.7,
@@ -231,7 +231,7 @@ impl ChatCompletionsProfile {
             rate_limit: RateLimitPolicy::RetryAfterHeader,
             response_content: ChatResponseContentPolicy::StringOnly,
             capabilities: ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
-            media_capabilities: MediaCapabilities::new(false, true, false),
+            vision_capabilities: VisionCapabilities::new(true, false),
             temperatures: ChatTemperatures {
                 chat: 0.7,
                 tools: 0.7,
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(p.response_content, ChatResponseContentPolicy::StringOnly);
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);
-        assert!(p.media_capabilities.supports_image_understanding);
+        assert!(p.vision_capabilities.supports_image_understanding);
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
             p.structured_output,
             StructuredOutputPolicy::ZaiGlmToolModelsOnly
         );
-        assert!(p.media_capabilities.supports_image_understanding);
+        assert!(p.vision_capabilities.supports_image_understanding);
         assert!(!p.capabilities.supports_structured_output);
     }
 
@@ -321,7 +321,7 @@ mod tests {
         assert!(p.capabilities.strict_tool_history());
         assert!(p.capabilities.supports_tool_calling);
         assert!(!p.capabilities.supports_structured_output);
-        assert!(p.media_capabilities.supports_image_understanding);
+        assert!(p.vision_capabilities.supports_image_understanding);
         assert!(
             p.require_reasoning_content_on_tool_calls,
             "opencode_go must require reasoning_content on tool-call assistant messages for MiMo/DeepSeek compatibility"

@@ -20,12 +20,12 @@ pub struct LlmClient {
     discovered_model_sources: Vec<(&'static str, Arc<dyn DiscoveredModelSource>)>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
-    /// Optional explicit media model name for multimodal requests.
-    pub media_model_name: Option<String>,
-    /// Optional media model ID for audio/image/video requests.
-    pub media_model_id: Option<String>,
-    /// Optional media model provider for audio/image/video requests.
-    pub media_model_provider: Option<String>,
+    /// Optional explicit vision model name for image/video requests.
+    pub vision_model_name: Option<String>,
+    /// Optional vision model ID for image/video requests.
+    pub vision_model_id: Option<String>,
+    /// Optional vision model provider for image/video requests.
+    pub vision_model_provider: Option<String>,
 }
 
 /// Provider-discovered model metadata exposed without leaking provider-specific internals.
@@ -105,17 +105,17 @@ impl LlmClient {
         providers::provider_key(name)
     }
 
-    fn resolve_media_route_for_modality(
+    fn resolve_vision_route_for_modality(
         &self,
-        modality: capabilities::MediaModality,
+        modality: capabilities::VisionModality,
     ) -> Result<(String, crate::config::ModelInfo), LlmError> {
         let Some(model_name) = self
-            .media_model_name
+            .vision_model_name
             .as_deref()
             .filter(|name| !name.is_empty())
         else {
             return Err(LlmError::MissingConfig(format!(
-                "MEDIA_MODEL is not configured for {}",
+                "VISION_MODEL is not configured for {}",
                 modality.label()
             )));
         };
@@ -124,67 +124,45 @@ impl LlmClient {
 
         if !self.is_provider_available(&model_info.provider) {
             return Err(LlmError::MissingConfig(format!(
-                "MEDIA_MODEL provider '{}' is not available; check the API key and compiled profile",
+                "VISION_MODEL provider '{}' is not available; check the API key and compiled profile",
                 model_info.provider
             )));
         }
 
-        if capabilities::provider_media_capabilities_for_model(&model_info).supports(modality) {
+        if capabilities::provider_vision_capabilities_for_model(&model_info).supports(modality) {
             return Ok((model_name.to_string(), model_info));
         }
 
         Err(LlmError::MissingConfig(format!(
-            "MEDIA_MODEL {}/{} is not allowed for {} by media policy",
+            "VISION_MODEL {}/{} is not allowed for {} by vision policy",
             model_info.provider,
             model_info.id,
             modality.label()
         )))
     }
 
-    /// Resolve the model route for audio transcription.
-    ///
-    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
-    pub fn resolve_media_model_for_audio_stt(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::AudioTranscription)
-            .map(|(_, info)| info)
-    }
-
     /// Resolve the model route for image understanding.
     ///
-    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
+    /// Requires explicit `VISION_MODEL_ID`/`VISION_MODEL_PROVIDER`.
     ///
     /// # Errors
     ///
     /// Returns `LlmError::MissingConfig` when no route supports image understanding.
-    pub fn resolve_media_model_for_image(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::ImageUnderstanding)
+    pub fn resolve_vision_model_for_image(&self) -> Result<crate::config::ModelInfo, LlmError> {
+        self.resolve_vision_route_for_modality(capabilities::VisionModality::ImageUnderstanding)
             .map(|(_, info)| info)
     }
 
     /// Resolve the model route for video understanding.
     ///
-    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
+    /// Requires explicit `VISION_MODEL_ID`/`VISION_MODEL_PROVIDER`.
     ///
     /// # Errors
     ///
     /// Returns `LlmError::MissingConfig` when no route supports video understanding.
-    pub fn resolve_media_model_for_video(&self) -> Result<crate::config::ModelInfo, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::VideoUnderstanding)
+    pub fn resolve_vision_model_for_video(&self) -> Result<crate::config::ModelInfo, LlmError> {
+        self.resolve_vision_route_for_modality(capabilities::VisionModality::VideoUnderstanding)
             .map(|(_, info)| info)
-    }
-
-    /// Resolve the configured model name for audio transcription.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` when no route supports audio transcription.
-    pub fn resolve_media_model_name_for_audio_stt(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::AudioTranscription)
-            .map(|(name, _)| name)
     }
 
     /// Resolve the configured model name for image understanding.
@@ -192,8 +170,8 @@ impl LlmClient {
     /// # Errors
     ///
     /// Returns `LlmError::MissingConfig` when no route supports image understanding.
-    pub fn resolve_media_model_name_for_image(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::ImageUnderstanding)
+    pub fn resolve_vision_model_name_for_image(&self) -> Result<String, LlmError> {
+        self.resolve_vision_route_for_modality(capabilities::VisionModality::ImageUnderstanding)
             .map(|(name, _)| name)
     }
 
@@ -202,37 +180,31 @@ impl LlmClient {
     /// # Errors
     ///
     /// Returns `LlmError::MissingConfig` when no route supports video understanding.
-    pub fn resolve_media_model_name_for_video(&self) -> Result<String, LlmError> {
-        self.resolve_media_route_for_modality(capabilities::MediaModality::VideoUnderstanding)
+    pub fn resolve_vision_model_name_for_video(&self) -> Result<String, LlmError> {
+        self.resolve_vision_route_for_modality(capabilities::VisionModality::VideoUnderstanding)
             .map(|(name, _)| name)
-    }
-
-    /// Returns true when at least one configured route supports audio transcription.
-    #[must_use]
-    pub fn is_audio_transcription_available(&self) -> bool {
-        self.resolve_media_model_for_audio_stt().is_ok()
     }
 
     /// Returns true when at least one configured route supports image understanding.
     #[must_use]
     pub fn is_image_understanding_available(&self) -> bool {
-        self.resolve_media_model_for_image().is_ok()
+        self.resolve_vision_model_for_image().is_ok()
     }
 
     /// Returns true when at least one configured route supports video understanding.
     #[must_use]
     pub fn is_video_understanding_available(&self) -> bool {
-        self.resolve_media_model_for_video().is_ok()
+        self.resolve_vision_model_for_video().is_ok()
     }
 
     /// Create a new LLM client with providers configured from settings
     #[must_use]
     pub fn new(settings: &crate::config::AgentSettings) -> Self {
-        let (media_model_id, media_model_provider) = match settings.get_media_model() {
+        let (vision_model_id, vision_model_provider) = match settings.get_vision_model() {
             (id, provider) if !id.is_empty() && !provider.is_empty() => (Some(id), Some(provider)),
             _ => (None, None),
         };
-        let media_model_name = media_model_id.clone();
+        let vision_model_name = vision_model_id.clone();
         let providers = providers::build_configured_providers(settings);
 
         #[cfg_attr(
@@ -284,9 +256,9 @@ impl LlmClient {
             providers,
             discovered_model_sources,
             models: settings.get_available_models(),
-            media_model_name,
-            media_model_id,
-            media_model_provider,
+            vision_model_name,
+            vision_model_id,
+            vision_model_provider,
         }
     }
 
@@ -295,12 +267,10 @@ impl LlmClient {
         self.providers.insert(Self::provider_key(&name), provider);
     }
 
-    /// Returns true if at least one multimodal provider is configured.
+    /// Returns true if at least one vision provider is configured.
     #[must_use]
-    pub fn is_multimodal_available(&self) -> bool {
-        self.is_audio_transcription_available()
-            || self.is_image_understanding_available()
-            || self.is_video_understanding_available()
+    pub fn is_vision_available(&self) -> bool {
+        self.is_image_understanding_available() || self.is_video_understanding_available()
     }
 
     /// Returns true if requested provider is configured.
@@ -742,69 +712,6 @@ impl LlmClient {
         support::backoff::get_rate_limit_wait_secs(error)
     }
 
-    /// Transcribe audio to text
-    ///
-    /// # Errors
-    ///
-    /// Returns any error from the provider.
-    pub async fn transcribe_audio(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        model_name: &str,
-    ) -> Result<String, LlmError> {
-        let model_info = self.get_model_info(model_name)?;
-        let provider = self.get_provider(&model_info.provider)?;
-        provider
-            .transcribe_audio(audio_bytes, mime_type, &model_info.id)
-            .await
-    }
-
-    /// Transcribe audio to text with a task-specific prompt.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error from the provider.
-    pub async fn transcribe_audio_with_prompt(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        text_prompt: &str,
-        model_name: &str,
-    ) -> Result<String, LlmError> {
-        let model_info = self.get_model_info(model_name)?;
-        let provider = self.get_provider(&model_info.provider)?;
-        provider
-            .transcribe_audio_with_prompt(audio_bytes, mime_type, text_prompt, &model_info.id)
-            .await
-    }
-
-    /// Transcribe audio with retry logic.
-    /// Retries up to 5 times with exponential backoff for retryable errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error from the provider after all retry attempts are exhausted.
-    pub async fn transcribe_audio_with_fallback(
-        &self,
-        provider_name: &str,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        model_id: &str,
-    ) -> Result<String, LlmError> {
-        self.retry_with_backoff(
-            || async {
-                let provider = self.get_provider(provider_name)?;
-                provider
-                    .transcribe_audio(audio_bytes.clone(), mime_type, model_id)
-                    .await
-            },
-            &format!("Transcription with {}", provider_name),
-            3000,
-        )
-        .await
-    }
-
     /// Analyze an image with a text prompt
     ///
     /// # Errors
@@ -862,53 +769,6 @@ impl LlmClient {
             .map(|(_, info)| info.clone())
             .ok_or_else(|| LlmError::unknown(format!("Model {model_name} not found")))
     }
-
-    /// Execute an async operation with retry logic and exponential backoff.
-    async fn retry_with_backoff<T, F, Fut>(
-        &self,
-        operation: F,
-        context: &str,
-        initial_backoff_ms: u64,
-    ) -> Result<T, LlmError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T, LlmError>>,
-    {
-        for attempt in 1..=Self::MAX_RETRIES {
-            match operation().await {
-                Ok(result) => {
-                    if attempt > 1 {
-                        info!("{} succeeded after {} attempts", context, attempt);
-                    }
-                    return Ok(result);
-                }
-                Err(e) => {
-                    if attempt < Self::MAX_RETRIES
-                        && let Some(backoff) = support::backoff::get_retry_delay_with_initial(
-                            &e,
-                            attempt,
-                            initial_backoff_ms,
-                        )
-                    {
-                        warn!(
-                            "{} failed (attempt {}/{}): {}, retrying after {:?}",
-                            context,
-                            attempt,
-                            Self::MAX_RETRIES,
-                            e,
-                            backoff
-                        );
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    }
-                    warn!("{} failed after {} attempts: {}", context, attempt, e);
-                    return Err(e);
-                }
-            }
-        }
-
-        Err(LlmError::api_error("All retry attempts exhausted"))
-    }
 }
 
 #[cfg(test)]
@@ -934,13 +794,13 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
-    fn media_resolver_prefers_explicit_media_route_for_video() {
+    fn vision_resolver_prefers_explicit_vision_route_for_video() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("google/gemini-3-flash-preview".to_string()),
-                media_model_provider: Some("openrouter".to_string()),
+                vision_model_id: Some("google/gemini-3-flash-preview".to_string()),
+                vision_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -949,21 +809,21 @@ mod tests {
 
         let llm = LlmClient::new(&settings);
         let route = llm
-            .resolve_media_model_for_video()
-            .expect("media route should resolve");
+            .resolve_vision_model_for_video()
+            .expect("vision route should resolve");
 
         assert_eq!(route.id, "google/gemini-3-flash-preview");
         assert_eq!(route.provider, "openrouter");
     }
 
     #[test]
-    fn media_resolver_rejects_unconfigured_provider_routes() {
+    fn vision_resolver_rejects_unconfigured_provider_routes() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-missing".to_string()),
-                media_model_provider: Some("missing-provider".to_string()),
+                vision_model_id: Some("vision-missing".to_string()),
+                vision_model_provider: Some("missing-provider".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -972,8 +832,8 @@ mod tests {
 
         let llm = LlmClient::new(&settings);
         let error = llm
-            .resolve_media_model_for_image()
-            .expect_err("unavailable media provider must not fall back");
+            .resolve_vision_model_for_image()
+            .expect_err("unavailable vision provider must not fall back");
 
         assert!(matches!(
             error,
@@ -984,13 +844,13 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
-    fn media_model_name_resolvers_return_selected_route_names() {
+    fn vision_model_name_resolvers_return_selected_route_names() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("google/gemini-3-flash-preview".to_string()),
-                media_model_provider: Some("openrouter".to_string()),
+                vision_model_id: Some("google/gemini-3-flash-preview".to_string()),
+                vision_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -999,24 +859,19 @@ mod tests {
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
-            llm.resolve_media_model_name_for_audio_stt()
-                .expect("audio stt route"),
-            "google/gemini-3-flash-preview"
-        );
-        assert_eq!(
-            llm.resolve_media_model_name_for_image()
+            llm.resolve_vision_model_name_for_image()
                 .expect("image route"),
             "google/gemini-3-flash-preview"
         );
         assert_eq!(
-            llm.resolve_media_model_name_for_video()
+            llm.resolve_vision_model_name_for_video()
                 .expect("video route"),
             "google/gemini-3-flash-preview"
         );
     }
 
     #[test]
-    fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
+    fn vision_is_unavailable_when_no_supported_vision_routes_exist() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
@@ -1028,19 +883,18 @@ mod tests {
         );
 
         let llm = LlmClient::new(&settings);
-        assert!(!llm.is_multimodal_available());
-        assert!(!llm.is_audio_transcription_available());
+        assert!(!llm.is_vision_available());
         assert!(!llm.is_image_understanding_available());
         assert!(!llm.is_video_understanding_available());
 
         let error = llm
-            .resolve_media_model_for_video()
+            .resolve_vision_model_for_video()
             .expect_err("video route missing");
         assert!(matches!(
             error,
             crate::llm::LlmError::MissingConfig(message)
                 if message.contains("video understanding")
-                    && message.contains("MEDIA_MODEL")
+                    && message.contains("VISION_MODEL")
         ));
     }
 

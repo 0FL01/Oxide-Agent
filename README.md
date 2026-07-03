@@ -146,7 +146,7 @@ The bot supports these Agent Mode provider routes/profiles with tool calling:
 *   **OpenRouter** (`OPENROUTER_API_KEY`) - Multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
 
 > [!NOTE]
-> Voice recognition and image analysis require an explicit `MEDIA_MODEL_ID` / `MEDIA_MODEL_PROVIDER` route.
+> Voice recognition requires `AUDIO_STT_BASE_URL`; image/video analysis requires an explicit `VISION_MODEL_ID` / `VISION_MODEL_PROVIDER` route.
 
 ### Infrastructure
 *   **Docker** - run the default code sandbox (`agent-sandbox:latest`)
@@ -276,8 +276,9 @@ AGENT_MODEL_CONTEXT_WINDOW_TOKENS=128000
 
 ### Optional overrides
 ```dotenv
-MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
-MEDIA_MODEL_PROVIDER="openrouter"
+AUDIO_STT_BASE_URL="http://127.0.0.1:8002"
+VISION_MODEL_ID="google/gemini-3.1-flash-lite-preview"
+VISION_MODEL_PROVIDER="openrouter"
 ```
 
 <details>
@@ -368,9 +369,9 @@ Formats: `ogg` (recommended), `wav`
 SSML support: set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<prosody>` tags
 
 ### Media
-- **Media Audio Provider** (`tool-media-audio`) - audio transcription
-- **Media Image Provider** (`tool-media-image`) - image description
-- **Media Video Provider** (`tool-media-video`) - video description
+- **Audio STT Provider** (`tool-audio-stt`) - audio transcription
+- **Vision Image Provider** (`tool-vision-image`) - image description
+- **Vision Video Provider** (`tool-vision-video`) - video description
 - **YT-DLP Provider** (`tool-ytdlp`) - video and audio download from various platforms
 
 ### Task Management
@@ -700,7 +701,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | **Search Tools** | `tool-web-search`, `tool-crw`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backend** | `sandbox-backend-sandboxd-client` |
-| **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
+| **Media** | `tool-audio-stt`, `tool-vision-image`, `tool-vision-video`, `tool-ytdlp` |
 | **TTS** | `tool-tts-kokoro`, `tool-tts-silero` |
 | **Memory** | `tool-wiki-memory`, `tool-compression`, `tool-agents-md` |
 | **Integrations** | `integration-mcp-jira`, `integration-mcp-mattermost`, `integration-ssh-mcp` |

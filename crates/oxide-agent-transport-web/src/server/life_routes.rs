@@ -439,7 +439,11 @@ async fn life_upload_attachments_for_user(
     let limit_mb = web_chat_upload_limit_mb();
     let max_bytes = limit_mb.saturating_mul(1024 * 1024);
     let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
-    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let preprocessor = Preprocessor::from_settings(
+        state.session_manager.llm_client(),
+        state.session_manager.agent_settings().as_ref(),
+        sandbox_scope,
+    );
     let mut total_bytes = 0_u64;
     let mut attachments = Vec::new();
 
@@ -515,7 +519,11 @@ async fn life_large_input_for_user(
     }
 
     let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
-    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let preprocessor = Preprocessor::from_settings(
+        state.session_manager.llm_client(),
+        state.session_manager.agent_settings().as_ref(),
+        sandbox_scope,
+    );
     let file_name = request
         .file_name
         .filter(|name| !name.trim().is_empty())

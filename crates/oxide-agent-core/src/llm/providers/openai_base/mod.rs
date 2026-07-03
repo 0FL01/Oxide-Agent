@@ -300,18 +300,6 @@ impl LlmProvider for OpenAIBaseProvider {
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
-    async fn transcribe_audio(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        model_id: &str,
-    ) -> Result<String, LlmError> {
-        let _ = (audio_bytes, mime_type, model_id);
-        Err(LlmError::unknown(
-            "Audio transcription not supported by OpenAI Base provider".to_string(),
-        ))
-    }
-
     async fn analyze_image(
         &self,
         image_bytes: Vec<u8>,

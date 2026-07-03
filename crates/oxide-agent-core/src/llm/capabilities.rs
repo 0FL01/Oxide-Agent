@@ -2,49 +2,44 @@ use crate::config::ModelInfo;
 
 use super::providers;
 
-/// Media modality types used for capability-based route resolution.
+/// Vision modality types used for capability-based route resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaModality {
-    AudioTranscription,
+pub enum VisionModality {
     ImageUnderstanding,
     VideoUnderstanding,
 }
 
-impl MediaModality {
+impl VisionModality {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::AudioTranscription => "audio transcription",
             Self::ImageUnderstanding => "image understanding",
             Self::VideoUnderstanding => "video understanding",
         }
     }
 }
 
-/// Provider support matrix for media modalities.
+/// Provider support matrix for vision modalities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MediaCapabilities {
-    pub supports_audio_transcription: bool,
+pub struct VisionCapabilities {
     pub supports_image_understanding: bool,
     pub supports_video_understanding: bool,
 }
 
-impl MediaCapabilities {
+impl VisionCapabilities {
     #[must_use]
-    pub const fn new(audio: bool, image: bool, video: bool) -> Self {
+    pub const fn new(image: bool, video: bool) -> Self {
         Self {
-            supports_audio_transcription: audio,
             supports_image_understanding: image,
             supports_video_understanding: video,
         }
     }
 
     #[must_use]
-    pub const fn supports(self, modality: MediaModality) -> bool {
+    pub const fn supports(self, modality: VisionModality) -> bool {
         match modality {
-            MediaModality::AudioTranscription => self.supports_audio_transcription,
-            MediaModality::ImageUnderstanding => self.supports_image_understanding,
-            MediaModality::VideoUnderstanding => self.supports_video_understanding,
+            VisionModality::ImageUnderstanding => self.supports_image_understanding,
+            VisionModality::VideoUnderstanding => self.supports_video_understanding,
         }
     }
 }
@@ -132,17 +127,18 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
 }
 
 #[must_use]
-/// Returns media modality support for a provider.
+/// Returns vision modality support for a provider.
 #[allow(dead_code)]
-fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
-    providers::provider_media_capabilities(provider_name).unwrap_or_else(default_media_capabilities)
+fn provider_vision_capabilities(provider_name: &str) -> VisionCapabilities {
+    providers::provider_vision_capabilities(provider_name)
+        .unwrap_or_else(default_vision_capabilities)
 }
 
 #[must_use]
-/// Returns media modality support for a specific configured model route.
-pub fn provider_media_capabilities_for_model(model_info: &ModelInfo) -> MediaCapabilities {
-    providers::provider_media_capabilities_for_model(model_info)
-        .unwrap_or_else(default_media_capabilities)
+/// Returns vision modality support for a specific configured model route.
+pub fn provider_vision_capabilities_for_model(model_info: &ModelInfo) -> VisionCapabilities {
+    providers::provider_vision_capabilities_for_model(model_info)
+        .unwrap_or_else(default_vision_capabilities)
 }
 
 #[must_use]
@@ -156,8 +152,8 @@ fn default_provider_capabilities() -> ProviderCapabilities {
     ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false)
 }
 
-const fn default_media_capabilities() -> MediaCapabilities {
-    MediaCapabilities::new(false, false, false)
+const fn default_vision_capabilities() -> VisionCapabilities {
+    VisionCapabilities::new(false, false)
 }
 
 #[must_use]
@@ -318,8 +314,8 @@ mod tests {
         oxide_module_llm_provider_opencode_go
     ))]
     #[test]
-    fn media_capabilities_are_modality_specific() {
-        let opencode_go = super::provider_media_capabilities("opencode-go");
+    fn vision_capabilities_are_modality_specific() {
+        let opencode_go = super::provider_vision_capabilities("opencode-go");
 
         for model_id in [
             "google/gemini-2.0-flash",
@@ -336,24 +332,19 @@ mod tests {
                 provider: "openrouter".to_string(),
                 weight: 1,
             };
-            let openrouter = super::provider_media_capabilities_for_model(&openrouter_media);
+            let openrouter = super::provider_vision_capabilities_for_model(&openrouter_media);
             assert!(
-                openrouter.supports(super::MediaModality::AudioTranscription),
+                openrouter.supports(super::VisionModality::ImageUnderstanding),
                 "{model_id}"
             );
             assert!(
-                openrouter.supports(super::MediaModality::ImageUnderstanding),
-                "{model_id}"
-            );
-            assert!(
-                openrouter.supports(super::MediaModality::VideoUnderstanding),
+                openrouter.supports(super::VisionModality::VideoUnderstanding),
                 "{model_id}"
             );
         }
 
-        assert!(!opencode_go.supports(super::MediaModality::AudioTranscription));
-        assert!(!opencode_go.supports(super::MediaModality::ImageUnderstanding));
-        assert!(!opencode_go.supports(super::MediaModality::VideoUnderstanding));
+        assert!(!opencode_go.supports(super::VisionModality::ImageUnderstanding));
+        assert!(!opencode_go.supports(super::VisionModality::VideoUnderstanding));
     }
 
     #[test]

@@ -63,15 +63,6 @@ impl LlmProvider for JsonDecodeRetryMock {
         ))
     }
 
-    async fn transcribe_audio(
-        &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
-    ) -> Result<String, LlmError> {
-        unimplemented!()
-    }
-
     async fn analyze_image(
         &self,
         _image_bytes: Vec<u8>,

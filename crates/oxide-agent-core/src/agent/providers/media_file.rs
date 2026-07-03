@@ -4,6 +4,7 @@ use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
 };
+use crate::audio_stt::{AudioTranscriber, AudioTranscriptionInput};
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use crate::storage::StorageProvider;
@@ -39,6 +40,7 @@ enum MediaKind {
 /// Provider for explicit media analysis on sandbox files.
 pub struct MediaFileProvider {
     llm_client: Arc<LlmClient>,
+    audio_transcriber: Arc<dyn AudioTranscriber>,
     fileops: Arc<dyn SandboxFileOps>,
     exec: Arc<dyn SandboxExec>,
     /// Durable storage for resolving `artifact://` URIs (browser-live screenshots).
@@ -53,8 +55,6 @@ struct AudioFileArgs {
     path: String,
     #[serde(default)]
     mime_type: Option<String>,
-    #[serde(default)]
-    prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,19 +76,28 @@ struct VideoFileArgs {
 impl MediaFileProvider {
     /// Create a new provider with lazy sandbox initialization.
     #[must_use]
-    pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
+    pub fn new(
+        llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
+        sandbox_scope: impl Into<SandboxScope>,
+    ) -> Self {
         Self::from_runtime(
             llm_client,
+            audio_transcriber,
             Arc::new(SandboxRuntime::new(sandbox_scope.into())),
         )
     }
 
     /// Create a new provider from the shared sandbox runtime.
     #[must_use]
-    pub fn from_runtime(llm_client: Arc<LlmClient>, runtime: Arc<SandboxRuntime>) -> Self {
+    pub fn from_runtime(
+        llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
+        runtime: Arc<SandboxRuntime>,
+    ) -> Self {
         let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
         let exec: Arc<dyn SandboxExec> = runtime;
-        Self::with_sandbox_backends(llm_client, fileops, exec)
+        Self::with_sandbox_backends(llm_client, audio_transcriber, fileops, exec)
     }
 
     /// Create a new provider from the shared sandbox runtime with durable
@@ -96,6 +105,7 @@ impl MediaFileProvider {
     #[must_use]
     pub fn from_runtime_with_storage(
         llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
         runtime: Arc<SandboxRuntime>,
         storage: Arc<dyn StorageProvider>,
         user_id: i64,
@@ -104,6 +114,7 @@ impl MediaFileProvider {
         let exec: Arc<dyn SandboxExec> = runtime;
         Self::with_sandbox_backends_and_storage(
             llm_client,
+            audio_transcriber,
             fileops,
             exec,
             Some(storage),
@@ -115,10 +126,18 @@ impl MediaFileProvider {
     #[must_use]
     pub fn with_sandbox_backends(
         llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
         fileops: Arc<dyn SandboxFileOps>,
         exec: Arc<dyn SandboxExec>,
     ) -> Self {
-        Self::with_sandbox_backends_and_storage(llm_client, fileops, exec, None, None)
+        Self::with_sandbox_backends_and_storage(
+            llm_client,
+            audio_transcriber,
+            fileops,
+            exec,
+            None,
+            None,
+        )
     }
 
     /// Create a provider from narrow sandbox capability traits with durable
@@ -126,6 +145,7 @@ impl MediaFileProvider {
     #[must_use]
     pub fn with_sandbox_backends_and_storage(
         llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
         fileops: Arc<dyn SandboxFileOps>,
         exec: Arc<dyn SandboxExec>,
         storage: Option<Arc<dyn StorageProvider>>,
@@ -133,6 +153,7 @@ impl MediaFileProvider {
     ) -> Self {
         Self {
             llm_client,
+            audio_transcriber,
             fileops,
             exec,
             storage,
@@ -194,10 +215,6 @@ impl MediaFileProvider {
                         "type": "string",
                         "description": "Optional MIME type override, for example audio/ogg or audio/wav"
                     },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
-                    }
                 },
                 "required": ["path"]
             }),
@@ -318,21 +335,15 @@ impl MediaFileProvider {
         Ok((resolved_path, bytes))
     }
 
-    fn resolve_audio_model_name(&self) -> Result<String> {
-        self.llm_client
-            .resolve_media_model_name_for_audio_stt()
-            .map_err(|error| anyhow!("Audio transcription route unavailable: {error}"))
-    }
-
     fn resolve_image_model_name(&self) -> Result<String> {
         self.llm_client
-            .resolve_media_model_name_for_image()
+            .resolve_vision_model_name_for_image()
             .map_err(|error| anyhow!("Image understanding route unavailable: {error}"))
     }
 
     fn resolve_video_model_name(&self) -> Result<String> {
         self.llm_client
-            .resolve_media_model_name_for_video()
+            .resolve_vision_model_name_for_video()
             .map_err(|error| anyhow!("Video understanding route unavailable: {error}"))
     }
 
@@ -425,15 +436,14 @@ impl MediaFileProvider {
         let mime_type = args
             .mime_type
             .unwrap_or_else(|| infer_audio_mime_type(&resolved_path).to_string());
-        let prompt = args.prompt.unwrap_or_else(|| {
-            "Transcribe this audio accurately for an AI agent. Preserve the spoken content faithfully and include timestamps, speaker turns, or structure only when they are clearly available or explicitly relevant.".to_string()
-        });
-        let model_name = self.resolve_audio_model_name()?;
 
-        info!(path = %resolved_path, mime_type = %mime_type, model = %model_name, "Transcribing sandbox audio file");
-        let transcription = self
-            .llm_client
-            .transcribe_audio_with_prompt(audio_bytes, &mime_type, &prompt, &model_name)
+        info!(path = %resolved_path, mime_type = %mime_type, "Transcribing sandbox audio file");
+        let transcript = self
+            .audio_transcriber
+            .transcribe(
+                AudioTranscriptionInput::new(audio_bytes, &mime_type)
+                    .with_file_name(media_file_name_for_transcription(&resolved_path)),
+            )
             .await
             .map_err(|error| anyhow!("Audio transcription failed: {error}"))?;
 
@@ -441,8 +451,10 @@ impl MediaFileProvider {
             "ok": true,
             "path": resolved_path,
             "mime_type": mime_type,
-            "model": model_name,
-            "transcription": transcription,
+            "model": transcript.model,
+            "vad": transcript.vad,
+            "segments": transcript.segments,
+            "transcription": transcript.text,
         }))?)
     }
 
@@ -573,6 +585,14 @@ fn extension(path: &str) -> Option<String> {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(ToString::to_string)
+}
+
+fn media_file_name_for_transcription(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "audio.bin".to_string())
 }
 
 fn is_remote_url(path: &str) -> bool {
@@ -775,6 +795,12 @@ mod tests {
     use chrono::Utc;
     use tokio_util::sync::CancellationToken;
 
+    fn unavailable_audio_transcriber() -> Arc<dyn AudioTranscriber> {
+        Arc::new(crate::audio_stt::UnavailableAudioTranscriber::new(
+            "audio STT not used by this test",
+        ))
+    }
+
     fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
         let now = Utc::now();
         ToolInvocation {
@@ -821,9 +847,10 @@ mod tests {
     }
 
     #[test]
-    fn transcribe_audio_tool_accepts_custom_prompt() {
+    fn transcribe_audio_tool_exposes_stt_inputs_only() {
         let provider = Arc::new(MediaFileProvider::new(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             42_i64,
         ));
         let tool = provider
@@ -834,9 +861,10 @@ mod tests {
             .spec();
 
         assert_eq!(
-            tool.parameters["properties"]["prompt"]["type"],
+            tool.parameters["properties"]["mime_type"]["type"],
             serde_json::json!("string")
         );
+        assert!(tool.parameters["properties"].get("prompt").is_none());
     }
 
     #[test]
@@ -867,6 +895,7 @@ mod tests {
     fn media_tool_descriptions_mention_urls() {
         let provider = Arc::new(MediaFileProvider::new(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             42_i64,
         ));
         let tools = provider
@@ -900,6 +929,7 @@ mod tests {
     fn typed_runtime_executors_register_media_tools() {
         let provider = Arc::new(MediaFileProvider::new(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             42_i64,
         ));
 
@@ -918,6 +948,7 @@ mod tests {
     fn typed_runtime_executors_for_filters_media_tools() {
         let provider = Arc::new(MediaFileProvider::new(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             42_i64,
         ));
 
@@ -934,6 +965,7 @@ mod tests {
     async fn typed_runtime_executor_rejects_missing_path_before_sandbox() {
         let provider = Arc::new(MediaFileProvider::new(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             42_i64,
         ));
         let executor = provider
@@ -969,8 +1001,11 @@ mod tests {
             .await
             .expect("write artifact test file");
 
-        let provider =
-            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
+        let provider = MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
+            42_i64,
+        );
         let (resolved_path, bytes, cleanup_path) = provider
             .read_media_source(
                 "artifact://browser/task-1/session-1/step-0001-milestone.png",
@@ -1010,6 +1045,7 @@ mod tests {
 
         let provider = MediaFileProvider::from_runtime_with_storage(
             Arc::new(LlmClient::new(&AgentSettings::default())),
+            unavailable_audio_transcriber(),
             Arc::new(SandboxRuntime::new(SandboxScope::from(42_i64))),
             Arc::new(mock_storage),
             42,
@@ -1041,19 +1077,23 @@ mod tests {
         }
 
         #[test]
-        fn resolve_video_model_name_requires_video_capable_media_route() {
+        fn resolve_video_model_name_requires_video_capable_vision_route() {
             let settings = with_provider_key(
                 AgentSettings {
                     agent_model_id: Some("agent-openrouter".to_string()),
                     agent_model_provider: Some("openrouter".to_string()),
-                    media_model_id: Some("media-missing".to_string()),
-                    media_model_provider: Some("missing-provider".to_string()),
+                    vision_model_id: Some("vision-missing".to_string()),
+                    vision_model_provider: Some("missing-provider".to_string()),
                     ..AgentSettings::default()
                 },
                 "llm-provider/openrouter",
                 "test-openrouter-key",
             );
-            let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
+            let provider = MediaFileProvider::new(
+                Arc::new(LlmClient::new(&settings)),
+                unavailable_audio_transcriber(),
+                42_i64,
+            );
 
             let error = provider
                 .resolve_video_model_name()
@@ -1067,11 +1107,15 @@ mod tests {
             let settings = AgentSettings {
                 agent_model_id: Some("agent-missing".to_string()),
                 agent_model_provider: Some("missing-provider".to_string()),
-                media_model_id: Some("media-missing".to_string()),
-                media_model_provider: Some("missing-provider".to_string()),
+                vision_model_id: Some("vision-missing".to_string()),
+                vision_model_provider: Some("missing-provider".to_string()),
                 ..AgentSettings::default()
             };
-            let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
+            let provider = MediaFileProvider::new(
+                Arc::new(LlmClient::new(&settings)),
+                unavailable_audio_transcriber(),
+                42_i64,
+            );
 
             let error = provider
                 .resolve_image_model_name()

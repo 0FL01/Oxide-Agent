@@ -90,8 +90,8 @@ jobs:
       SUB_AGENT_MODEL_ID: glm-4.5-air
       SUB_AGENT_MODEL_PROVIDER: openai-base:zai
       SUB_AGENT_MAX_OUTPUT_TOKENS: "48000"
-      MEDIA_MODEL_ID: google/gemini-3-flash-preview
-      MEDIA_MODEL_PROVIDER: openrouter
+      VISION_MODEL_ID: google/gemini-3-flash-preview
+      VISION_MODEL_PROVIDER: openrouter
       NARRATOR_MODEL_ID: google/gemini-3-flash-preview
       NARRATOR_MODEL_PROVIDER: openrouter
       RUN_LLM_PROVIDER_CHECKS: "0"

@@ -4,6 +4,8 @@ use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::tool_runtime::AgentsMdModuleContext;
 #[cfg(oxide_module_tool_agents_md)]
 use crate::agent::tool_runtime::AgentsMdToolModule;
+#[cfg(oxide_module_tool_audio_stt)]
+use crate::agent::tool_runtime::AudioSttToolModule;
 use crate::agent::tool_runtime::BrowserLiveModuleContext;
 #[cfg(oxide_module_tool_browser_live)]
 use crate::agent::tool_runtime::BrowserLiveToolModule;
@@ -22,12 +24,6 @@ use crate::agent::tool_runtime::ManagerControlPlaneModuleContext;
 use crate::agent::tool_runtime::ManagerControlPlaneToolModule;
 #[cfg(oxide_module_integration_mcp_mattermost)]
 use crate::agent::tool_runtime::MattermostMcpToolModule;
-#[cfg(oxide_module_tool_media_audio)]
-use crate::agent::tool_runtime::MediaAudioToolModule;
-#[cfg(oxide_module_tool_media_image)]
-use crate::agent::tool_runtime::MediaImageToolModule;
-#[cfg(oxide_module_tool_media_video)]
-use crate::agent::tool_runtime::MediaVideoToolModule;
 #[cfg(oxide_module_tool_reminder)]
 use crate::agent::tool_runtime::ReminderToolModule;
 #[cfg(oxide_module_tool_retrieve_tools)]
@@ -47,6 +43,10 @@ use crate::agent::tool_runtime::SshMcpToolModule;
 use crate::agent::tool_runtime::StackLogsToolModule;
 #[cfg(oxide_module_tool_todos)]
 use crate::agent::tool_runtime::TodosToolModule;
+#[cfg(oxide_module_tool_vision_image)]
+use crate::agent::tool_runtime::VisionImageToolModule;
+#[cfg(oxide_module_tool_vision_video)]
+use crate::agent::tool_runtime::VisionVideoToolModule;
 #[cfg(any(
     oxide_module_tool_sandbox_exec,
     oxide_module_tool_sandbox_fileops,
@@ -60,9 +60,9 @@ use crate::agent::tool_runtime::TodosToolModule;
     oxide_module_tool_delegation,
     oxide_module_tool_retrieve_tools,
     oxide_module_tool_file_delivery,
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video,
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video,
     oxide_module_tool_reminder,
     oxide_module_tool_browser_live,
     oxide_module_tool_stack_logs,
@@ -104,9 +104,9 @@ use crate::agent::tool_runtime::{
     oxide_module_tool_delegation,
     oxide_module_tool_retrieve_tools,
     oxide_module_tool_file_delivery,
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video,
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video,
     oxide_module_tool_reminder,
     oxide_module_tool_browser_live,
     oxide_module_tool_stack_logs,
@@ -203,9 +203,9 @@ impl AgentExecutor {
             oxide_module_tool_delegation,
             oxide_module_tool_retrieve_tools,
             oxide_module_tool_file_delivery,
-            oxide_module_tool_media_audio,
-            oxide_module_tool_media_image,
-            oxide_module_tool_media_video,
+            oxide_module_tool_audio_stt,
+            oxide_module_tool_vision_image,
+            oxide_module_tool_vision_video,
             oxide_module_tool_reminder,
             oxide_module_tool_browser_live,
             oxide_module_tool_stack_logs,
@@ -235,12 +235,12 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, catalog, &DelegationToolModule, ctx);
         #[cfg(oxide_module_tool_file_delivery)]
         self.register_tool_runtime_module(registry, catalog, &FileDeliveryToolModule, ctx);
-        #[cfg(oxide_module_tool_media_audio)]
-        self.register_tool_runtime_module(registry, catalog, &MediaAudioToolModule, ctx);
-        #[cfg(oxide_module_tool_media_image)]
-        self.register_tool_runtime_module(registry, catalog, &MediaImageToolModule, ctx);
-        #[cfg(oxide_module_tool_media_video)]
-        self.register_tool_runtime_module(registry, catalog, &MediaVideoToolModule, ctx);
+        #[cfg(oxide_module_tool_audio_stt)]
+        self.register_tool_runtime_module(registry, catalog, &AudioSttToolModule, ctx);
+        #[cfg(oxide_module_tool_vision_image)]
+        self.register_tool_runtime_module(registry, catalog, &VisionImageToolModule, ctx);
+        #[cfg(oxide_module_tool_vision_video)]
+        self.register_tool_runtime_module(registry, catalog, &VisionVideoToolModule, ctx);
         #[cfg(oxide_module_tool_reminder)]
         self.register_tool_runtime_module(registry, catalog, &ReminderToolModule, ctx);
         #[cfg(oxide_module_tool_browser_live)]
@@ -326,9 +326,9 @@ impl AgentExecutor {
         oxide_module_tool_delegation,
         oxide_module_tool_retrieve_tools,
         oxide_module_tool_file_delivery,
-        oxide_module_tool_media_audio,
-        oxide_module_tool_media_image,
-        oxide_module_tool_media_video,
+        oxide_module_tool_audio_stt,
+        oxide_module_tool_vision_image,
+        oxide_module_tool_vision_video,
         oxide_module_tool_reminder,
         oxide_module_tool_browser_live,
         oxide_module_tool_stack_logs,
@@ -388,9 +388,9 @@ impl AgentExecutor {
             oxide_module_tool_compression,
             oxide_module_tool_retrieve_tools,
             oxide_module_tool_file_delivery,
-            oxide_module_tool_media_audio,
-            oxide_module_tool_media_image,
-            oxide_module_tool_media_video,
+            oxide_module_tool_audio_stt,
+            oxide_module_tool_vision_image,
+            oxide_module_tool_vision_video,
             oxide_module_tool_reminder,
             oxide_module_tool_browser_live,
             oxide_module_tool_stack_logs,

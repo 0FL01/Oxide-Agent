@@ -4,6 +4,7 @@
 //! multimodal model before passing to the agent for execution.
 
 use super::providers::SandboxRuntime;
+use crate::audio_stt::{AudioTranscriber, AudioTranscriptionInput, build_audio_transcriber};
 use crate::llm::LlmClient;
 use crate::sandbox::{ExecResult, SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::Result;
@@ -35,6 +36,7 @@ pub struct StagedDocument {
 /// Preprocessor for converting multimodal inputs to text
 pub struct Preprocessor {
     llm_client: Arc<LlmClient>,
+    audio_transcriber: Arc<dyn AudioTranscriber>,
     sandbox_fileops: Arc<dyn SandboxFileOps>,
     sandbox_exec: Arc<dyn SandboxExec>,
 }
@@ -52,25 +54,42 @@ impl Preprocessor {
     ///
     /// let settings = AgentSettings::new().expect("valid settings");
     /// let llm_client = Arc::new(LlmClient::new(&settings));
-    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let preprocessor = Preprocessor::from_settings(llm_client, &settings, 123456789);
     /// ```
     #[must_use]
-    pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
+    pub fn new(
+        llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
+        sandbox_scope: impl Into<SandboxScope>,
+    ) -> Self {
         let runtime = Arc::new(SandboxRuntime::new(sandbox_scope.into()));
         let sandbox_fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
         let sandbox_exec: Arc<dyn SandboxExec> = runtime;
-        Self::with_sandbox_backends(llm_client, sandbox_fileops, sandbox_exec)
+        Self::with_sandbox_backends(llm_client, audio_transcriber, sandbox_fileops, sandbox_exec)
+    }
+
+    /// Create a new preprocessor from runtime settings.
+    #[must_use]
+    pub fn from_settings(
+        llm_client: Arc<LlmClient>,
+        settings: &crate::config::AgentSettings,
+        sandbox_scope: impl Into<SandboxScope>,
+    ) -> Self {
+        let audio_transcriber = build_audio_transcriber(&settings.audio_stt_config());
+        Self::new(llm_client, audio_transcriber, sandbox_scope)
     }
 
     /// Create a preprocessor with explicit sandbox backends.
     #[must_use]
     pub fn with_sandbox_backends(
         llm_client: Arc<LlmClient>,
+        audio_transcriber: Arc<dyn AudioTranscriber>,
         sandbox_fileops: Arc<dyn SandboxFileOps>,
         sandbox_exec: Arc<dyn SandboxExec>,
     ) -> Self {
         Self {
             llm_client,
+            audio_transcriber,
             sandbox_fileops,
             sandbox_exec,
         }
@@ -89,7 +108,7 @@ impl Preprocessor {
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
-    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let preprocessor = Preprocessor::from_settings(llm_client, &settings, 123456789);
     /// let audio_bytes = vec![0; 100];
     /// let text = preprocessor.transcribe_voice(audio_bytes, "audio/ogg").await?;
     /// # Ok(())
@@ -105,19 +124,17 @@ impl Preprocessor {
             audio_bytes.len()
         );
 
-        let model_name = self
-            .llm_client
-            .resolve_media_model_name_for_audio_stt()
-            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
-
-        let transcription = self
-            .llm_client
-            .transcribe_audio(audio_bytes, mime_type, &model_name)
+        let transcript = self
+            .audio_transcriber
+            .transcribe(
+                AudioTranscriptionInput::new(audio_bytes, mime_type)
+                    .with_file_name(default_voice_file_name(mime_type)),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("Transcription failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("AUDIO_STT_UNAVAILABLE: {e}"))?;
 
-        info!("Transcription result: {} chars", transcription.len());
-        Ok(transcription)
+        info!("Transcription result: {} chars", transcript.text.len());
+        Ok(transcript.text)
     }
 
     /// Describe an image for the agent context
@@ -135,7 +152,7 @@ impl Preprocessor {
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
-    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let preprocessor = Preprocessor::from_settings(llm_client, &settings, 123456789);
     /// let image_bytes = vec![0; 100];
     /// let description = preprocessor.describe_image(image_bytes, Some("Explain this chart")).await?;
     /// # Ok(())
@@ -175,8 +192,8 @@ impl Preprocessor {
 
         let model_name = self
             .llm_client
-            .resolve_media_model_name_for_image()
-            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
+            .resolve_vision_model_name_for_image()
+            .map_err(|e| anyhow::anyhow!("VISION_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client
@@ -222,8 +239,8 @@ impl Preprocessor {
 
         let model_name = self
             .llm_client
-            .resolve_media_model_name_for_video()
-            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
+            .resolve_vision_model_name_for_video()
+            .map_err(|e| anyhow::anyhow!("VISION_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client
@@ -447,7 +464,7 @@ impl Preprocessor {
     /// # async fn main() -> anyhow::Result<()> {
     /// # let settings = AgentSettings::new().expect("valid settings");
     /// # let llm_client = Arc::new(LlmClient::new(&settings));
-    /// let preprocessor = Preprocessor::new(llm_client, 123456789);
+    /// let preprocessor = Preprocessor::from_settings(llm_client, &settings, 123456789);
     /// let input = AgentInput::Text("Hello".to_string());
     /// let result = preprocessor.preprocess_input(input).await?;
     /// assert_eq!(result, "Hello");
@@ -566,6 +583,17 @@ pub enum AgentInput {
     },
 }
 
+fn default_voice_file_name(mime_type: &str) -> &'static str {
+    match mime_type.split(';').next().unwrap_or(mime_type).trim() {
+        "audio/ogg" | "audio/opus" => "telegram-voice.ogg",
+        "audio/webm" => "telegram-voice.webm",
+        "audio/wav" | "audio/x-wav" => "telegram-voice.wav",
+        "audio/mpeg" | "audio/mp3" => "telegram-voice.mp3",
+        "audio/mp4" | "audio/x-m4a" => "telegram-voice.m4a",
+        _ => "telegram-voice.bin",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +613,12 @@ mod tests {
     const TEST_EXEC_BACKEND_ID: SandboxBackendId = SandboxBackendId::new("test/preprocessor-exec");
     const TEST_FILEOPS_CAPABILITIES: &[SandboxCapability] = &[SandboxCapability::FileOps];
     const TEST_EXEC_CAPABILITIES: &[SandboxCapability] = &[SandboxCapability::Exec];
+
+    fn unavailable_audio_transcriber() -> Arc<dyn AudioTranscriber> {
+        Arc::new(crate::audio_stt::UnavailableAudioTranscriber::new(
+            "audio STT not used by this test",
+        ))
+    }
 
     #[derive(Default)]
     struct RecordingSandboxFileOps {
@@ -796,7 +830,12 @@ mod tests {
         let sandbox_fileops: Arc<dyn SandboxFileOps> =
             Arc::<RecordingSandboxFileOps>::clone(&fileops);
         let sandbox_exec: Arc<dyn SandboxExec> = Arc::<RecordingSandboxExec>::clone(&exec);
-        let preprocessor = Preprocessor::with_sandbox_backends(llm, sandbox_fileops, sandbox_exec);
+        let preprocessor = Preprocessor::with_sandbox_backends(
+            llm,
+            unavailable_audio_transcriber(),
+            sandbox_fileops,
+            sandbox_exec,
+        );
 
         let processed = preprocessor
             .process_document(
@@ -834,7 +873,12 @@ mod tests {
         let sandbox_fileops: Arc<dyn SandboxFileOps> =
             Arc::<RecordingSandboxFileOps>::clone(&fileops);
         let sandbox_exec: Arc<dyn SandboxExec> = Arc::<RecordingSandboxExec>::clone(&exec);
-        let preprocessor = Preprocessor::with_sandbox_backends(llm, sandbox_fileops, sandbox_exec);
+        let preprocessor = Preprocessor::with_sandbox_backends(
+            llm,
+            unavailable_audio_transcriber(),
+            sandbox_fileops,
+            sandbox_exec,
+        );
 
         let staged = preprocessor
             .stage_document_upload(
@@ -869,8 +913,8 @@ mod tests {
         let mut settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
-            media_model_provider: Some("openrouter".to_string()),
+            vision_model_id: Some("google/gemini-3-flash-preview".to_string()),
+            vision_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
         settings.modules.insert(
@@ -892,7 +936,8 @@ mod tests {
         let mut llm = crate::llm::LlmClient::new(&settings);
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
-        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let preprocessor =
+            Preprocessor::new(Arc::new(llm), unavailable_audio_transcriber(), 42_i64);
         let result = preprocessor
             .preprocess_input(AgentInput::Image {
                 bytes: b"image".to_vec(),
@@ -911,8 +956,8 @@ mod tests {
         let mut settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
-            media_model_provider: Some("openrouter".to_string()),
+            vision_model_id: Some("google/gemini-3-flash-preview".to_string()),
+            vision_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
         settings.modules.insert(
@@ -934,7 +979,8 @@ mod tests {
         let mut llm = crate::llm::LlmClient::new(&settings);
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
-        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let preprocessor =
+            Preprocessor::new(Arc::new(llm), unavailable_audio_transcriber(), 42_i64);
         let result = preprocessor
             .preprocess_input(AgentInput::Image {
                 bytes: b"image".to_vec(),
@@ -948,12 +994,12 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_openrouter)]
     #[tokio::test]
-    async fn preprocess_video_uses_media_model() {
+    async fn preprocess_video_uses_vision_model() {
         let mut settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
-            media_model_provider: Some("openrouter".to_string()),
+            vision_model_id: Some("google/gemini-3-flash-preview".to_string()),
+            vision_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
         settings.modules.insert(
@@ -977,7 +1023,8 @@ mod tests {
         let mut llm = crate::llm::LlmClient::new(&settings);
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
-        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let preprocessor =
+            Preprocessor::new(Arc::new(llm), unavailable_audio_transcriber(), 42_i64);
         let result = preprocessor
             .preprocess_input(AgentInput::Video {
                 bytes: b"video".to_vec(),

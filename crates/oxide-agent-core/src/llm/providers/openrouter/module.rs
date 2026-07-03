@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
-use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
+use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode, VisionCapabilities};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 
 /// Capability module for OpenRouter routes.
@@ -51,19 +51,18 @@ impl LlmProviderModule for OpenRouterProviderModule {
         )
     }
 
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(false, false, false)
+    fn vision_capabilities(&self) -> VisionCapabilities {
+        VisionCapabilities::new(false, false)
     }
 
-    fn media_capabilities_for_model(&self, model_info: &ModelInfo) -> MediaCapabilities {
+    fn vision_capabilities_for_model(&self, model_info: &ModelInfo) -> VisionCapabilities {
         let Some(policy) = openrouter_model_policy(&model_info.id) else {
-            return self.media_capabilities();
+            return self.vision_capabilities();
         };
 
-        MediaCapabilities::new(
-            policy.approved_for_media_audio && policy.input_audio,
-            policy.approved_for_media_image && policy.input_image,
-            policy.approved_for_media_video && policy.input_video,
+        VisionCapabilities::new(
+            policy.approved_for_vision_image && policy.input_image,
+            policy.approved_for_vision_video && policy.input_video,
         )
     }
 }
@@ -72,13 +71,11 @@ impl LlmProviderModule for OpenRouterProviderModule {
 struct OpenRouterModelPolicy {
     supports_tools_parameter: bool,
     supports_structured_outputs: bool,
-    input_audio: bool,
     input_image: bool,
     input_video: bool,
     approved_for_main_agent: bool,
-    approved_for_media_audio: bool,
-    approved_for_media_image: bool,
-    approved_for_media_video: bool,
+    approved_for_vision_image: bool,
+    approved_for_vision_video: bool,
 }
 
 fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
@@ -87,13 +84,11 @@ fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
         return Some(OpenRouterModelPolicy {
             supports_tools_parameter: true,
             supports_structured_outputs: true,
-            input_audio: true,
             input_image: true,
             input_video: true,
             approved_for_main_agent: false,
-            approved_for_media_audio: true,
-            approved_for_media_image: true,
-            approved_for_media_video: true,
+            approved_for_vision_image: true,
+            approved_for_vision_video: true,
         });
     }
 
@@ -101,13 +96,11 @@ fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
         "deepseek/deepseek-v4-flash" | "deepseek/deepseek-v4-pro" => Some(OpenRouterModelPolicy {
             supports_tools_parameter: true,
             supports_structured_outputs: true,
-            input_audio: false,
             input_image: false,
             input_video: false,
             approved_for_main_agent: true,
-            approved_for_media_audio: false,
-            approved_for_media_image: false,
-            approved_for_media_video: false,
+            approved_for_vision_image: false,
+            approved_for_vision_video: false,
         }),
         _ => None,
     }
@@ -135,22 +128,20 @@ mod tests {
 
         let gemini = route("google/gemini-3.1-flash-lite-preview");
         let gemini_capabilities = module.capabilities_for_model(&gemini);
-        let gemini_media = module.media_capabilities_for_model(&gemini);
+        let gemini_vision = module.vision_capabilities_for_model(&gemini);
 
         assert!(!gemini_capabilities.supports_tool_calling);
         assert!(gemini_capabilities.supports_structured_output);
-        assert!(gemini_media.supports_audio_transcription);
-        assert!(gemini_media.supports_image_understanding);
-        assert!(gemini_media.supports_video_understanding);
+        assert!(gemini_vision.supports_image_understanding);
+        assert!(gemini_vision.supports_video_understanding);
 
         let deepseek = route("deepseek/deepseek-v4-flash");
         let deepseek_capabilities = module.capabilities_for_model(&deepseek);
-        let deepseek_media = module.media_capabilities_for_model(&deepseek);
+        let deepseek_vision = module.vision_capabilities_for_model(&deepseek);
 
         assert!(deepseek_capabilities.supports_tool_calling);
         assert!(deepseek_capabilities.supports_structured_output);
-        assert!(!deepseek_media.supports_audio_transcription);
-        assert!(!deepseek_media.supports_image_understanding);
-        assert!(!deepseek_media.supports_video_understanding);
+        assert!(!deepseek_vision.supports_image_understanding);
+        assert!(!deepseek_vision.supports_video_understanding);
     }
 }

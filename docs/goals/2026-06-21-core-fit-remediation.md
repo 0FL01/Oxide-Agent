@@ -366,9 +366,9 @@ Full audit evidence with reasoning, traces, and design assessments: `docs/goals/
   | `tool-sandbox-exec` | `oxide_module_tool_sandbox_exec` | (check) |
   | `tool-sandbox-recreate` | `oxide_module_tool_sandbox_recreate` | (check) |
   | `tool-file-delivery` | `oxide_module_tool_file_delivery` | (check) |
-  | `tool-media-audio` | `oxide_module_tool_media_audio` | (check) |
-  | `tool-media-image` | `oxide_module_tool_media_image` | (check) |
-  | `tool-media-video` | `oxide_module_tool_media_video` | (check) |
+  | `tool-audio-stt` | `oxide_module_tool_audio_stt` | (check) |
+  | `tool-vision-image` | `oxide_module_tool_vision_image` | (check) |
+  | `tool-vision-video` | `oxide_module_tool_vision_video` | (check) |
   | `tool-ytdlp` | `oxide_module_tool_ytdlp` | (check) |
   | `tool-tts-kokoro` | `oxide_module_tool_tts_kokoro` | (check) |
   | `tool-tts-silero` | `oxide_module_tool_tts_silero` | (check) |

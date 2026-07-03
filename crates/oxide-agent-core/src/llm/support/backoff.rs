@@ -85,39 +85,6 @@ pub fn get_rate_limit_wait_secs(error: &LlmError) -> Option<u64> {
     }
 }
 
-pub(crate) fn get_retry_delay_with_initial(
-    error: &LlmError,
-    attempt: usize,
-    initial_backoff_ms: u64,
-) -> Option<Duration> {
-    let capped_rate_limit =
-        |backoff_ms: u64| Duration::from_millis(backoff_ms.min(RATE_LIMIT_BACKOFF_CAP_SECS * 1000));
-    let capped_transient =
-        |backoff_ms: u64| Duration::from_millis(backoff_ms.min(TRANSIENT_BACKOFF_CAP_SECS * 1000));
-    let backoff = || initial_backoff_ms * 2u64.pow((attempt - 1) as u32);
-
-    match error {
-        LlmError::RateLimit { wait_secs, .. } => {
-            if let Some(secs) = wait_secs {
-                return Some(Duration::from_secs(*secs + 1));
-            }
-            Some(capped_rate_limit(backoff()))
-        }
-        LlmError::ApiError {
-            status: Some(429), ..
-        } => Some(capped_rate_limit(backoff())),
-        LlmError::ApiError {
-            status: Some(status),
-            ..
-        } if is_transient_server_status(*status) => Some(capped_transient(backoff())),
-        LlmError::EmptyResponse(_) => Some(capped_transient(backoff())),
-        LlmError::NetworkError(_) => Some(capped_transient(backoff())),
-        LlmError::RequestBuilder(_) => None,
-        LlmError::JsonError(_) => Some(capped_transient(backoff())),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::get_retry_delay;

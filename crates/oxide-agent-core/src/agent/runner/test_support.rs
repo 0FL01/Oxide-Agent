@@ -39,9 +39,6 @@ pub(super) fn stub_non_chat_methods(provider: &mut MockLlmProvider) {
         .expect_complete_internal_text()
         .returning(|_, _, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
     provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(LlmError::unknown("Not implemented".to_string())));
-    provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(LlmError::unknown("Not implemented".to_string())));
 }

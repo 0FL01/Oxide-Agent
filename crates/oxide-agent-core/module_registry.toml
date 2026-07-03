@@ -182,24 +182,24 @@ provides = ["tool/file-delivery"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
-id = "tool/media-audio"
-cargo_feature = "tool-media-audio"
+id = "tool/audio-stt"
+cargo_feature = "tool-audio-stt"
 kind = "Media"
-provides = ["tool/media-audio-transcription"]
+provides = ["tool/audio-stt-transcription"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
-id = "tool/media-image"
-cargo_feature = "tool-media-image"
+id = "tool/vision-image"
+cargo_feature = "tool-vision-image"
 kind = "Media"
-provides = ["tool/media-image-description"]
+provides = ["tool/vision-image-description"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]
-id = "tool/media-video"
-cargo_feature = "tool-media-video"
+id = "tool/vision-video"
+cargo_feature = "tool-vision-video"
 kind = "Media"
-provides = ["tool/media-video-description"]
+provides = ["tool/vision-video-description"]
 profiles = ["full", "embedded-opencode-local", "web-embedded-opencode-local"]
 
 [[modules]]

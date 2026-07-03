@@ -99,7 +99,7 @@ impl AgentRunner {
     }
 
     fn route_supports_native_image_parts(route: &ModelInfo) -> bool {
-        crate::llm::provider_media_capabilities_for_model(route).supports_image_understanding
+        crate::llm::provider_vision_capabilities_for_model(route).supports_image_understanding
     }
 
     fn has_image_attachment_refs(memory_messages: &[AgentMessage]) -> bool {

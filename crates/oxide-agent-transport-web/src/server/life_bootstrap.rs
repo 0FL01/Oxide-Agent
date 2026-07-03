@@ -201,7 +201,10 @@ mod tests {
         test_remove_env(LIFE_TELEGRAM_CHAT_ID_ENV);
         test_remove_env(LIFE_TELEGRAM_BOT_TOKEN_ENV);
 
-        assert_eq!(SoloBridgeBootstrapConfig::from_env().unwrap(), None);
+        assert_eq!(
+            SoloBridgeBootstrapConfig::from_env().expect("unconfigured bootstrap should parse"),
+            None
+        );
     }
 
     #[test]
@@ -211,7 +214,8 @@ mod tests {
         test_set_env(LIFE_TELEGRAM_CHAT_ID_ENV, "424242");
         test_remove_env(LIFE_TELEGRAM_BOT_TOKEN_ENV);
 
-        let error = SoloBridgeBootstrapConfig::from_env().unwrap_err();
+        let error = SoloBridgeBootstrapConfig::from_env()
+            .expect_err("telegram binding without owner must fail");
         assert!(error.to_string().contains(LIFE_OWNER_WEB_LOGIN_ENV));
 
         test_remove_env(LIFE_TELEGRAM_CHAT_ID_ENV);
@@ -224,7 +228,8 @@ mod tests {
         test_remove_env(LIFE_TELEGRAM_CHAT_ID_ENV);
         test_set_env(LIFE_TELEGRAM_BOT_TOKEN_ENV, "123456:SECRET");
 
-        let error = SoloBridgeBootstrapConfig::from_env().unwrap_err();
+        let error = SoloBridgeBootstrapConfig::from_env()
+            .expect_err("bot token without chat binding must fail");
         let message = error.to_string();
         assert!(message.contains(LIFE_TELEGRAM_CHAT_ID_ENV));
         assert!(!message.contains("SECRET"));

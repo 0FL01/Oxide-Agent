@@ -4,10 +4,7 @@ pub(crate) mod module;
 
 pub(crate) use module::OpenRouterProviderModule;
 
-use crate::config::{
-    OPENROUTER_AUDIO_TRANSCRIBE_PROMPT, OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
-    OPENROUTER_IMAGE_TEMPERATURE,
-};
+use crate::config::OPENROUTER_IMAGE_TEMPERATURE;
 use crate::llm::providers::chat_completions::client::ChatCompletionsClient;
 use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
 use crate::llm::providers::chat_completions::request::{self as chat_request, ChatRequestOptions};
@@ -69,11 +66,6 @@ impl OpenRouterProvider {
         media::infer_image_mime_type(image_bytes)
     }
 
-    #[cfg(test)]
-    fn audio_input_format(mime_type: &str) -> &'static str {
-        media::audio_input_format(mime_type)
-    }
-
     fn build_video_request_body(
         model_id: &str,
         video_bytes: &[u8],
@@ -132,41 +124,6 @@ impl LlmProvider for OpenRouterProvider {
             model_id,
             max_tokens,
             ChatRequestOptions::new(self.profile()).with_native_image_parts(false),
-        );
-
-        let res_json = self.client.post_json(&body).await?;
-        extract_text_content(&res_json, &["choices", "0", "message", "content"])
-    }
-
-    async fn transcribe_audio(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        model_id: &str,
-    ) -> Result<String, LlmError> {
-        self.transcribe_audio_with_prompt(
-            audio_bytes,
-            mime_type,
-            OPENROUTER_AUDIO_TRANSCRIBE_PROMPT,
-            model_id,
-        )
-        .await
-    }
-
-    async fn transcribe_audio_with_prompt(
-        &self,
-        audio_bytes: Vec<u8>,
-        mime_type: &str,
-        text_prompt: &str,
-        model_id: &str,
-    ) -> Result<String, LlmError> {
-        let body = chat_request::build_audio_body(
-            &audio_bytes,
-            mime_type,
-            text_prompt,
-            model_id,
-            8000,
-            OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
         );
 
         let res_json = self.client.post_json(&body).await?;
@@ -254,7 +211,6 @@ mod tests {
         self as chat_request, ChatRequestOptions,
     };
     use crate::llm::{ChatWithToolsRequest, LlmProvider, ToolDefinition};
-    use base64::Engine;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -391,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_image_audio_video_requests_keep_content_part_shapes() {
+    fn openrouter_image_video_requests_keep_content_part_shapes() {
         let profile = ChatCompletionsProfile::openrouter();
         let image = chat_request::build_image_body(
             b"image-bytes",
@@ -402,14 +358,6 @@ mod tests {
             4000,
             0.2,
             ChatRequestOptions::new(profile),
-        );
-        let audio = chat_request::build_audio_body(
-            b"audio-bytes",
-            "audio/mpeg",
-            "Transcribe",
-            "google/gemini-3.1-flash-lite-preview",
-            8000,
-            0.2,
         );
         let video = OpenRouterProvider::build_video_request_body(
             "google/gemini-3.1-flash-lite-preview",
@@ -424,58 +372,9 @@ mod tests {
             json!("image_url")
         );
         assert_eq!(
-            audio["messages"][0]["content"][1]["type"],
-            json!("input_audio")
-        );
-        assert_eq!(
-            audio["messages"][0]["content"][1]["input_audio"]["format"],
-            json!("mp3")
-        );
-        assert_eq!(
             video["messages"][1]["content"][1]["type"],
             json!("video_url")
         );
-    }
-
-    #[test]
-    fn audio_transcription_prompt_is_embedded_in_request() {
-        let audio_base64 = base64::prelude::BASE64_STANDARD.encode(b"audio-bytes");
-        let body = json!({
-            "model": "google/gemini-3.1-flash-lite-preview",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Extract timestamps and speakers"},
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": audio_base64,
-                                "format": "wav"
-                            }
-                        }
-                    ]
-                }
-            ]
-        });
-
-        assert_eq!(
-            body["messages"][0]["content"][0]["text"],
-            json!("Extract timestamps and speakers")
-        );
-    }
-
-    #[test]
-    fn audio_input_format_tracks_common_mime_types() {
-        assert_eq!(OpenRouterProvider::audio_input_format("audio/wav"), "wav");
-        assert_eq!(OpenRouterProvider::audio_input_format("audio/mpeg"), "mp3");
-        assert_eq!(OpenRouterProvider::audio_input_format("audio/ogg"), "ogg");
-        assert_eq!(OpenRouterProvider::audio_input_format("audio/flac"), "flac");
-        assert_eq!(
-            OpenRouterProvider::audio_input_format("audio/wav; codecs=1"),
-            "wav"
-        );
-        assert_eq!(OpenRouterProvider::audio_input_format("unknown"), "wav");
     }
 
     #[test]

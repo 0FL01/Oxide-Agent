@@ -239,21 +239,21 @@ fn assert_tool_availability_contract(
         &compiled_module_ids,
         &enabled_module_ids,
         &tool_names,
-        "tool/media-audio",
+        "tool/audio-stt",
         &["transcribe_audio_file"],
     );
     assert_tools_absent_when_module_unavailable(
         &compiled_module_ids,
         &enabled_module_ids,
         &tool_names,
-        "tool/media-image",
+        "tool/vision-image",
         &["describe_image_file"],
     );
     assert_tools_absent_when_module_unavailable(
         &compiled_module_ids,
         &enabled_module_ids,
         &tool_names,
-        "tool/media-video",
+        "tool/vision-video",
         &["describe_video_file"],
     );
     assert_tools_absent_when_module_unavailable(
@@ -343,9 +343,9 @@ fn assert_tool_availability_contract(
                     "tool/compression",
                     "tool/delegation",
                     "tool/file-delivery",
-                    "tool/media-audio-transcription",
-                    "tool/media-image-description",
-                    "tool/media-video-description",
+                    "tool/audio-stt-transcription",
+                    "tool/vision-image-description",
+                    "tool/vision-video-description",
                     "tool/sandbox-exec",
                     "tool/sandbox-fileops",
                     "tool/sandbox-list-files",

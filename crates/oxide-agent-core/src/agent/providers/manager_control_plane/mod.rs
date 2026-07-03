@@ -234,9 +234,9 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_upload_file",
 ];
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
     "transcribe_audio_file",

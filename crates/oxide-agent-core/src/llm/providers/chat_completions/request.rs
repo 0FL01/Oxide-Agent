@@ -201,38 +201,6 @@ pub(crate) fn build_image_body(
 
 #[must_use]
 #[allow(dead_code)] // Live in profile-full (openrouter); dead in web/embedded profiles.
-pub(crate) fn build_audio_body(
-    audio_bytes: &[u8],
-    mime_type: &str,
-    text_prompt: &str,
-    model_id: &str,
-    max_tokens: u32,
-    temperature: f32,
-) -> Value {
-    json!({
-        "model": model_id,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text_prompt},
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": media::base64_data(audio_bytes),
-                            "format": media::audio_input_format(mime_type)
-                        }
-                    }
-                ]
-            }
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    })
-}
-
-#[must_use]
-#[allow(dead_code)] // Live in profile-full (openrouter); dead in web/embedded profiles.
 pub(crate) fn build_video_body(
     video_bytes: &[u8],
     mime_type: &str,

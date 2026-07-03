@@ -256,6 +256,7 @@ fn spawn_deferred_agent_input(ctx: DeferredAgentInputContext) {
             &ctx.dispatch.bot,
             &ctx.msg,
             &ctx.llm,
+            &ctx.dispatch.agent_settings,
             &ctx.sandbox_scope,
             preserve_binary_uploads,
         )
@@ -310,10 +311,12 @@ pub(crate) async fn preprocess_agent_message_input(
     bot: &Bot,
     msg: &Message,
     llm: &Arc<LlmClient>,
+    agent_settings: &Arc<AgentSettings>,
     sandbox_scope: &SandboxScope,
     preserve_binary_uploads: bool,
 ) -> Result<String> {
-    let preprocessor = Preprocessor::new(llm.clone(), sandbox_scope.clone());
+    let preprocessor =
+        Preprocessor::from_settings(llm.clone(), agent_settings.as_ref(), sandbox_scope.clone());
     let input = if preserve_binary_uploads {
         extract_agent_file_input(bot, msg).await?
     } else {
@@ -345,9 +348,9 @@ pub(crate) async fn send_multimodal_unavailable_message(
     detail: Option<&str>,
 ) -> Result<()> {
     let detail =
-        detail.unwrap_or("MEDIA_MODEL is not configured or is not allowed for this media type.");
+        detail.unwrap_or("Vision or audio STT backend is not configured for this media type.");
     let message = format!(
-        "🚫 Media input is not available.\n{detail}\nFix: set MEDIA_MODEL_ID=google/gemini-3.1-flash-lite-preview and MEDIA_MODEL_PROVIDER=openrouter, then restart the bot."
+        "🚫 Media input is not available.\n{detail}\nFix voice: set AUDIO_STT_BASE_URL. Fix image/video: set VISION_MODEL_ID and VISION_MODEL_PROVIDER, then restart the bot."
     );
 
     crate::bot::resilient::send_message_resilient_with_thread(
@@ -361,11 +364,21 @@ pub(crate) async fn send_multimodal_unavailable_message(
 pub(crate) fn media_route_unavailable_detail(error: &anyhow::Error) -> Option<String> {
     let message = error.to_string();
     message
-        .strip_prefix("MEDIA_ROUTE_UNAVAILABLE: ")
+        .strip_prefix("AUDIO_STT_UNAVAILABLE: ")
         .map(ToOwned::to_owned)
         .or_else(|| {
+            message
+                .strip_prefix("VISION_ROUTE_UNAVAILABLE: ")
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            message
+                .strip_prefix("MEDIA_ROUTE_UNAVAILABLE: ")
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
             (message == "MULTIMODAL_DISABLED").then(|| {
-                "MEDIA_MODEL is not configured or is not allowed for this media type.".to_string()
+                "Vision or audio STT backend is not configured for this media type.".to_string()
             })
         })
 }

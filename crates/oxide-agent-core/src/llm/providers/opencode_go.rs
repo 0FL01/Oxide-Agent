@@ -518,18 +518,6 @@ impl LlmProvider for OpenCodeGoProvider {
         result
     }
 
-    async fn transcribe_audio(
-        &self,
-        _audio_bytes: Vec<u8>,
-        _mime_type: &str,
-        _model_id: &str,
-    ) -> Result<String, LlmError> {
-        Err(LlmError::unknown(format!(
-            "Audio transcription not supported by {}",
-            self.profile.display_name
-        )))
-    }
-
     async fn analyze_image(
         &self,
         image_bytes: Vec<u8>,

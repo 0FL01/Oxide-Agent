@@ -307,9 +307,6 @@ async fn executor_injects_configured_wiki_memory_context() {
             Err(crate::llm::LlmError::unknown("Not implemented".to_string()))
         });
     provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
-    provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
 
@@ -344,9 +341,6 @@ async fn manual_compaction_uses_current_compaction_controller() {
             Ok("Current compact handoff summary.".to_string())
         },
     );
-    provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
@@ -451,9 +445,6 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
             Ok("Current compact handoff summary.".to_string())
         },
     );
-    provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
@@ -713,9 +704,6 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
             assert!(user_message.contains("сохрани в память"));
             Ok(r#"{"candidates":[{"kind":"fact","title":"User location","content":"Локация пользователя: Россия, Кировская область, Котельнич.","confidence":0.92,"importance":0.8,"tags":["explicit-remember","profile","location"],"evidence":["Previous user message supplied the location and the latest user message asked to save it."],"reason":"User explicitly asked to save the prior location context."}]}"#.to_string())
         });
-    provider
-        .expect_transcribe_audio()
-        .returning(|_, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));
     provider
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::unknown("Not implemented".to_string())));

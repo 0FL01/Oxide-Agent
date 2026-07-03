@@ -187,7 +187,11 @@ async fn stage_task_attachments(
     let limit_mb = web_chat_upload_limit_mb();
     let max_bytes = limit_mb.saturating_mul(1024 * 1024);
     let sandbox_scope = web_session_sandbox_scope(user_id, &session.context_key);
-    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let preprocessor = Preprocessor::from_settings(
+        state.session_manager.llm_client(),
+        state.session_manager.agent_settings().as_ref(),
+        sandbox_scope,
+    );
     let mut total_bytes = 0_u64;
     let mut attachments = Vec::new();
 

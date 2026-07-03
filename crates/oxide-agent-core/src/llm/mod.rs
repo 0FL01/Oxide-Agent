@@ -15,7 +15,7 @@ mod types;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub(crate) use capabilities::{
-    provider_capabilities_for_model, provider_media_capabilities_for_model,
+    provider_capabilities_for_model, provider_vision_capabilities_for_model,
 };
 pub(crate) use client::InternalTextPurpose;
 pub use client::{DiscoveredLlmModel, DiscoveredModelSource, LlmClient};
@@ -24,13 +24,7 @@ pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
 pub(crate) use support::backoff::is_transient_server_status;
-#[cfg(any(
-    oxide_module_llm_provider_openai_chatgpt,
-    oxide_module_llm_provider_anthropic,
-    oxide_module_llm_provider_openai_base,
-    oxide_module_llm_provider_opencode_go,
-    oxide_module_llm_provider_openrouter
-))]
+#[cfg(feature = "http-client")]
 pub use support::http;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, MessageContentPart, ProviderItemId,

@@ -53,27 +53,6 @@ pub(crate) fn base64_data(bytes: &[u8]) -> String {
     BASE64.encode(bytes)
 }
 
-#[must_use]
-#[allow(dead_code)] // Live in profile-full (openrouter audio); dead in web/embedded profiles.
-pub(crate) fn audio_input_format(mime_type: &str) -> &'static str {
-    let normalized = mime_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-
-    match normalized.as_str() {
-        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
-        "audio/mpeg" | "audio/mp3" => "mp3",
-        "audio/ogg" | "audio/opus" | "audio/vorbis" => "ogg",
-        "audio/flac" => "flac",
-        "audio/mp4" | "audio/x-m4a" => "m4a",
-        "audio/webm" => "webm",
-        _ => "wav",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,12 +79,5 @@ mod tests {
             image_data_url_with_mime(&[0xFF, 0xD8, 0xFF], "application/octet-stream"),
             "data:image/jpeg;base64,/9j/"
         );
-    }
-
-    #[test]
-    fn support_media_maps_audio_input_formats_without_content_shape() {
-        assert_eq!(audio_input_format("audio/mpeg; codecs=mp3"), "mp3");
-        assert_eq!(audio_input_format("audio/webm"), "webm");
-        assert_eq!(audio_input_format("application/octet-stream"), "wav");
     }
 }

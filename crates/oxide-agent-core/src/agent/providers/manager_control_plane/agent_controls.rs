@@ -350,9 +350,9 @@ impl ManagerControlPlaneProvider {
         }
 
         #[cfg(any(
-            oxide_module_tool_media_audio,
-            oxide_module_tool_media_image,
-            oxide_module_tool_media_video
+            oxide_module_tool_audio_stt,
+            oxide_module_tool_vision_image,
+            oxide_module_tool_vision_video
         ))]
         groups.push(TopicAgentToolGroup {
             provider: "media_file",
@@ -1432,16 +1432,16 @@ impl ManagerControlPlaneProvider {
 mod tests {
     use super::*;
     #[cfg(any(
-        oxide_module_tool_media_audio,
-        oxide_module_tool_media_image,
-        oxide_module_tool_media_video
+        oxide_module_tool_audio_stt,
+        oxide_module_tool_vision_image,
+        oxide_module_tool_vision_video
     ))]
     use std::sync::Arc;
 
     #[cfg(any(
-        oxide_module_tool_media_audio,
-        oxide_module_tool_media_image,
-        oxide_module_tool_media_video
+        oxide_module_tool_audio_stt,
+        oxide_module_tool_vision_image,
+        oxide_module_tool_vision_video
     ))]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_media_file_tools() {

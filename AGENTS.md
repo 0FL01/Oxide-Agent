@@ -128,7 +128,7 @@ For current file/module structure inside any subsystem, run `graphify query "<su
 - Search: `web_search` (one tool, multiple backends: CRW, Tavily, Brave), `crw` (scrape), `retrieve-tools` (tool group activation).
 - Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with explicit render modes: `render:"http"` (default), `render:"lightpanda"`, `render:"playwright"`. No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true.
 - Browser: `browser_live` tools (see Browser Live above).
-- Media: `media-audio` (transcription), `media-image` (description), `media-video` (description).
+- Media: `audio-stt` (transcription), `vision-image` (description), `vision-video` (description).
 - Integrations: `jira-mcp`, `mattermost-mcp` (runtime-disabled, enabled via `topic_agent_tools_enable`), `ssh-mcp`.
 - Agent ops: `delegation`, `manager_control_plane`, `reminder`, `agents_md`, `wiki_memory`, `stack_logs` (disabled for topic agents, blocked for sub-agents), `compression`, `file_delivery`, `path`, `todos`, `tts` (Kokoro EN + Silero RU), `ytdlp`.
 

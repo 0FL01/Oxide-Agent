@@ -32,6 +32,8 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(oxide_module_tool_agents_md)]
 pub use modules::AgentsMdToolModule;
+#[cfg(oxide_module_tool_audio_stt)]
+pub use modules::AudioSttToolModule;
 pub use modules::BrowserLiveModuleContext;
 #[cfg(oxide_module_tool_browser_live)]
 pub use modules::BrowserLiveToolModule;
@@ -51,12 +53,6 @@ pub use modules::ManagerControlPlaneModuleContext;
 pub use modules::ManagerControlPlaneToolModule;
 #[cfg(oxide_module_integration_mcp_mattermost)]
 pub use modules::MattermostMcpToolModule;
-#[cfg(oxide_module_tool_media_audio)]
-pub use modules::MediaAudioToolModule;
-#[cfg(oxide_module_tool_media_image)]
-pub use modules::MediaImageToolModule;
-#[cfg(oxide_module_tool_media_video)]
-pub use modules::MediaVideoToolModule;
 #[cfg(oxide_module_tool_reminder)]
 pub use modules::ReminderToolModule;
 #[cfg(oxide_module_tool_sandbox_exec)]
@@ -75,6 +71,10 @@ pub use modules::StackLogsToolModule;
 #[cfg(oxide_module_tool_todos)]
 pub use modules::TodosToolModule;
 pub use modules::ToolModuleContextParts;
+#[cfg(oxide_module_tool_vision_image)]
+pub use modules::VisionImageToolModule;
+#[cfg(oxide_module_tool_vision_video)]
+pub use modules::VisionVideoToolModule;
 #[cfg(oxide_module_tool_webfetch_md)]
 pub use modules::WebCrawlerToolModule;
 #[cfg(oxide_module_tool_webfetch_md)]

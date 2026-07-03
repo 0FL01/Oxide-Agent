@@ -10,15 +10,15 @@ mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 pub mod media_file;
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 mod path;
 pub mod reminder;
@@ -66,9 +66,9 @@ pub use manager_control_plane::{
     ManagerTopicLifecycle, ManagerTopicSandboxCleanup, manager_control_plane_tool_names,
 };
 #[cfg(any(
-    oxide_module_tool_media_audio,
-    oxide_module_tool_media_image,
-    oxide_module_tool_media_video
+    oxide_module_tool_audio_stt,
+    oxide_module_tool_vision_image,
+    oxide_module_tool_vision_video
 ))]
 pub use media_file::MediaFileProvider;
 pub use reminder::{

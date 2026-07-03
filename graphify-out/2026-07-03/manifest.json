@@ -130,24 +130,24 @@
     "semantic_hash": "86a798f40f39631cee8b5386a6c6fec1"
   },
   "crates/oxide-agent-core/src/agent/executor/registry.rs": {
-    "mtime": 1782659623.8689637,
-    "ast_hash": "ae2fc748dfc6c8f303851bd64dec9326",
-    "semantic_hash": "ae2fc748dfc6c8f303851bd64dec9326"
+    "mtime": 1783095591.5438566,
+    "ast_hash": "a1e47f941abe605acac035a587279f9c",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/executor/tests/basics.rs": {
-    "mtime": 1782576705.6944554,
-    "ast_hash": "641c98d580f47784c1e4c59b8fe0a453",
-    "semantic_hash": "641c98d580f47784c1e4c59b8fe0a453"
+    "mtime": 1783094344.980528,
+    "ast_hash": "5900bb80f93c3e69ade7f77d30cafb59",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/executor/tests/mod.rs": {
-    "mtime": 1782403070.4797814,
-    "ast_hash": "8552032d154382d10550992a9240a7ad",
-    "semantic_hash": "8552032d154382d10550992a9240a7ad"
+    "mtime": 1783094312.1879404,
+    "ast_hash": "3a14585a075df46b0bf1899dd4ca126f",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/executor/tests/registry.rs": {
-    "mtime": 1782576705.6947012,
-    "ast_hash": "19793001b7068cf7fd1eeae9b83854ac",
-    "semantic_hash": "19793001b7068cf7fd1eeae9b83854ac"
+    "mtime": 1783094796.9750223,
+    "ast_hash": "2f0886165c19843b1cd30272be13d845",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/executor/tests/resume.rs": {
     "mtime": 1782403070.4801981,
@@ -270,9 +270,9 @@
     "semantic_hash": "e3e24c8480f864f921053092bce0ede8"
   },
   "crates/oxide-agent-core/src/agent/preprocessor.rs": {
-    "mtime": 1782403070.4860208,
-    "ast_hash": "e1911ed24d49a4e8c37e1cb418140b9d",
-    "semantic_hash": "e1911ed24d49a4e8c37e1cb418140b9d"
+    "mtime": 1783095591.6078558,
+    "ast_hash": "084064f22a3771fcfeda9ed3475f9ab8",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/profile.rs": {
     "mtime": 1782576705.69548,
@@ -420,9 +420,9 @@
     "semantic_hash": "bcd3368314be102b5f572556c2931f4b"
   },
   "crates/oxide-agent-core/src/agent/providers/manager_control_plane/agent_controls.rs": {
-    "mtime": 1782498033.4286416,
-    "ast_hash": "c154c085ed10a9061e279f3abc24390a",
-    "semantic_hash": "c154c085ed10a9061e279f3abc24390a"
+    "mtime": 1783094825.7734835,
+    "ast_hash": "fdf8e6fd3d07d278acb3868fe2af0b81",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/providers/manager_control_plane/agents_md.rs": {
     "mtime": 1782056559.1160326,
@@ -455,9 +455,9 @@
     "semantic_hash": "bad258fcfef0d69080e990377bdbbb6e"
   },
   "crates/oxide-agent-core/src/agent/providers/manager_control_plane/mod.rs": {
-    "mtime": 1782496793.0132358,
-    "ast_hash": "1b48adb107e3ce49db2e9abc7cca35ca",
-    "semantic_hash": "1b48adb107e3ce49db2e9abc7cca35ca"
+    "mtime": 1783094825.757089,
+    "ast_hash": "3fb040b316d2e15a14a075360a1a6586",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/providers/manager_control_plane/profiles.rs": {
     "mtime": 1782056559.1171393,
@@ -545,14 +545,14 @@
     "semantic_hash": "765bb9cffcbcc0acc3114bb1f508d6af"
   },
   "crates/oxide-agent-core/src/agent/providers/media_file.rs": {
-    "mtime": 1782403070.495829,
-    "ast_hash": "860f258f9619ad55ad709b52d148d860",
-    "semantic_hash": "860f258f9619ad55ad709b52d148d860"
+    "mtime": 1783095591.8148532,
+    "ast_hash": "5bd8282e3cd36e0cbf96d944ac3b636d",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/providers/mod.rs": {
-    "mtime": 1782498033.5056407,
-    "ast_hash": "7e5bd20c924c7d318348f35edbbcb44f",
-    "semantic_hash": "7e5bd20c924c7d318348f35edbbcb44f"
+    "mtime": 1783094598.1563451,
+    "ast_hash": "0c310ce0022ea6c06454e169b9b93037",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/providers/path.rs": {
     "mtime": 1782056559.1391351,
@@ -745,9 +745,9 @@
     "semantic_hash": "3153be93eec835ebda14e86f92453f8d"
   },
   "crates/oxide-agent-core/src/agent/runner/llm_calls.rs": {
-    "mtime": 1782576705.6972086,
-    "ast_hash": "578fa2bc868f6b76de0257acae7c43c6",
-    "semantic_hash": "578fa2bc868f6b76de0257acae7c43c6"
+    "mtime": 1783094049.1192474,
+    "ast_hash": "e1aa8070c8bb96eeec55009f1a49e2dc",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/runner/loop_detection.rs": {
     "mtime": 1782403070.50329,
@@ -780,9 +780,9 @@
     "semantic_hash": "e83dd6a312fe4c3f39f773fa091ed903"
   },
   "crates/oxide-agent-core/src/agent/runner/test_support.rs": {
-    "mtime": 1782403070.505426,
-    "ast_hash": "5b12911f238e62386e56d9223c4bfed0",
-    "semantic_hash": "5b12911f238e62386e56d9223c4bfed0"
+    "mtime": 1783094292.2231913,
+    "ast_hash": "56cf1b1594836f749df1b06940a22b82",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/runner/tools.rs": {
     "mtime": 1782576705.698345,
@@ -840,14 +840,14 @@
     "semantic_hash": "e26ebc95c5b125c2ad0755371ace52a2"
   },
   "crates/oxide-agent-core/src/agent/tool_runtime/mod.rs": {
-    "mtime": 1782576705.698649,
-    "ast_hash": "7de9b52a769ceaf6c6abe358b5fba2d3",
-    "semantic_hash": "7de9b52a769ceaf6c6abe358b5fba2d3"
+    "mtime": 1783095591.979851,
+    "ast_hash": "09e7add4ce6449c853e43d7f81008348",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/tool_runtime/modules.rs": {
-    "mtime": 1782659665.8094363,
-    "ast_hash": "e75e8bf266de1601f11fa14ff387d66d",
-    "semantic_hash": "e75e8bf266de1601f11fa14ff387d66d"
+    "mtime": 1783094710.2249362,
+    "ast_hash": "8046ba479e2f2d8d7ac4c01837f170d4",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/agent/tool_runtime/normalizer.rs": {
     "mtime": 1782056559.1608012,
@@ -940,9 +940,9 @@
     "semantic_hash": "ce5b42f40d8ba8a8bbd7baa37c8e3064"
   },
   "crates/oxide-agent-core/src/capabilities/compiled.rs": {
-    "mtime": 1782576705.6991951,
-    "ast_hash": "c5c93a22c11ced258587df922df94fa3",
-    "semantic_hash": "c5c93a22c11ced258587df922df94fa3"
+    "mtime": 1783095075.8773394,
+    "ast_hash": "b176d3e2d540a20fa9496b18b0d58f27",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/capabilities/manifest.rs": {
     "mtime": 1782459454.8026407,
@@ -965,24 +965,24 @@
     "semantic_hash": "1444b01c3e07df2b743985c138dee609"
   },
   "crates/oxide-agent-core/src/config.rs": {
-    "mtime": 1782502326.604669,
-    "ast_hash": "26011707fce17424128680709ffccfc8",
-    "semantic_hash": "26011707fce17424128680709ffccfc8"
+    "mtime": 1783095592.0508502,
+    "ast_hash": "d5385a4197123a9477b181037a50b38c",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/lib.rs": {
-    "mtime": 1782056559.205015,
-    "ast_hash": "a1f184b00d29da497fc69ef0ad6216a6",
-    "semantic_hash": "a1f184b00d29da497fc69ef0ad6216a6"
+    "mtime": 1783092923.622055,
+    "ast_hash": "88dee94785ad6d7641e6cfedaf14d771",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/capabilities.rs": {
-    "mtime": 1782403070.5111892,
-    "ast_hash": "9c777f7ad5bbf1540e176ac978497ca6",
-    "semantic_hash": "9c777f7ad5bbf1540e176ac978497ca6"
+    "mtime": 1783094027.6965168,
+    "ast_hash": "0a6b202184746ca8141432cc31550ecc",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/client.rs": {
-    "mtime": 1782403070.5117447,
-    "ast_hash": "20aeb11361ad5f72721e5bf2d3726be3",
-    "semantic_hash": "20aeb11361ad5f72721e5bf2d3726be3"
+    "mtime": 1783095592.0578501,
+    "ast_hash": "a1d03e104a376da3597dc2e8e1e8b315",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/error.rs": {
     "mtime": 1782403070.512038,
@@ -990,19 +990,19 @@
     "semantic_hash": "c4e5dc0d23b4fe03604a53c606b2602c"
   },
   "crates/oxide-agent-core/src/llm/mod.rs": {
-    "mtime": 1782403070.5121527,
-    "ast_hash": "6bc69b7bac0304366ad0f635569407a4",
-    "semantic_hash": "6bc69b7bac0304366ad0f635569407a4"
+    "mtime": 1783095044.9424667,
+    "ast_hash": "2a770448c347256fd57a0071546692ea",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/provider.rs": {
-    "mtime": 1782403070.5126722,
-    "ast_hash": "d5b984463ce899bf407fef3e1df8ac98",
-    "semantic_hash": "d5b984463ce899bf407fef3e1df8ac98"
+    "mtime": 1783093374.066335,
+    "ast_hash": "f05ee5b6e9d10e9b2ca48225f202f751",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/anthropic/client.rs": {
-    "mtime": 1782403070.5128667,
-    "ast_hash": "a0a5e616c2bc7f051a2ac1c8545a0d23",
-    "semantic_hash": "a0a5e616c2bc7f051a2ac1c8545a0d23"
+    "mtime": 1783093840.7958665,
+    "ast_hash": "9e3148ee4b5ada09bc19026a10c1ae8d",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/anthropic/mod.rs": {
     "mtime": 1782056559.1767619,
@@ -1030,14 +1030,14 @@
     "semantic_hash": "e1470e78eb4923f899c788e09e8268e8"
   },
   "crates/oxide-agent-core/src/llm/providers/chat_completions/profile.rs": {
-    "mtime": 1782403070.5138214,
-    "ast_hash": "86bddc8d1c3b47d92662802f279e1606",
-    "semantic_hash": "86bddc8d1c3b47d92662802f279e1606"
+    "mtime": 1783093732.9892218,
+    "ast_hash": "fde7eb7bff613c8f7abadd8254142726",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/chat_completions/request.rs": {
-    "mtime": 1782403070.514199,
-    "ast_hash": "4a4328850613553bcd353407bf0f2529",
-    "semantic_hash": "4a4328850613553bcd353407bf0f2529"
+    "mtime": 1783093986.3680363,
+    "ast_hash": "2f866ebf9bc3955d3d1ed6d36046b549",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/chat_completions/response.rs": {
     "mtime": 1782403070.5146835,
@@ -1055,9 +1055,9 @@
     "semantic_hash": "b547fa5191fab185e3aaa2546b5f2456"
   },
   "crates/oxide-agent-core/src/llm/providers/chatgpt/mod.rs": {
-    "mtime": 1782403070.516196,
-    "ast_hash": "51719243df7ab471dace31e08997432f",
-    "semantic_hash": "51719243df7ab471dace31e08997432f"
+    "mtime": 1783093840.7881193,
+    "ast_hash": "92842355c619deb1f24d10d3498eb09c",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/chatgpt/module.rs": {
     "mtime": 1782056559.1748006,
@@ -1090,34 +1090,34 @@
     "semantic_hash": "7b06372da0fd8bd59a68b86ec540da46"
   },
   "crates/oxide-agent-core/src/llm/providers/mod.rs": {
-    "mtime": 1782403070.516988,
-    "ast_hash": "721cf65b1f3045dd90bf1f397362e034",
-    "semantic_hash": "721cf65b1f3045dd90bf1f397362e034"
+    "mtime": 1783093543.3563309,
+    "ast_hash": "374562e9e5cfb6f1ca6300173776483a",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/modules.rs": {
-    "mtime": 1782403070.5171525,
-    "ast_hash": "055c23a6f8c16d1a68c40cf6919271c8",
-    "semantic_hash": "055c23a6f8c16d1a68c40cf6919271c8"
+    "mtime": 1783093715.1754458,
+    "ast_hash": "5697058213a79276cfa30d11199a0c93",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/openai_base/mod.rs": {
-    "mtime": 1782403070.5181942,
-    "ast_hash": "d2cc84c62f9ffcf62af8ec308c03e55a",
-    "semantic_hash": "d2cc84c62f9ffcf62af8ec308c03e55a"
+    "mtime": 1783093803.775332,
+    "ast_hash": "b34226f44f219d51f4c4ad1b768648ca",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/openai_base/module.rs": {
-    "mtime": 1782403070.5190408,
-    "ast_hash": "3f6cb7f3f915cc9334fb9afcd54e3f88",
-    "semantic_hash": "3f6cb7f3f915cc9334fb9afcd54e3f88"
+    "mtime": 1783093653.509221,
+    "ast_hash": "833e7d4d0e9c056c55e18712968ce2bc",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/openai_base/profile.rs": {
-    "mtime": 1782403070.519378,
-    "ast_hash": "823a5fc30521269622e2e8600c4dd380",
-    "semantic_hash": "823a5fc30521269622e2e8600c4dd380"
+    "mtime": 1783093732.9891868,
+    "ast_hash": "473c6949e9edb9bb720b2e9a113093f2",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/opencode_go.rs": {
-    "mtime": 1782403070.5200143,
-    "ast_hash": "78b57279f81a1a669f4f572c9d020a6a",
-    "semantic_hash": "78b57279f81a1a669f4f572c9d020a6a"
+    "mtime": 1783093803.760332,
+    "ast_hash": "53e2f3322c9f2f94646178ea9ff5bcaa",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/opencode_go/discovery.rs": {
     "mtime": 1782403070.5203633,
@@ -1125,14 +1125,14 @@
     "semantic_hash": "46dadc297c55e77b640330b5ab28c525"
   },
   "crates/oxide-agent-core/src/llm/providers/opencode_go/module.rs": {
-    "mtime": 1782403070.5205522,
-    "ast_hash": "1a0b9c9fd53ee8b8864483e362126606",
-    "semantic_hash": "1a0b9c9fd53ee8b8864483e362126606"
+    "mtime": 1783093639.827393,
+    "ast_hash": "e580b6b0a24fb3212eaccc46b06416d3",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/openrouter.rs": {
-    "mtime": 1782403070.520988,
-    "ast_hash": "e91610cadb6cf7c9d78b5c4586ff0174",
-    "semantic_hash": "e91610cadb6cf7c9d78b5c4586ff0174"
+    "mtime": 1783096679.6364102,
+    "ast_hash": "161cd1839cf95a55a4797c43a89d63af",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/openrouter/helpers.rs": {
     "mtime": 1782403070.521292,
@@ -1140,9 +1140,9 @@
     "semantic_hash": "bb3fff150f0607640fbf579a1063e25c"
   },
   "crates/oxide-agent-core/src/llm/providers/openrouter/module.rs": {
-    "mtime": 1782056559.1745892,
-    "ast_hash": "3d6c5e66baa181a7957f61572882321a",
-    "semantic_hash": "3d6c5e66baa181a7957f61572882321a"
+    "mtime": 1783093622.4306116,
+    "ast_hash": "87dcd693b801765570c1a4288a05499b",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/protocol_profiles.rs": {
     "mtime": 1782056559.184389,
@@ -1170,9 +1170,9 @@
     "semantic_hash": "9aa95f59d58dd5133c77a39c5d8687b3"
   },
   "crates/oxide-agent-core/src/llm/support/backoff.rs": {
-    "mtime": 1782403070.5215483,
-    "ast_hash": "ad4ecb30407f19c144125112f81160b5",
-    "semantic_hash": "ad4ecb30407f19c144125112f81160b5"
+    "mtime": 1783095227.68838,
+    "ast_hash": "bf10f2b7d5575cdefe28e1117668086e",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/support/history.rs": {
     "mtime": 1782403070.5222192,
@@ -1185,9 +1185,9 @@
     "semantic_hash": "86f5a9ad2a9ec040f8b6d7eb72941170"
   },
   "crates/oxide-agent-core/src/llm/support/media.rs": {
-    "mtime": 1782403070.5227156,
-    "ast_hash": "8ea40816574b2fb28a5dc53d60c2972c",
-    "semantic_hash": "8ea40816574b2fb28a5dc53d60c2972c"
+    "mtime": 1783094006.1627874,
+    "ast_hash": "2207f9194f26887589ece97b7e0e0f06",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/support/mod.rs": {
     "mtime": 1782403070.5229316,
@@ -1385,9 +1385,9 @@
     "semantic_hash": "68b7507d3840a0bf832f750069a99130"
   },
   "crates/oxide-agent-core/src/testing.rs": {
-    "mtime": 1782403070.5286946,
-    "ast_hash": "7cfcc0be90f0bf3213f8d24b9a51076c",
-    "semantic_hash": "7cfcc0be90f0bf3213f8d24b9a51076c"
+    "mtime": 1783094292.2221913,
+    "ast_hash": "2af9e2c7f7cd175a7aef1d4538e2bd5b",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/utils.rs": {
     "mtime": 1782056559.2056444,
@@ -1405,19 +1405,19 @@
     "semantic_hash": "ee134fb53b00a8c7761f51b23224a7e2"
   },
   "crates/oxide-agent-core/tests/hermetic_agent.rs": {
-    "mtime": 1782403070.529152,
-    "ast_hash": "1727c17b13107506f646f5465136abca",
-    "semantic_hash": "1727c17b13107506f646f5465136abca"
+    "mtime": 1783094426.0565088,
+    "ast_hash": "80d59208c5dbd303be06a18a2c1ce0bd",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/tests/json_decode_error.rs": {
-    "mtime": 1782403070.5293667,
-    "ast_hash": "120ad005555b1e566eaacdd4a4abef44",
-    "semantic_hash": "120ad005555b1e566eaacdd4a4abef44"
+    "mtime": 1783094363.3292973,
+    "ast_hash": "c5af6d250fc46b72d6614822d6730a8a",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/tests/modular_registry_snapshots.rs": {
-    "mtime": 1782576705.699765,
-    "ast_hash": "477f96d433b88855c1f567ce82a57c69",
-    "semantic_hash": "477f96d433b88855c1f567ce82a57c69"
+    "mtime": 1783094903.8262327,
+    "ast_hash": "a0b92a21bf12960c57876d03ef4bc579",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/tests/proptest_remediation.rs": {
     "mtime": 1782499364.6199062,
@@ -1440,9 +1440,9 @@
     "semantic_hash": "72b5a612d2c82b5072487f78fa849e13"
   },
   "crates/oxide-agent-core/tests/sub_agent_delegation.rs": {
-    "mtime": 1782403070.532702,
-    "ast_hash": "65536c19b039ab274563f3e1f9102210",
-    "semantic_hash": "65536c19b039ab274563f3e1f9102210"
+    "mtime": 1783094444.182099,
+    "ast_hash": "15c0353bd2d89b473a820126832dd096",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/tests/tool_runtime_static_guards.rs": {
     "mtime": 1782576705.7006721,
@@ -1615,9 +1615,9 @@
     "semantic_hash": "047ef3284b75adc2b27dfc644f471046"
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs": {
-    "mtime": 1782056840.5546315,
-    "ast_hash": "8e9bb35e837e2fd936310878901305d0",
-    "semantic_hash": "8e9bb35e837e2fd936310878901305d0"
+    "mtime": 1783093230.1865427,
+    "ast_hash": "6cde547fee927a9c2abc2cc8f7035d66",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input_intent.rs": {
     "mtime": 1782056840.5551562,
@@ -1625,9 +1625,9 @@
     "semantic_hash": "624a5f11237b308b75e6e682e94dc4e5"
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/lifecycle.rs": {
-    "mtime": 1782403070.5432665,
-    "ast_hash": "f73b09087d4d5e24d948d781e2ffdc30",
-    "semantic_hash": "f73b09087d4d5e24d948d781e2ffdc30"
+    "mtime": 1783093244.560362,
+    "ast_hash": "fcb23a37a69143ca0e39445c58c4b3e2",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/mod.rs": {
     "mtime": 1782056840.5526962,
@@ -1650,9 +1650,9 @@
     "semantic_hash": "4bfcbec6f9b5657b3215229c3473ee4e"
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs": {
-    "mtime": 1782403070.5437129,
-    "ast_hash": "0b42d7e2843213b50960a953ffd71715",
-    "semantic_hash": "0b42d7e2843213b50960a953ffd71715"
+    "mtime": 1783093244.5593622,
+    "ast_hash": "ad964c454cb1afbbdc818c1b50f1c9b8",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/tests.rs": {
     "mtime": 1782056840.5579393,
@@ -1825,9 +1825,9 @@
     "semantic_hash": "db9236149745960ca21c916b48e66eb1"
   },
   "crates/oxide-agent-transport-web/src/scripted_llm.rs": {
-    "mtime": 1782403070.5469863,
-    "ast_hash": "46fe496ba5233fb6c39dc8f9c6324798",
-    "semantic_hash": "46fe496ba5233fb6c39dc8f9c6324798"
+    "mtime": 1783094460.9184077,
+    "ast_hash": "06a1c9393154eb1e14dd8ef13b923e61",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/agent_profiles.rs": {
     "mtime": 1782056840.5292125,
@@ -1855,9 +1855,9 @@
     "semantic_hash": "305633cd3fddc155c44c35dc26d382a6"
   },
   "crates/oxide-agent-transport-web/src/server/life_bootstrap.rs": {
-    "mtime": 1782654271.0142581,
-    "ast_hash": "742bed41b510027d56f7f3ba7fb02dbd",
-    "semantic_hash": "742bed41b510027d56f7f3ba7fb02dbd"
+    "mtime": 1783096692.6850133,
+    "ast_hash": "570e26906a03ec6ffec84c07d5deb7bf",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/life_executor.rs": {
     "mtime": 1782657546.46708,
@@ -1865,8 +1865,8 @@
     "semantic_hash": "e60e9ba0e4a4569b14347f2552e2dcfa"
   },
   "crates/oxide-agent-transport-web/src/server/life_routes.rs": {
-    "mtime": 1783075731.4447246,
-    "ast_hash": "d1631f3cc1e266a820a21149061b9920",
+    "mtime": 1783093165.407996,
+    "ast_hash": "c436db17d4b51c9b69e6329c72f95561",
     "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/life_telegram_delivery.rs": {
@@ -1890,14 +1890,14 @@
     "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/search_probe.rs": {
-    "mtime": 1782403070.549596,
-    "ast_hash": "dd0de91b7878d2cb6ed1ed6b0465b1cd",
-    "semantic_hash": "dd0de91b7878d2cb6ed1ed6b0465b1cd"
+    "mtime": 1783094494.3926497,
+    "ast_hash": "4443ba5264099a527bcdc486b54e11b0",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/session_routes.rs": {
-    "mtime": 1782590227.9440477,
-    "ast_hash": "b094f1fe73aff9ed29b2746f4ed753c7",
-    "semantic_hash": "b094f1fe73aff9ed29b2746f4ed753c7"
+    "mtime": 1783093165.4063573,
+    "ast_hash": "540ff7a5b8e0d10754450f5845389c62",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/settings_routes.rs": {
     "mtime": 1782056840.5275302,
@@ -1925,8 +1925,8 @@
     "semantic_hash": "a08bb242d4e1146d3c8bbb1e5718c40c"
   },
   "crates/oxide-agent-transport-web/src/server/tests.rs": {
-    "mtime": 1783075731.4451568,
-    "ast_hash": "c1446f6a446e3d1dec760816dceffb66",
+    "mtime": 1783094476.86287,
+    "ast_hash": "85b8cda9a1873dcbe0bdd0558f8050ab",
     "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/src/server/types.rs": {
@@ -1975,9 +1975,9 @@
     "semantic_hash": "27c98e36bd4152c20ca54d346f346950"
   },
   "crates/oxide-agent-transport-web/tests/e2e/providers.rs": {
-    "mtime": 1782403070.5548654,
-    "ast_hash": "1244ebaac8d75a97c8969b84e3b0228d",
-    "semantic_hash": "1244ebaac8d75a97c8969b84e3b0228d"
+    "mtime": 1783094513.0974145,
+    "ast_hash": "69399214e8ea52d84035a2ec8725a1fe",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-transport-web/tests/e2e/reminder_tests.rs": {
     "mtime": 1782056853.6379333,
@@ -2435,9 +2435,9 @@
     "semantic_hash": "945a4573ca5b506ac4bad73a796dc95f"
   },
   ".github/workflows/ci.yml": {
-    "mtime": 1782404068.5676055,
-    "ast_hash": "debf773db9f286af9a684cb648abd615",
-    "semantic_hash": "debf773db9f286af9a684cb648abd615"
+    "mtime": 1783095275.3881586,
+    "ast_hash": "35567317a5d8396feb8bc6284b501231",
+    "semantic_hash": ""
   },
   ".github/workflows/deploy.yml": {
     "mtime": 1782404261.4441807,
@@ -2445,14 +2445,14 @@
     "semantic_hash": "2a5276c7126fb8e0077367023fa94a7e"
   },
   "AGENTS.md": {
-    "mtime": 1783075729.5774753,
-    "ast_hash": "86d06fe287194e83b0ff31d1c82115c2",
+    "mtime": 1783095308.2164185,
+    "ast_hash": "9d4e29d2e8592a45180a93f8735a3230",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1782652381.3550143,
-    "ast_hash": "e1b9256516c7048943fa174b557f76f7",
-    "semantic_hash": "e1b9256516c7048943fa174b557f76f7"
+    "mtime": 1783095295.8155744,
+    "ast_hash": "532dab21b04a9fa04b7bae2bc88b0490",
+    "semantic_hash": ""
   },
   "crates/oxide-agent-core/proptest-regressions/agent/loop_detection/tool_detector.txt": {
     "mtime": 1782403070.4719548,
@@ -2535,9 +2535,9 @@
     "semantic_hash": "1237c95c2b75c4d7b6ebe34d9068f25c"
   },
   "docs/goals/2026-06-21-core-fit-remediation.md": {
-    "mtime": 1782497933.7068954,
-    "ast_hash": "97e9c4148f16d20856ada0f277d1fa04",
-    "semantic_hash": "97e9c4148f16d20856ada0f277d1fa04"
+    "mtime": 1783095342.2079911,
+    "ast_hash": "6a4bf87e204cd6e755129291451096c2",
+    "semantic_hash": ""
   },
   "docs/goals/2026-06-22-compaction-dcp-redesign.md": {
     "mtime": 1782472306.869912,
@@ -2947,6 +2947,11 @@
   "crates/oxide-agent-transport-web/src/server/life_run_worker.rs": {
     "mtime": 1783075731.387353,
     "ast_hash": "df63ddcc7f96896817198b7676927cff",
+    "semantic_hash": ""
+  },
+  "crates/oxide-agent-core/src/audio_stt.rs": {
+    "mtime": 1783095702.394215,
+    "ast_hash": "8092886019897e173a1305b3ad64f6d6",
     "semantic_hash": ""
   }
 }

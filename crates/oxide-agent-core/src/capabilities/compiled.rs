@@ -469,24 +469,24 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-media-audio",
-        "tool/media-audio",
+        "tool-audio-stt",
+        "tool/audio-stt",
         Media,
-        ["tool/media-audio-transcription"]
+        ["tool/audio-stt-transcription"]
     );
     push_module!(
         modules,
-        "tool-media-image",
-        "tool/media-image",
+        "tool-vision-image",
+        "tool/vision-image",
         Media,
-        ["tool/media-image-description"]
+        ["tool/vision-image-description"]
     );
     push_module!(
         modules,
-        "tool-media-video",
-        "tool/media-video",
+        "tool-vision-video",
+        "tool/vision-video",
         Media,
-        ["tool/media-video-description"]
+        ["tool/vision-video-description"]
     );
     push_module_with_requires!(
         modules,

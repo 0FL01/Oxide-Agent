@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
+use super::super::capabilities::{ProviderCapabilities, VisionCapabilities};
 use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
 
@@ -88,14 +88,14 @@ pub(crate) trait LlmProviderModule: Send + Sync {
     /// Base request capabilities for this provider.
     fn capabilities(&self) -> ProviderCapabilities;
 
-    /// Media modality support for this provider.
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(false, false, false)
+    /// Vision modality support for this provider.
+    fn vision_capabilities(&self) -> VisionCapabilities {
+        VisionCapabilities::new(false, false)
     }
 
-    /// Media modality support for a concrete model route.
-    fn media_capabilities_for_model(&self, _model_info: &ModelInfo) -> MediaCapabilities {
-        self.media_capabilities()
+    /// Vision modality support for a concrete model route.
+    fn vision_capabilities_for_model(&self, _model_info: &ModelInfo) -> VisionCapabilities {
+        self.vision_capabilities()
     }
 
     /// Request capabilities for a concrete model route.
@@ -176,20 +176,20 @@ pub(crate) fn provider_missing_route_config_message(
         .and_then(|module| module.missing_route_config_message(provider_name, settings))
 }
 
-/// Returns media capabilities for a compiled provider module.
+/// Returns vision capabilities for a compiled provider module.
 #[must_use]
 #[allow(dead_code)]
-pub(crate) fn provider_media_capabilities(provider_name: &str) -> Option<MediaCapabilities> {
-    find_provider_module(provider_name).map(|module| module.media_capabilities())
+pub(crate) fn provider_vision_capabilities(provider_name: &str) -> Option<VisionCapabilities> {
+    find_provider_module(provider_name).map(|module| module.vision_capabilities())
 }
 
-/// Returns media capabilities for a concrete route handled by a compiled provider module.
+/// Returns vision capabilities for a concrete route handled by a compiled provider module.
 #[must_use]
-pub(crate) fn provider_media_capabilities_for_model(
+pub(crate) fn provider_vision_capabilities_for_model(
     model_info: &ModelInfo,
-) -> Option<MediaCapabilities> {
+) -> Option<VisionCapabilities> {
     find_provider_module(&model_info.provider)
-        .map(|module| module.media_capabilities_for_model(model_info))
+        .map(|module| module.vision_capabilities_for_model(model_info))
 }
 
 /// Returns request capabilities for a concrete route handled by a compiled provider module.
@@ -519,7 +519,7 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_openrouter)]
     #[test]
-    fn openrouter_module_owns_model_specific_media_capabilities() {
+    fn openrouter_module_owns_model_specific_vision_capabilities() {
         for model_id in [
             "google/gemini-2.0-flash",
             "google/gemini-2.5-flash-lite",
@@ -536,10 +536,9 @@ mod tests {
                 weight: 1,
             };
 
-            let capabilities = super::provider_media_capabilities_for_model(&route)
+            let capabilities = super::provider_vision_capabilities_for_model(&route)
                 .expect("provider should resolve");
 
-            assert!(capabilities.supports_audio_transcription, "{model_id}");
             assert!(capabilities.supports_image_understanding, "{model_id}");
             assert!(capabilities.supports_video_understanding, "{model_id}");
         }

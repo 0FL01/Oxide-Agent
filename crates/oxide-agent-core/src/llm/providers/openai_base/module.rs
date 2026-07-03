@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::config::AgentSettings;
 use crate::llm::LlmProvider;
-use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
+use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode, VisionCapabilities};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 
 use super::profile::OpenAICompatibleProfile;
@@ -353,16 +353,16 @@ impl LlmProviderModule for OpenAIBaseProviderModule {
         ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
     }
 
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(false, false, false)
+    fn vision_capabilities(&self) -> VisionCapabilities {
+        VisionCapabilities::new(false, false)
     }
 
-    fn media_capabilities_for_model(
+    fn vision_capabilities_for_model(
         &self,
         model_info: &crate::config::ModelInfo,
-    ) -> MediaCapabilities {
+    ) -> VisionCapabilities {
         let supports_image = endpoint_image_input_for_provider(&model_info.provider);
-        MediaCapabilities::new(false, supports_image, false)
+        VisionCapabilities::new(supports_image, false)
     }
 
     fn capabilities_for_model(
