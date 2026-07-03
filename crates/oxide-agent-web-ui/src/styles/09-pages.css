@@ -380,14 +380,6 @@
   margin-top: 10px;
 }
 
-.life-activity-toggle .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 1.5s infinite;
-}
-
 .life-activity-toggle.open {
   background: var(--accent-soft);
 }
@@ -399,11 +391,6 @@
 
 .life-activity-toggle.open .chevron {
   transform: rotate(90deg);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 .life-composer {

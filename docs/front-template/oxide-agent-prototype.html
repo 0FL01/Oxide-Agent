@@ -130,27 +130,6 @@
   .session-item.active {
     background: rgba(16,163,127,0.08);
   }
-  .session-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    margin-top: 5px;
-    flex-shrink: 0;
-  }
-  .session-dot.idle { background: var(--faint); }
-  .session-dot.running {
-    background: var(--accent);
-    animation: pulse-dot 1.6s ease-in-out infinite;
-  }
-  .session-dot.completed { background: var(--accent); }
-  .session-dot.waiting { background: var(--warning); }
-  .session-dot.error { background: var(--error); }
-  .session-dot.cancelled { background: var(--muted); }
-
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-  }
-
   .session-meta { min-width: 0; flex: 1; }
   .session-title {
     font-size: 13px;
@@ -327,18 +306,6 @@
   .status-chip:hover {
     background: var(--surface-hover);
     border-color: var(--border-strong);
-  }
-  .status-chip.active { color: var(--accent); }
-  .status-chip.waiting { color: var(--warning); }
-  .status-chip.warning { color: var(--warning); }
-  .status-chip.error { color: var(--error); }
-  .status-chip .dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-  }
-  .status-chip.active .dot {
-    animation: pulse-dot 1.6s ease-in-out infinite;
   }
   .status-chip .chevron {
     color: var(--faint);
@@ -916,7 +883,6 @@
     sessions.forEach(s => {
       const item = el('div', 'session-item' + (s.id === currentSessionId ? ' active' : ''), list);
       item.addEventListener('click', () => switchSession(s.id));
-      const dot = el('div', 'session-dot ' + s.status, item);
       const meta = el('div', 'session-meta', item);
       const title = el('div', 'session-title', meta);
       title.textContent = s.title;
@@ -971,14 +937,8 @@
     // Status chip
     if (s.statusChip) {
       const wrap = el('div', 'status-wrap', inner);
-      let chipCls = 'status-chip';
-      if (s.statusChip.active) chipCls += ' active';
-      if (s.status === 'waiting') chipCls += ' waiting';
-      if (s.status === 'error') chipCls += ' warning';
-      if (s.status === 'cancelled') chipCls += ' error';
-      const chip = el('div', chipCls, wrap);
+      const chip = el('div', 'status-chip', wrap);
       chip.addEventListener('click', openDrawer);
-      const dot = el('span', 'dot', chip);
       const text = el('span', '', chip);
       text.textContent = s.statusChip.text;
       const chevron = el('span', 'chevron', chip);

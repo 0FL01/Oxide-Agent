@@ -4,7 +4,7 @@ use crate::utils::spawn_ui;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, CreateTaskVersionRequest, PersistedTaskEvent, TaskAttachment, TaskEventKind,
-    TaskStatus, TaskSummary, UserMessageEventPayload,
+    TaskSummary, UserMessageEventPayload,
 };
 use std::collections::HashMap;
 
@@ -158,13 +158,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let selected_index = view.selected_index;
             let version_count = view.version_count;
             let editable = editable_task_id.as_ref() == Some(&task.task_id);
-            let card_status_class = match task.status {
-                TaskStatus::Running | TaskStatus::Queued => "running",
-                TaskStatus::Completed => "success",
-                TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => "error",
-                _ => "",
-            };
-            let card_class = format!("task-card {card_status_class}");
             let original_input = task.input_markdown.clone();
             let input_markdown = task.input_markdown.clone();
             let attachments = task.attachments.clone();
@@ -175,7 +168,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
             let search_probe_messages = search_probe_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
-            let activity_open = drawer_open.get() && activity_task_id.get().as_deref() == Some(task.task_id.as_str());
             let task_id_for_activity = task.task_id.clone();
             let open_activity = Callback::new(move |_| {
                 if drawer_open.get_untracked()
@@ -192,7 +184,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let next_task = view.next_task;
 
             view! {
-                <article class=card_class>
+                <article class="task-card">
                     <TaskUserMessagePanel
                         data=UserMessagePanelData {
                             session_id: session_id.clone(),
@@ -216,7 +208,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                     <ResumeUserMessages messages=resume_messages />
                     <SearchProbeMessages messages=search_probe_messages />
                     <div class="task-action-row">
-                        <ThinkingButton label=activity_label open=activity_open on_click=open_activity />
+                        <ThinkingButton label=activity_label on_click=open_activity />
                     </div>
 
                     {final_response_markdown.map(|answer| view! {

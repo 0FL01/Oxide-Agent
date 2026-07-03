@@ -226,16 +226,6 @@ fn SessionItem(
     let (draft_title, set_draft_title) = signal(original_title.clone());
     let (is_saving, set_is_saving) = signal(false);
 
-    // Determine status dot class from last task status
-    let status_class = match session.last_task_status {
-        Some(oxide_agent_web_contracts::TaskStatus::Running) => "running",
-        Some(oxide_agent_web_contracts::TaskStatus::Completed) => "success",
-        Some(oxide_agent_web_contracts::TaskStatus::Failed) => "error",
-        Some(oxide_agent_web_contracts::TaskStatus::Cancelled) => "error",
-        Some(oxide_agent_web_contracts::TaskStatus::Interrupted) => "warning",
-        _ => "idle",
-    };
-
     let input_ref = NodeRef::<html::Input>::new();
     Effect::new(move |_| {
         if is_renaming.get()
@@ -321,7 +311,6 @@ fn SessionItem(
                 if is_renaming.get() {
                     view! {
                         <div class="session-rename-row">
-                            <span class=format!("session-status-dot {}", status_class)></span>
                             <input
                                 class="session-rename-input"
                                 type="text"
@@ -354,7 +343,6 @@ fn SessionItem(
                             class=move || if active.get() { "session-item active" } else { "session-item" }
                             href=format!("/app/session/{}", session.session_id)
                         >
-                            <span class=format!("session-status-dot {}", status_class)></span>
                             <span class="session-copy">
                                 <span class="session-id">{display_session_title(&session)}</span>
                             </span>

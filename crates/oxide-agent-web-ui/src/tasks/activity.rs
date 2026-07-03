@@ -38,13 +38,6 @@ pub(super) fn ActivityStatusChip(
             if status == TaskStatus::Completed {
                 return ().into_any();
             }
-            let class = match status {
-                TaskStatus::Queued | TaskStatus::Running => "status-chip active",
-                TaskStatus::WaitingForUserInput => "status-chip active waiting",
-                TaskStatus::Failed | TaskStatus::Interrupted => "status-chip warning",
-                TaskStatus::Cancelled => "status-chip error",
-                TaskStatus::Completed => "status-chip",
-            };
             let label = match status {
                 TaskStatus::Queued | TaskStatus::Running => "Thinking",
                 TaskStatus::WaitingForUserInput => "Waiting for your input",
@@ -55,8 +48,7 @@ pub(super) fn ActivityStatusChip(
             };
             view! {
                 <div class="status-wrap">
-                    <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
-                        <span class="dot"></span>
+                    <button class="status-chip" type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
                         <span>{label}</span>
                         <span class="chevron">"›"</span>
                     </button>
@@ -69,12 +61,10 @@ pub(super) fn ActivityStatusChip(
 #[component]
 pub(super) fn ThinkingButton(
     label: Memo<String>,
-    open: bool,
     on_click: Callback<leptos::ev::MouseEvent>,
 ) -> impl IntoView {
     view! {
-        <button class=if open { "thinking-button open" } else { "thinking-button" } type="button" on:click=move |ev| on_click.run(ev)>
-            <span class="dot"></span>
+        <button class="thinking-button" type="button" on:click=move |ev| on_click.run(ev)>
             <span>{move || label.get()}</span>
             <span class="chevron">"›"</span>
         </button>
@@ -479,12 +469,6 @@ fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView 
             let prompt = snapshot.get("system_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
             let tools = snapshot.get("tool_schema_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
             let budget = snapshot.get("budget_state").and_then(|v| v.as_str()).unwrap_or("context");
-            let health_class = match budget {
-                "Healthy" => "context-health-ok",
-                "Warning" | "Approaching" => "context-health-warn",
-                "Critical" | "Over" => "context-health-over",
-                _ => "context-health-ok",
-            };
             view! {
                 <section class="context-card">
                     <div class="context-card-grid">
@@ -506,7 +490,6 @@ fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView 
                         </div>
                     </div>
                     <div class="context-card-health">
-                        <span class={format!("context-health-dot {health_class}")}></span>
                         <span class="context-health-label">{budget.to_lowercase()}</span>
                     </div>
                 </section>

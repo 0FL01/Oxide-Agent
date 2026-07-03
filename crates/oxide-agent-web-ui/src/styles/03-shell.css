@@ -250,47 +250,6 @@
   font: 11px/1.5 var(--font-mono);
 }
 
-.session-status-dot,
-.session-dot {
-  width: 8px;
-  height: 8px;
-  display: inline-block;
-  border-radius: 50%;
-  background: var(--faint);
-  flex: 0 0 auto;
-  margin-top: 5px;
-}
-
-.session-status-dot.idle {
-  background: var(--text-faint);
-}
-
-.session-status-dot.running,
-.session-dot.running {
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
-  animation: pulse-dot 1.6s ease-in-out infinite;
-}
-
-.session-status-dot.success,
-.session-dot.completed {
-  background: var(--accent);
-  opacity: 0.75;
-}
-
-.session-status-dot.warning,
-.session-dot.waiting {
-  background: var(--warning);
-  box-shadow: 0 0 6px rgba(216, 162, 30, 0.4);
-}
-
-.session-status-dot.error,
-.session-dot.error,
-.session-dot.cancelled {
-  background: var(--error);
-  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
-}
-
 .session-actions {
   position: absolute;
   right: 8px;
@@ -355,14 +314,4 @@
 
 .session-rename-input:focus {
   box-shadow: 0 0 0 1px var(--accent);
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
 }

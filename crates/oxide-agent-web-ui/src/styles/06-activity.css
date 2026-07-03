@@ -38,25 +38,6 @@
   flex-shrink: 0;
 }
 
-.context-health-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.context-health-dot.context-health-ok {
-  background: var(--accent-green);
-}
-
-.context-health-dot.context-health-warn {
-  background: var(--accent-yellow);
-}
-
-.context-health-dot.context-health-over {
-  background: var(--accent-red);
-}
-
 .context-health-label {
   color: var(--fg-muted);
   font: 500 10px/1 var(--font-mono);
@@ -497,29 +478,6 @@
   color: var(--muted);
   padding: 0 12px;
   font-size: 12px;
-}
-
-.status-chip .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--faint);
-}
-
-.status-chip.active .dot {
-  background: var(--accent);
-  animation: pulse-dot 1.6s ease-in-out infinite;
-}
-
-.status-chip.waiting .dot {
-  background: var(--warning);
-  animation: none;
-}
-
-.status-chip.warning .dot,
-.status-chip.error .dot {
-  background: var(--error);
-  animation: none;
 }
 
 .status-chip .chevron {

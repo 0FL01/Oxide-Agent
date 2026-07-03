@@ -37,29 +37,6 @@
   border-left: 1px solid var(--border-subtle);
 }
 
-.task-card::before {
-  content: '';
-  position: absolute;
-  left: -3px;
-  top: 0;
-  width: 5px;
-  height: 5px;
-  background: var(--border-strong);
-}
-
-.task-card.running::before {
-  background: var(--accent-blue);
-  animation: pulse 2s infinite;
-}
-
-.task-card.success::before {
-  background: var(--accent-green);
-}
-
-.task-card.error::before {
-  background: var(--accent-red);
-}
-
 .message {
   font-size: 13px;
   line-height: 1.7;
@@ -215,10 +192,6 @@
   border: 0;
   background: transparent;
   padding: 0;
-}
-
-.task-card::before {
-  content: none;
 }
 
 .message {
@@ -437,13 +410,6 @@
   color: var(--muted);
   padding: 0 12px;
   font-size: 12px;
-}
-
-.thinking-button .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--accent);
 }
 
 .thinking-button .chevron {

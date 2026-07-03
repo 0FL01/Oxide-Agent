@@ -116,7 +116,6 @@ fn LifeTurnCard(
                                 type="button"
                                 on:click=move |_| open_activity.run(run_id_for_click.clone())
                             >
-                                <span class="dot"></span>
                                 <span>"Activity"</span>
                                 <span class="chevron">"›"</span>
                             </button>

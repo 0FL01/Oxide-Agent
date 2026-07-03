@@ -297,7 +297,6 @@ pub fn LifeConsole() -> impl IntoView {
                                         }
                                     }
                                 >
-                                    <span class="dot"></span>
                                     <span>"Thinking"</span>
                                     <span class="chevron">"›"</span>
                                 </button>
