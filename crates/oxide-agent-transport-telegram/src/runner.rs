@@ -12,12 +12,13 @@ use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
 };
 #[cfg(feature = "storage-sqlx")]
-use oxide_agent_core::{llm, storage};
+use oxide_agent_core::{config::AgentSettings, llm, sandbox::SandboxScope, storage};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
     domain::{LifeTransportId, TELEGRAM_TRANSPORT_ID},
     gateway::{LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission},
     storage::{LifeStorageRepository, SqlxLifeStorage},
+    worker::LIFE_CONTEXT_KEY,
 };
 use std::sync::Arc;
 #[cfg(feature = "storage-sqlx")]
@@ -36,6 +37,15 @@ use tracing::info;
 const LIFE_TELEGRAM_CHAT_ID_ENV: &str = "LIFE_TELEGRAM_CHAT_ID";
 #[cfg(feature = "storage-sqlx")]
 const LIFE_TELEGRAM_BOT_TOKEN_ENV: &str = "LIFE_TELEGRAM_BOT_TOKEN";
+#[cfg(feature = "storage-sqlx")]
+const LIFE_READY_MESSAGE: &str = "Permanent Life Mode is ready. Send any private message here and I will answer in the shared Web/Telegram Life chat.";
+#[cfg(feature = "storage-sqlx")]
+const LIFE_HELP_MESSAGE: &str = "Send any non-command private message to talk to Life Mode. Commands: /start, /help, /status. No /life prefix is used.";
+#[cfg(feature = "storage-sqlx")]
+const LIFE_UNSUPPORTED_INPUT_MESSAGE: &str =
+    "This Life Mode chat supports text, voice, photo, video, and document messages.";
+#[cfg(feature = "storage-sqlx")]
+const LIFE_EMPTY_MEDIA_MESSAGE: &str = "Media input did not produce any text to send to Life Mode.";
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
@@ -72,7 +82,11 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
                 let life_bot = Bot::new(life_token);
                 let life_handler = setup_life_handler();
                 let mut life_dispatcher = Dispatcher::builder(life_bot, life_handler)
-                    .dependencies(dptree::deps![life_storage.clone()])
+                    .dependencies(dptree::deps![
+                        life_storage.clone(),
+                        llm_client.clone(),
+                        settings.agent.clone()
+                    ])
                     .build();
                 info!("Life bot is running with Telegram long polling...");
                 tokio::spawn(async move {
@@ -230,10 +244,7 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
 fn setup_life_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry().branch(
         Update::filter_message()
-            .filter(|msg: Message| {
-                matches!(msg.chat.kind, teloxide::types::ChatKind::Private(_))
-                    && msg.text().is_some()
-            })
+            .filter(|msg: Message| matches!(msg.chat.kind, teloxide::types::ChatKind::Private(_)))
             .endpoint(handle_life_dedicated_message),
     )
 }
@@ -243,6 +254,8 @@ async fn handle_life_dedicated_message(
     bot: Bot,
     msg: Message,
     life_storage: Arc<SqlxLifeStorage>,
+    llm: Arc<llm::LlmClient>,
+    agent_settings: Arc<AgentSettings>,
 ) -> Result<(), teloxide::RequestError> {
     let Some(user) = access_control_user(&msg) else {
         return respond(());
@@ -261,48 +274,129 @@ async fn handle_life_dedicated_message(
         return respond(());
     }
 
-    let Some(text) = msg.text().map(str::trim).filter(|text| !text.is_empty()) else {
-        return respond(());
-    };
+    let payload =
+        life_telegram_message_payload(&bot, &msg, &llm, &agent_settings, user.id.0.cast_signed())
+            .await?;
 
-    match classify_life_telegram_text(text) {
-        LifeTelegramInput::Start => {
-            bot.send_message(
-                msg.chat.id,
-                "Permanent Life Mode is ready. Send any private message here and I will answer in the shared Web/Telegram Life chat.",
-            )
-            .await?;
-            return respond(());
-        }
-        LifeTelegramInput::Help => {
-            bot.send_message(
-                msg.chat.id,
-                "Send any non-command private message to talk to Life Mode. Commands: /start, /help, /status. No /life prefix is used.",
-            )
-            .await?;
-            return respond(());
-        }
-        LifeTelegramInput::Status => {
-            let status_text = life_status_text(life_storage.as_ref(), &chat_id).await;
-            bot.send_message(msg.chat.id, status_text).await?;
-            return respond(());
-        }
-        LifeTelegramInput::UnsupportedCommand => {
-            bot.send_message(
-                msg.chat.id,
-                "Unknown Life Mode command. Send a normal message, or use /help.",
-            )
-            .await?;
-            return respond(());
-        }
-        LifeTelegramInput::Submit(payload) => {
+    match payload {
+        LifeTelegramPayload::Media(content) => {
             let from_user_id = user.id.0;
-            submit_life_telegram_message(bot, msg, life_storage, from_user_id, chat_id, payload)
+            submit_life_telegram_message(bot, msg, life_storage, from_user_id, chat_id, content)
                 .await?;
         }
+        LifeTelegramPayload::Handled => return respond(()),
+        LifeTelegramPayload::Unsupported => {
+            bot.send_message(msg.chat.id, LIFE_UNSUPPORTED_INPUT_MESSAGE)
+                .await?;
+            return respond(());
+        }
+        LifeTelegramPayload::Text(text) => match classify_life_telegram_text(&text) {
+            LifeTelegramInput::Start => {
+                bot.send_message(msg.chat.id, LIFE_READY_MESSAGE).await?;
+                return respond(());
+            }
+            LifeTelegramInput::Help => {
+                bot.send_message(msg.chat.id, LIFE_HELP_MESSAGE).await?;
+                return respond(());
+            }
+            LifeTelegramInput::Status => {
+                let status_text = life_status_text(life_storage.as_ref(), &chat_id).await;
+                bot.send_message(msg.chat.id, status_text).await?;
+                return respond(());
+            }
+            LifeTelegramInput::UnsupportedCommand => {
+                bot.send_message(
+                    msg.chat.id,
+                    "Unknown Life Mode command. Send a normal message, or use /help.",
+                )
+                .await?;
+                return respond(());
+            }
+            LifeTelegramInput::Submit(payload) => {
+                let from_user_id = user.id.0;
+                submit_life_telegram_message(
+                    bot,
+                    msg,
+                    life_storage,
+                    from_user_id,
+                    chat_id,
+                    payload,
+                )
+                .await?;
+            }
+        },
     }
 
     respond(())
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn life_telegram_message_payload(
+    bot: &Bot,
+    msg: &Message,
+    llm: &Arc<llm::LlmClient>,
+    agent_settings: &Arc<AgentSettings>,
+    user_id: i64,
+) -> Result<LifeTelegramPayload, teloxide::RequestError> {
+    if let Some(text) = msg.text().map(str::trim).filter(|text| !text.is_empty()) {
+        return Ok(LifeTelegramPayload::Text(text.to_owned()));
+    }
+
+    if !life_telegram_message_has_preprocessable_media(msg) {
+        return Ok(LifeTelegramPayload::Unsupported);
+    }
+
+    let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
+    match bot::agent_handlers::preprocess_agent_message_input(
+        bot,
+        msg,
+        llm,
+        agent_settings,
+        &sandbox_scope,
+        false,
+    )
+    .await
+    {
+        Ok(content) if !content.trim().is_empty() => Ok(LifeTelegramPayload::Media(content)),
+        Ok(_) => {
+            bot.send_message(msg.chat.id, LIFE_EMPTY_MEDIA_MESSAGE)
+                .await?;
+            Ok(LifeTelegramPayload::Handled)
+        }
+        Err(error) => {
+            if let Some(detail) = bot::agent_handlers::media_route_unavailable_detail(&error) {
+                let message = bot::agent_handlers::multimodal_unavailable_message(Some(&detail));
+                bot.send_message(msg.chat.id, message).await?;
+                return Ok(LifeTelegramPayload::Handled);
+            }
+
+            error!("Telegram life media preprocessing failed: {error}");
+            let sanitized_error = oxide_agent_core::utils::sanitize_html_error(&error.to_string());
+            bot.send_message(
+                msg.chat.id,
+                format!("❌ Failed to process Life Mode media input:\n\n{sanitized_error}"),
+            )
+            .await?;
+            Ok(LifeTelegramPayload::Handled)
+        }
+    }
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn life_telegram_message_has_preprocessable_media(msg: &Message) -> bool {
+    msg.voice().is_some()
+        || msg.photo().is_some()
+        || msg.video().is_some()
+        || msg.document().is_some()
+}
+
+#[cfg(feature = "storage-sqlx")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LifeTelegramPayload {
+    Text(String),
+    Media(String),
+    Unsupported,
+    Handled,
 }
 
 #[cfg(feature = "storage-sqlx")]
@@ -664,14 +758,47 @@ async fn handle_agent_confirmation(
 
 #[cfg(all(test, feature = "storage-sqlx"))]
 mod tests {
-    use super::{LifeTelegramInput, access_control_user_id, classify_life_telegram_text};
+    use super::{
+        LifeTelegramInput, access_control_user_id, classify_life_telegram_text,
+        life_telegram_message_has_preprocessable_media,
+    };
     use crate::bot::handlers::get_user_id_safe;
     use teloxide::types::{
-        Chat, ChatId, ChatKind, ChatPrivate, MediaKind, MediaText, Message, MessageCommon,
-        MessageId, MessageKind, User, UserId,
+        Chat, ChatId, ChatKind, ChatPrivate, FileId, FileMeta, FileUniqueId, MediaKind, MediaText,
+        MediaVoice, Message, MessageCommon, MessageId, MessageKind, Seconds, User, UserId, Voice,
     };
 
     fn text_message(from: Option<User>) -> Message {
+        message_with_media(
+            from,
+            MediaKind::Text(MediaText {
+                text: "hello".to_string(),
+                entities: Vec::new(),
+                link_preview_options: None,
+            }),
+        )
+    }
+
+    fn voice_message(from: Option<User>) -> Message {
+        message_with_media(
+            from,
+            MediaKind::Voice(MediaVoice {
+                voice: Voice {
+                    file: FileMeta {
+                        id: FileId("voice-file-id".to_string()),
+                        unique_id: FileUniqueId("voice-file-unique-id".to_string()),
+                        size: 128,
+                    },
+                    duration: Seconds::from_seconds(1),
+                    mime_type: None,
+                },
+                caption: None,
+                caption_entities: Vec::new(),
+            }),
+        )
+    }
+
+    fn message_with_media(from: Option<User>, media_kind: MediaKind) -> Message {
         Message {
             id: MessageId(1),
             thread_id: None,
@@ -700,11 +827,7 @@ mod tests {
                 reply_to_story: None,
                 sender_boost_count: None,
                 edit_date: None,
-                media_kind: MediaKind::Text(MediaText {
-                    text: "hello".to_string(),
-                    entities: Vec::new(),
-                    link_preview_options: None,
-                }),
+                media_kind,
                 reply_markup: None,
                 is_automatic_forward: false,
                 has_protected_content: false,
@@ -778,5 +901,15 @@ mod tests {
             classify_life_telegram_text("/life remember this"),
             LifeTelegramInput::UnsupportedCommand
         );
+    }
+
+    #[test]
+    fn life_dedicated_media_detection_accepts_voice_messages() {
+        assert!(!life_telegram_message_has_preprocessable_media(
+            &text_message(None)
+        ));
+        assert!(life_telegram_message_has_preprocessable_media(
+            &voice_message(None)
+        ));
     }
 }

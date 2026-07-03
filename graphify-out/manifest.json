@@ -1615,8 +1615,8 @@
     "semantic_hash": "047ef3284b75adc2b27dfc644f471046"
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs": {
-    "mtime": 1783093230.1865427,
-    "ast_hash": "6cde547fee927a9c2abc2cc8f7035d66",
+    "mtime": 1783098753.8711007,
+    "ast_hash": "d77aac2b87769f0430eb0d620c6875a1",
     "semantic_hash": ""
   },
   "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input_intent.rs": {
@@ -1745,8 +1745,8 @@
     "semantic_hash": "524e4216663c97fa683685563d33d873"
   },
   "crates/oxide-agent-transport-telegram/src/runner.rs": {
-    "mtime": 1783075730.1955476,
-    "ast_hash": "4c95a636b918a34adcc56bf93ba735e9",
+    "mtime": 1783099135.4063041,
+    "ast_hash": "991448b950d0dda5385dd648de9dc6f8",
     "semantic_hash": ""
   },
   "crates/oxide-agent-transport-telegram/tests/agent_xml_leak_prevention.rs": {

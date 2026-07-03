@@ -347,11 +347,7 @@ pub(crate) async fn send_multimodal_unavailable_message(
     thread_id: Option<ThreadId>,
     detail: Option<&str>,
 ) -> Result<()> {
-    let detail =
-        detail.unwrap_or("Vision or audio STT backend is not configured for this media type.");
-    let message = format!(
-        "🚫 Media input is not available.\n{detail}\nFix voice: set AUDIO_STT_BASE_URL. Fix image/video: set VISION_MODEL_ID and VISION_MODEL_PROVIDER, then restart the bot."
-    );
+    let message = multimodal_unavailable_message(detail);
 
     crate::bot::resilient::send_message_resilient_with_thread(
         bot, chat_id, &message, None, thread_id,
@@ -359,6 +355,14 @@ pub(crate) async fn send_multimodal_unavailable_message(
     .await?;
 
     Ok(())
+}
+
+pub(crate) fn multimodal_unavailable_message(detail: Option<&str>) -> String {
+    let detail =
+        detail.unwrap_or("Vision or audio STT backend is not configured for this media type.");
+    format!(
+        "🚫 Media input is not available.\n{detail}\nFix voice: set AUDIO_STT_BASE_URL. Fix image/video: set VISION_MODEL_ID and VISION_MODEL_PROVIDER, then restart the bot."
+    )
 }
 
 pub(crate) fn media_route_unavailable_detail(error: &anyhow::Error) -> Option<String> {
