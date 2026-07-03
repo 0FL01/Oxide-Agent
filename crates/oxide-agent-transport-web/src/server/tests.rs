@@ -4238,6 +4238,70 @@ async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
 
 #[cfg(feature = "storage-sqlx")]
 #[tokio::test]
+async fn life_read_apis_accept_session_cookie_without_csrf() {
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "life_read_user".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, _, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "life_read_user".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let (status, axum::Json(error)) = super::life_routes::api_get_life_state(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect_err("test state has no life storage");
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.error.code, ErrorCode::BackendUnavailable);
+
+    let (status, axum::Json(error)) = super::life_routes::api_list_life_turns(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+        axum::extract::Query(super::life_routes::LifeTurnsQuery {
+            cursor: None,
+            limit: Some(1),
+        }),
+    )
+    .await
+    .expect_err("test state has no life storage");
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.error.code, ErrorCode::BackendUnavailable);
+
+    let (status, axum::Json(error)) = super::life_routes::api_list_life_events(
+        axum::extract::State(state),
+        auth_headers(&token, None),
+        axum::extract::Query(super::life_routes::LifeEventsQuery {
+            run_id: None,
+            cursor: None,
+            limit: Some(1),
+        }),
+    )
+    .await
+    .expect_err("test state has no life storage");
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error.error.code, ErrorCode::BackendUnavailable);
+}
+
+#[cfg(feature = "storage-sqlx")]
+#[tokio::test]
 async fn life_sse_returns_503_without_storage() {
     let state = test_app_state();
     let now = chrono::Utc::now();

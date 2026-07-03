@@ -29,10 +29,10 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 #[cfg(feature = "storage-sqlx")]
-use super::sse::sse_json_event;
-use super::{AppState, api_error, authenticated_user_with_csrf};
+use super::backend_unavailable_response;
 #[cfg(feature = "storage-sqlx")]
-use super::{authenticated_user, backend_unavailable_response};
+use super::sse::sse_json_event;
+use super::{AppState, api_error, authenticated_user, authenticated_user_with_csrf};
 
 #[cfg(feature = "storage-sqlx")]
 use super::types::web_chat_upload_limit_mb;
@@ -86,7 +86,7 @@ pub(crate) async fn api_get_life_state(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiLifeStateResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let user = authenticated_user(&state, &headers).await?;
     life_state_for_user(&state, user.user_id).await
 }
 
@@ -95,7 +95,7 @@ pub(crate) async fn api_list_life_turns(
     headers: HeaderMap,
     Query(query): Query<LifeTurnsQuery>,
 ) -> Result<Json<ApiLifeTurnsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let user = authenticated_user(&state, &headers).await?;
     list_life_turns_for_user(&state, user.user_id, query).await
 }
 
@@ -104,7 +104,7 @@ pub(crate) async fn api_list_life_events(
     headers: HeaderMap,
     Query(query): Query<LifeEventsQuery>,
 ) -> Result<Json<ApiLifeEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let user = authenticated_user(&state, &headers).await?;
     list_life_events_for_user(&state, user.user_id, query).await
 }
 
