@@ -11,9 +11,17 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     ApiLifeEventResponse, ApiLifeRunSummary, ApiLifeSubmitResponse, ApiLifeTurnResponse,
 };
+use std::collections::HashMap;
 
 const LIFE_TURNS_PAGE: usize = 50;
 const LIFE_EVENTS_PAGE: usize = 100;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LifeRunActivityPageState {
+    next_cursor: Option<String>,
+    has_more: bool,
+    loading: bool,
+}
 
 /// Permanent chat console — the main UI for life mode.
 ///
@@ -41,12 +49,11 @@ pub fn LifeConsole() -> impl IntoView {
     let (turns_has_more, set_turns_has_more) = signal(false);
     let (loading_older_turns, set_loading_older_turns) = signal(false);
 
-    let (event_cursor, set_event_cursor) = signal(None::<String>);
-    let (events_has_more, set_events_has_more) = signal(false);
-    let (loading_older_events, set_loading_older_events) = signal(false);
-
     // ── Activity drawer ────────────────────────────────────────────────
     let (drawer_open, set_drawer_open) = signal(false);
+    let (selected_activity_run_id, set_selected_activity_run_id) = signal(None::<String>);
+    let (run_activity_pages, set_run_activity_pages) =
+        signal(HashMap::<String, LifeRunActivityPageState>::new());
 
     // ── SSE streaming ──────────────────────────────────────────────────
     let (streaming, set_streaming) = signal(false);
@@ -80,8 +87,6 @@ pub fn LifeConsole() -> impl IntoView {
                 let mut events_asc = response.events;
                 events_asc.reverse();
                 set_events.set(events_asc);
-                set_events_has_more.set(response.next_cursor.is_some());
-                set_event_cursor.set(response.next_cursor);
             }
 
             // Fetch life state for active run.
@@ -128,29 +133,48 @@ pub fn LifeConsole() -> impl IntoView {
 
     // ── Load older events ──────────────────────────────────────────────
     let load_older_events = Callback::new(move |_| {
-        if loading_older_events.get_untracked() || !events_has_more.get_untracked() {
+        let Some(run_id) = selected_activity_run_id.get_untracked() else {
+            return;
+        };
+        let Some(page) = run_activity_pages.get_untracked().get(&run_id).cloned() else {
+            return;
+        };
+        if page.loading || !page.has_more {
             return;
         }
-        let cursor = event_cursor.get_untracked();
-        let run_id = active_run.get_untracked().map(|r| r.run_id);
-        set_loading_older_events.set(true);
+        let cursor = page.next_cursor;
+        set_run_activity_pages.update(|pages| {
+            pages.entry(run_id.clone()).or_default().loading = true;
+        });
         set_error.set(None);
         spawn_ui(async move {
             let client = auth.client();
             match client
-                .list_life_events(run_id.as_deref(), cursor.as_deref(), LIFE_EVENTS_PAGE)
+                .list_life_events(Some(&run_id), cursor.as_deref(), LIFE_EVENTS_PAGE)
                 .await
             {
                 Ok(response) => {
                     let mut events_asc = response.events;
                     events_asc.reverse();
                     merge_events(set_events, events_asc, true);
-                    set_events_has_more.set(response.next_cursor.is_some());
-                    set_event_cursor.set(response.next_cursor);
+                    set_run_activity_pages.update(|pages| {
+                        pages.insert(
+                            run_id.clone(),
+                            LifeRunActivityPageState {
+                                has_more: response.next_cursor.is_some(),
+                                next_cursor: response.next_cursor,
+                                loading: false,
+                            },
+                        );
+                    });
                 }
-                Err(error) => set_error.set(Some(error.to_string())),
+                Err(error) => {
+                    set_error.set(Some(error.to_string()));
+                    set_run_activity_pages.update(|pages| {
+                        pages.entry(run_id.clone()).or_default().loading = false;
+                    });
+                }
             }
-            set_loading_older_events.set(false);
         });
     });
 
@@ -161,8 +185,83 @@ pub fn LifeConsole() -> impl IntoView {
     });
 
     // ── Activity toggle ────────────────────────────────────────────────
-    let toggle_drawer = Callback::new(move |_| {
-        set_drawer_open.update(|open| *open = !*open);
+    let open_activity_for_run = Callback::new(move |run_id: String| {
+        let already_open = drawer_open.get_untracked()
+            && selected_activity_run_id.get_untracked().as_deref() == Some(run_id.as_str());
+        if already_open {
+            set_drawer_open.set(false);
+            return;
+        }
+
+        set_selected_activity_run_id.set(Some(run_id.clone()));
+        set_drawer_open.set(true);
+
+        if run_activity_pages.get_untracked().contains_key(&run_id) {
+            return;
+        }
+
+        set_run_activity_pages.update(|pages| {
+            pages.insert(
+                run_id.clone(),
+                LifeRunActivityPageState {
+                    loading: true,
+                    ..LifeRunActivityPageState::default()
+                },
+            );
+        });
+
+        spawn_ui(async move {
+            let client = auth.client();
+            match client
+                .list_life_events(Some(&run_id), None, LIFE_EVENTS_PAGE)
+                .await
+            {
+                Ok(response) => {
+                    let mut events_asc = response.events;
+                    events_asc.reverse();
+                    merge_events(set_events, events_asc, false);
+                    set_run_activity_pages.update(|pages| {
+                        pages.insert(
+                            run_id.clone(),
+                            LifeRunActivityPageState {
+                                has_more: response.next_cursor.is_some(),
+                                next_cursor: response.next_cursor,
+                                loading: false,
+                            },
+                        );
+                    });
+                }
+                Err(error) => {
+                    set_error.set(Some(error.to_string()));
+                    set_run_activity_pages.update(|pages| {
+                        pages.remove(&run_id);
+                    });
+                }
+            }
+        });
+    });
+
+    let selected_run_has_older_events = Signal::derive(move || {
+        selected_activity_run_id
+            .get()
+            .and_then(|run_id| {
+                run_activity_pages
+                    .get()
+                    .get(&run_id)
+                    .map(|page| page.has_more)
+            })
+            .unwrap_or(false)
+    });
+    let selected_run_events_loading = Signal::derive(move || {
+        selected_activity_run_id
+            .get()
+            .and_then(|run_id| {
+                run_activity_pages
+                    .get()
+                    .get(&run_id)
+                    .map(|page| page.loading)
+            })
+            .unwrap_or(false)
     });
 
     view! {
@@ -172,6 +271,9 @@ pub fn LifeConsole() -> impl IntoView {
                 <div class="life-results-panel">
                     <LifeTranscript
                         turns=turns
+                        selected_activity_run_id=selected_activity_run_id
+                        drawer_open=drawer_open
+                        open_activity=open_activity_for_run
                         has_more=Signal::derive(move || turns_has_more.get())
                         loading_older=Signal::derive(move || loading_older_turns.get())
                         load_older=load_older_turns
@@ -180,9 +282,20 @@ pub fn LifeConsole() -> impl IntoView {
                         if is_running.get() {
                             view! {
                                 <button
-                                    class=move || if drawer_open.get() { "life-activity-toggle open" } else { "life-activity-toggle" }
+                                    class=move || {
+                                        let active_run_id = active_run.get().map(|run| run.run_id);
+                                        let is_open = drawer_open.get()
+                                            && active_run_id.as_deref().is_some_and(|run_id| {
+                                                selected_activity_run_id.get().as_deref() == Some(run_id)
+                                            });
+                                        if is_open { "life-activity-toggle open" } else { "life-activity-toggle" }
+                                    }
                                     type="button"
-                                    on:click=move |ev| toggle_drawer.run(ev)
+                                    on:click=move |_| {
+                                        if let Some(run) = active_run.get_untracked() {
+                                            open_activity_for_run.run(run.run_id);
+                                        }
+                                    }
                                 >
                                     <span class="dot"></span>
                                     <span>"Thinking"</span>
@@ -213,9 +326,9 @@ pub fn LifeConsole() -> impl IntoView {
                 open=drawer_open
                 set_open=set_drawer_open
                 events=events
-                active_run=active_run
-                has_older=Signal::derive(move || events_has_more.get())
-                loading_older=Signal::derive(move || loading_older_events.get())
+                selected_run_id=selected_activity_run_id
+                has_older=selected_run_has_older_events
+                loading_older=selected_run_events_loading
                 load_older=load_older_events
             />
         </section>

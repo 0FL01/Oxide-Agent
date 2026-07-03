@@ -376,6 +376,10 @@
   margin-top: 4px;
 }
 
+.life-turn .life-activity-toggle {
+  margin-top: 10px;
+}
+
 .life-activity-toggle .dot {
   width: 6px;
   height: 6px;

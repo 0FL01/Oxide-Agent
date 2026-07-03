@@ -103,15 +103,57 @@ pub(crate) fn merge_events(
     });
 }
 
+/// Convert only events for the selected run into persisted task events.
+///
+/// Life activity is anchored to an explicit run selected by the user-visible
+/// transcript button. With no selected run there is intentionally no implicit
+/// "all runs" fallback, because that mixes permanent-chat activity from
+/// unrelated answers.
+pub(crate) fn life_persisted_events_for_run(
+    events: &[ApiLifeEventResponse],
+    selected_run_id: Option<&str>,
+) -> Vec<PersistedTaskEvent> {
+    let Some(run_id) = selected_run_id else {
+        return Vec::new();
+    };
+
+    events
+        .iter()
+        .filter(|event| event.run_id == run_id)
+        .filter_map(life_event_to_persisted)
+        .collect()
+}
+
+/// User-visible Life activity anchors belong to final assistant turns.
+///
+/// The run id is used only as an internal selection key by the UI; it is not
+/// rendered in the transcript or drawer header.
+pub(crate) fn life_turn_activity_run_id(turn: &ApiLifeTurnResponse) -> Option<&str> {
+    if turn.role == "assistant" {
+        turn.run_id.as_deref()
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_agent_web_contracts::ApiLifeEventResponse;
+    use oxide_agent_web_contracts::{ApiLifeEventResponse, ApiLifeTurnResponse};
 
     fn life_event(seq: i64, kind: &str, summary: &str) -> ApiLifeEventResponse {
+        life_event_for_run("run-1", seq, kind, summary)
+    }
+
+    fn life_event_for_run(
+        run_id: &str,
+        seq: i64,
+        kind: &str,
+        summary: &str,
+    ) -> ApiLifeEventResponse {
         ApiLifeEventResponse {
             event_id: format!("evt-{seq}"),
-            run_id: "run-1".to_string(),
+            run_id: run_id.to_string(),
             seq,
             kind: kind.to_string(),
             payload: serde_json::json!({
@@ -121,6 +163,21 @@ mod tests {
                 "truncated": false,
             }),
             created_at: 1_700_000_000_000 + seq * 1000,
+        }
+    }
+
+    fn life_turn(role: &str, run_id: Option<&str>) -> ApiLifeTurnResponse {
+        ApiLifeTurnResponse {
+            turn_id: "turn-1".to_owned(),
+            run_id: run_id.map(ToOwned::to_owned),
+            role: role.to_owned(),
+            source_transport: "web".to_owned(),
+            source_ref: None,
+            content: "content".to_owned(),
+            attachments: serde_json::json!([]),
+            transport_metadata: serde_json::json!({}),
+            redaction_state: "clean".to_owned(),
+            created_at: 1_700_000_000_000,
         }
     }
 
@@ -174,5 +231,46 @@ mod tests {
         let persisted = life_event_to_persisted(&event).expect("conversion succeeds");
         assert!(persisted.redacted);
         assert!(persisted.truncated);
+    }
+
+    #[test]
+    fn persisted_events_require_selected_run() {
+        let events = vec![life_event(1, "tool_call", "execute_command")];
+
+        assert!(life_persisted_events_for_run(&events, None).is_empty());
+    }
+
+    #[test]
+    fn persisted_events_are_scoped_to_selected_run() {
+        let events = vec![
+            life_event_for_run("run-1", 1, "tool_call", "run one"),
+            life_event_for_run("run-2", 1, "tool_call", "run two"),
+        ];
+
+        let visible = life_persisted_events_for_run(&events, Some("run-2"));
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].summary, "run two");
+    }
+
+    #[test]
+    fn assistant_turn_with_run_gets_activity_anchor() {
+        let turn = life_turn("assistant", Some("run-1"));
+
+        assert_eq!(life_turn_activity_run_id(&turn), Some("run-1"));
+    }
+
+    #[test]
+    fn user_turn_does_not_get_activity_anchor() {
+        let turn = life_turn("user", Some("run-1"));
+
+        assert_eq!(life_turn_activity_run_id(&turn), None);
+    }
+
+    #[test]
+    fn assistant_turn_without_run_does_not_get_activity_anchor() {
+        let turn = life_turn("assistant", None);
+
+        assert_eq!(life_turn_activity_run_id(&turn), None);
     }
 }

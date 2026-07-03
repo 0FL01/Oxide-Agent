@@ -1,13 +1,13 @@
-use crate::life::state::life_event_to_persisted;
+use crate::life::state::life_persisted_events_for_run;
 use crate::tasks::activity::{
     ActivityItemCard, group_activity_events, is_chat_visible_event, is_useful_event,
 };
 use crate::tasks::payload::is_sub_agent_event;
 use crate::tasks::state::latest_pinned_todos;
 use leptos::prelude::*;
-use oxide_agent_web_contracts::{ApiLifeEventResponse, ApiLifeRunSummary, PersistedTaskEvent};
+use oxide_agent_web_contracts::{ApiLifeEventResponse, PersistedTaskEvent};
 
-/// Life activity drawer — renders life_events for the active run.
+/// Life activity drawer — renders life_events for the selected transcript run.
 ///
 /// Reuses the shared event rendering (tool cards, grouping, filtering)
 /// from `tasks/activity.rs` by converting `ApiLifeEventResponse` to
@@ -17,7 +17,7 @@ pub(crate) fn LifeActivityDrawer(
     open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
     events: ReadSignal<Vec<ApiLifeEventResponse>>,
-    active_run: ReadSignal<Option<ApiLifeRunSummary>>,
+    selected_run_id: ReadSignal<Option<String>>,
     has_older: Signal<bool>,
     loading_older: Signal<bool>,
     load_older: Callback<leptos::ev::MouseEvent>,
@@ -25,16 +25,10 @@ pub(crate) fn LifeActivityDrawer(
     let (show_sub_agents, set_show_sub_agents) = signal(true);
 
     view! {
-        <aside class=move || if open.get() { "activity-drawer open" } else { "activity-drawer" }>
+        <aside class=move || if open.get() && selected_run_id.get().is_some() { "activity-drawer open" } else { "activity-drawer" }>
             <header class="activity-header">
                 <div class="activity-title-row">
                     <span class="activity-title">"Activity"</span>
-                    {move || {
-                        active_run.get().map(|run| view! {
-                            <span class="activity-title-separator">"·"</span>
-                            <span class="activity-elapsed">{format!("Run {}", &run.run_id[..8])}</span>
-                        })
-                    }}
                 </div>
                 <div class="activity-actions">
                     <button
@@ -66,27 +60,28 @@ pub(crate) fn LifeActivityDrawer(
                 }}
                 {move || {
                     let all_events = events.get();
-                    let run_id = active_run.get().map(|r| r.run_id);
-
-                    // Filter to active run events and convert to PersistedTaskEvent.
-                    let persisted: Vec<PersistedTaskEvent> = all_events
-                        .iter()
-                        .filter(|e| run_id.as_deref().is_none_or(|rid| e.run_id == *rid))
-                        .filter_map(life_event_to_persisted)
-                        .filter(|e| include_sub_agent(e, show_sub_agents.get()))
-                        .filter(|e| is_chat_visible_event(&e.kind))
-                        .filter(is_useful_event)
-                        .collect();
+                    let selected_run_id = selected_run_id.get();
+                    let persisted: Vec<PersistedTaskEvent> = life_persisted_events_for_run(
+                        &all_events,
+                        selected_run_id.as_deref(),
+                    )
+                    .into_iter()
+                    .filter(|event| include_sub_agent(event, show_sub_agents.get()))
+                    .filter(|event| is_chat_visible_event(&event.kind))
+                    .filter(is_useful_event)
+                    .collect();
 
                     if persisted.is_empty() {
-                        return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
+                        let label = if loading_older.get() { "Loading activity..." } else { "No activity yet." };
+                        return view! { <div class="activity-empty">{label}</div> }.into_any();
                     }
 
                     let todos = latest_pinned_todos(&persisted);
                     let items = group_activity_events(persisted, false);
 
                     if items.is_empty() && todos.is_none() {
-                        return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
+                        let label = if loading_older.get() { "Loading activity..." } else { "No activity yet." };
+                        return view! { <div class="activity-empty">{label}</div> }.into_any();
                     }
 
                     view! {

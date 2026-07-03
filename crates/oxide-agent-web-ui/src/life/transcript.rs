@@ -1,3 +1,4 @@
+use crate::life::state::life_turn_activity_run_id;
 use crate::markdown::render_markdown;
 use crate::tasks::composer::MessageAttachments;
 use leptos::prelude::*;
@@ -8,6 +9,9 @@ use oxide_agent_web_contracts::{ApiLifeTurnResponse, TaskAttachment};
 #[component]
 pub(crate) fn LifeTranscript(
     turns: ReadSignal<Vec<ApiLifeTurnResponse>>,
+    selected_activity_run_id: ReadSignal<Option<String>>,
+    drawer_open: ReadSignal<bool>,
+    open_activity: Callback<String>,
     has_more: Signal<bool>,
     loading_older: Signal<bool>,
     load_older: Callback<leptos::ev::MouseEvent>,
@@ -46,7 +50,14 @@ pub(crate) fn LifeTranscript(
                 } else {
                     items
                         .into_iter()
-                        .map(|turn| view! { <LifeTurnCard turn=turn /> })
+                        .map(|turn| view! {
+                            <LifeTurnCard
+                                turn=turn
+                                selected_activity_run_id=selected_activity_run_id
+                                drawer_open=drawer_open
+                                open_activity=open_activity
+                            />
+                        })
                         .collect_view()
                         .into_any()
                 }
@@ -56,7 +67,12 @@ pub(crate) fn LifeTranscript(
 }
 
 #[component]
-fn LifeTurnCard(turn: ApiLifeTurnResponse) -> impl IntoView {
+fn LifeTurnCard(
+    turn: ApiLifeTurnResponse,
+    selected_activity_run_id: ReadSignal<Option<String>>,
+    drawer_open: ReadSignal<bool>,
+    open_activity: Callback<String>,
+) -> impl IntoView {
     let is_user = turn.role == "user";
     let class = if is_user {
         "life-turn user"
@@ -64,6 +80,7 @@ fn LifeTurnCard(turn: ApiLifeTurnResponse) -> impl IntoView {
         "life-turn assistant"
     };
     let role_label = if is_user { "You" } else { "Agent" };
+    let activity_run_id = life_turn_activity_run_id(&turn).map(ToOwned::to_owned);
     let content_html = if is_user {
         // User messages are plain text — escape and preserve line breaks.
         escape_html_with_breaks(&turn.content)
@@ -85,6 +102,26 @@ fn LifeTurnCard(turn: ApiLifeTurnResponse) -> impl IntoView {
                 } else {
                     view! { <MessageAttachments attachments=attachments.clone() /> }.into_any()
                 }
+            }}
+            {move || {
+                activity_run_id
+                    .as_ref()
+                    .map(|run_id| {
+                        let run_id_for_click = run_id.clone();
+                        let open = drawer_open.get()
+                            && selected_activity_run_id.get().as_deref() == Some(run_id.as_str());
+                        view! {
+                            <button
+                                class=if open { "life-activity-toggle open" } else { "life-activity-toggle" }
+                                type="button"
+                                on:click=move |_| open_activity.run(run_id_for_click.clone())
+                            >
+                                <span class="dot"></span>
+                                <span>"Activity"</span>
+                                <span class="chevron">"›"</span>
+                            </button>
+                        }
+                    })
             }}
         </div>
     }
