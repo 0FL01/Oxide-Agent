@@ -281,25 +281,27 @@ pub fn LifeConsole() -> impl IntoView {
                     {move || {
                         if is_running.get() {
                             view! {
-                                <button
-                                    class=move || {
-                                        let active_run_id = active_run.get().map(|run| run.run_id);
-                                        let is_open = drawer_open.get()
-                                            && active_run_id.as_deref().is_some_and(|run_id| {
-                                                selected_activity_run_id.get().as_deref() == Some(run_id)
-                                            });
-                                        if is_open { "life-activity-toggle open" } else { "life-activity-toggle" }
-                                    }
-                                    type="button"
-                                    on:click=move |_| {
-                                        if let Some(run) = active_run.get_untracked() {
-                                            open_activity_for_run.run(run.run_id);
+                                <div class="life-active-run-status">
+                                    <button
+                                        class=move || {
+                                            let active_run_id = active_run.get().map(|run| run.run_id);
+                                            let is_open = drawer_open.get()
+                                                && active_run_id.as_deref().is_some_and(|run_id| {
+                                                    selected_activity_run_id.get().as_deref() == Some(run_id)
+                                                });
+                                            if is_open { "life-activity-toggle open" } else { "life-activity-toggle" }
                                         }
-                                    }
-                                >
-                                    <span>"Thinking"</span>
-                                    <span class="chevron">"›"</span>
-                                </button>
+                                        type="button"
+                                        on:click=move |_| {
+                                            if let Some(run) = active_run.get_untracked() {
+                                                open_activity_for_run.run(run.run_id);
+                                            }
+                                        }
+                                    >
+                                        <span>"Thinking"</span>
+                                        <span class="chevron">"›"</span>
+                                    </button>
+                                </div>
                             }.into_any()
                         } else {
                             ().into_any()

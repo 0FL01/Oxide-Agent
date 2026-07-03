@@ -2080,8 +2080,8 @@
     "semantic_hash": "30b2d10aa3a51ea65b7bc4a16efc5052"
   },
   "crates/oxide-agent-web-ui/src/life/console.rs": {
-    "mtime": 1783076682.0708609,
-    "ast_hash": "9016debf15ab5aafd8f6a4061acc82a1",
+    "mtime": 1783102078.1893084,
+    "ast_hash": "df426ff69e6c2e923794278b02011210",
     "semantic_hash": ""
   },
   "crates/oxide-agent-web-ui/src/life/mod.rs": {
