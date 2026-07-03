@@ -22,3 +22,4 @@ dist/
 pg_data/
 postgres-init/
 .donor
+backups/
