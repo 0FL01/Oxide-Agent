@@ -42,6 +42,7 @@ mod static_assets;
 mod task_executor;
 mod task_routes;
 mod types;
+mod voice_routes;
 
 pub(crate) use agent_profiles::{
     api_create_agent_profile, api_delete_agent_profile, api_list_agent_profiles,
@@ -80,6 +81,7 @@ pub(crate) use task_routes::{
     build_task_agent_user_input, build_task_execution_input, task_preview_source,
 };
 pub use types::*;
+pub(crate) use voice_routes::api_transcribe_voice;
 
 use axum::{Json, extract::State, http::StatusCode};
 use oxide_agent_web_contracts::{ErrorCode, ErrorEnvelope, PublicConfigResponse};

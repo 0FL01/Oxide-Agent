@@ -2,6 +2,7 @@ use crate::api::{ApiClient, ApiClientError};
 use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::utils::{navigate, spawn_ui};
+use crate::voice::VoiceRecorderControl;
 use futures_util::join;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
@@ -17,8 +18,8 @@ use super::composer::{
     AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
-    task_input_limit_notice, task_input_too_long,
+    merge_voice_transcript, persist_default_effort, reset_composer_textarea_height,
+    submit_parent_form_on_ctrl_enter, task_input_limit_notice, task_input_too_long,
 };
 use super::lightbox::{Lightbox, LightboxContext, LightboxImage};
 use super::profile::{
@@ -237,6 +238,7 @@ fn Workspace(
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
+    let (voice_busy, set_voice_busy) = signal(false);
     let (drag_active, set_drag_active) = signal(false);
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (profiles_loaded, set_profiles_loaded) = signal(false);
@@ -586,6 +588,9 @@ fn Workspace(
             set_error.set(Some(message));
             return;
         }
+        if voice_busy.get_untracked() {
+            return;
+        }
         set_loading.set(true);
         set_error.set(None);
         let effort = selected_effort.get();
@@ -798,6 +803,11 @@ fn Workspace(
         });
     });
 
+    let on_voice_transcript = Callback::new(move |transcript: String| {
+        set_input.set(merge_voice_transcript(&input.get_untracked(), &transcript));
+        reset_composer_textarea_height(textarea_ref);
+    });
+
     let include_default_profile = Signal::derive(move || session_id.get().is_none());
 
     let session_id_for_cards = session_id;
@@ -960,7 +970,7 @@ fn Workspace(
                                 let auth_state = auth.auth.get();
                                 let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
                                     && !auth_state.large_input_attachments_supported;
-                                input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                input_blocked || voice_busy.get() || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
                             }>
                                 <AgentProfileSelect
                                     profiles=profiles
@@ -996,13 +1006,20 @@ fn Workspace(
                                     />
                                     "Attach"
                                 </label>
+                                <VoiceRecorderControl
+                                    auth=auth
+                                    disabled=Signal::derive(move || loading.get() || is_running() || voice_busy.get())
+                                    set_busy=set_voice_busy
+                                    set_error=set_error
+                                    on_transcript=on_voice_transcript
+                                />
                                 <button
                                     type="submit"
                                     disabled=move || {
                                         let auth_state = auth.auth.get();
                                         let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
                                             && !auth_state.large_input_attachments_supported;
-                                        loading.get() || is_running() || input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
+                                        loading.get() || is_running() || voice_busy.get() || input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
                                     }
                                     class="btn-primary"
                                     style=move || if is_running() { "display:none" } else { "" }

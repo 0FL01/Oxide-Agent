@@ -2,10 +2,12 @@ use crate::auth::AuthContext;
 use crate::tasks::composer::{
     PendingAttachmentFile, PendingAttachmentList, append_pending_browser_files, browser_files,
     browser_files_from_input_event, can_submit_input, handle_composer_drag, handle_composer_drop,
-    handle_composer_input, handle_composer_paste, reset_composer_textarea_height,
-    submit_parent_form_on_ctrl_enter, task_input_limit_notice, task_input_too_long,
+    handle_composer_input, handle_composer_paste, merge_voice_transcript,
+    reset_composer_textarea_height, submit_parent_form_on_ctrl_enter, task_input_limit_notice,
+    task_input_too_long,
 };
 use crate::utils::spawn_ui;
+use crate::voice::VoiceRecorderControl;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{ApiLifeSubmitRequest, ApiLifeSubmitResponse, TaskAttachment};
 
@@ -30,6 +32,7 @@ pub(crate) fn LifeComposer(
 ) -> impl IntoView {
     let textarea_ref = NodeRef::<html::Textarea>::new();
     let (drag_active, set_drag_active) = signal(false);
+    let (voice_busy, set_voice_busy) = signal(false);
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
@@ -42,6 +45,9 @@ pub(crate) fn LifeComposer(
         let max_chars = auth_state.max_task_input_chars;
         if let Some(message) = task_input_limit_notice(&text, max_chars) {
             set_error.set(Some(message));
+            return;
+        }
+        if voice_busy.get_untracked() {
             return;
         }
         set_loading.set(true);
@@ -85,6 +91,11 @@ pub(crate) fn LifeComposer(
             set_loading.set(false);
         });
     };
+
+    let on_voice_transcript = Callback::new(move |transcript: String| {
+        set_input.set(merge_voice_transcript(&input.get_untracked(), &transcript));
+        reset_composer_textarea_height(textarea_ref);
+    });
 
     view! {
         <form class="composer life-composer" on:submit=submit>
@@ -152,7 +163,7 @@ pub(crate) fn LifeComposer(
                         let auth_state = auth.auth.get();
                         let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
                             && !auth_state.large_input_attachments_supported;
-                        input_blocked || (!can_submit_input(&input.get(), &pending_files.get()) && !is_running.get())
+                        input_blocked || voice_busy.get() || (!can_submit_input(&input.get(), &pending_files.get()) && !is_running.get())
                     }>
                         <label class="button secondary composer-attach-button">
                             <input
@@ -171,13 +182,20 @@ pub(crate) fn LifeComposer(
                             />
                             "Attach"
                         </label>
+                        <VoiceRecorderControl
+                            auth=auth
+                            disabled=Signal::derive(move || loading.get() || is_running.get() || voice_busy.get())
+                            set_busy=set_voice_busy
+                            set_error=set_error
+                            on_transcript=on_voice_transcript
+                        />
                         <button
                             type="submit"
                             disabled=move || {
                                 let auth_state = auth.auth.get();
                                 let input_blocked = task_input_too_long(&input.get(), auth_state.max_task_input_chars)
                                     && !auth_state.large_input_attachments_supported;
-                                loading.get() || is_running.get() || input_blocked || !can_submit_input(&input.get(), &pending_files.get())
+                                loading.get() || is_running.get() || voice_busy.get() || input_blocked || !can_submit_input(&input.get(), &pending_files.get())
                             }
                             class="btn-primary"
                         >

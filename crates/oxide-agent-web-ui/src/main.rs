@@ -22,6 +22,8 @@ mod sse;
 mod tasks;
 #[cfg(target_arch = "wasm32")]
 mod utils;
+#[cfg(target_arch = "wasm32")]
+mod voice;
 
 #[cfg(test)]
 #[allow(dead_code)]

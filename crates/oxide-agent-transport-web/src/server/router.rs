@@ -22,7 +22,7 @@ use super::{
     api_list_agent_profiles, api_list_life_events, api_list_life_turns, api_list_model_routes,
     api_list_sessions, api_list_tasks, api_login, api_logout, api_me, api_privacy_hard_wipe_life,
     api_public_config, api_refresh_model_routes, api_register, api_resume_task,
-    api_submit_life_input, api_update_agent_profile, api_update_session,
+    api_submit_life_input, api_transcribe_voice, api_update_agent_profile, api_update_session,
     api_update_session_profile, api_update_settings, api_upload_task_attachments, auto_title,
     health, sse, static_assets,
 };
@@ -44,6 +44,7 @@ pub fn build_router(state: AppState) -> Router {
             get(api_get_settings).patch(api_update_settings),
         )
         .route("/api/v1/model-routes", get(api_list_model_routes))
+        .route("/api/v1/voice/transcriptions", post(api_transcribe_voice))
         .route("/api/v1/life/state", get(api_get_life_state))
         .route("/api/v1/life/state", delete(api_privacy_hard_wipe_life))
         .route("/api/v1/life/inputs", post(api_submit_life_input))

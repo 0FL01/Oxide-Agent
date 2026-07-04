@@ -195,6 +195,19 @@ pub(crate) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile
     !input.trim().is_empty() || !attachments.is_empty()
 }
 
+pub(crate) fn merge_voice_transcript(current_input: &str, transcript: &str) -> String {
+    let transcript = transcript.trim();
+    if transcript.is_empty() {
+        return current_input.to_string();
+    }
+    let current = current_input.trim_end();
+    if current.is_empty() {
+        transcript.to_string()
+    } else {
+        format!("{current}\n\n{transcript}")
+    }
+}
+
 pub(crate) fn task_input_char_count(input: &str) -> usize {
     input.chars().count()
 }

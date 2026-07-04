@@ -1,16 +1,16 @@
 # Graph Report - Oxide-Agent  (2026-07-04)
 
 ## Corpus Check
-- 558 files · ~943,734 words
+- 561 files · ~945,923 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 14957 nodes · 41139 edges · 717 communities (477 shown, 240 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 1426 edges (avg confidence: 0.8)
+- 15022 nodes · 41368 edges · 684 communities (462 shown, 222 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 1434 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `923ea78f`
+- Built from commit: `444086c1`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -209,7 +209,6 @@
 - [[_COMMUNITY_Adblock Config|Adblock Config]]
 - [[_COMMUNITY_Executor Effort|Executor Effort]]
 - [[_COMMUNITY_Executor Config|Executor Config]]
-- [[_COMMUNITY_Agent Events|Agent Events]]
 - [[_COMMUNITY_ChatGPT Login CLI|ChatGPT Login CLI]]
 - [[_COMMUNITY_CDP Connection|CDP Connection]]
 - [[_COMMUNITY_CICD Workflows|CI/CD Workflows]]
@@ -338,6 +337,7 @@
 - [[_COMMUNITY_ChatGPT Auth Flow|ChatGPT Auth Flow]]
 - [[_COMMUNITY_Module Slicing Goals|Module Slicing Goals]]
 - [[_COMMUNITY_Web UI Answer Screenshot|Web UI Answer Screenshot]]
+- [[_COMMUNITY_Browser Artifact Records|Browser Artifact Records]]
 - [[_COMMUNITY_Lightbox UI|Lightbox UI]]
 - [[_COMMUNITY_Action Base JS|Action Base JS]]
 - [[_COMMUNITY_Wiki Backend Interface|Wiki Backend Interface]]
@@ -345,7 +345,6 @@
 - [[_COMMUNITY_REST Contract Tests|REST Contract Tests]]
 - [[_COMMUNITY_Compaction Redesign Goals|Compaction Redesign Goals]]
 - [[_COMMUNITY_Web UI Empty State|Web UI Empty State]]
-- [[_COMMUNITY_Registry Wiki Backend|Registry Wiki Backend]]
 - [[_COMMUNITY_Life Config|Life Config]]
 - [[_COMMUNITY_Core Fit Audit Goals|Core Fit Audit Goals]]
 - [[_COMMUNITY_Wiki Scope|Wiki Scope]]
@@ -362,7 +361,6 @@
 - [[_COMMUNITY_SSH Cleanup Goals|SSH Cleanup Goals]]
 - [[_COMMUNITY_OpenCode Config|OpenCode Config]]
 - [[_COMMUNITY_Plugin Package|Plugin Package]]
-- [[_COMMUNITY_Hooks System Docs|Hooks System Docs]]
 - [[_COMMUNITY_Loop Detection Docs|Loop Detection Docs]]
 - [[_COMMUNITY_Timestamp Utils|Timestamp Utils]]
 - [[_COMMUNITY_Postgres Services|Postgres Services]]
@@ -377,9 +375,7 @@
 - [[_COMMUNITY_Silero TTS API|Silero TTS API]]
 - [[_COMMUNITY_Phase0 Probe Script|Phase0 Probe Script]]
 - [[_COMMUNITY_CI Clippy Job|CI Clippy Job]]
-- [[_COMMUNITY_CI Format Job|CI Format Job]]
 - [[_COMMUNITY_Agent Execution Doc|Agent Execution Doc]]
-- [[_COMMUNITY_Community 368|Community 368]]
 - [[_COMMUNITY_Life Console Transcript|Life Console Transcript]]
 - [[_COMMUNITY_Types Module (A)|Types Module (A)]]
 - [[_COMMUNITY_Models Module|Models Module]]
@@ -390,24 +386,17 @@
 - [[_COMMUNITY_Cursor-Based Paging|Cursor-Based Paging]]
 - [[_COMMUNITY_CRW Migration Goal|CRW Migration Goal]]
 - [[_COMMUNITY_ZAI Drop Plan|ZAI Drop Plan]]
-- [[_COMMUNITY_Community 392|Community 392]]
 - [[_COMMUNITY_Context Window Tracking Ref|Context Window Tracking Ref]]
 - [[_COMMUNITY_CLIProxyAPI Examples|CLIProxyAPI Examples]]
 - [[_COMMUNITY_Community 395|Community 395]]
-- [[_COMMUNITY_Community 396|Community 396]]
 - [[_COMMUNITY_Community 397|Community 397]]
 - [[_COMMUNITY_OpenCode Zen Provider Doc|OpenCode Zen Provider Doc]]
-- [[_COMMUNITY_OpenRouter Provider Doc|OpenRouter Provider Doc]]
 - [[_COMMUNITY_Community 402|Community 402]]
-- [[_COMMUNITY_Community 403|Community 403]]
 - [[_COMMUNITY_Community 404|Community 404]]
 - [[_COMMUNITY_Community 405|Community 405]]
-- [[_COMMUNITY_Community 406|Community 406]]
 - [[_COMMUNITY_Community 407|Community 407]]
-- [[_COMMUNITY_Community 408|Community 408]]
 - [[_COMMUNITY_Community 409|Community 409]]
 - [[_COMMUNITY_Community 410|Community 410]]
-- [[_COMMUNITY_Community 411|Community 411]]
 - [[_COMMUNITY_Community 412|Community 412]]
 - [[_COMMUNITY_Community 413|Community 413]]
 - [[_COMMUNITY_Community 414|Community 414]]
@@ -416,7 +405,8 @@
 - [[_COMMUNITY_Community 417|Community 417]]
 - [[_COMMUNITY_Community 418|Community 418]]
 - [[_COMMUNITY_Community 419|Community 419]]
-- [[_COMMUNITY_Community 421|Community 421]]
+- [[_COMMUNITY_Community 420|Community 420]]
+- [[_COMMUNITY_Community 423|Community 423]]
 - [[_COMMUNITY_Community 424|Community 424]]
 - [[_COMMUNITY_Community 425|Community 425]]
 - [[_COMMUNITY_Community 426|Community 426]]
@@ -427,7 +417,7 @@
 - [[_COMMUNITY_Community 432|Community 432]]
 - [[_COMMUNITY_Community 433|Community 433]]
 - [[_COMMUNITY_Community 434|Community 434]]
-- [[_COMMUNITY_Community 437|Community 437]]
+- [[_COMMUNITY_Community 436|Community 436]]
 - [[_COMMUNITY_Community 438|Community 438]]
 - [[_COMMUNITY_Community 439|Community 439]]
 - [[_COMMUNITY_Community 440|Community 440]]
@@ -448,7 +438,6 @@
 - [[_COMMUNITY_Community 458|Community 458]]
 - [[_COMMUNITY_Community 459|Community 459]]
 - [[_COMMUNITY_Community 460|Community 460]]
-- [[_COMMUNITY_Community 461|Community 461]]
 - [[_COMMUNITY_Community 462|Community 462]]
 - [[_COMMUNITY_Community 465|Community 465]]
 - [[_COMMUNITY_Community 466|Community 466]]
@@ -492,20 +481,15 @@
 - [[_COMMUNITY_Community 511|Community 511]]
 - [[_COMMUNITY_Community 512|Community 512]]
 - [[_COMMUNITY_Community 513|Community 513]]
-- [[_COMMUNITY_Community 517|Community 517]]
 - [[_COMMUNITY_Community 518|Community 518]]
 - [[_COMMUNITY_Community 519|Community 519]]
-- [[_COMMUNITY_Community 520|Community 520]]
-- [[_COMMUNITY_Community 521|Community 521]]
 - [[_COMMUNITY_Community 522|Community 522]]
 - [[_COMMUNITY_Community 523|Community 523]]
 - [[_COMMUNITY_Community 524|Community 524]]
 - [[_COMMUNITY_Community 525|Community 525]]
-- [[_COMMUNITY_Community 527|Community 527]]
 - [[_COMMUNITY_Community 528|Community 528]]
 - [[_COMMUNITY_Community 532|Community 532]]
 - [[_COMMUNITY_Community 533|Community 533]]
-- [[_COMMUNITY_Community 539|Community 539]]
 - [[_COMMUNITY_Community 541|Community 541]]
 - [[_COMMUNITY_Community 542|Community 542]]
 - [[_COMMUNITY_Community 545|Community 545]]
@@ -616,11 +600,6 @@
 - [[_COMMUNITY_Community 655|Community 655]]
 - [[_COMMUNITY_Community 656|Community 656]]
 - [[_COMMUNITY_Community 657|Community 657]]
-- [[_COMMUNITY_Community 658|Community 658]]
-- [[_COMMUNITY_Community 659|Community 659]]
-- [[_COMMUNITY_Community 660|Community 660]]
-- [[_COMMUNITY_Community 661|Community 661]]
-- [[_COMMUNITY_Community 662|Community 662]]
 - [[_COMMUNITY_Community 663|Community 663]]
 - [[_COMMUNITY_Community 664|Community 664]]
 - [[_COMMUNITY_Community 665|Community 665]]
@@ -689,14 +668,6 @@
 - [[_COMMUNITY_Community 729|Community 729]]
 - [[_COMMUNITY_Community 730|Community 730]]
 - [[_COMMUNITY_Community 731|Community 731]]
-- [[_COMMUNITY_Community 732|Community 732]]
-- [[_COMMUNITY_Community 733|Community 733]]
-- [[_COMMUNITY_Community 734|Community 734]]
-- [[_COMMUNITY_Community 735|Community 735]]
-- [[_COMMUNITY_Community 736|Community 736]]
-- [[_COMMUNITY_Community 737|Community 737]]
-- [[_COMMUNITY_Community 738|Community 738]]
-- [[_COMMUNITY_Community 739|Community 739]]
 - [[_COMMUNITY_Community 740|Community 740]]
 - [[_COMMUNITY_Community 741|Community 741]]
 - [[_COMMUNITY_Community 742|Community 742]]
@@ -709,11 +680,9 @@
 - [[_COMMUNITY_Community 749|Community 749]]
 - [[_COMMUNITY_Community 750|Community 750]]
 - [[_COMMUNITY_Community 751|Community 751]]
-- [[_COMMUNITY_Community 752|Community 752]]
-- [[_COMMUNITY_Community 753|Community 753]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `String` - 2042 edges
+1. `String` - 2056 edges
 2. `StorageError` - 273 edges
 3. `ToolDefinition` - 196 edges
 4. `SandboxError` - 166 edges
@@ -754,6 +723,9 @@
 - 2-file cycle: `crates/oxide-agent-core/src/sandbox/broker.rs -> crates/oxide-agent-core/src/sandbox/manager.rs -> crates/oxide-agent-core/src/sandbox/broker.rs`
 - 2-file cycle: `crates/oxide-agent-core/src/agent/executor/compaction.rs -> crates/oxide-agent-core/src/agent/progress.rs -> crates/oxide-agent-core/src/agent/executor/compaction.rs`
 - 3-file cycle: `crates/oxide-agent-core/src/agent/progress.rs -> crates/oxide-agent-core/src/agent/providers/todos.rs -> crates/oxide-agent-runtime/src/agent/runtime/progress.rs -> crates/oxide-agent-core/src/agent/progress.rs`
+- 4-file cycle: `crates/oxide-agent-core/src/agent/runner/types.rs -> crates/oxide-browser-sidecar/src/session.rs -> crates/oxide-browser-sidecar/src/browser.rs -> crates/oxide-agent-core/src/agent/tool_runtime/process.rs -> crates/oxide-agent-core/src/agent/runner/types.rs`
+- 5-file cycle: `crates/oxide-agent-core/src/agent/context.rs -> crates/oxide-browser-sidecar/src/session.rs -> crates/oxide-browser-sidecar/src/browser.rs -> crates/oxide-agent-core/src/agent/tool_runtime/process.rs -> crates/oxide-agent-core/src/agent/runner/types.rs -> crates/oxide-agent-core/src/agent/context.rs`
+- 5-file cycle: `crates/oxide-agent-core/src/agent/runner/types.rs -> crates/oxide-browser-sidecar/src/session.rs -> crates/oxide-browser-sidecar/src/browser.rs -> crates/oxide-agent-core/src/agent/tool_runtime/process.rs -> crates/oxide-agent-core/src/agent/tool_runtime/invocation.rs -> crates/oxide-agent-core/src/agent/runner/types.rs`
 
 ## Hyperedges (group relationships)
 - **Agent Mode LLM Providers** — readme_opencodego, readme_opencodezen, readme_chatgptcodex, readme_zai, readme_minimax, readme_openrouter [EXTRACTED 0.95]
@@ -772,11 +744,11 @@
 - **Prompt cache optimization stack** — docs_tips_cache_hit_token_usage, docs_tips_cache_hit_composed_prompt, docs_tips_cache_hit_fold_system_messages, docs_tips_cache_hit_compaction_budget_guard, docs_tips_cache_hit_static_prefix_architecture [EXTRACTED 1.00]
 - **ZAI provider migration to openai_base profile** — docs_prd_implemented_zai_drop_openai_compatible_profile_zai, docs_prd_implemented_zai_drop_openai_base, docs_prd_implemented_zai_drop_zai_provider, docs_prd_implemented_zai_drop_sse_streaming_parser, docs_prd_implemented_zai_drop_streaming_tool_calls [EXTRACTED 1.00]
 
-## Communities (717 total, 240 thin omitted)
+## Communities (684 total, 222 thin omitted)
 
 ### Community 0 - "SSH Tools & File Editing"
-Cohesion: 0.07
-Nodes (44): CallToolResult, ApplyFileEditArgs, build_wrapped_remote_command(), CheckProcessArgs, CheckProcessRequest, cleanup_stale_private_key_tempfiles(), cleanup_stale_private_key_tempfiles_in(), cleanup_stale_private_key_tempfiles_removes_only_matching_files() (+36 more)
+Cohesion: 0.04
+Nodes (94): CallToolResult, ApplyFileEditArgs, build_wrapped_remote_command(), check_process_tool_schema_uses_chatgpt_compatible_top_level_object(), CheckProcessArgs, CheckProcessRequest, cleanup_stale_private_key_tempfiles(), cleanup_stale_private_key_tempfiles_in() (+86 more)
 
 ### Community 1 - "Web Auth & Session API"
 Cohesion: 0.06
@@ -787,120 +759,120 @@ Cohesion: 0.05
 Nodes (75): append_fallback_notes(), append_result(), backend_failure_falls_back_to_next_backend(), BackendError, BraveRateLimiter, BraveSearchBackend, BraveSearchResponse, BraveWebResult (+67 more)
 
 ### Community 3 - "Sandbox Docker Management"
-Cohesion: 0.07
-Nodes (25): SandboxError, BrokerSandboxManager, DockerSandboxManager, ExecResult, Box, CancellationToken, Drop, Error (+17 more)
+Cohesion: 0.06
+Nodes (30): get_sandbox_image(), SandboxError, BrokerSandboxManager, DockerSandboxManager, ExecResult, ingest_stack_log_chunk_buffers_partial_lines_until_newline(), Box, CancellationToken (+22 more)
 
 ### Community 4 - "File Delivery Tool"
-Cohesion: 0.04
-Nodes (87): cfg_name_for_module(), env_var_for_feature(), main(), parse_module_entries(), parse_string_value(), Vec, ManagerControlPlaneProvider, Result (+79 more)
+Cohesion: 0.08
+Nodes (65): TopicAgentsMdDeleteArgs, TopicAgentsMdGetArgs, TopicAgentsMdRollbackArgs, TopicAgentsMdUpsertArgs, Option, TopicBindingDeleteArgs, TopicBindingGetArgs, TopicBindingRollbackArgs (+57 more)
 
 ### Community 5 - "Build System & Module Registry"
-Cohesion: 0.07
-Nodes (15): format_reminder_created(), format_reminder_line(), TopicAgentsMdRecord, AgentFlowRecord, ReminderJobRecord, ReminderJobStatus, InMemoryStorage, Arc (+7 more)
+Cohesion: 0.08
+Nodes (12): TopicAgentsMdRecord, ReminderJobRecord, ReminderJobStatus, InMemoryStorage, Arc, Default, HashMap, Option (+4 more)
 
 ### Community 6 - "AGENTS.md Tool Module"
 Cohesion: 0.02
-Nodes (40): AgentsMdToolModule, AudioSttToolModule, BrowserLiveToolModule, compiled_modules_have_consistent_group_and_visibility(), CompressionToolModule, DelegationToolModule, FileDeliveryToolModule, JiraMcpToolModule (+32 more)
+Nodes (42): AgentsMdToolModule, AudioSttToolModule, BrowserLiveToolModule, compiled_modules_have_consistent_group_and_visibility(), CompressionToolModule, DelegationToolModule, FileDeliveryToolModule, JiraMcpToolModule (+34 more)
 
 ### Community 7 - "Browser Tool Actions"
 Cohesion: 0.06
-Nodes (91): BrowserFrame, action_kind_schema(), browser_action_schema(), browser_action_variant_schema(), browser_close_always_purges_ephemeral_profile(), browser_close_returns_metrics_snapshot(), browser_execute_direct_click_returns_executed_and_screenshot_attachment(), browser_execute_direct_navigate_returns_executed_and_final_url() (+83 more)
+Nodes (94): BrowserFrame, action_kind_schema(), browser_action_schema(), browser_action_variant_schema(), browser_close_always_purges_ephemeral_profile(), browser_close_returns_metrics_snapshot(), browser_execute_direct_click_returns_executed_and_screenshot_attachment(), browser_execute_direct_navigate_returns_executed_and_final_url() (+86 more)
 
 ### Community 8 - "Browser Console & Network Capture"
 Cohesion: 0.04
-Nodes (82): ConsoleItem, ConsoleLevel, NetworkItem, NetworkSummary, adblock_allows_non_matching_url(), adblock_blocks_matching_url(), adblock_fail_open_on_malformed_url(), adblock_maps_cdp_types_correctly() (+74 more)
+Nodes (81): ConsoleItem, ConsoleLevel, NetworkItem, adblock_allows_non_matching_url(), adblock_blocks_matching_url(), adblock_fail_open_on_malformed_url(), adblock_maps_cdp_types_correctly(), adblock_skips_document_resource_type() (+73 more)
 
 ### Community 9 - "CRW Scrape Client"
-Cohesion: 0.07
-Nodes (41): execute_claimed_run_executes_follow_up_inputs_as_separate_runs(), FixedWorkerClock, LifeRunExecutionOutcome, LifeRunExecutor, LifeWorker, LifeWorker<S, E, SystemLifeWorkerClock>, LifeWorkerClock, LifeWorkerRunContext (+33 more)
+Cohesion: 0.11
+Nodes (45): AudioContext, Blob, BlobEvent, activate_recording_slot(), ActiveVoiceRecording, animated_waveform(), begin_recording_slot(), build_visualizer() (+37 more)
 
 ### Community 10 - "Life Principal & Identity"
-Cohesion: 0.07
-Nodes (60): PrincipalUserId, binding_from_row(), claimed_delivery_from_row(), delivery_from_row(), delivery_status_from_str(), encode_event_cursor(), encode_turn_cursor(), event_from_row() (+52 more)
+Cohesion: 0.06
+Nodes (67): PrincipalUserId, LifePrincipal, Value, LifeTurn, LifeTurnRole, RedactionState, Option, RunId (+59 more)
 
 ### Community 11 - "Storage Facade"
-Cohesion: 0.06
-Nodes (47): with_next_reminder_version(), StorageError, advisory_lock_key(), advisory_xact_lock(), db_error(), ensure_user_row_in_tx(), enum_from_sql(), enum_to_sql() (+39 more)
+Cohesion: 0.08
+Nodes (21): with_next_reminder_version(), StorageError, AsRef, DateTime, Option, Path, PgPool, Result (+13 more)
 
 ### Community 12 - "Agent Memory Storage"
-Cohesion: 0.06
-Nodes (54): assistant_msg(), tool_call_msg(), tool_result_msg(), user_msg(), assistant_msg(), tool_call_msg(), tool_result_msg(), user_msg() (+46 more)
+Cohesion: 0.08
+Nodes (43): agent_memory_deserializes_old_json_without_attachment_refs(), AgentMessageAttachment, AgentMessageAttachmentKind, attachment_artifact_uri_survives_checkpoint_roundtrip(), attachment_refs_serialize_without_raw_bytes_and_only_for_user_helpers(), attachment_without_artifact_uri_serializes_cleanly(), compaction_state_defaults_on_new(), compaction_state_resets_on_clear() (+35 more)
 
 ### Community 13 - "Web Task API Contracts"
-Cohesion: 0.08
-Nodes (80): ApiCancelTaskResponse, ApiCreateTaskRequest, ApiCreateTaskResponse, ApiCreateTaskVersionRequest, ApiCreateTaskVersionResponse, ApiResumeTaskRequest, ApiResumeTaskResponse, load_owned_task() (+72 more)
+Cohesion: 0.07
+Nodes (89): ApiCancelTaskResponse, ApiCreateTaskRequest, ApiCreateTaskResponse, ApiCreateTaskVersionRequest, ApiCreateTaskVersionResponse, ApiResumeTaskRequest, ApiResumeTaskResponse, load_owned_task() (+81 more)
 
 ### Community 14 - "Telegram Chat & Agent Mode"
-Cohesion: 0.18
-Nodes (17): artifact_uri_falls_back_to_durable_storage_when_fs_misses(), artifact_uri_resolves_to_local_artifact_file(), media_tool_descriptions_mention_urls(), MediaFileToolExecutor, resolve_image_model_name_reports_unavailable_route(), Arc, Into, LlmClient (+9 more)
+Cohesion: 0.12
+Nodes (15): expect_forum_topic_provision_binding_calls(), expect_forum_topic_provision_infra_calls(), expect_forum_topic_provision_profile_calls(), FakeTopicLifecycle, FakeTopicSandboxCleanup, FakeTopicSandboxControl, LifecycleCall, mock_storage_for_forum_topic_provision() (+7 more)
 
 ### Community 15 - "Life Event System"
-Cohesion: 0.11
-Nodes (22): LifeEvent, RunId, Value, Self, TimestampMillis, ClaimedLifeInputRun, ClaimedLifeRun, FakeWorkerStore (+14 more)
+Cohesion: 0.09
+Nodes (27): LifeEvent, RunId, Value, LifeInput, LifeInputStatus, InputId, Option, TurnId (+19 more)
 
 ### Community 16 - "Reminder Context & Tools"
-Cohesion: 0.11
-Nodes (17): Send, Sync, ToolExecutor, AgentsMdModuleContext, BrowserLiveModuleContext, ManagerControlPlaneModuleContext, MattermostMcpToolModule, media_file_provider() (+9 more)
+Cohesion: 0.12
+Nodes (16): Send, Sync, ToolExecutor, AgentsMdModuleContext, BrowserLiveModuleContext, MattermostMcpToolModule, media_file_provider(), Arc (+8 more)
 
 ### Community 17 - "Tool Surface Activation"
 Cohesion: 0.07
 Nodes (51): activatable_groups_excludes_always_visible(), activate_name_returns_true_for_new_false_for_existing(), ActivationResult, always_visible_specs_excludes_deferred(), capability_group_round_trip(), CapabilityGroup, catalog_duplicate_fails(), catalog_filter_by_names_keeps_only_allowed() (+43 more)
 
 ### Community 18 - "Search Probe"
-Cohesion: 0.14
-Nodes (25): effort_rank(), env_effort(), escape_dossier_text(), extract_tag(), forced_finalize_execution_options(), forced_finalize_options_disable_search_by_policy(), generation_timeout_uses_total_remaining_budget(), handoff_from_generation_text() (+17 more)
+Cohesion: 0.06
+Nodes (87): build_forced_finalize_prompt(), build_generation_prompt(), char_count(), compact_text(), dossier_injection_appends_after_original_prompt_and_preserves_attachments(), dossier_injection_noops_without_handoffs(), dossier_renderer_uses_xml_like_envelope_and_escapes_content(), dossier_truncation_preserves_newest_handoff_first() (+79 more)
 
 ### Community 19 - "Session Management"
-Cohesion: 0.09
-Nodes (29): derive_web_session_id(), is_openai_base_prefix(), normalize_model_route(), normalized_openai_base_instance_name(), normalized_provider_name(), parse_web_model_id(), preferred_provider_name(), raw_model_id_for_prefix() (+21 more)
+Cohesion: 0.07
+Nodes (60): create_session_bootstraps_topic_agents_md_into_memory(), derive_search_probe_session_id(), derive_web_session_id(), fresh_web_session_can_skip_initial_durable_bootstrap_reads(), inject_topic_agents_md_for_session(), is_fresh_web_session_context(), is_openai_base_prefix(), last_main_agent_final_message_reads_latest_parent_assistant_response() (+52 more)
 
 ### Community 20 - "Sandbox Broker"
 Cohesion: 0.08
-Nodes (56): get_sandbox_image(), get_sandboxd_socket(), broker_download_file_roundtrip_reads_existing_container_file(), broker_upload_file_roundtrip_persists_to_existing_container(), broker_write_file_roundtrip_persists_to_existing_container(), default_stack_logs_include_stderr(), default_stack_logs_max_entries(), docker_manager() (+48 more)
+Nodes (53): get_sandboxd_socket(), broker_download_file_roundtrip_reads_existing_container_file(), broker_upload_file_roundtrip_persists_to_existing_container(), broker_write_file_roundtrip_persists_to_existing_container(), default_stack_logs_include_stderr(), default_stack_logs_max_entries(), docker_manager(), handle_cleanup_old_downloads() (+45 more)
 
 ### Community 21 - "CRW Client"
-Cohesion: 0.17
-Nodes (31): allocate_user_id(), AuthError, bootstrap_user(), change_password(), change_password_updates_hash_and_revokes_other_sessions(), create_auth_session_for_user(), create_user(), current_user_for_token() (+23 more)
+Cohesion: 0.18
+Nodes (21): Chat, builds_peer_key_from_spec_with_thread_id(), builds_peer_key_from_spec_without_thread_id(), builds_peer_key_with_thread_id(), builds_peer_key_without_thread_id(), is_forum_chat(), keeps_dm_general_topic_id_for_outbound_params(), keeps_dm_topic_for_outbound_params() (+13 more)
 
 ### Community 22 - "Compaction Scope"
-Cohesion: 0.05
-Nodes (38): CompactionScope, Default, AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, background_checkpoint_coalesces_to_latest_snapshot(), checkpoint_debounce_duration() (+30 more)
+Cohesion: 0.15
+Nodes (19): AgentMemoryCheckpoint, AgentStatus, background_checkpoint_coalesces_to_latest_snapshot(), checkpoint_debounce_duration(), checkpoint_skips_identical_forced_persists(), memory_checkpoint_hash(), MemoryCheckpointState, persist_queued_memory_checkpoint() (+11 more)
 
 ### Community 23 - "Reminder Scheduling"
-Cohesion: 0.07
-Nodes (63): base_args(), builds_daily_cron_from_wall_clock_time(), builds_weekly_cron_from_weekdays(), compile_cron_schedule(), compile_interval_schedule(), compile_once_schedule(), compile_schedule(), CompiledReminderSchedule (+55 more)
+Cohesion: 0.08
+Nodes (54): base_args(), builds_daily_cron_from_wall_clock_time(), builds_weekly_cron_from_weekdays(), compile_cron_schedule(), compile_interval_schedule(), compile_once_schedule(), compile_schedule(), CompiledReminderSchedule (+46 more)
 
 ### Community 24 - "Manager Control Plane Ops"
-Cohesion: 0.10
-Nodes (35): Bytes, CloseSessionResponse, ConsoleDebugQuery, DomExtractResponse, ObserveResponse, action(), action_kind_str(), AppState (+27 more)
+Cohesion: 0.11
+Nodes (44): allocate_user_id(), AuthError, bootstrap_user(), change_password(), change_password_updates_hash_and_revokes_other_sessions(), create_auth_session_for_user(), create_user(), current_user_for_token() (+36 more)
 
 ### Community 25 - "Compiled Capabilities"
-Cohesion: 0.14
-Nodes (31): create_session_bootstraps_topic_agents_md_into_memory(), derive_search_probe_session_id(), fresh_web_session_can_skip_initial_durable_bootstrap_reads(), inject_topic_agents_md_for_session(), is_fresh_web_session_context(), last_main_agent_final_message_reads_latest_parent_assistant_response(), log_session_create_phase(), make_manager_with_storage() (+23 more)
+Cohesion: 0.10
+Nodes (33): execute_claimed_run_executes_follow_up_inputs_as_separate_runs(), FixedWorkerClock, LifeRunExecutionOutcome, LifeRunExecutor, LifeWorker, LifeWorker<S, E, SystemLifeWorkerClock>, LifeWorkerClock, LifeWorkerRunContext (+25 more)
 
 ### Community 26 - "Web Transport & Browser Events"
-Cohesion: 0.06
-Nodes (71): browser_display_payload(), browser_display_payload_preserves_screenshot_metadata(), browser_live_payload_from_reasoning(), BrowserEventScope, BrowserStoredFile, close_broadcasts_closed_sentinel(), close_is_idempotent_and_does_not_refresh_closed_at(), closed_at_is_none_before_close_and_set_after_close() (+63 more)
+Cohesion: 0.07
+Nodes (62): browser_display_payload(), browser_display_payload_preserves_screenshot_metadata(), BrowserEventScope, close_broadcasts_closed_sentinel(), close_is_idempotent_and_does_not_refresh_closed_at(), closed_at_is_none_before_close_and_set_after_close(), collect_events(), collect_events_builds_persisted_browser_events_with_payload_previews() (+54 more)
 
 ### Community 27 - "Browser DOM Extract Types"
-Cohesion: 0.05
-Nodes (51): fake_dom_extract_payload(), browser_mode_name(), CloseArgs, dom_value(), BrowserDescriptor, BrowserMode, BrowserStreamEvent, BrowserStreamSubscribe (+43 more)
+Cohesion: 0.04
+Nodes (89): Bytes, browser_mode_name(), dom_value(), ActionResponse, ActionResult, BrowserDescriptor, BrowserMode, BrowserObservation (+81 more)
 
 ### Community 28 - "LLM Provider Base"
-Cohesion: 0.07
-Nodes (62): adds_json_mode_only_without_tools(), apply_profile_rate_limit_wait(), auth_header_is_optional(), build_image_analysis_body(), build_tool_chat_body(), builds_image_analysis_body_with_data_url(), builds_tool_chat_body_with_tools_and_without_parallel_tool_calls(), chat_completions_url() (+54 more)
+Cohesion: 0.08
+Nodes (57): adds_json_mode_only_without_tools(), apply_profile_rate_limit_wait(), auth_header_is_optional(), build_image_analysis_body(), build_tool_chat_body(), builds_image_analysis_body_with_data_url(), builds_tool_chat_body_with_tools_and_without_parallel_tool_calls(), chat_completions_url() (+49 more)
 
 ### Community 29 - "Sandbox File Operations"
 Cohesion: 0.06
-Nodes (55): apply_exact_text_edit(), ApplyFileEditArgs, bytes_look_binary(), default_workspace_path(), edit_read_guard_allows_missing_snapshot_for_empty_file(), edit_read_guard_rejects_missing_snapshot_for_non_empty_file(), edit_read_guard_rejects_stale_snapshot(), exact_text_edit_allows_empty_file_insert() (+47 more)
+Nodes (62): apply_exact_text_edit(), ApplyFileEditArgs, bytes_look_binary(), default_workspace_path(), edit_read_guard_allows_missing_snapshot_for_empty_file(), edit_read_guard_rejects_missing_snapshot_for_non_empty_file(), edit_read_guard_rejects_stale_snapshot(), exact_text_edit_allows_empty_file_insert() (+54 more)
 
 ### Community 30 - "Agent Controls & Callbacks"
-Cohesion: 0.10
-Nodes (62): Display, Formatter, From, Result, Self, SessionId, handle_agent_confirmation_callback(), AgentControlCommand (+54 more)
+Cohesion: 0.08
+Nodes (86): CallbackQueryId, AgentCallbackAction, AgentCallbackContext, answer_agent_callback(), cancel_agent_task(), cancel_agent_task_by_id(), dispatch_agent_callback(), handle_agent_callback() (+78 more)
 
 ### Community 31 - "Config System"
 Cohesion: 0.07
-Nodes (64): Config, brave_backend_config_parses_non_empty_env_values(), brave_backend_config_uses_defaults_when_env_missing(), brave_backend_configured_only_by_api_key_presence(), browser_agent_config_defaults_to_disabled(), browser_agent_config_keeps_existing_vision_model_when_disabled(), browser_agent_config_parses_enabled(), browser_agent_config_rejects_missing_sidecar_url() (+56 more)
+Nodes (65): Config, brave_backend_config_parses_non_empty_env_values(), brave_backend_config_uses_defaults_when_env_missing(), brave_backend_configured_only_by_api_key_presence(), browser_agent_config_defaults_to_disabled(), browser_agent_config_keeps_existing_vision_model_when_disabled(), browser_agent_config_parses_enabled(), browser_agent_config_rejects_missing_sidecar_url() (+57 more)
 
 ### Community 32 - "Webfetch HTML Tests"
 Cohesion: 0.04
@@ -911,20 +883,20 @@ Cohesion: 0.09
 Nodes (27): DiscoveredLlmModel, DiscoveredModelSource, internal_text_completion_uses_explicit_route(), InternalTextPurpose, llm_client_registers_opencode_go_when_key_present(), llm_client_registers_opencode_zen_when_key_present(), LlmClient, main_agent_tool_request_uses_configured_temperature() (+19 more)
 
 ### Community 34 - "Agent Hooks Controls"
-Cohesion: 0.11
-Nodes (43): topic_agent_hooks_disable_persists_manageable_hook_change(), topic_agent_hooks_disable_rejects_protected_hook(), topic_agent_hooks_get_reports_manageable_and_protected_hooks(), topic_agent_tools_disable_accepts_stack_logs_provider_alias(), topic_agent_tools_disable_expands_provider_alias_and_persists_profile(), topic_agent_tools_disable_sandbox_triggers_container_cleanup(), topic_agent_tools_enable_accepts_reminder_provider_alias(), topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() (+35 more)
+Cohesion: 0.10
+Nodes (44): topic_agent_hooks_disable_persists_manageable_hook_change(), topic_agent_hooks_disable_rejects_protected_hook(), topic_agent_hooks_get_reports_manageable_and_protected_hooks(), topic_agent_tools_disable_accepts_stack_logs_provider_alias(), topic_agent_tools_disable_expands_provider_alias_and_persists_profile(), topic_agent_tools_disable_sandbox_triggers_container_cleanup(), topic_agent_tools_enable_accepts_reminder_provider_alias(), topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() (+36 more)
 
 ### Community 35 - "Hook Context"
-Cohesion: 0.09
-Nodes (36): execute_write_todos(), recv_todos_update(), Arc, Box, DateTime, Display, Error, Formatter (+28 more)
+Cohesion: 0.14
+Nodes (30): execute_write_todos(), recv_todos_update(), Arc, Box, Display, Error, Formatter, Mutex (+22 more)
 
 ### Community 36 - "Browser Artifacts"
-Cohesion: 0.06
-Nodes (44): browser_artifact_names_are_stable_and_sanitized(), browser_artifact_uri(), BrowserArtifactPurpose, BrowserArtifactSettings, build_browser_artifact_ref(), live_frame_artifact_gets_retention_expiry(), path_is_under_root(), DateTime (+36 more)
+Cohesion: 0.05
+Nodes (50): browser_artifact_names_are_stable_and_sanitized(), browser_artifact_uri(), BrowserArtifactPurpose, BrowserArtifactSettings, build_browser_artifact_ref(), live_frame_artifact_gets_retention_expiry(), path_is_under_root(), DateTime (+42 more)
 
 ### Community 37 - "Agent Memory Rendering"
-Cohesion: 0.13
-Nodes (27): channel_tools(), file_tools(), mattermost_mcp_runtime_error(), MattermostMcpProvider, MattermostMcpToolExecutor, message_tools(), Arc, Error (+19 more)
+Cohesion: 0.10
+Nodes (32): Vec, channel_tools(), file_tools(), mattermost_mcp_runtime_error(), MattermostMcpProvider, MattermostMcpToolExecutor, message_tools(), Arc (+24 more)
 
 ### Community 38 - "Prompt Composer"
 Cohesion: 0.10
@@ -932,63 +904,63 @@ Nodes (46): available_tool_names(), build_category_list_block(), build_date_cont
 
 ### Community 39 - "Manager Audit Trail"
 Cohesion: 0.13
-Nodes (33): ReminderScheduleNotifier, Send, Sync, generate_flow_id(), generate_flow_id_returns_v4_uuid(), current_reminder_schedule_notifier(), current_reminder_scheduler_handle(), is_general_forum_topic() (+25 more)
+Nodes (32): ReminderScheduleNotifier, Send, Sync, generate_flow_id(), ReminderThreadKind, generate_flow_id_returns_v4_uuid(), current_reminder_schedule_notifier(), current_reminder_scheduler_handle() (+24 more)
 
 ### Community 40 - "Media File Handling"
-Cohesion: 0.13
-Nodes (24): AudioSttConfig, AudioSttError, AudioTranscriber, AudioTranscript, AudioTranscriptionInput, AudioTranscriptSegment, build_audio_transcriber(), build_configured_audio_transcriber() (+16 more)
+Cohesion: 0.26
+Nodes (34): raw_output_preview(), stream_text(), active_count_label(), BrowserToolCard(), command_from_events(), CrawlToolCard(), first_line(), GenericToolCard() (+26 more)
 
 ### Community 41 - "LLM Types & Tool Calls"
-Cohesion: 0.09
-Nodes (14): tool_call(), tool_result_text_content(), tool_call(), cache_hit_rate_computes_ratio(), content_parts_are_limited_to_user_messages(), content_parts_are_transient_and_text_only_degradation_preserves_text(), MessageContentPart, Into (+6 more)
+Cohesion: 0.06
+Nodes (18): cache_hit_rate_computes_ratio(), content_parts_are_limited_to_user_messages(), content_parts_are_transient_and_text_only_degradation_preserves_text(), InvocationId, MessageContentPart, ProviderItemId, ProviderToolCallId, AsRef (+10 more)
 
 ### Community 42 - "Life Identity Links"
-Cohesion: 0.12
-Nodes (38): FakeGatewayStore, FakeState, FixedClock, LifeClock, LifeGateway, LifeGateway<S, C>, LifeGateway<S, SystemLifeClock>, LifeGatewayError (+30 more)
+Cohesion: 0.10
+Nodes (41): FakeGatewayStore, FakeState, FixedClock, LifeClock, LifeGateway, LifeGateway<S, C>, LifeGateway<S, SystemLifeClock>, LifeGatewayError (+33 more)
 
 ### Community 43 - "Life Routes API"
 Cohesion: 0.10
-Nodes (63): api_get_life_state(), api_life_large_input(), api_life_sse_stream(), api_life_upload_attachments(), api_list_life_events(), api_list_life_turns(), api_privacy_hard_wipe_life(), api_submit_life_input() (+55 more)
+Nodes (62): api_get_life_state(), api_life_large_input(), api_life_sse_stream(), api_life_upload_attachments(), api_list_life_events(), api_list_life_turns(), api_privacy_hard_wipe_life(), api_submit_life_input() (+54 more)
 
 ### Community 44 - "Browser Sidecar Client"
-Cohesion: 0.09
-Nodes (43): BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, CapturedRequest, create_request(), create_response(), create_session_sends_auth_and_idempotency_headers(), endpoint_with_query() (+35 more)
+Cohesion: 0.07
+Nodes (47): BrowserSidecar, BrowserSidecarClient, BrowserSidecarTimeouts, CapturedRequest, create_request(), create_response(), create_session_sends_auth_and_idempotency_headers(), endpoint_with_query() (+39 more)
 
 ### Community 45 - "Web App State"
 Cohesion: 0.07
-Nodes (39): progress_snapshot_from_serializable(), AppState, AuthRateLimitEntry, AuthRateLimiter, build_sqlx_backed_app_state(), CachedAuthSession, default_web_sandbox_control(), durable_web_store_required() (+31 more)
+Nodes (39): AppState, AuthRateLimitEntry, AuthRateLimiter, build_sqlx_backed_app_state(), CachedAuthSession, default_web_sandbox_control(), durable_web_store_required(), is_production_run_mode() (+31 more)
 
 ### Community 46 - "Web API Responses"
 Cohesion: 0.11
-Nodes (22): B, OkResponse, Self, TaskEventsResponse, ApiClient, ApiClientError, decode(), CreateSessionRequest (+14 more)
+Nodes (20): B, OkResponse, Self, ApiClient, ApiClientError, decode(), CreateSessionRequest, CreateSessionResponse (+12 more)
 
 ### Community 47 - "Agent Tools Audit"
 Cohesion: 0.11
-Nodes (25): logs_alias_expands_stack_logs_group(), ManagerControlPlaneProvider, BTreeSet, Option, Result, Value, Vec, search_alias_expands_unified_search_and_fetch_groups() (+17 more)
+Nodes (26): logs_alias_expands_stack_logs_group(), ManagerControlPlaneProvider, BTreeSet, Option, Result, Value, Vec, search_alias_expands_unified_search_and_fetch_groups() (+18 more)
 
 ### Community 48 - "Browser Test Support"
 Cohesion: 0.11
-Nodes (33): action_kind(), api_failure(), click_request(), create_request(), fake_debug_console_respects_since_action_seq(), fake_debug_endpoints_return_network_and_console_diagnostics(), fake_debug_network_respects_since_action_seq(), fake_error_envelope_covers_failure_and_browser_crash() (+25 more)
+Nodes (33): action_kind(), api_failure(), click_request(), create_request(), fake_debug_console_respects_since_action_seq(), fake_debug_endpoints_return_network_and_console_diagnostics(), fake_debug_network_respects_since_action_seq(), fake_dom_extract_payload() (+25 more)
 
 ### Community 49 - "Sub-Agent Delegation"
-Cohesion: 0.12
-Nodes (12): AgentRunner, Option, Result, AgentRunner, LlmAttemptMetadata, route_with_soft_output_cap_limits_provider_request_without_reserving_context(), Option, Result (+4 more)
+Cohesion: 0.09
+Nodes (16): AgentRunner, Option, Result, AgentRunner, AttemptOutcome, LlmAttemptMetadata, route_with_soft_output_cap_limits_provider_request_without_reserving_context(), Duration (+8 more)
 
 ### Community 50 - "ChatGPT Provider"
 Cohesion: 0.08
-Nodes (52): build_chat_request_body(), chatgpt_responses_sse_parser_remains_special(), ChatGptProvider, ChatGptResponseMetadata, ChatGptStreamDiagnostics, ChatRequestOutcome, decode_utf8_prefix(), empty_chatgpt_response_error() (+44 more)
+Nodes (51): build_chat_request_body(), chatgpt_responses_sse_parser_remains_special(), ChatGptProvider, ChatGptResponseMetadata, ChatGptStreamDiagnostics, ChatRequestOutcome, decode_utf8_prefix(), empty_chatgpt_response_error() (+43 more)
 
 ### Community 51 - "Compaction Admission"
 Cohesion: 0.06
-Nodes (46): AdmissionBlocker, AdmissionBudget, AdmissionDecision, blocker_no_budget_reason(), blocker_payload_exceeds_reason(), ChunkSummaryResult, ContextAdmission, EmergencySummarizer (+38 more)
+Nodes (45): AdmissionBlocker, AdmissionBudget, AdmissionDecision, blocker_no_budget_reason(), blocker_payload_exceeds_reason(), ChunkSummaryResult, ContextAdmission, EmergencySummarizer (+37 more)
 
 ### Community 52 - "Reminder Schedule Events"
 Cohesion: 0.08
-Nodes (49): ReminderScheduleEvent, Send, Sync, StorageProvider, append_reminder_audit_event(), current_timestamp_unix_secs(), defer_busy_reminder(), finalize_one_shot_reminder_failure() (+41 more)
+Nodes (48): Send, Sync, StorageProvider, append_reminder_audit_event(), current_timestamp_unix_secs(), defer_busy_reminder(), finalize_one_shot_reminder_failure(), finalize_one_shot_reminder_success() (+40 more)
 
 ### Community 53 - "History Recording"
-Cohesion: 0.08
-Nodes (46): Send, Sync, ToolHistoryError, ToolHistoryWriter, EnvironmentMetadata, ModelMetadata, ProviderMetadata, CancellationToken (+38 more)
+Cohesion: 0.06
+Nodes (68): Send, Sync, ToolHistoryError, ToolHistoryWriter, ModelMetadata, ProviderMetadata, batch_from_llm_tool_calls_preserves_correlation_ids(), missing_function_or_name_is_unpairable() (+60 more)
 
 ### Community 54 - "Jira MCP Client"
 Cohesion: 0.07
@@ -999,24 +971,24 @@ Cohesion: 0.16
 Nodes (37): html_to_markdown(), Result, display_content_type(), extract_google_blog_html(), extract_google_devsite_html(), extract_habr_article_html(), extract_habr_comments_html(), extract_html_region() (+29 more)
 
 ### Community 56 - "Agent Settings & Routes"
-Cohesion: 0.12
-Nodes (13): AgentSettings, default_model_route_weight(), ModelInfo, resolve_internal_context_budget_tokens(), Item, Iterator, Vec, test_sub_agent_routes_without_context_window_inherit_agent_context_window() (+5 more)
+Cohesion: 0.09
+Nodes (18): AgentSettings, default_model_route_weight(), get_stack_logs_project(), ModelInfo, ModuleRuntimeConfig, PartialModelRoute, resolve_internal_context_budget_tokens(), Into (+10 more)
 
 ### Community 57 - "LLM Provider Trait"
-Cohesion: 0.11
+Cohesion: 0.10
 Nodes (37): anthropic_module_owns_base_capabilities(), anthropic_module_registers_provider_id_and_aliases(), build_configured_providers(), canonical_route_provider(), chatgpt_module_owns_aliases_and_base_capabilities(), compiled_provider_modules(), disabled_opencode_go_module_registers_no_aliases(), find_provider_module() (+29 more)
 
 ### Community 58 - "Telegram Agent Mode Screenshot"
-Cohesion: 0.13
-Nodes (31): build_send_file_response(), build_send_file_response_serializes_delivery_status(), file_delivery_normalizer(), file_delivery_status_code(), file_delivery_tool_definitions(), file_name_from_path(), file_size_bytes_with_exec(), FileDeliveryToolExecutor (+23 more)
+Cohesion: 0.08
+Nodes (49): Completed file delivery in Telegram (Agent Mode UI element), Telegram Agent Mode overview screenshot, Agent Mode task list (Telegram UI element), Tool calls display (Telegram Agent Mode UI element), Telegram Agent Mode video screenshot, chat_delivery_max_file_size_bytes(), deliver_file_fails_when_queue_is_unavailable(), deliver_file_propagates_delivery_error() (+41 more)
 
 ### Community 59 - "Compression Tool"
 Cohesion: 0.07
 Nodes (47): compress_result_all_failure(), compress_result_all_success(), compress_result_partial_failure(), compress_result_to_json(), compress_schema_has_ranges_and_messages(), compress_tool_names(), compress_tool_schema(), CompressEntry (+39 more)
 
 ### Community 60 - "Compaction Blocks"
-Cohesion: 0.06
-Nodes (31): anchor_index_is_first_direct(), block_is_active_by_default(), block_serde_round_trip(), CompressionBlock, dummy_block(), effective_indices_nested_consumption(), effective_indices_no_consumed(), effective_indices_with_consumed() (+23 more)
+Cohesion: 0.07
+Nodes (26): anchor_index_is_first_direct(), block_is_active_by_default(), block_serde_round_trip(), CompressionBlock, dummy_block(), effective_indices_nested_consumption(), effective_indices_no_consumed(), effective_indices_with_consumed() (+18 more)
 
 ### Community 61 - "Sub-Agent Delegation Config"
 Cohesion: 0.13
@@ -1027,16 +999,16 @@ Cohesion: 0.06
 Nodes (32): Arc, AtomicU64, Cache, Duration, Self, test_cooldown_blocks_second_attempt(), test_different_users_independent(), test_entry_count() (+24 more)
 
 ### Community 63 - "Browser Action Status"
-Cohesion: 0.11
-Nodes (48): activity_elapsed_label(), activity_task_status(), ActivityDrawer(), ActivityItem, ActivityItemCard(), ActivityStatusChip(), AgentEventCard(), close_terminal_unmatched_tools() (+40 more)
+Cohesion: 0.17
+Nodes (29): ActivityItem, ActivityItemCard(), AgentEventCard(), close_terminal_unmatched_tools(), compact_reasoning_preview(), compact_tokens(), event_body(), event_kind_label() (+21 more)
 
 ### Community 64 - "Adblock Engine"
-Cohesion: 0.07
-Nodes (28): ScreenshotArtifact, AdblockEngine, adblock_for_request(), BrowserInner, BrowserSession, capture_config_for_request(), consent_script_for_request(), create_allows_when_under_cap() (+20 more)
+Cohesion: 0.08
+Nodes (28): CloseSessionResponse, AdblockEngine, adblock_for_request(), BrowserInner, BrowserSession, capture_config_for_request(), consent_script_for_request(), create_allows_when_under_cap() (+20 more)
 
 ### Community 65 - "Telegram Callbacks"
 Cohesion: 0.07
-Nodes (44): BudgetState, TokenSnapshot, BrowserMilestone, BrowserMilestone<'a>, BrowserMilestoneKind, budget_state_label(), current_step(), format_budget_breakdown() (+36 more)
+Nodes (43): BudgetState, TokenSnapshot, BrowserMilestone, BrowserMilestone<'a>, BrowserMilestoneKind, budget_state_label(), current_step(), format_budget_breakdown() (+35 more)
 
 ### Community 66 - "Composer & Clipboard"
 Cohesion: 0.07
@@ -1047,23 +1019,23 @@ Cohesion: 0.10
 Nodes (32): normalize_tool_runtime_route_part(), Default, Duration, Option, PathBuf, Self, ToolOutputBudget, ToolRuntimeConfig (+24 more)
 
 ### Community 68 - "Protocol Profiles"
-Cohesion: 0.13
-Nodes (15): get_brave_backend_api_key(), get_crw_api_token(), get_crw_base_url(), get_stack_logs_project(), get_tavily_api_key(), is_crw_configured(), is_web_search_configured(), ModuleRuntimeConfig (+7 more)
+Cohesion: 0.07
+Nodes (36): compiled_capability_manifest(), compiled_manifest_exposes_browser_live_tool_module(), compiled_manifest_exposes_compiled_durable_storage_backends(), openrouter_module_declares_provider_config_schema(), Result, boxed(), compiled_manifest_is_valid_for_selected_features(), compiled_manifest_requires_declared_capabilities_to_exist() (+28 more)
 
 ### Community 69 - "yt-dlp Provider"
-Cohesion: 0.09
-Nodes (29): AtomicBool, cleanup_old_downloads(), DownloadAudioArgs, DownloadVideoArgs, FakeSandbox, GetMetadataArgs, is_fatal_ytdlp_error(), is_retryable_ytdlp_error() (+21 more)
+Cohesion: 0.11
+Nodes (20): AtomicBool, cleanup_old_downloads(), DownloadAudioArgs, DownloadVideoArgs, FakeSandbox, GetMetadataArgs, is_fatal_ytdlp_error(), is_retryable_ytdlp_error() (+12 more)
 
 ### Community 70 - "Media Preprocessor"
-Cohesion: 0.09
-Nodes (23): default_voice_file_name(), format_media_task(), preprocess_image_preserves_user_request_separately_from_description(), preprocess_image_without_context_keeps_plain_description(), preprocess_video_uses_vision_model(), Preprocessor, process_document_uses_narrow_sandbox_backends(), RecordingSandboxExec (+15 more)
+Cohesion: 0.06
+Nodes (29): default_voice_file_name(), format_media_task(), preprocess_image_preserves_user_request_separately_from_description(), preprocess_image_without_context_keeps_plain_description(), preprocess_video_uses_vision_model(), Preprocessor, process_document_uses_narrow_sandbox_backends(), RecordingSandboxExec (+21 more)
 
 ### Community 71 - "Wiki Memory Backend"
-Cohesion: 0.09
-Nodes (24): check_process_tool_schema_uses_chatgpt_compatible_top_level_object(), default_remote_file_name(), format_stderr_suffix(), private_key_tempfile_is_removed_on_drop(), resolve_backend_auth(), resolve_secret_ref(), ResolvedBackendAuth, Arc (+16 more)
+Cohesion: 0.13
+Nodes (30): discovered_model_for_config(), DiscoveredOpenCodeGoModel, DiscoverySource, is_free_model(), model_by_id(), model_matches_filter(), ModelCatalogState, ModelsDevError (+22 more)
 
 ### Community 72 - "Task Runner"
-Cohesion: 0.11
+Cohesion: 0.12
 Nodes (54): get_agent_max_iterations(), AgentTaskContext, begin_completed_response_finalization(), bind_task_progress_runtime(), clear_completed_response_delivery_state(), CompletedResponseDeliveryAction, CompletedResponseDeliveryPhase, CompletedResponseDeliveryState (+46 more)
 
 ### Community 73 - "In-Memory Web UI Store"
@@ -1072,83 +1044,83 @@ Nodes (24): event(), InMemoryWebUiStore, rejects_unknown_schema_versions_before_
 
 ### Community 74 - "Default Infra Config"
 Cohesion: 0.08
-Nodes (26): default_infra_allowed_tool_modes(), default_secret_probe_kind(), manager_control_plane_tool_names(), ManagerControlPlaneProvider, ManagerControlPlaneToolExecutor, ManagerTopicLifecycle, ManagerTopicSandboxCleanup, ManagerTopicSandboxControl (+18 more)
+Nodes (25): default_infra_allowed_tool_modes(), default_secret_probe_kind(), ManagerControlPlaneProvider, ManagerControlPlaneToolExecutor, ManagerTopicLifecycle, ManagerTopicSandboxCleanup, ManagerTopicSandboxControl, PrivateSecretProbeArgs (+17 more)
 
 ### Community 75 - "LLM Capabilities"
 Cohesion: 0.07
 Nodes (29): anthropic_capabilities_disable_structured_output(), chatgpt_capabilities_disable_structured_output(), default_provider_capabilities(), default_vision_capabilities(), opencode_go_any_model_uses_native_tools_without_structured_output(), opencode_go_capabilities_enable_strict_tools(), opencode_go_models_use_native_tools_without_structured_output(), opencode_go_prefixed_model_id_is_normalized_for_capabilities() (+21 more)
 
 ### Community 76 - "Auth Helpers"
-Cohesion: 0.09
-Nodes (68): State, hash_session_token(), Option, WebAuthSessionRecord, auth_client_key(), auth_cookie_header(), auth_cookie_value(), auth_error_response() (+60 more)
+Cohesion: 0.12
+Nodes (54): auth_client_key(), auth_cookie_header(), auth_cookie_value(), auth_error_response(), auth_rate_limit_key(), authenticated_user(), authenticated_user_with_csrf(), cache_auth_session() (+46 more)
 
 ### Community 77 - "Agent Execution Basics"
 Cohesion: 0.09
 Nodes (18): execute_new_task_remembers_task_and_appends_single_user_task(), executor_timeout_check_uses_configured_value_and_ignores_idle_sessions(), hard_timeout_uses_configured_duration_and_message(), new_task_admission_inline_for_normal_input(), new_task_admission_manifest_for_oversized_input(), new_task_clears_stale_todos_before_completion_check(), new_task_inserts_soft_temporal_boundary_after_long_pause(), build_executor() (+10 more)
 
 ### Community 78 - "Route Failover"
-Cohesion: 0.08
-Nodes (41): run_fails_over_to_weighted_backup_after_persistent_rate_limits(), run_keeps_primary_provider_when_rate_limit_recovers(), run_repairs_invalid_tool_history_before_llm_call(), Instant, select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route(), select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled(), select_model_route_index_keeps_selected_opencode_zen_route_with_go_fallbacks(), structured_output_requirement_disables_chatgpt_primary_route() (+33 more)
+Cohesion: 0.07
+Nodes (48): run_fails_over_to_weighted_backup_after_persistent_rate_limits(), run_keeps_primary_provider_when_rate_limit_recovers(), run_repairs_invalid_tool_history_before_llm_call(), select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled(), select_model_route_index_keeps_selected_opencode_zen_route_with_go_fallbacks(), structured_output_requirement_disables_chatgpt_primary_route(), structured_output_requirement_uses_active_provider_without_registry_lookup(), structured_output_requirement_uses_primary_route_before_selection() (+40 more)
 
 ### Community 79 - "Agent Execution Profile"
-Cohesion: 0.09
-Nodes (32): additional_blocked_tools_override_existing_policy(), additional_disabled_hooks_override_existing_policy(), AgentExecutionProfile, blocked_tools_override_allowlist(), dm_default_blocked_tools(), dm_default_blocklist_contains_ssh_jira_mattermost_tools(), dm_policy_can_be_merged_with_other_blocklist(), dm_tool_policy() (+24 more)
+Cohesion: 0.07
+Nodes (40): AgentExecutor, PolicyControlledHook, AgentRunner, Arc, Box, RwLock, Self, additional_blocked_tools_override_existing_policy() (+32 more)
 
 ### Community 80 - "Forum Topics"
 Cohesion: 0.11
 Nodes (14): default_ssh_agent_allowed_tools(), ForumTopicCatalogEntry, ForumTopicCreateArgs, ForumTopicEditArgs, ForumTopicListArgs, ForumTopicProvisionSshAgentArgs, ForumTopicProvisionSshAgentPlan, ForumTopicThreadArgs (+6 more)
 
 ### Community 81 - "Message Handling"
-Cohesion: 0.16
-Nodes (49): Message, can_use_agent_mode(), check_agent_access(), check_state_and_redirect(), clear(), Command, current_or_default_context_state(), defaults_to_agent_mode_for_allowed_private_user() (+41 more)
+Cohesion: 0.08
+Nodes (100): Message, can_use_agent_mode(), check_agent_access(), check_state_and_redirect(), clear(), Command, current_or_default_context_state(), defaults_to_agent_mode_for_allowed_private_user() (+92 more)
 
 ### Community 82 - "Agent Profile Config"
-Cohesion: 0.09
-Nodes (45): AgentProfileView, CreateAgentProfileRequest, CreateAgentProfileResponse, ListAgentProfilesResponse, ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView, DateTime (+37 more)
+Cohesion: 0.10
+Nodes (43): AgentProfileView, CreateAgentProfileRequest, CreateAgentProfileResponse, ListAgentProfilesResponse, ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView, DateTime (+35 more)
 
 ### Community 83 - "Web Task Contracts"
-Cohesion: 0.07
-Nodes (43): pending_user_input_view(), TaskSseProgress, AgentEffort, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse, CreateTaskVersionRequest, CreateTaskVersionResponse (+35 more)
+Cohesion: 0.06
+Nodes (47): pending_user_input_view(), TaskSseProgress, Option, UpdateUserSettingsRequest, AgentEffort, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse (+39 more)
 
 ### Community 84 - "Compression Engine"
-Cohesion: 0.15
-Nodes (32): apply_compression_allows_non_overlapping_block(), apply_compression_consumes_existing_block(), apply_compression_creates_block(), apply_compression_message_mode(), apply_compression_nested_consumption(), apply_compression_no_mutation_on_error(), apply_compression_rejects_overlap_with_active_block(), apply_compression_rejects_stale_ref() (+24 more)
+Cohesion: 0.12
+Nodes (38): CompressionSelection, SummaryPart, apply_compression_allows_non_overlapping_block(), apply_compression_consumes_existing_block(), apply_compression_creates_block(), apply_compression_message_mode(), apply_compression_nested_consumption(), apply_compression_no_mutation_on_error() (+30 more)
 
 ### Community 85 - "File Delivery Worker"
-Cohesion: 0.11
-Nodes (27): claimed(), delivery_worker_marks_success_delivered(), delivery_worker_retries_then_dead_letters(), FakeDeliveryStore, FakeSender, LifeDeliverySender, LifeDeliveryStore, LifeDeliveryWorker (+19 more)
+Cohesion: 0.07
+Nodes (44): claimed(), delivery_worker_marks_success_delivered(), delivery_worker_retries_then_dead_letters(), FakeDeliveryStore, FakeSender, LifeDeliverySender, LifeDeliverySendFailure, LifeDeliveryStore (+36 more)
 
 ### Community 86 - "Task Executor"
-Cohesion: 0.12
-Nodes (49): apply_event_collection(), broadcast_progress_if_present(), broadcast_status_if_present(), close_event_log_if_present(), derive_session_id(), earliest_of(), execute_agent_task(), execution_options_from_effort() (+41 more)
+Cohesion: 0.11
+Nodes (54): progress_snapshot_from_serializable(), request_content(), apply_event_collection(), broadcast_progress_if_present(), broadcast_status_if_present(), close_event_log_if_present(), derive_session_id(), earliest_of() (+46 more)
 
 ### Community 87 - "Life Run"
 Cohesion: 0.09
-Nodes (34): LifeRun, Option, RunId, clock_error(), FakeRuntimeStore, FixedClock, LifeRuntimeError, LifeRuntimeHandle (+26 more)
+Nodes (35): LifeRun, LifeRunStatus, Option, RunId, clock_error(), FakeRuntimeStore, FixedClock, LifeRuntimeError (+27 more)
 
 ### Community 88 - "Session Caching"
-Cohesion: 0.21
-Nodes (10): log_session_cache(), log_store_query(), log_task_cache(), log_task_write_front(), max_task_file_bytes_from_env(), Instant, Option, WebSessionRecord (+2 more)
+Cohesion: 0.09
+Nodes (27): ExpiredWebRecordsCleanup, initial_task_flush_cache(), log_session_cache(), log_store_query(), log_task_cache(), log_task_write_front(), max_task_file_bytes_from_env(), Arc (+19 more)
 
 ### Community 89 - "Wiki Memory Planner"
-Cohesion: 0.33
-Nodes (16): AgentEvent, Self, browser_event_parts(), compaction_completed_parts(), compaction_event_parts(), file_event_parts(), history_repair_event_parts(), lifecycle_event_parts() (+8 more)
+Cohesion: 0.20
+Nodes (24): AgentEvent, Self, browser_event_parts(), BrowserStoredFile, compaction_completed_parts(), compaction_event_parts(), contains_sensitive_marker(), file_event_parts() (+16 more)
 
 ### Community 90 - "LLM Request Policies"
-Cohesion: 0.23
-Nodes (12): agent_event_to_life_parts(), LifeMemoryCheckpoint, maps_continuation(), maps_error(), maps_sub_agent_tool_call(), maps_thinking(), maps_todos_updated(), maps_tool_call() (+4 more)
+Cohesion: 0.08
+Nodes (26): LifeStorageError, LifeStorageRepository, Send, Sync, db_error(), Error, agent_event_to_life_parts(), LifeAgentExecutor (+18 more)
 
 ### Community 91 - "Stack Logs Selector"
-Cohesion: 0.14
-Nodes (25): compute_cron_next_run_at(), compute_next_reminder_run_at(), CreateReminderJobOptions, format_reminder_unix_in_timezone(), parse_fixed_offset(), parse_reminder_clock_time(), parse_reminder_timezone(), ReminderScheduleKind (+17 more)
+Cohesion: 0.15
+Nodes (24): compute_cron_next_run_at(), compute_next_reminder_run_at(), CreateReminderJobOptions, format_reminder_unix_in_timezone(), parse_fixed_offset(), parse_reminder_clock_time(), parse_reminder_timezone(), ReminderScheduleKind (+16 more)
 
 ### Community 92 - "Tool Registry"
 Cohesion: 0.05
 Nodes (8): clear_web_search_registry_env(), current_tool_catalog_include_web_search_when_key_is_configured(), current_tool_catalog_omit_web_search_without_backend_env(), registry_topic_infra_config(), typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured(), typed_runtime_registry_registers_unified_web_search_once_for_all_backends(), typed_runtime_registry_skips_disabled_ssh_mcp_module(), typed_runtime_registry_skips_disabled_web_search_module()
 
 ### Community 93 - "Identity Display"
-Cohesion: 0.12
-Nodes (22): build_executor(), enqueue_runtime_context_updates_session_inbox(), remove_if_idle_does_not_remove_running_session(), remove_if_idle_removes_session_and_token(), resume_with_user_input_clears_pending_request_and_queues_context(), resume_with_user_input_returns_false_without_pending_request(), AgentExecutor, Arc (+14 more)
+Cohesion: 0.11
+Nodes (25): Display, Formatter, From, Result, Self, SessionId, build_executor(), enqueue_runtime_context_updates_session_inbox() (+17 more)
 
 ### Community 94 - "File Delivery Types"
 Cohesion: 0.11
@@ -1159,28 +1131,28 @@ Cohesion: 0.08
 Nodes (14): CapabilityManifestEntry, CapabilityId, CapabilityKind, CapabilityRequirement, ModuleConfigProperty, ModuleConfigValueKind, ModuleId, Display (+6 more)
 
 ### Community 96 - "E2E Delegation Tests"
-Cohesion: 0.13
-Nodes (31): e2e_spawned_sub_agent_does_not_block_task_completion(), auth_for_session(), create_session_http(), create_task_http(), delete_session_http(), ensure_test_auth_session(), fetch_task_events(), fetch_task_timeline() (+23 more)
+Cohesion: 0.12
+Nodes (36): e2e_spawned_sub_agent_does_not_block_task_completion(), auth_for_session(), create_session_http(), create_task_http(), create_task_http_expect_conflict(), delete_session_http(), ensure_test_auth_session(), fetch_task_progress() (+28 more)
 
 ### Community 97 - "Tool Definitions"
 Cohesion: 0.18
 Nodes (22): allowed_provider_names_for_enabled_modules(), assert_absent_tool_prefix(), assert_absent_tools(), assert_present_capabilities(), assert_present_tools(), assert_provider_alias_contract(), assert_tool_availability_contract(), assert_tools_absent_when_module_unavailable() (+14 more)
 
 ### Community 98 - "OpenCode Go Provider Body"
-Cohesion: 0.05
-Nodes (71): adaptive_throttle_blocks_until_capacity_is_released(), adaptive_throttle_enters_incremental_cooldown_after_failure_bursts(), adaptive_throttle_recovers_concurrency_after_success_streak(), build_chat_completion_body(), build_image_analysis_body(), build_tool_chat_body(), chat_completion_body_uses_raw_model_id(), derive_messages_api_base() (+63 more)
+Cohesion: 0.08
+Nodes (48): build_chat_completion_body(), build_image_analysis_body(), build_tool_chat_body(), chat_completion_body_uses_raw_model_id(), derive_messages_api_base(), disabled_reasoning_omits_openai_reasoning_effort(), endpoint_parts(), json_body_len() (+40 more)
 
 ### Community 99 - "Topic Routing"
-Cohesion: 0.13
-Nodes (21): markdown_preview_line(), Json, Option, Result, StatusCode, strip_markdown_prefix(), strip_ordered_list_prefix(), validate_session_title() (+13 more)
+Cohesion: 0.16
+Nodes (15): api_error(), backend_unavailable_response(), health(), Into, Json, StatusCode, Value, TaskSseError (+7 more)
 
 ### Community 100 - "Life Console UI"
-Cohesion: 0.05
-Nodes (74): api_event(), ApiLifeEventResponse, assistant_turn_with_run_gets_activity_anchor(), assistant_turn_without_run_does_not_get_activity_anchor(), converts_finished_event(), converts_reasoning_event(), converts_tool_call_event(), handles_redacted_and_truncated_flags() (+66 more)
+Cohesion: 0.19
+Nodes (27): build_stream_url(), ErrorPayload, handle_error_event(), handle_keepalive(), handle_life_event(), handle_run_status(), handle_snapshot(), handle_turn() (+19 more)
 
 ### Community 101 - "Manager Shared Ops"
-Cohesion: 0.10
-Nodes (39): binding_is_active(), resolve_active_topic_binding(), activity_touch_path_only_occurs_for_active_dynamic_binding(), auto_binding_workflow_routes_thread_to_dynamic_binding(), build_binding_activity_touch_options(), cached_bot_username(), contains_bot_mention(), dynamic_binding_activity_touch_runs_only_for_successful_processing() (+31 more)
+Cohesion: 0.14
+Nodes (31): activity_touch_path_only_occurs_for_active_dynamic_binding(), auto_binding_workflow_routes_thread_to_dynamic_binding(), build_binding_activity_touch_options(), cached_bot_username(), contains_bot_mention(), dynamic_binding_route_ignores_static_topic_fields(), dynamic_route_decision(), execute_manager_tool() (+23 more)
 
 ### Community 102 - "Webfetch Error Detection"
 Cohesion: 0.20
@@ -1188,47 +1160,47 @@ Nodes (25): assert_memory_eq(), cleanup_browser_artifact_scope(), insert_artifac
 
 ### Community 103 - "Runner State"
 Cohesion: 0.13
-Nodes (48): access_control_accepts_human_messages(), access_control_ignores_bot_authored_messages(), access_control_ignores_messages_without_user_sender(), access_control_user(), access_control_user_id(), classify_life_telegram_text(), configured_life_telegram_bot_token(), configured_life_telegram_chat_id() (+40 more)
+Nodes (9): dynamic_binding_activity_touch_runs_only_for_successful_processing(), dynamic_binding_precedes_static_topic_config_on_resolve_topic_route(), forum_text_message(), HashMap, Mutex, Result, Self, Vec (+1 more)
 
 ### Community 104 - "Main Binary & CLI"
 Cohesion: 0.10
-Nodes (39): capabilities_usage_error(), CapabilityMode, config_usage_error(), init_logging(), init_settings(), main(), parse_capabilities_command(), parse_config_command() (+31 more)
+Nodes (41): compiled_profile_name(), Option, capabilities_usage_error(), CapabilityMode, config_usage_error(), init_logging(), init_settings(), main() (+33 more)
 
 ### Community 105 - "Web Auth Bootstrap"
 Cohesion: 0.15
 Nodes (14): CdpError, CdpEvent, parse_eval_result(), parse_eval_result_errors_on_exception(), parse_execution_context_id(), Arc, Duration, Option (+6 more)
 
 ### Community 106 - "Browser Viewport"
-Cohesion: 0.07
-Nodes (39): build_launch_args(), ChromiumProcess, default_viewport(), DevToolsTarget, find_in_path(), find_in_path_ignores_non_executable(), find_in_path_locates_executable(), launch_args_exclude_fingerprint_flags() (+31 more)
+Cohesion: 0.09
+Nodes (32): build_launch_args(), ChromiumProcess, default_viewport(), DevToolsTarget, find_in_path(), find_in_path_ignores_non_executable(), find_in_path_locates_executable(), launch_args_exclude_fingerprint_flags() (+24 more)
 
 ### Community 107 - "Web Streaming Signals"
 Cohesion: 0.10
 Nodes (42): Option, PersistedTaskEvent, ReadSignal, Vec, WriteSignal, start_task_stream(), StreamUiSignals, AssistantMessage() (+34 more)
 
 ### Community 108 - "Stack Logs Tool"
-Cohesion: 0.09
-Nodes (29): default_include_stderr(), default_stack_logs_max_entries(), FakeDiagnostics, fetch_args_default_to_stage_contract_values(), fetch_schema_mentions_cursor_and_suppression_oriented_usage(), Arc, DateTime, Default (+21 more)
+Cohesion: 0.11
+Nodes (26): default_include_stderr(), default_stack_logs_max_entries(), FakeDiagnostics, fetch_args_default_to_stage_contract_values(), fetch_schema_mentions_cursor_and_suppression_oriented_usage(), Arc, DateTime, Default (+18 more)
 
 ### Community 109 - "HTML Utils"
-Cohesion: 0.07
-Nodes (33): clean_html(), escape_angle_brackets(), format_text(), format_tokens(), retry_transport_operation(), AsRef, F, Result (+25 more)
+Cohesion: 0.08
+Nodes (25): clean_html(), escape_angle_brackets(), format_text(), format_tokens(), retry_transport_operation(), AsRef, F, Result (+17 more)
 
 ### Community 110 - "Agent Runner Hooks"
-Cohesion: 0.04
-Nodes (59): ManagerControlPlaneProvider, Option, Result, TopicInfraPreflightReport, Value, Vec, TopicInfraUpsertArgs, build_agent_flow_record() (+51 more)
+Cohesion: 0.09
+Nodes (26): build_agent_flow_record(), build_agent_profile_record(), build_audit_event_record(), build_reminder_job_record(), build_topic_agents_md_record(), build_topic_binding_record(), build_topic_context_record(), next_record_version() (+18 more)
 
 ### Community 111 - "Budget & Token Tracking"
-Cohesion: 0.25
-Nodes (11): boundary_backward(), boundary_forward(), executor_error_maps_every_required_error_class(), long_stdout_is_split_into_head_and_tail(), Self, success_output_encodes_compact_json_content(), take_head_by_bytes(), take_tail_by_bytes() (+3 more)
+Cohesion: 0.13
+Nodes (19): EnvironmentMetadata, CancellationToken, Into, Option, PathBuf, Self, Value, ToolExecutionContext (+11 more)
 
 ### Community 112 - "Memory Capture"
 Cohesion: 0.13
-Nodes (8): InvocationId, ProviderItemId, ProviderToolCallId, AsRef, Display, Formatter, From, Result
+Nodes (14): args_to_request(), request_validation(), Default, Err, FromStr, Into, Option, Result (+6 more)
 
 ### Community 113 - "Path Tool"
-Cohesion: 0.14
-Nodes (21): AttemptOutcome, FakeImageFileOps, image_message(), missing_image_ref_degrades_to_text_only(), native_image_parts_fall_back_to_filesystem_when_postgres_misses(), native_image_parts_resolve_for_tool_messages(), native_image_parts_resolve_from_postgres_via_artifact_uri(), native_image_parts_resolve_from_user_attachment_refs() (+13 more)
+Cohesion: 0.15
+Nodes (19): FakeImageFileOps, image_message(), missing_image_ref_degrades_to_text_only(), native_image_parts_fall_back_to_filesystem_when_postgres_misses(), native_image_parts_resolve_for_tool_messages(), native_image_parts_resolve_from_postgres_via_artifact_uri(), native_image_parts_resolve_from_user_attachment_refs(), NativeImageFileReader (+11 more)
 
 ### Community 114 - "SSE Backfill"
 Cohesion: 0.16
@@ -1236,7 +1208,7 @@ Nodes (43): append_unique_event(), backfill_missed_events(), backfill_missed_eve
 
 ### Community 116 - "Compaction Auto-Select"
 Cohesion: 0.11
-Nodes (32): active_block_extending_into_tail_is_adjusted(), active_block_in_range_is_included(), adjust_for_active_blocks(), browser_history_target_is_capped_below_warning_tail(), compressible_middle_returns_range(), empty_messages_returns_none(), engine_accepts_automatic_selection(), extend_to_min_user_turns() (+24 more)
+Nodes (33): active_block_extending_into_tail_is_adjusted(), active_block_in_range_is_included(), adjust_for_active_blocks(), browser_history_target_is_capped_below_warning_tail(), compressible_middle_returns_range(), contains_browser_live_tool_output(), empty_messages_returns_none(), engine_accepts_automatic_selection() (+25 more)
 
 ### Community 117 - "Structured Output"
 Cohesion: 0.11
@@ -1244,7 +1216,7 @@ Nodes (38): parse_structured_output(), parses_json_inside_code_fence(), parses_j
 
 ### Community 118 - "Batched Text Input"
 Cohesion: 0.13
-Nodes (40): assemble_text_batch(), BatchedTextInputCheck, BatchedTextTaskContext, buffer_agent_text_input(), build_batched_text_task_context(), DeferredAgentInputContext, dispatch_preprocessed_agent_text(), ensure_agent_flow_session_keys() (+32 more)
+Nodes (39): assemble_text_batch(), BatchedTextInputCheck, BatchedTextTaskContext, buffer_agent_text_input(), build_batched_text_task_context(), DeferredAgentInputContext, dispatch_preprocessed_agent_text(), ensure_agent_flow_session_keys() (+31 more)
 
 ### Community 119 - "Browser Actions Lib"
 Cohesion: 0.04
@@ -1252,39 +1224,39 @@ Nodes (46): 1. Context Usage Indicator, 1. Receiving Usage from Provider, 1. Tok
 
 ### Community 120 - "Todos Tool Card"
 Cohesion: 0.10
-Nodes (71): Children, Value, TodosCard(), raw_output_preview(), stream_text(), active_count_label(), BrowserToolCard(), chars_label() (+63 more)
+Nodes (37): Children, Value, TodosCard(), chars_label(), format_duration_ms(), parse_spawned_sub_agent_tasks(), parse_sub_agent_statuses(), parse_sub_agent_tasks_from_call() (+29 more)
 
 ### Community 121 - "Compaction Archive"
-Cohesion: 0.10
-Nodes (34): ArchiveRef, bounded_summary_source_messages(), CapturedSummaryRequest, CapturingSummaryBackend, compact_via_engine_skips_when_summary_would_not_reduce_rendered_context(), compact_via_engine_summarizes_only_selected_range(), CompactionController, CompactionControllerError (+26 more)
+Cohesion: 0.11
+Nodes (34): count_tokens_cached(), bounded_summary_source_messages(), CapturedSummaryRequest, CapturingSummaryBackend, compact_via_engine_skips_when_summary_would_not_reduce_rendered_context(), compact_via_engine_summarizes_only_selected_range(), CompactionController, CompactionControllerError (+26 more)
 
 ### Community 122 - "Agent Executor Transitions"
-Cohesion: 0.10
-Nodes (19): AgentExecutionOutcome, AgentUserInput, AgentExecutor, effort_prompt_instructions(), AgentSession, CancellationToken, F, Option (+11 more)
+Cohesion: 0.07
+Nodes (25): AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput, Duration, AgentExecutor, effort_prompt_instructions(), AgentSession (+17 more)
 
 ### Community 123 - "User Config Management"
-Cohesion: 0.11
-Nodes (16): HashMap, Option, UserConfig, UserContextConfig, execute_manager_tool(), IntegrationStorage, manager_forum_topic_delete_cleans_transport_topic_scope(), RecordingSandboxCleanup (+8 more)
+Cohesion: 0.10
+Nodes (15): AppendAuditEventOptions, Value, UpsertAgentProfileOptions, execute_manager_tool(), IntegrationStorage, manager_forum_topic_delete_cleans_transport_topic_scope(), RecordingSandboxCleanup, Arc (+7 more)
 
 ### Community 124 - "Auto Title"
-Cohesion: 0.13
-Nodes (25): AgentProfileSelection, auto_title_does_not_replace_manual_timestamp_titles(), auto_title_may_replace_timestamp_titles(), CreateSessionRequest, CreateSessionResponse, GetSessionResponse, looks_like_timestamp_title(), DateTime (+17 more)
+Cohesion: 0.09
+Nodes (35): AgentProfileSelection, auto_title_does_not_replace_manual_timestamp_titles(), auto_title_may_replace_timestamp_titles(), CreateSessionRequest, CreateSessionResponse, GetSessionResponse, looks_like_timestamp_title(), DateTime (+27 more)
 
 ### Community 125 - "Compaction Strategy"
-Cohesion: 0.10
-Nodes (37): assistant_msg(), build_tool_call_details(), compute_purge_error_inputs(), compute_superseded_tool_results(), dedup_different_paths_not_superseded(), dedup_non_file_tool_different_args(), dedup_non_file_tool_same_args(), dedup_protected_tool_exempt() (+29 more)
+Cohesion: 0.07
+Nodes (45): assistant_msg(), tool_call_msg(), tool_result_msg(), user_msg(), assistant_msg(), build_tool_call_details(), compute_purge_error_inputs(), compute_superseded_tool_results() (+37 more)
 
 ### Community 126 - "Progress Labels"
 Cohesion: 0.09
 Nodes (48): ActionStatus, action_kind(), bool_str(), click_selector(), click_xy(), dispatch_mouse_click(), eval_js(), eval_js_readonly() (+40 more)
 
 ### Community 127 - "Activity Drawer UI"
-Cohesion: 0.27
-Nodes (9): CancellationToken, Option, PathBuf, Result, SshExecutionBackend, UpstreamApplyFileEditResponse, UpstreamCheckProcessResponse, UpstreamReadFileResponse (+1 more)
+Cohesion: 0.18
+Nodes (30): build_app_state(), build_sqlx_app_state(), capabilities_usage_error(), CapabilityMode, config_usage_error(), durable_web_store_required(), init_logging(), main() (+22 more)
 
 ### Community 128 - "Web Session API"
-Cohesion: 0.16
-Nodes (39): ApiCreateSessionRequest, ApiCreateSessionResponse, load_owned_session(), WebSessionRecord, WebSessionRecord, session_detail_from_record(), session_summary_from_record(), api_create_session_with_request() (+31 more)
+Cohesion: 0.17
+Nodes (37): ApiCreateSessionRequest, ApiCreateSessionResponse, WebSessionRecord, session_detail_from_record(), session_summary_from_record(), api_create_session_with_request(), api_delete_session(), api_get_session() (+29 more)
 
 ### Community 129 - "Model Catalog"
 Cohesion: 0.10
@@ -1300,39 +1272,39 @@ Nodes (22): ChildStderr, append_stderr_chunk(), log_stderr_close(), MattermostMc
 
 ### Community 132 - "Context Assembler"
 Cohesion: 0.08
-Nodes (30): CoreBPE, contains_browser_live_tool_output(), estimate_hot_memory(), estimate_json_tokens(), estimate_message_tokens(), estimate_rendered_message_tokens(), estimate_rendered_messages_tokens(), estimate_request_budget() (+22 more)
+Nodes (31): CoreBPE, estimate_hot_memory(), estimate_json_tokens(), estimate_message_tokens(), estimate_rendered_message_tokens(), estimate_rendered_messages_tokens(), estimate_request_budget(), estimate_request_budget_accounts_for_request_components() (+23 more)
 
 ### Community 133 - "Model Discovery Config"
-Cohesion: 0.25
-Nodes (24): cancelled_probe_does_not_start_generations(), collect_probe_events(), create_parent_session(), default_tool_allowlist(), disabled_shell_returns_execute_request_unchanged(), enabled_probe_generation_failure_leaves_input_unchanged(), enabled_probe_runs_generations_emits_events_and_injects_dossier(), enabled_shell_returns_execute_request_unchanged() (+16 more)
+Cohesion: 0.23
+Nodes (28): cancelled_probe_does_not_start_generations(), collect_probe_events(), create_parent_session(), default_tool_allowlist(), disabled_shell_returns_execute_request_unchanged(), enabled_probe_generation_failure_leaves_input_unchanged(), enabled_probe_runs_generations_emits_events_and_injects_dossier(), enabled_shell_returns_execute_request_unchanged() (+20 more)
 
 ### Community 134 - "OpenCode Go Model Discovery"
-Cohesion: 0.11
-Nodes (27): AudioFileArgs, extension(), ImageFileArgs, infer_audio_mime_type(), infer_video_mime_type(), is_html_content_type(), is_remote_url(), media_file_name_for_transcription() (+19 more)
+Cohesion: 0.05
+Nodes (68): artifact_uri_falls_back_to_durable_storage_when_fs_misses(), artifact_uri_resolves_to_local_artifact_file(), AudioFileArgs, extension(), ImageFileArgs, infer_audio_mime_type(), infer_video_mime_type(), is_html_content_type() (+60 more)
 
 ### Community 135 - "Auth Session Events"
-Cohesion: 0.15
-Nodes (25): auth_session(), event(), next_user_id(), postgres_timestamp_now(), DateTime, PersistedTaskEvent, PgPool, TaskStatus (+17 more)
+Cohesion: 0.22
+Nodes (21): auth_session(), event(), next_user_id(), postgres_timestamp_now(), DateTime, PersistedTaskEvent, TaskStatus, Utc (+13 more)
 
 ### Community 136 - "Compaction Regression Tests"
-Cohesion: 0.23
-Nodes (36): assert_budget_state_is_known(), assert_compress_tool_result_applied(), assert_tool_payload_compacted_or_removed(), derive_session_id(), e2e_compaction_initial_anchor_survives_many_small_followups(), e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary(), e2e_compaction_pressure_budget_prunes_only_before_summary_boundary(), e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() (+28 more)
+Cohesion: 0.17
+Nodes (43): assert_budget_state_is_known(), assert_compress_tool_result_applied(), assert_tool_payload_compacted_or_removed(), derive_session_id(), e2e_compaction_initial_anchor_survives_many_small_followups(), e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary(), e2e_compaction_pressure_budget_prunes_only_before_summary_boundary(), e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() (+35 more)
 
 ### Community 137 - "Block Refs"
 Cohesion: 0.08
 Nodes (18): block_ref_parse_round_trip(), block_ref_serde_round_trip(), BlockRefParseError, message_ref_handles_large_indices(), message_ref_parse_round_trip(), message_ref_resolve_boundary(), message_ref_resolve_stale(), message_ref_resolve_valid() (+10 more)
 
 ### Community 138 - "Wiki Cache"
-Cohesion: 0.11
-Nodes (30): batch_from_llm_tool_calls_preserves_correlation_ids(), missing_function_or_name_is_unpairable(), normalize_arguments(), OpenCodeGoParsedToolCall, OpenCodeGoProtocolIssue, OpenCodeGoToolCallBatch, OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder (+22 more)
+Cohesion: 0.18
+Nodes (26): capabilities_usage_error(), capability_parser_accepts_compiled_json(), capability_parser_accepts_enabled_json_with_config(), capability_parser_accepts_schema_json(), capability_parser_ignores_login_commands(), capability_parser_rejects_missing_json(), CapabilityCommand, CapabilityMode (+18 more)
 
 ### Community 139 - "OpenRouter Provider"
 Cohesion: 0.14
 Nodes (18): build_video_request_body_uses_video_url_data_part(), openrouter_image_video_requests_keep_content_part_shapes(), openrouter_rate_limit_metadata_reset_is_preserved(), openrouter_text_request_uses_headers_and_exact_endpoint(), openrouter_tool_request_sets_require_parameters(), OpenRouterProvider, parse_openrouter_rate_limit(), request_body() (+10 more)
 
 ### Community 140 - "Activity Button State"
-Cohesion: 0.10
-Nodes (24): activity_button_label(), activity_button_label_running_advances_with_clock(), activity_button_label_terminal_freezes_with_clock(), activity_elapsed_seconds(), ActivityTiming, artifact_filename(), artifact_image_url(), browser_now_millis() (+16 more)
+Cohesion: 0.08
+Nodes (32): activity_button_label(), activity_button_label_running_advances_with_clock(), activity_button_label_terminal_freezes_with_clock(), activity_elapsed_seconds(), ActivityTiming, artifact_filename(), artifact_image_url(), browser_now_millis() (+24 more)
 
 ### Community 141 - "Auto Title Logic"
 Cohesion: 0.10
@@ -1343,8 +1315,8 @@ Cohesion: 0.13
 Nodes (32): A11yNode, all_ignored_nodes_returns_empty(), ax_node(), AxNode, AxProperty, AxValue, depth_increments_correctly(), empty_tree_returns_empty() (+24 more)
 
 ### Community 143 - "ChatGPT Auth File"
-Cohesion: 0.07
-Nodes (58): auth_record_round_trips_on_disk(), ChatGptAuthFile, ChatGptAuthFlow, ChatGptAuthManager, ChatGptAuthRecord, ChatGptAuthStatus, ChatGptDeviceAuthorization, ChatGptSession (+50 more)
+Cohesion: 0.11
+Nodes (32): auth_record_round_trips_on_disk(), ChatGptAuthFile, ChatGptAuthFlow, ChatGptAuthManager, ChatGptAuthRecord, ChatGptAuthStatus, ChatGptDeviceAuthorization, ChatGptSession (+24 more)
 
 ### Community 144 - "Hermetic Agent Test"
 Cohesion: 0.18
@@ -1355,16 +1327,16 @@ Cohesion: 0.19
 Nodes (35): agent_profile_display_name(), agent_profile_payload(), agent_profile_system_prompt(), agent_profile_view_from_record(), agent_profiles_cache_error_response(), AgentProfilesCacheLoadError, api_create_agent_profile(), api_delete_agent_profile() (+27 more)
 
 ### Community 146 - "Browser Execute Plan"
-Cohesion: 0.12
-Nodes (34): action_metadata(), bounded_timeout_ms(), BrowserExecutePlan, build_action_request(), clamp_action_timeouts(), clamps_wait_timeout_to_request_timeout(), click_action(), maps_click_action_to_sidecar_action_request() (+26 more)
+Cohesion: 0.11
+Nodes (35): action_metadata(), bounded_timeout_ms(), BrowserExecutePlan, build_action_request(), clamp_action_timeouts(), clamps_wait_timeout_to_request_timeout(), click_action(), maps_click_action_to_sidecar_action_request() (+27 more)
 
 ### Community 147 - "Wiki Memory Config"
-Cohesion: 0.23
-Nodes (6): Default, Self, Value, Vec, summarize_recent_messages(), TimeoutReportHook
+Cohesion: 0.14
+Nodes (12): topic_agents_md_get_reports_missing_record(), topic_agents_md_rollback_restores_previous_snapshot(), topic_agents_md_upsert_dry_run_does_not_persist(), topic_agents_md_upsert_persists_and_audits(), topic_context_get_reports_missing_record(), topic_context_rollback_rejects_duplicate_topic_prompt_restore(), topic_context_rollback_restores_previous_snapshot(), topic_context_upsert_dry_run_does_not_persist() (+4 more)
 
 ### Community 148 - "A11y Snapshot"
-Cohesion: 0.10
-Nodes (10): CompleteTodosRuntimeExecutor, CountingSearchRuntimeExecutor, DeadEndFailureRuntimeExecutor, ParallelRuntimeExecutor, Arc, AtomicUsize, Mutex, ToolName (+2 more)
+Cohesion: 0.15
+Nodes (25): advisory_lock_key(), advisory_xact_lock(), db_error(), ensure_user_row_in_tx(), enum_from_sql(), enum_to_sql(), enum_vec_from_sql(), enum_vec_to_sql() (+17 more)
 
 ### Community 149 - "Scrape Error Detection"
 Cohesion: 0.04
@@ -1375,12 +1347,12 @@ Cohesion: 0.15
 Nodes (16): ManagerControlPlaneProvider, HashMap, Option, Result, SandboxContainerRecord, Value, Vec, TopicSandboxCreateArgs (+8 more)
 
 ### Community 151 - "Runner Tools"
-Cohesion: 0.14
+Cohesion: 0.13
 Nodes (23): AgentRunner, BufferedRuntimeHistory, BufferedRuntimeHistoryEvent, current_execution_model_route(), long_native_todo_completion_content_is_stored_as_pending_final_draft(), native_todo_completion_continues_for_explicit_final_response(), native_tool_call_content_is_recorded_on_assistant_tool_call(), Option (+15 more)
 
 ### Community 152 - "Wiki Memory Execution"
-Cohesion: 0.26
-Nodes (4): AgentRunner, Option, Result, Sender
+Cohesion: 0.18
+Nodes (5): ConfigStorage, Mutex, Option, Result, Vec
 
 ### Community 153 - "Loop Detection Service"
 Cohesion: 0.19
@@ -1388,67 +1360,67 @@ Nodes (12): disables_for_session(), LoopDetectionService, MockScout, re_prompt_i
 
 ### Community 154 - "Output Window"
 Cohesion: 0.05
-Nodes (58): delegation_runtime_error(), Error, parse_invocation_args(), sandbox_normalizer(), SandboxToolHandlers, typed_apply_file_edit_result(), typed_exec_result(), typed_list_files_result() (+50 more)
+Nodes (49): file_delivery_normalizer(), typed_json_string_result(), parse_runtime_args(), Sender, ssh_normalizer(), ssh_runtime_failure(), SshMcpProvider, typed_ssh_exec_output() (+41 more)
 
 ### Community 155 - "OpenCode Go Provider Utils"
-Cohesion: 0.25
-Nodes (10): parse_runtime_args(), Sender, T, ToolName, SshMcpProvider, SshRuntimeToolExecutor, typed_ssh_exec_output(), typed_ssh_payload_output() (+2 more)
+Cohesion: 0.12
+Nodes (10): Hook Registry, Hook Trait, HookRegistry, В AgentRunner, Интеграция в runner, Логирование, Методы, Порядок выполнения хуков (+2 more)
 
 ### Community 156 - "Browser Tool Card UI"
-Cohesion: 0.14
-Nodes (18): ChatCompletionsProfile, ChatReasoningPolicy, ChatResponseContentPolicy, ChatStreamingPolicy, ChatTemperatures, ChatThinkingPolicy, ChatToolChoicePolicy, generic_profile_matches_openai_base_defaults() (+10 more)
+Cohesion: 0.07
+Nodes (28): apply_profile_rate_limit_wait(), ChatCompletionsClient, ChatCompletionsClientConfig, client_shell_keeps_endpoint_profile_and_bearer_auth(), HttpClient, Into, Option, Result (+20 more)
 
 ### Community 157 - "Input Intent Classification"
-Cohesion: 0.11
-Nodes (30): AgentInputIntentClassification, AgentInputIntentSnapshot, AgentInputSessionStatus, classifier_route(), ClassifierResponse, classify_agent_input_intent(), parse_classifier_response(), parse_classifier_response_accepts_wrapped_json() (+22 more)
+Cohesion: 0.18
+Nodes (17): AgentInputIntentClassification, AgentInputIntentSnapshot, AgentInputSessionStatus, classifier_route(), ClassifierResponse, classify_agent_input_intent(), parse_classifier_response(), parse_classifier_response_accepts_wrapped_json() (+9 more)
 
 ### Community 158 - "Wiki Bootstrap"
-Cohesion: 0.08
-Nodes (23): AgentExecutionEffort, AgentExecutionOptions, AgentExecutor, Duration, AgentRunner, AgentSession, Arc, Into (+15 more)
+Cohesion: 0.10
+Nodes (10): CompleteTodosRuntimeExecutor, CountingSearchRuntimeExecutor, DeadEndFailureRuntimeExecutor, ParallelRuntimeExecutor, Arc, AtomicUsize, Mutex, ToolName (+2 more)
 
 ### Community 159 - "Web Console Entry"
-Cohesion: 0.16
-Nodes (32): compiled_profile_name(), Option, build_app_state(), build_sqlx_app_state(), capabilities_usage_error(), CapabilityMode, config_usage_error(), durable_web_store_required() (+24 more)
+Cohesion: 0.29
+Nodes (6): CancelSubAgentsArgs, Vec, SpawnSubAgentsArgs, SubAgentTaskArgs, WaitSubAgentsArgs, get_sub_agent_max_iterations()
 
 ### Community 160 - "SSE Task Stream"
-Cohesion: 0.09
-Nodes (39): api_sse_task_stream(), progress_event_if_changed(), ApiTaskStatus, AppState, Event, HeaderMap, Infallible, Item (+31 more)
+Cohesion: 0.12
+Nodes (31): api_sse_task_stream(), progress_event_if_changed(), ApiTaskStatus, AppState, Event, HeaderMap, Infallible, Item (+23 more)
 
 ### Community 161 - "Agent Effort Profile"
-Cohesion: 0.11
-Nodes (28): apply_loaded_default_effort(), missing_profile_option_label(), profile_value_to_id(), Option, ReadSignal, WriteSignal, upsert_task_summary(), ActivityPageState (+20 more)
+Cohesion: 0.19
+Nodes (24): ActivityPageState, cached_settings_profiles(), compare_task_events(), ComposerNotice(), load_latest_task_events(), load_settings_profiles(), max_event_seq(), merge_task_events() (+16 more)
 
 ### Community 162 - "LLM Loop Detector"
 Cohesion: 0.12
 Nodes (16): create_memory(), detects_loop_when_confident(), LlmClient, LlmLoopDetector, LlmLoopResponse, LoopScoutClient, MockLoopScout, Arc (+8 more)
 
 ### Community 163 - "Messages Client"
-Cohesion: 0.16
-Nodes (20): Completed file delivery in Telegram (Agent Mode UI element), Telegram Agent Mode overview screenshot, Agent Mode task list (Telegram UI element), Tool calls display (Telegram Agent Mode UI element), Telegram Agent Mode video screenshot, chat_delivery_max_file_size_bytes(), deliver_file_fails_when_queue_is_unavailable(), deliver_file_propagates_delivery_error() (+12 more)
+Cohesion: 0.20
+Nodes (20): TaskDetail, activity_elapsed_label(), activity_task_status(), ActivityDrawer(), ActivityStatusChip(), ContextCard(), latest_activity_status(), latest_activity_task_id() (+12 more)
 
 ### Community 164 - "Execution Config"
-Cohesion: 0.12
-Nodes (34): MutationExecutionResult, reminder_tool_names(), ActiveSessionConfig, apply_execution_profile(), apply_reminder_context(), apply_topic_infra_config(), compose_execution_prompt_instructions(), configure_active_session() (+26 more)
+Cohesion: 0.16
+Nodes (31): manager_control_plane_tool_names(), ActiveSessionConfig, apply_execution_profile(), apply_reminder_context(), apply_topic_infra_config(), compose_execution_prompt_instructions(), configure_active_session(), merge_prompt_instructions() (+23 more)
 
 ### Community 165 - "SQLx Storage Backend"
 Cohesion: 0.23
-Nodes (29): enum_from_sql(), enum_to_sql(), ExpiredWebRecordsCleanup, from_json(), i32_to_u32(), i64_to_u64(), json_error(), json_value() (+21 more)
+Nodes (29): enum_from_sql(), enum_to_sql(), from_json(), i32_to_u32(), i64_to_u64(), is_initial_task_without_progress(), json_error(), json_value() (+21 more)
 
 ### Community 166 - "ZAI Audit Tests"
 Cohesion: 0.15
 Nodes (31): assert_monotonic(), cleanup_live_attempt(), derive_session_id(), diff(), e2e_zai_heavy_sandbox_audit_logs_baselines(), e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup(), event_names(), is_retryable_live_failure() (+23 more)
 
 ### Community 167 - "Compaction Renderer"
-Cohesion: 0.23
-Nodes (21): block_render_includes_full_tool_batch(), block_render_injects_summary_at_anchor(), block_render_missing_consumed_ref_appended(), block_render_multiple_non_overlapping_blocks(), block_render_nested_consumption(), block_render_preserves_raw_messages(), CompactionRenderer, create_block() (+13 more)
+Cohesion: 0.18
+Nodes (25): assistant_msg(), block_render_includes_full_tool_batch(), block_render_injects_summary_at_anchor(), block_render_missing_consumed_ref_appended(), block_render_multiple_non_overlapping_blocks(), block_render_nested_consumption(), block_render_preserves_raw_messages(), CompactionRenderer (+17 more)
 
 ### Community 168 - "Test Hooks"
-Cohesion: 0.07
-Nodes (37): compiled_capability_manifest(), compiled_manifest_exposes_browser_live_tool_module(), compiled_manifest_exposes_compiled_durable_storage_backends(), openrouter_module_declares_provider_config_schema(), Result, boxed(), compiled_manifest_is_valid_for_selected_features(), compiled_manifest_requires_declared_capabilities_to_exist() (+29 more)
+Cohesion: 0.16
+Nodes (6): DateTime, Into, Option, Utc, TodoItem, TodoList
 
 ### Community 169 - "Topic Lifecycle Mock"
-Cohesion: 0.14
-Nodes (11): FakeTopicLifecycle, FakeTopicSandboxCleanup, FakeTopicSandboxControl, LifecycleCall, HashMap, Mutex, Option, Result (+3 more)
+Cohesion: 0.27
+Nodes (12): add_code_copy_buttons(), blocks_raw_html_from_markdown(), drops_images_from_markdown_output(), markdown_options(), MarkdownContent(), removes_script_content_and_event_attributes(), removes_unsafe_link_protocols(), render_markdown() (+4 more)
 
 ### Community 170 - "Browser Types"
 Cohesion: 0.05
@@ -1463,16 +1435,16 @@ Cohesion: 0.16
 Nodes (24): activate_already_active_group(), activate_files_group(), activate_multiple_groups(), empty_capabilities_array(), make_invocation(), missing_capabilities_field(), mixed_known_and_unknown_groups(), parse_arguments() (+16 more)
 
 ### Community 173 - "Chat Completions Response"
-Cohesion: 0.18
-Nodes (29): chat_completions_parse_empty_tool_call_id_uses_profile_policy(), chat_completions_parse_openai_usage(), chat_completions_parse_openrouter_rate_limit_metadata(), chat_completions_parse_tool_calls_preserves_wire_ids(), chat_completions_parse_zai_chunk_array_content_and_reasoning(), correlated_tool_call(), empty_id_tool_call(), extract_error_response() (+21 more)
+Cohesion: 0.17
+Nodes (31): tool_call(), chat_completions_parse_empty_tool_call_id_uses_profile_policy(), chat_completions_parse_openai_usage(), chat_completions_parse_openrouter_rate_limit_metadata(), chat_completions_parse_tool_calls_preserves_wire_ids(), chat_completions_parse_zai_chunk_array_content_and_reasoning(), correlated_tool_call(), empty_id_tool_call() (+23 more)
 
 ### Community 174 - "Compaction Backend"
-Cohesion: 0.12
-Nodes (17): args_to_request_applies_defaults(), args_to_request_applies_overrides(), args_to_request_rejects_invalid_values(), request_defaults(), Default, Err, FromStr, Into (+9 more)
+Cohesion: 0.18
+Nodes (12): DateTime, Default, Utc, stack_logs_broker_payload_roundtrip_preserves_contract_types(), stack_logs_list_sources_payload_roundtrip_preserves_source_records(), StackLogCursor, StackLogEntry, StackLogsFetchRequest (+4 more)
 
 ### Community 175 - "Recording Topic Lifecycle"
-Cohesion: 0.14
-Nodes (14): RecordingTopicLifecycle, Result, StdMutex, Vec, ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest (+6 more)
+Cohesion: 0.15
+Nodes (13): RecordingTopicLifecycle, Result, StdMutex, Vec, ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest (+5 more)
 
 ### Community 176 - "Google Blog Source"
 Cohesion: 0.15
@@ -1481,6 +1453,10 @@ Nodes (12): classify(), Option, Url, classify(), is_google_devsite_url(), Option
 ### Community 177 - "Transport Progress"
 Cohesion: 0.15
 Nodes (24): AgentTransport, best_effort_delivery_preserves_file_kind(), confirmed_delivery_ack_failure(), confirmed_delivery_ack_success(), DummyTransport, loop_notification_is_deduplicated_per_run(), progress_updates_on_events(), ProgressRuntimeConfig (+16 more)
+
+### Community 178 - "Agent View"
+Cohesion: 0.05
+Nodes (19): ConfirmationType, agent_control_keyboards_only_include_cancel_task(), agent_control_markup(), agent_flow_inline_keyboard(), agent_flow_inline_keyboard_with_toggle(), AgentView, assert_no_browser_control_text(), cancel_task_confirmation_inline_keyboard() (+11 more)
 
 ### Community 179 - "Web Console Dev"
 Cohesion: 0.11
@@ -1492,59 +1468,55 @@ Nodes (41): 14.10 Create session, 14.11 Update session (rename), 14.12 Get sessi
 
 ### Community 181 - "ID Utilities"
 Cohesion: 0.07
-Nodes (42): OutputWindow, Option, window_chars(), WindowedOutput, CachedMarkdownDocument, delivery_success_payload(), DeliveryPayloadExtra, DeliveryStdoutExtra (+34 more)
+Nodes (50): OutputWindow, Option, window_chars(), WindowedOutput, CachedMarkdownDocument, delivery_success_payload(), DeliveryPayloadExtra, DeliveryStdoutExtra (+42 more)
 
 ### Community 182 - "AGENTS.md Provider"
 Cohesion: 0.18
 Nodes (18): agents_md_tool_names(), AgentsMdProvider, AgentsMdToolExecutor, AgentsMdUpdateArgs, get_returns_current_topic_record(), Arc, Mutex, Result (+10 more)
 
 ### Community 183 - "LLM Calls"
-Cohesion: 0.13
-Nodes (7): Default, Result, Self, StackLogsFetchRequest, StackLogsListSourcesRequest, SandboxDiagnosticsRuntime, SandboxCapability
+Cohesion: 0.21
+Nodes (6): Default, Result, Self, StackLogsFetchRequest, StackLogsListSourcesRequest, SandboxDiagnosticsRuntime
 
 ### Community 184 - "Tool Executor Registry"
 Cohesion: 0.16
 Nodes (18): duplicate_registration_fails_fast(), executor_error_is_normalized(), registered_executor_runs_by_exact_name(), RegistryError, Arc, BTreeMap, Option, Result (+10 more)
 
 ### Community 185 - "OpenCode Go Throttle"
-Cohesion: 0.19
-Nodes (11): prepare_sub_agent_execution_applies_sub_agent_budget_policy(), prepare_sub_agent_execution_fails_when_topic_agents_md_load_fails(), prepare_sub_agent_execution_inherits_topic_agents_md(), Into, Self, runtime_invocation(), sub_agent_explicit_config_overrides_inherited_parent_model(), sub_agent_falls_back_to_agent_routes_without_inherited_model() (+3 more)
+Cohesion: 0.17
+Nodes (7): AgentMemoryScope, explicit_memory_scope_overrides_compaction_scope(), restore_last_task_from_memory_keeps_existing_last_task(), restore_last_task_from_memory_uses_latest_user_task(), Into, Self, synthetic_memory_scope_defaults_to_session_identity()
 
 ### Community 186 - "Reminder Scheduling Logic"
 Cohesion: 0.25
 Nodes (11): rejects_invalid_thread_id(), rejects_missing_chat_id_without_context(), resolves_chat_id_from_context_when_present(), resolves_explicit_chat_id_over_context(), Bot, ChatId, Option, Result (+3 more)
 
 ### Community 187 - "Browser Artifact Tests"
-Cohesion: 0.09
-Nodes (55): CallbackQueryId, AgentCallbackAction, AgentCallbackContext, answer_agent_callback(), cancel_agent_task(), cancel_agent_task_by_id(), dispatch_agent_callback(), handle_agent_callback() (+47 more)
+Cohesion: 0.18
+Nodes (11): Main Agent (оркестратор), Sub-Agent (рабочий), Карта хуков по агентам, Конфигурация, Основные концепции, Поток выполнения через хуки, Примеры, Система хуков Oxide Agent (+3 more)
 
 ### Community 188 - "Noop Storage"
-Cohesion: 0.10
-Nodes (7): AgentMemory, format_soft_temporal_boundary(), NoopStorage, Mutex, Option, Result, Vec
+Cohesion: 0.09
+Nodes (8): AgentMemory, TokenUsage, AgentFlowRecord, NoopStorage, Mutex, Option, Result, Vec
 
 ### Community 189 - "Topic Route Resolution"
 Cohesion: 0.13
 Nodes (12): forum_text_message(), resolve_topic_route_prefers_dynamic_binding_over_static_topic_config(), HashMap, Mutex, Option, Result, Self, Vec (+4 more)
 
 ### Community 190 - "Web Record Models"
-Cohesion: 0.15
-Nodes (16): LoginIndexRecord, PersistedTaskEvent, DateTime, PersistedTaskEvent, Utc, Vec, WebUiStoreResult, validate_schema_version() (+8 more)
+Cohesion: 0.16
+Nodes (18): LoginIndexRecord, PersistedTaskEvent, DateTime, Option, PersistedTaskEvent, Utc, Vec, WebUiStoreResult (+10 more)
 
 ### Community 191 - "Adblock Config"
 Cohesion: 0.11
 Nodes (16): adblock_enabled_from_env_var(), engine_allows_non_matching_domain(), engine_blocks_matching_domain(), engine_fail_open_on_malformed_url(), engine_respects_exception_rules(), engine_works_with_empty_source_url(), from_filter_paths_all_nonexistent_returns_none(), from_filter_paths_empty_iterator_returns_none() (+8 more)
 
 ### Community 192 - "Executor Effort"
-Cohesion: 0.21
-Nodes (8): admin_runtime_exposes_admin_capability(), Default, Option, Result, SandboxContainerRecord, Self, Vec, SandboxAdminRuntime
+Cohesion: 0.16
+Nodes (10): admin_runtime_exposes_admin_capability(), Default, Option, Result, SandboxContainerRecord, Self, Vec, SandboxAdminRuntime (+2 more)
 
 ### Community 193 - "Executor Config"
 Cohesion: 0.16
 Nodes (9): AgentExecutor, format_model_routes(), AgentSession, Arc, LlmClient, Option, Self, Vec (+1 more)
-
-### Community 194 - "Agent Events"
-Cohesion: 0.13
-Nodes (7): build_agent_profile_record(), AgentProfileRecord, Value, UpsertAgentProfileOptions, Result, Vec, TestStorage
 
 ### Community 195 - "ChatGPT Login CLI"
 Cohesion: 0.11
@@ -1555,20 +1527,20 @@ Cohesion: 0.22
 Nodes (19): delivered_file(), delivered_file_link(), delivered_file_preview(), delivered_file_preview_kind(), delivered_files_for_task(), DeliveredFileEventBody(), DeliveredFileLink, DeliveredFilePreviewKind (+11 more)
 
 ### Community 197 - "CI/CD Workflows"
-Cohesion: 0.22
+Cohesion: 0.21
 Nodes (13): apply_exact_text_edit(), apply_sandbox_file_edit(), bytes_look_binary(), Option, Result, Vec, SandboxAppliedFileEdit, SandboxApplyFileEditResult (+5 more)
 
 ### Community 198 - "LLM Image Calls"
-Cohesion: 0.23
-Nodes (8): Into, Self, StartArgs, ObserveQuery, Default, Self, serializes_create_session_contract(), Viewport
+Cohesion: 0.27
+Nodes (6): capture_screenshot(), Vec, sha256_of_bytes(), sha256_of_empty_is_known(), sha256_of_known_data(), Engine
 
 ### Community 199 - "OpenCode Go Concurrency"
 Cohesion: 0.17
 Nodes (19): body_has_anti_bot_marker(), body_has_cloudflare_challenge_marker(), header_contains(), reject_anti_bot_challenge(), Error, HeaderMap, Option, Result (+11 more)
 
 ### Community 200 - "HTTP Utilities"
-Cohesion: 0.09
-Nodes (36): get_llm_http_timeout_secs(), create_http_client(), create_http_client_builder(), extract_text_content(), format_reqwest_error(), json_body_len(), parse_http_date(), parse_retry_after() (+28 more)
+Cohesion: 0.08
+Nodes (19): tool_call(), extract_text_content(), format_reqwest_error(), json_body_len(), parse_http_date(), parse_retry_after(), Error, HeaderMap (+11 more)
 
 ### Community 201 - "Browser Observe"
 Cohesion: 0.17
@@ -1579,8 +1551,8 @@ Cohesion: 0.05
 Nodes (40): 1. Сборка system prompt, 2. History folding, 3. Sub-agent system prompt, 4. Provider-native cache markers не используются, 5. TokenUsage: cache telemetry, Baseline (измерено 2026-06-01), Comparison, `[DYNAMIC_SESSION]` — меняется между сессиями (+32 more)
 
 ### Community 203 - "DB Helpers"
-Cohesion: 0.17
-Nodes (17): build_sub_agent_tool_runtime_executors_do_not_expose_compress(), build_sub_agent_tool_runtime_executors_use_narrow_sandbox_surface(), DelegationProvider, DelegationToolExecutor, PreparedSubAgentExecution, Arc, M, Mutex (+9 more)
+Cohesion: 0.14
+Nodes (24): build_sub_agent_tool_runtime_executors_do_not_expose_compress(), build_sub_agent_tool_runtime_executors_use_narrow_sandbox_surface(), DelegationProvider, DelegationToolExecutor, prepare_sub_agent_execution_fails_when_topic_agents_md_load_fails(), prepare_sub_agent_execution_inherits_topic_agents_md(), Arc, Into (+16 more)
 
 ### Community 204 - "SQLx Row Mapping"
 Cohesion: 0.23
@@ -1591,16 +1563,16 @@ Cohesion: 0.07
 Nodes (29): Agent execution, Architectural invariants, Branch, Browser Live, Build, Commit style, Compaction, Configuration (+21 more)
 
 ### Community 206 - "Agent Session"
-Cohesion: 0.11
-Nodes (8): AgentSession, EphemeralSession, CancellationToken, Instant, Option, Result, Self, Vec
+Cohesion: 0.09
+Nodes (10): CompactionScope, Default, AgentSession, EphemeralSession, CancellationToken, Instant, Option, Result (+2 more)
 
 ### Community 207 - "Kokoro TTS Client"
-Cohesion: 0.18
-Nodes (10): apply_profile_rate_limit_wait(), ChatCompletionsClient, ChatCompletionsClientConfig, client_shell_keeps_endpoint_profile_and_bearer_auth(), HttpClient, Into, Option, Result (+2 more)
+Cohesion: 0.14
+Nodes (4): AgentSession, PendingUserInput, start_task_clears_pending_user_input(), UserInputKind
 
 ### Community 208 - "Runner Config"
-Cohesion: 0.10
-Nodes (18): AgentContext, Send, AgentRunnerConfig, AgentRunnerContext<'a>, AgentRunnerContextBase, FinalResponseInput, PendingFinalDraft, PendingFinalDraftDecision (+10 more)
+Cohesion: 0.09
+Nodes (16): transient_context_is_not_persisted_to_memory(), AgentRunnerConfig, AgentRunnerContext<'a>, AgentRunnerContextBase, PendingFinalDraft, PendingFinalDraftDecision, Arc, Default (+8 more)
 
 ### Community 209 - "Tool Failure Classification"
 Cohesion: 0.21
@@ -1611,20 +1583,20 @@ Cohesion: 0.14
 Nodes (13): anthropic_provider_text_delegates_to_messages(), anthropic_provider_tools_preserve_tool_use_and_tool_result_blocks(), anthropic_provider_uses_messages_headers(), AnthropicProvider, request_body(), Client, Into, Receiver (+5 more)
 
 ### Community 211 - "Response Reasoning Policy"
-Cohesion: 0.07
-Nodes (75): discovered_model_for_config(), DiscoveredOpenCodeGoModel, discovery_config(), DiscoverySource, explicit_image_input_support(), image_support_uses_explicit_modalities_before_default_fallback(), infer_protocol(), infer_protocol_for_config() (+67 more)
+Cohesion: 0.11
+Nodes (33): discovery_config(), explicit_image_input_support(), image_support_uses_explicit_modalities_before_default_fallback(), infers_known_protocol_families_and_unknowns(), init_models_dev_catalog(), init_models_dev_catalog_for_tests(), modality_value_is_image(), models_dev_supports_image() (+25 more)
 
 ### Community 212 - "LLM Provider Build"
 Cohesion: 0.17
 Nodes (16): LlmProviderBuildContext, Client, build_model_catalog(), build_zen_model_catalog(), configured_api_key(), go_discovery_config(), module_string_value_or_env_or_default(), module_u64_value_or_env_or_default() (+8 more)
 
 ### Community 213 - "History Batch Completion"
-Cohesion: 0.17
-Nodes (24): check_batch_completion(), extract_expected_invocation_ids(), fold_all_volatile_when_no_stable_prefixes(), fold_stable_system_messages_before_date_volatile_after(), fold_system_messages_appends_system_history_to_prompt(), fold_system_messages_into_prompt(), fold_system_messages_skips_empty_system_entries(), has_empty_explicit_provider_tool_call_id() (+16 more)
+Cohesion: 0.16
+Nodes (25): check_batch_completion(), extract_expected_invocation_ids(), fold_all_volatile_when_no_stable_prefixes(), fold_stable_system_messages_before_date_volatile_after(), fold_system_messages_appends_system_history_to_prompt(), fold_system_messages_into_prompt(), fold_system_messages_skips_empty_system_entries(), has_empty_explicit_provider_tool_call_id() (+17 more)
 
 ### Community 214 - "Recorded Tool Requests"
-Cohesion: 0.09
-Nodes (22): ChatResponse, compress_and_write_todos_response(), request_contains(), two_todo_tool_calls_response(), structured_awaiting_user_input_response(), structured_final_answer_response(), unstructured_text_response(), RecordedToolRequest (+14 more)
+Cohesion: 0.08
+Nodes (25): ChatResponse, compress_and_write_todos_response(), request_contains(), two_todo_tool_calls_response(), structured_awaiting_user_input_response(), structured_final_answer_response(), tool_call_response(), tool_call_response_attaches_explicit_correlation() (+17 more)
 
 ### Community 215 - "Life Transcript UI"
 Cohesion: 0.05
@@ -1636,22 +1608,22 @@ Nodes (12): extract_domain(), extract_reasoning_summary(), infer_thought(), infe
 
 ### Community 217 - "Policy Hooks"
 Cohesion: 0.26
-Nodes (7): chat_like_profile_preserves_expected_protocol_shape(), profile_builds_consistent_components(), profile_exposes_encoding_and_inbound_helpers(), Into, Option, Self, ToolProtocolProfile
+Nodes (9): Arc, Into, Mutex, Self, ToolName, runtime_invocation(), typed_runtime_executor_searches_videos_with_fake_sandbox(), typed_runtime_executors_register_ytdlp_tools() (+1 more)
 
 ### Community 218 - "Capabilities Interface"
-Cohesion: 0.19
-Nodes (18): create_app(), Router, session_lifecycle(), auth_client(), count_dom_elements(), create_session(), goto_with_capture(), quiescence_catches_late_spa_hydration_beyond_quiet_window() (+10 more)
+Cohesion: 0.16
+Nodes (20): create_app(), Router, main(), Result, session_lifecycle(), auth_client(), count_dom_elements(), create_session() (+12 more)
 
 ### Community 219 - "API Error Types"
-Cohesion: 0.20
+Cohesion: 0.17
 Nodes (16): api_error_carries_provider_model(), api_error_defaults_to_none(), context_overflow_carries_provider_model(), is_context_overflow_typed_match(), Error, Into, Self, try_classify_context_overflow_400_with_indicator() (+8 more)
 
 ### Community 220 - "Chat Completions Profile"
 Cohesion: 0.21
-Nodes (12): chat_completions_can_keep_user_images_while_tool_results_are_text_only(), chat_completions_generic_tool_request_includes_image_content_parts(), chat_completions_generic_tool_request_matches_openai_base_legacy(), chat_completions_opencode_openai_body_preserves_reasoning_effort(), chat_completions_openrouter_tool_request_sets_require_parameters(), chat_completions_strict_tool_result_empty_text_gets_stable_projection(), chat_completions_zai_native_json_disables_streaming_thinking_conflict(), ChatRequestOptions<'a> (+4 more)
+Nodes (7): client_creation(), client_from_env(), KokoroClient, Client, Result, Self, Vec
 
 ### Community 221 - "Diagnostic Scope"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (13): DiagnosticScope, chrome_new_tab_page_storm_is_internal(), classify_console(), classify_network(), first_party_xhr_failure_is_surfaced(), host_of(), hosts_related(), is_benign_static_asset() (+5 more)
 
 ### Community 222 - "DOM Extract Requests"
@@ -1671,28 +1643,28 @@ Cohesion: 0.21
 Nodes (13): anthropic_encoder_builds_tool_use_input(), AnthropicAssistantToolCall, chat_like_encoder_uses_provider_wire_id(), ChatLikeAssistantToolCall, EncodedAssistantToolCall, encoder_skips_server_executed_transports(), ProviderToolCallEncoder, responses_encoder_preserves_item_and_call_ids() (+5 more)
 
 ### Community 226 - "Browser Action Verification"
-Cohesion: 0.23
-Nodes (24): action_verified_reason(), BrowserActionVerification, BrowserVerificationStatus, failed(), noop_action_is_verification_failure(), noop_pure_action_with_technical_success_is_verified(), observation(), pure_action_verified_by_result_without_post_action_screenshot() (+16 more)
+Cohesion: 0.24
+Nodes (21): action_verified_reason(), BrowserActionVerification, BrowserVerificationStatus, failed(), noop_action_is_verification_failure(), noop_pure_action_with_technical_success_is_verified(), observation(), pure_action_verified_by_result_without_post_action_screenshot() (+13 more)
 
 ### Community 227 - "Module Registry Snapshots"
-Cohesion: 0.22
-Nodes (7): normalize_job_ids(), CancellationToken, Result, Uuid, serialize_json(), sub_agent_display_names_are_drawn_from_pun_pool(), sub_agent_display_names_avoid_active_collisions()
+Cohesion: 0.11
+Nodes (20): build_sub_agent_report(), CompletedSubAgentExecution, delegation_runtime_error(), Error, Instant, JoinHandle, sample_snapshot(), shape_sub_agent_terminal_output_maps_timeout_to_timeout_report() (+12 more)
 
 ### Community 228 - "Sub-Agent Delegation Tests"
 Cohesion: 0.16
 Nodes (13): AgentRunner, RouteFailoverState, Arc, Duration, HashMap, Instant, LlmClient, Mutex (+5 more)
 
 ### Community 229 - "Life Telegram Delivery"
-Cohesion: 0.15
-Nodes (19): normalizer_applies_protocol_transport_and_fallback_wire_id(), normalizer_preserves_existing_provider_ids(), Self, ToolCorrelationNormalizer, anthropic_encoder_builds_tool_result_block(), anthropic_encoder_maps_wire_tool_messages_to_provider_protocol(), AnthropicToolResult, chat_like_encoder_uses_provider_wire_id() (+11 more)
+Cohesion: 0.23
+Nodes (13): anthropic_encoder_builds_tool_result_block(), anthropic_encoder_maps_wire_tool_messages_to_provider_protocol(), AnthropicToolResult, chat_like_encoder_uses_provider_wire_id(), ChatLikeToolResult, EncodedToolResult, encoder_skips_server_executed_tool_transports(), ProviderToolResultEncoder (+5 more)
 
 ### Community 230 - "Life Bootstrap"
-Cohesion: 0.15
+Cohesion: 0.18
 Nodes (20): bootstrap_config_is_noop_when_unconfigured(), bootstrap_config_never_exposes_bot_token_value(), bootstrap_config_requires_owner_for_telegram_binding(), bootstrap_life_solo_bridge(), bootstrap_life_solo_bridge_from_env(), AsRef, Option, OsStr (+12 more)
 
 ### Community 231 - "Public Config API"
-Cohesion: 0.16
-Nodes (17): config_clamps_generation_count_and_parses_env(), config_defaults_are_disabled_and_web_only(), config_defaults_use_web_crawler_in_merge_mode(), env_bool_default(), env_tool_allowlist(), env_u64(), env_u8(), env_usize() (+9 more)
+Cohesion: 0.13
+Nodes (21): api_public_config(), AppState, config_clamps_generation_count_and_parses_env(), config_defaults_are_disabled_and_web_only(), config_defaults_use_web_crawler_in_merge_mode(), env_bool_default(), env_tool_allowlist(), env_u64() (+13 more)
 
 ### Community 232 - "Consent Engine JS"
 Cohesion: 0.09
@@ -1700,11 +1672,11 @@ Nodes (6): CloseAction, CssMatcher, Detector, NopAction, WaitAction, WaitCssActi
 
 ### Community 233 - "CMP Detection JS"
 Cohesion: 0.13
-Nodes (4): CMP, IfAllowAllAction, IfCssAction, RunMethodAction
+Nodes (3): CMP, ListAction, RunMethodAction
 
 ### Community 234 - "Sub-Agent Reports"
-Cohesion: 0.18
-Nodes (5): ConfigStorage, Mutex, Option, Result, Vec
+Cohesion: 0.23
+Nodes (6): Default, Self, Value, Vec, summarize_recent_messages(), TimeoutReportHook
 
 ### Community 235 - "Repo Host Classification"
 Cohesion: 0.29
@@ -1719,8 +1691,8 @@ Cohesion: 0.21
 Nodes (20): anthropic_extra_headers(), assistant_message(), build_completion_body(), build_messages_body(), build_messages_body_folds_history_system_into_top_level_system(), build_messages_body_includes_thinking_when_provided(), build_messages_body_omits_thinking_when_none(), build_messages_body_uses_anthropic_wire_shape() (+12 more)
 
 ### Community 238 - "Wiki Keys"
-Cohesion: 0.22
-Nodes (9): forum_topic_create_invokes_lifecycle_and_audits_success(), forum_topic_delete_cleans_topic_storage_and_sandbox(), forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra(), expect_forum_topic_provision_binding_calls(), expect_forum_topic_provision_infra_calls(), expect_forum_topic_provision_profile_calls(), mock_storage_for_forum_topic_provision(), MockStorageProvider (+1 more)
+Cohesion: 0.21
+Nodes (8): forum_topic_create_invokes_lifecycle_and_audits_success(), forum_topic_delete_cleans_topic_storage_and_sandbox(), forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra(), topic_delete_user_config(), HashMap, Option, UserConfig, UserContextConfig
 
 ### Community 239 - "Model Routes API"
 Cohesion: 0.21
@@ -1731,28 +1703,28 @@ Cohesion: 0.15
 Nodes (11): build_script(), build_script_contains_engine_and_bootstrap(), build_script_no_chrome_refs(), build_script_noops_ui_methods(), build_script_rejects_all_consent(), build_script_skips_non_html(), consent_enabled_from_env_var(), ConsentConfig (+3 more)
 
 ### Community 242 - "Web Router & CORS"
-Cohesion: 0.19
-Nodes (12): CorsLayer, add_web_response_headers(), build_router(), AppState, Body, Next, Request, Response (+4 more)
+Cohesion: 0.12
+Nodes (19): CorsLayer, add_web_response_headers(), build_router(), AppState, Body, Next, Request, Response (+11 more)
 
 ### Community 243 - "Content Loop Detector"
 Cohesion: 0.19
 Nodes (9): ContentLoopDetector, detects_repetition(), ignores_tables_and_lists(), reset_tracking_clears_history(), HashMap, Self, Vec, skips_code_blocks() (+1 more)
 
 ### Community 244 - "Manager Topic Lifecycle"
-Cohesion: 0.30
-Nodes (10): inspect_topic_infra_config(), probe_secret_ref(), resolve_secret_material(), ResolvedSecretMaterial, secret_source(), SecretProbeKind, SecretProbeReport, TopicInfraPreflightReport (+2 more)
+Cohesion: 0.08
+Nodes (40): api_event(), ApiLifeEventResponse, ApiLifeTurnResponse, LifeConsole(), LifeRunActivityPageState, IntoView, Option, assistant_turn_with_run_gets_activity_anchor() (+32 more)
 
 ### Community 245 - "Session E2E Tests"
-Cohesion: 0.14
-Nodes (21): RequestBuilder, with_auth(), with_session_auth(), e2e_latency_session_ready(), e2e_sequential_tasks_same_session(), e2e_session_lifecycle(), e2e_simple_text_response(), e2e_task_cancel() (+13 more)
+Cohesion: 0.18
+Nodes (15): e2e_latency_session_ready(), e2e_sequential_tasks_same_session(), e2e_session_lifecycle(), e2e_simple_text_response(), e2e_task_cancel(), cleanup_web_sandbox(), execute_task(), AppState (+7 more)
 
 ### Community 246 - "Hooks Documentation"
-Cohesion: 0.12
-Nodes (10): Hook Registry, Hook Trait, HookRegistry, В AgentRunner, Интеграция в runner, Логирование, Методы, Порядок выполнения хуков (+2 more)
+Cohesion: 0.26
+Nodes (8): auth_client(), Client, Instant, Self, Vec, smoke_test_browser_sidecar_client_contract(), start_server(), Timings
 
 ### Community 247 - "Token Budget Estimation"
 Cohesion: 0.05
-Nodes (74): Chat, cancel_status_reply_markup(), agent_mode_session_keys(), derive_agent_mode_session_id(), ensure_session_exists(), fnv1a_mix_i64(), fnv1a_mix_str(), remove_session() (+66 more)
+Nodes (78): agent_mode_session_keys(), AgentModeSessionKeys, cancel_and_clear_session(), cleanup_abandoned_empty_flow(), clear_pending_text_batch(), derive_agent_mode_session_id(), ensure_session_exists(), EnsureSessionContext (+70 more)
 
 ### Community 248 - "Sandbox & Tool Runtime Build"
 Cohesion: 0.29
@@ -1763,8 +1735,8 @@ Cohesion: 0.24
 Nodes (19): classify(), file_rank(), gist_api_url(), gist_comment_api_url(), gist_parts(), GistCommentPlan, GistFileContent, GistParts (+11 more)
 
 ### Community 251 - "Web Settings Panel"
-Cohesion: 0.25
-Nodes (20): Model settings panel with web default model dropdown and Save/Refresh actions, Model route metadata list (source, protocol, image input, status, saved web default, env fallback), api_get_settings(), api_update_settings(), cached_user_settings(), load_current_user_record(), load_user_record_for_cache(), prewarm_user_settings_cache() (+12 more)
+Cohesion: 0.29
+Nodes (18): Model settings panel with web default model dropdown and Save/Refresh actions, Model route metadata list (source, protocol, image input, status, saved web default, env fallback), api_get_settings(), api_update_settings(), cached_user_settings(), load_current_user_record(), load_user_record_for_cache(), prewarm_user_settings_cache() (+10 more)
 
 ### Community 252 - "Compaction Policy"
 Cohesion: 0.06
@@ -1791,20 +1763,20 @@ Cohesion: 0.06
 Nodes (33): Completion Audit, Contract Boundary Analysis, Decisions, Final Verification, Functional requirements (G*), Goal: Permanent Life Mode memory implementation, Implementation Plan, LifeGateway -> LifeWorker (+25 more)
 
 ### Community 258 - "HTTP Timeout & Client"
-Cohesion: 0.29
-Nodes (6): create_task_http_expect_conflict(), JsonHttpResponse, Result, StatusCode, T, e2e_web_followup_while_running_returns_session_busy()
+Cohesion: 0.22
+Nodes (7): data_payload(), decode_utf8_prefix(), normalize_newlines_in_place(), Option, Result, Vec, support_sse_normalizes_crlf_boundaries()
 
 ### Community 259 - "Chat Completions Client"
-Cohesion: 0.23
-Nodes (6): Cow, AgentRunner, Duration, HashSet, Option, Result
+Cohesion: 0.19
+Nodes (8): Cow, AgentRunner, Duration, HashSet, Instant, Option, Result, select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route()
 
 ### Community 260 - "Streaming Tool Calls"
-Cohesion: 0.26
-Nodes (17): apply_streaming_tool_call_delta(), chat_completions_stream_accumulates_content_and_reasoning(), chat_completions_stream_accumulates_tool_call_deltas(), decode_utf8_prefix(), finalize_streaming_tool_calls(), finish_streaming_chat_response(), normalize_newlines_in_place(), parse_streaming_chat_response() (+9 more)
+Cohesion: 0.19
+Nodes (22): apply_streaming_tool_call_delta(), chat_completions_stream_accumulates_content_and_reasoning(), chat_completions_stream_accumulates_tool_call_deltas(), decode_utf8_prefix(), finalize_streaming_tool_calls(), finish_streaming_chat_response(), normalize_newlines_in_place(), parse_streaming_chat_response() (+14 more)
 
 ### Community 261 - "Protocol Inference"
-Cohesion: 0.36
-Nodes (8): adapter_builds_inbound_tool_calls_with_protocol_metadata(), adapter_generates_fresh_invocation_ids_for_provider_generated_calls(), adapter_generates_uncorrelated_runtime_ids_when_provider_omits_wire_id(), adapter_preserves_optional_provider_item_ids(), ProviderToolCallAdapter, Into, Option, Self
+Cohesion: 0.12
+Nodes (21): chat_like_profile_preserves_expected_protocol_shape(), profile_builds_consistent_components(), profile_exposes_encoding_and_inbound_helpers(), Into, Option, Self, ToolProtocolProfile, adapter_builds_inbound_tool_calls_with_protocol_metadata() (+13 more)
 
 ### Community 262 - "Anthropic Tool Encoder"
 Cohesion: 0.24
@@ -1831,8 +1803,8 @@ Cohesion: 0.13
 Nodes (4): Consent, ConsentAction, Matcher, URLMatcher
 
 ### Community 268 - "Compaction Types"
-Cohesion: 0.11
-Nodes (18): DateTime, Default, Utc, stack_logs_broker_payload_roundtrip_preserves_contract_types(), stack_logs_list_sources_payload_roundtrip_preserves_source_records(), StackLogCursor, StackLogEntry, StackLogsFetchRequest (+10 more)
+Cohesion: 0.07
+Nodes (36): ManagerControlPlaneProvider, Option, Result, TopicInfraPreflightReport, Value, Vec, TopicInfraUpsertArgs, build_topic_infra_config_record() (+28 more)
 
 ### Community 269 - "Memory Behavior Runtime"
 Cohesion: 0.06
@@ -1855,8 +1827,8 @@ Cohesion: 0.04
 Nodes (47): 1. General Topic Special Case (Telegram), 1. Thread Specification, 2. Thread-Based Session Keys, 2. Thread-Not-Found Fallback Ambiguity, 3. Agent Routing Tiers, 3. Session Key Collision Risk, 4. Configuration Hierarchy, 4. Thread Binding Inheritance Complexity (+39 more)
 
 ### Community 274 - "Compaction Module"
-Cohesion: 0.10
-Nodes (24): CompletedSubAgentExecution, Drop, HashMap, Instant, JoinHandle, Notify, Semaphore, StdMutex (+16 more)
+Cohesion: 0.12
+Nodes (15): lookup_to_json(), normalize_job_ids(), Drop, HashMap, Notify, Semaphore, StdMutex, Value (+7 more)
 
 ### Community 275 - "SQLx Config"
 Cohesion: 0.12
@@ -1867,19 +1839,19 @@ Cohesion: 0.14
 Nodes (12): db_error(), login_conflict_error(), Error, Display, Error, Formatter, Result, TaskStatus (+4 more)
 
 ### Community 277 - "Browser Live Events"
-Cohesion: 0.16
-Nodes (12): browser_live_summary(), BrowserLiveDebugBadges, BrowserLiveEventPayload, BrowserLiveEventType, BrowserLiveScreenshotRef, PersistedTaskEvent, DateTime, Option (+4 more)
+Cohesion: 0.15
+Nodes (13): browser_live_payload_from_reasoning(), browser_live_summary(), BrowserLiveDebugBadges, BrowserLiveEventPayload, BrowserLiveEventType, BrowserLiveScreenshotRef, PersistedTaskEvent, DateTime (+5 more)
 
 ### Community 278 - "Delivered Files UI"
-Cohesion: 0.23
-Nodes (9): AgentExecutor, PolicyControlledHook, AgentRunner, Arc, Box, RwLock, Self, transient_context_is_not_persisted_to_memory() (+1 more)
+Cohesion: 0.36
+Nodes (6): base64_data(), data_url(), image_data_url(), image_data_url_with_mime(), infer_image_mime_type(), normalized_image_mime_type()
 
 ### Community 279 - "Completion Check Hook"
-Cohesion: 0.26
-Nodes (8): auth_client(), Client, Instant, Self, Vec, smoke_test_browser_sidecar_client_contract(), start_server(), Timings
+Cohesion: 0.36
+Nodes (3): ManagerControlPlaneProvider, Result, Vec
 
 ### Community 280 - "Media Input"
-Cohesion: 0.30
+Cohesion: 0.27
 Nodes (12): AgentInput, build_uploaded_file_input(), download_telegram_file(), extract_agent_file_input(), extract_agent_input(), extract_agent_input_inner(), mime_extension(), Bot (+4 more)
 
 ### Community 281 - "Reddit Source"
@@ -1911,16 +1883,16 @@ Cohesion: 0.32
 Nodes (13): classify(), is_package_name(), metadata_url(), optional_str(), parse_project_metadata(), project_url(), pypi_project_parts(), PypiProjectMetadata (+5 more)
 
 ### Community 290 - "Signal Handling"
-Cohesion: 0.12
-Nodes (14): args_to_request(), request_validation(), Default, Err, FromStr, Into, Option, Result (+6 more)
+Cohesion: 0.36
+Nodes (3): ManagerControlPlaneProvider, Result, Vec
 
 ### Community 291 - "Sandbox Scope"
 Cohesion: 0.22
 Nodes (6): container_name_differs_for_different_namespaces(), container_name_is_stable_for_same_scope(), docker_labels_include_transport_metadata(), HashMap, Into, Self
 
 ### Community 292 - "Life Executor"
-Cohesion: 0.14
-Nodes (11): ManagerControlPlaneProvider, MutationAuditTarget, PreviewableMutationPlan, F, Option, Result, Serialize, T (+3 more)
+Cohesion: 0.13
+Nodes (12): ManagerControlPlaneProvider, MutationAuditTarget, MutationExecutionResult, PreviewableMutationPlan, F, Option, Result, Serialize (+4 more)
 
 ### Community 293 - "Life Activity UI"
 Cohesion: 0.27
@@ -1935,8 +1907,8 @@ Cohesion: 0.40
 Nodes (12): classify(), habr_article_api_url(), habr_comments_api_url(), HabrKind, HabrPath, is_article_id(), is_company_slug(), is_habr_lang() (+4 more)
 
 ### Community 296 - "Storage Module Build"
-Cohesion: 0.09
-Nodes (15): AnthropicProviderModule, Arc, Option, ChatGptProviderModule, Arc, Option, build_primary_storage(), BuiltStorageBackend (+7 more)
+Cohesion: 0.24
+Nodes (9): build_primary_storage(), BuiltStorageBackend, Arc, Option, Result, Send, Sync, SqlxStorageModule (+1 more)
 
 ### Community 297 - "Life Agent Executor"
 Cohesion: 0.19
@@ -1948,7 +1920,7 @@ Nodes (28): Completion Audit, CP-1: Sidecar pipe foundation, CP-2: Reliable clic
 
 ### Community 299 - "Web Components"
 Cohesion: 0.09
-Nodes (23): ContainerSummary, ResolvedStackLogsSelector, apply_stack_log_cursor_returns_entries_after_cursor(), apply_stack_log_noise_filter_suppresses_expected_noise_classes(), assign_stack_log_ordinals_counts_per_service_and_stream(), list_files_command(), list_files_via_exec(), paginate_stack_log_entries_sets_next_cursor_from_last_returned_entry() (+15 more)
+Nodes (25): ContainerSummary, ResolvedStackLogsSelector, StackLogsListSourcesResponse, StackLogSource, apply_stack_log_cursor_returns_entries_after_cursor(), apply_stack_log_noise_filter_suppresses_expected_noise_classes(), assign_stack_log_ordinals_counts_per_service_and_stream(), list_files_command() (+17 more)
 
 ### Community 300 - "Tool Access Policy"
 Cohesion: 0.07
@@ -1960,26 +1932,26 @@ Nodes (11): rejects_non_http_urls(), parse_web_url(), reject_media_url(), reject
 
 ### Community 302 - "Module Runtime Config"
 Cohesion: 0.06
-Nodes (23): LifeIdentityLink, LifeTransportBinding, LifeTransportId, BindingId, Display, Formatter, Into, LifeResult (+15 more)
+Nodes (29): LifeDeliveryOutbox, LifeDeliveryStatus, BindingId, DeliveryId, LifeResult, Option, TurnId, Value (+21 more)
 
 ### Community 303 - "Testing Config Helpers"
 Cohesion: 0.29
 Nodes (11): configure_agent_expectations(), configure_basic_expectations(), configure_control_plane_expectations(), mock_llm_simple(), mock_storage_noop(), AsRef, MockLlmProvider, MockStorageProvider (+3 more)
 
 ### Community 304 - "Static Assets"
-Cohesion: 0.18
-Nodes (14): resolve_file_path(), Result, SandboxExec, AppState, Option, PathBuf, Response, serve_static_file() (+6 more)
+Cohesion: 0.29
+Nodes (11): AppState, Option, PathBuf, Response, serve_static_file(), static_asset_path(), static_assets_handler(), static_content_type() (+3 more)
 
 ### Community 305 - "Payload Fields"
-Cohesion: 0.18
-Nodes (10): AgentRunner, Error, Option, Result, should_parse_unstructured_structured_output_fallback(), AgentRunner, Option, Result (+2 more)
+Cohesion: 0.36
+Nodes (3): ManagerControlPlaneProvider, Result, Vec
 
 ### Community 306 - "Smoke Client"
 Cohesion: 0.33
 Nodes (10): parse_tool_calls(), parse_tool_calls_attaches_openrouter_wire_ids(), parse_tool_calls_handles_empty_id(), prepare_structured_messages(), prepare_structured_messages_preserves_tool_ids_for_assistant_and_tool_messages(), prepare_tools_json(), prepare_tools_json_uses_chat_completions_function_schema(), Result (+2 more)
 
 ### Community 307 - "Web Sandbox Control"
-Cohesion: 0.47
+Cohesion: 0.41
 Nodes (11): compiled_modules(), push_declared_modules(), push_llm_modules(), push_runtime_and_integration_modules(), push_tool_modules(), push_transport_and_storage_modules(), Box, Vec (+3 more)
 
 ### Community 308 - "Web UI Thinking Screenshot"
@@ -1987,60 +1959,60 @@ Cohesion: 0.18
 Nodes (10): CompletionCheckHook, Конструктор, Логика работы, Логирование, Назначение, Примеры сценариев, Реализация, Сценарий 1: Все задачи завершены (+2 more)
 
 ### Community 309 - "LLM Error Types"
-Cohesion: 0.08
-Nodes (26): EngineCompactionOutcome, EngineCompactionSkipped, CompactionBackend, CompactionPhase, CompactionReason, AgentExecutor, Option, Result (+18 more)
+Cohesion: 0.11
+Nodes (14): AgentEventSource, compaction_backend_label(), compaction_phase_label(), compaction_reason_label(), format_optional_route(), LlmRetryState, ProgressState, repeated_compaction_warning_is_preserved() (+6 more)
+
+### Community 310 - "Tool Call Parsing"
+Cohesion: 0.32
+Nodes (3): AnthropicProviderModule, Arc, Option
 
 ### Community 311 - "Provider E2E Tests"
-Cohesion: 0.53
-Nodes (10): chatgpt_chat_with_tools_live(), init_test_env(), is_expected_error(), minimax_chat_with_tools_live(), opencode_go_chat_with_tools_live(), openrouter_chat_with_tools_live(), Result, should_run_e2e_checks() (+2 more)
+Cohesion: 0.62
+Nodes (9): chatgpt_chat_with_tools_live(), init_test_env(), is_expected_error(), minimax_chat_with_tools_live(), opencode_go_chat_with_tools_live(), openrouter_chat_with_tools_live(), Result, should_run_e2e_checks() (+1 more)
 
 ### Community 312 - "ForEach Action JS"
-Cohesion: 0.17
-Nodes (3): ForEachAction, IfAllowNoneAction, RunRootedAction
+Cohesion: 0.12
+Nodes (5): ForEachAction, IfAllowAllAction, IfAllowNoneAction, IfCssAction, RunRootedAction
 
 ### Community 313 - "Timeout Report Hook"
 Cohesion: 0.18
-Nodes (11): Main Agent (оркестратор), Sub-Agent (рабочий), Карта хуков по агентам, Конфигурация, Основные концепции, Поток выполнения через хуки, Примеры, Система хуков Oxide Agent (+3 more)
+Nodes (10): adaptive_throttle_blocks_until_capacity_is_released(), adaptive_throttle_enters_incremental_cooldown_after_failure_bursts(), adaptive_throttle_recovers_concurrency_after_success_streak(), opencode_go_should_throttle(), OpenCodeGoAcquireWait, OpenCodeGoAdaptiveThrottle, Mutex, MutexGuard (+2 more)
 
 ### Community 314 - "SSE Decoding"
-Cohesion: 0.38
-Nodes (4): Mutex, Result, VecDeque, SequencedTestProvider
+Cohesion: 0.60
+Nodes (3): Error, Result, WebAgentTransport
 
 ### Community 315 - "Telegram Messaging"
-Cohesion: 0.20
-Nodes (16): agent_control_keyboards_only_include_cancel_task(), agent_control_markup(), agent_flow_inline_keyboard(), agent_flow_inline_keyboard_with_toggle(), assert_no_browser_control_text(), cancel_task_confirmation_inline_keyboard(), confirmation_inline_keyboard(), confirmation_keyboard() (+8 more)
+Cohesion: 0.32
+Nodes (3): ChatGptProviderModule, Arc, Option
 
 ### Community 317 - "Quiescence Verify"
-Cohesion: 0.31
+Cohesion: 0.34
 Nodes (7): ManagerControlPlaneProvider, F, Option, Result, T, Value, AuditEventRecord
 
 ### Community 318 - "Loop Detection Config"
-Cohesion: 0.17
-Nodes (17): LifeDeliverySendFailure, chunk_plain_text(), chunk_plain_text_keeps_chunks_within_telegram_limit(), now_millis(), AppState, Client, Option, Result (+9 more)
+Cohesion: 0.48
+Nodes (6): cfg_name_for_module(), env_var_for_feature(), main(), parse_module_entries(), parse_string_value(), Vec
 
 ### Community 319 - "Topic Contexts"
-Cohesion: 0.14
-Nodes (12): topic_agents_md_get_reports_missing_record(), topic_agents_md_rollback_restores_previous_snapshot(), topic_agents_md_upsert_dry_run_does_not_persist(), topic_agents_md_upsert_persists_and_audits(), topic_context_get_reports_missing_record(), topic_context_rollback_rejects_duplicate_topic_prompt_restore(), topic_context_rollback_restores_previous_snapshot(), topic_context_upsert_dry_run_does_not_persist() (+4 more)
+Cohesion: 0.18
+Nodes (16): AgentExecutor, AgentSession, Arc, RwLock, AgentsMdContext, ManagerControlPlaneContext, PreparedExecution, AgentSession (+8 more)
 
 ### Community 320 - "ChatGPT Auth Flow"
-Cohesion: 0.10
-Nodes (11): is_retryable_reqwest(), Error, StatusCode, stable_code_kind(), status_agent_message(), LifeStorageError, LifeStorageRepository, Send (+3 more)
+Cohesion: 0.43
+Nodes (7): get_brave_backend_api_key(), get_crw_api_token(), get_crw_base_url(), get_tavily_api_key(), is_crw_configured(), is_web_search_configured(), non_empty_env()
 
 ### Community 322 - "Web UI Answer Screenshot"
 Cohesion: 0.39
 Nodes (8): Web UI Agent Answer View (screenshot), Web UI Agent Thinking View (companion screenshot), LifeActivityDrawer — renders live run tool events alongside the answer, LifeConsole component — permanent chat console main UI, Life SSE stream — live event streaming for agent runs, LifeTranscript — chronological turn list with markdown-rendered assistant answers, Markdown rendering — comrak to HTML + ammonia sanitization + code copy buttons, Markdown CSS — dark-theme styling for rendered agent answer content
 
-### Community 324 - "Lightbox UI"
-Cohesion: 0.17
-Nodes (12): Ad blocking, Configuration, Configuration, Consent banner auto-dismiss, Filter list updates, How it works, How it works, Page interventions (diagnostic mode only) (+4 more)
-
-### Community 326 - "Wiki Backend Interface"
-Cohesion: 0.20
-Nodes (14): concise_text(), concise_title(), DeleteTarget, display_session_title(), looks_like_timestamp_title(), IntoView, Memo, Option (+6 more)
+### Community 323 - "Browser Artifact Records"
+Cohesion: 0.47
+Nodes (3): resolve_file_path(), Result, SandboxExec
 
 ### Community 327 - "Life Input UI"
-Cohesion: 0.16
-Nodes (12): initial_task_flush_cache(), is_initial_task_without_progress(), Arc, Cache, Self, WebTaskRecord, session_write_front_cache(), SessionCacheKey (+4 more)
+Cohesion: 0.17
+Nodes (14): get_opencode_go_max_concurrent(), opencode_go_anthropic_branch_uses_messages_api_base(), opencode_go_openai_branch_delegates_to_chat_completions_profile(), OpenCodeGoPermit, OpenCodeGoProvider, OpenCodeProviderProfile, Arc, Drop (+6 more)
 
 ### Community 328 - "REST Contract Tests"
 Cohesion: 0.07
@@ -2053,10 +2025,6 @@ Nodes (32): Compaction engine -> memory/storage, Compaction Trigger Matrix, Comp
 ### Community 330 - "Web UI Empty State"
 Cohesion: 0.83
 Nodes (4): Message Composer (empty state, 'Message Oxide Agent...'), Web UI Empty State Screenshot, Welcome Greeting UI Element ('What can I help you with?'), Welcome Mode Empty State (chat-wrapper.welcome-mode)
-
-### Community 331 - "Registry Wiki Backend"
-Cohesion: 0.19
-Nodes (7): client_creation(), client_from_env(), Client, Result, Self, Vec, SileroClient
 
 ### Community 332 - "Life Config"
 Cohesion: 0.33
@@ -2075,32 +2043,28 @@ Cohesion: 0.40
 Nodes (5): crw Full-Stack Service (Telegram Local), lightpanda Service (Telegram Local), searxng Service (Telegram Local), searxng Service (Web Local), SearXNG Configuration
 
 ### Community 339 - "Wiki Memory Docs"
-Cohesion: 0.22
-Nodes (17): extract_stdout_text(), is_timeout_report(), is_timeout_report_value(), push_bullets(), push_timeout_report_meta(), Item, Iterator, Value (+9 more)
+Cohesion: 0.26
+Nodes (18): get_llm_http_timeout_secs(), create_http_client(), create_http_client_builder(), init_test_env(), is_expected_error(), Result, Vec, should_run_e2e_checks() (+10 more)
 
 ### Community 342 - "List Action JS"
-Cohesion: 0.15
-Nodes (13): LlmProvider, Send, Sync, AlwaysFailMock, RetrySuccessMock, Arc, AtomicUsize, Result (+5 more)
+Cohesion: 0.11
+Nodes (17): LlmProvider, Send, Sync, AlwaysFailMock, RetrySuccessMock, Arc, AtomicUsize, Result (+9 more)
 
 ### Community 344 - "Runtime Invocation"
-Cohesion: 0.28
-Nodes (5): build_sub_agent_report(), shape_sub_agent_terminal_output_maps_timeout_to_timeout_report(), shape_sub_agent_terminal_output_maps_user_input_pause_to_error_report(), SubAgentReportContext, SubAgentReportStatus
+Cohesion: 0.17
+Nodes (10): filter_allowed_tools_rejects_manager_control_plane_requests(), CancellationToken, HashSet, Result, Sender, Uuid, sub_agent_blocklist_includes_sensitive_tools(), sub_agent_display_names_are_drawn_from_pun_pool() (+2 more)
 
 ### Community 346 - "Web UI Task Goals"
 Cohesion: 0.15
 Nodes (12): Completion Audit, Decisions, Final Verification, Goal: Web UI Tasks Cleanup After Split, Implementation Plan, Missing Inputs, Objective, Progress Log (+4 more)
 
-### Community 350 - "Hooks System Docs"
-Cohesion: 0.21
-Nodes (7): client_creation(), client_from_env(), KokoroClient, Client, Result, Self, Vec
-
 ### Community 351 - "Loop Detection Docs"
-Cohesion: 0.24
-Nodes (18): maybe_run_search_probe(), maybe_run_search_probe_with_config(), maybe_run_search_probe_with_runtime(), request_content(), CancellationToken, Default, Sender, run_forced_finalize() (+10 more)
+Cohesion: 0.10
+Nodes (18): EngineCompactionOutcome, EngineCompactionSkipped, CompactionBackend, CompactionPhase, CompactionReason, AgentExecutor, Option, Result (+10 more)
 
 ### Community 352 - "Timestamp Utils"
 Cohesion: 0.24
-Nodes (6): filter_allowed_tools_rejects_manager_control_plane_requests(), AgentRunner, Duration, HashSet, LlmClient, sub_agent_blocklist_includes_sensitive_tools()
+Nodes (6): prepare_sub_agent_execution_applies_sub_agent_budget_policy(), PreparedSubAgentExecution, AgentRunner, Duration, LlmClient, RuntimeToolRegistry
 
 ### Community 359 - "Latency Goals"
 Cohesion: 0.14
@@ -2123,28 +2087,20 @@ Cohesion: 0.04
 Nodes (44): 1. OGG для Telegram voice, 1) Проверка сервиса, 2) Синтез речи, 3. SSML + OGG, `400 Bad Request`, `422 Unprocessable Entity`, `500 Internal Server Error`, Base URL (+36 more)
 
 ### Community 365 - "CI Clippy Job"
-Cohesion: 0.25
-Nodes (8): Architectural invariants, Chrome binary preference, Clean vs diagnostic sessions, Command-line flags, Console interceptor hardening, Isolated worlds, Not covered, Stealth and anti-detection
-
-### Community 366 - "CI Format Job"
-Cohesion: 0.09
-Nodes (24): LifeDeliveryOutbox, LifeDeliveryStatus, BindingId, DeliveryId, LifeResult, Option, TurnId, Value (+16 more)
+Cohesion: 0.30
+Nodes (12): infer_protocol(), infer_protocol_for_config(), infer_protocol_for_prefix(), ModelDiscoveryFilter, ModelProtocol, OpenCodeGoDiscoveryConfig, BTreeMap, Duration (+4 more)
 
 ### Community 367 - "Agent Execution Doc"
-Cohesion: 0.25
-Nodes (8): `browser_close`, `browser_debug`, `browser_execute`, `browser_extract`, `browser_observe`, `browser_save_screenshot`, `browser_start`, Tools
-
-### Community 368 - "Community 368"
-Cohesion: 0.40
-Nodes (5): format_upstream_service_error(), is_upstream_missing_remote_path_error(), Error, ssh_runtime_failure(), ServiceError
+Cohesion: 0.15
+Nodes (6): RecordingCheckpoint, Mutex, Vec, VecDeque, RuntimeContextInbox, RuntimeContextInjection
 
 ### Community 370 - "Types Module (A)"
 Cohesion: 0.08
 Nodes (23): Codex /goal objective, Completion Audit, CP0: P0.5 verification — CDP JPEG + Postgres schema, CP1: CDP JPEG capture in sidecar, CP2: Postgres migration — `browser_artifacts` table, CP3: Storage facade methods, CP4: Sidecar returns bytes, no disk write, CP5: Core stores screenshots in Postgres (verified) (+15 more)
 
 ### Community 380 - "Models Module"
-Cohesion: 0.18
-Nodes (17): build_forced_finalize_prompt(), build_generation_prompt(), extract_json_string_field_lossy(), extract_json_u64_field_lossy(), extract_stdout_text_lossy(), first_useful_lines(), forced_finalize_prompt_includes_previous_final_message_context(), generation_prompt_includes_previous_final_message_as_context_only() (+9 more)
+Cohesion: 0.27
+Nodes (13): AgentInputIntent, InputIntentSnapshot, last_task_activity(), latest_user_task(), load_input_intent_snapshot(), resolve_agent_input_intent(), AgentSession, Arc (+5 more)
 
 ### Community 383 - "API Module"
 Cohesion: 0.08
@@ -2166,21 +2122,13 @@ Nodes (7): 1. Qwen AI Chat (Базовый текстовый запрос), 2. 
 Cohesion: 0.33
 Nodes (11): CompletionCheckHook, create_context(), Default, Self, test_all_completed_allows_completion(), test_continuation_limit_allows_completion(), test_empty_todos_allows_completion(), test_ignores_non_after_agent_events() (+3 more)
 
-### Community 396 - "Community 396"
-Cohesion: 0.22
-Nodes (7): data_payload(), decode_utf8_prefix(), normalize_newlines_in_place(), Option, Result, Vec, support_sse_normalizes_crlf_boundaries()
-
-### Community 399 - "OpenRouter Provider Doc"
-Cohesion: 0.27
-Nodes (6): capture_screenshot(), Vec, sha256_of_bytes(), sha256_of_empty_is_known(), sha256_of_known_data(), Engine
+### Community 398 - "OpenCode Zen Provider Doc"
+Cohesion: 0.06
+Nodes (36): messages_client_keeps_endpoint_key_and_profile(), MessagesClient, Client, Into, Result, Self, Value, messages_profile_preserves_anthropic_headers_and_endpoint_policy() (+28 more)
 
 ### Community 402 - "Community 402"
 Cohesion: 0.32
 Nodes (5): LoopDetectedEvent, LoopType, DateTime, Utc, loop_type_label()
-
-### Community 403 - "Community 403"
-Cohesion: 0.21
-Nodes (15): char_count(), compact_text(), dossier_injection_appends_after_original_prompt_and_preserves_attachments(), dossier_injection_noops_without_handoffs(), dossier_renderer_uses_xml_like_envelope_and_escapes_content(), dossier_truncation_preserves_newest_handoff_first(), handoff(), inject_search_probe_dossier() (+7 more)
 
 ### Community 404 - "Community 404"
 Cohesion: 0.35
@@ -2190,29 +2138,17 @@ Nodes (8): allows_tool_when_policy_permits_it(), blocks_explicitly_blocked_tool(
 Cohesion: 0.29
 Nodes (7): Lightbox(), LightboxContext, LightboxImage, IntoView, Option, ReadSignal, WriteSignal
 
-### Community 406 - "Community 406"
-Cohesion: 0.60
-Nodes (3): Error, Result, WebAgentTransport
-
 ### Community 407 - "Community 407"
 Cohesion: 0.09
 Nodes (21): Assistant message serialization (the fix that didn't work), Commits (all on `feature/chrome-agent`), Critical Finding: Trace Logs NOT Visible, Docker / Environment, External Research Summary, Gates (All Pass), H1: Enable trace logging, re-run, examine request body, H2: Omit `content` field entirely from JSON (+13 more)
 
-### Community 408 - "Community 408"
-Cohesion: 0.67
-Nodes (3): Duration, TaskStatus, wait_for_task_status()
-
 ### Community 409 - "Community 409"
-Cohesion: 0.13
-Nodes (21): build_output_path(), duration_estimation(), ensure_parent_dir(), estimate_duration(), output_path_defaults_into_workspace_generated(), Arc, Into, Mutex (+13 more)
+Cohesion: 0.05
+Nodes (45): client_creation(), client_from_env(), Client, Result, Self, Vec, SileroClient, build_output_path() (+37 more)
 
 ### Community 410 - "Community 410"
 Cohesion: 0.23
 Nodes (8): AgentRunner, CancellationToken, Error, F, Option, Result, Sender, T
-
-### Community 411 - "Community 411"
-Cohesion: 0.19
-Nodes (9): CancelSubAgentsArgs, lookup_to_json(), Value, Vec, SpawnSubAgentsArgs, SubAgentTaskArgs, summarize_recent_messages(), WaitSubAgentsArgs (+1 more)
 
 ### Community 412 - "Community 412"
 Cohesion: 0.10
@@ -2235,8 +2171,8 @@ Cohesion: 0.10
 Nodes (20): 13.1 Required behavior, 13.2 Message examples, 13.3 Integration paths, 13. Telegram requirements, 16.1 Threats, 16.2 URL access policy, 16.3 Prompt injection defense, 16.4 Audit events (+12 more)
 
 ### Community 417 - "Community 417"
-Cohesion: 0.18
-Nodes (8): 1. Prepare env, 2. Start a stack, 3. Postgres and migrations, 4. Optional services, 5. Sandbox, 6. Verify, 7. Operate, Deploy
+Cohesion: 0.15
+Nodes (9): 1. Prepare env, 2. Start a stack, 3. Postgres and migrations, 4. Optional services, 5. Sandbox, 6. Verify, 7. Operate, Deploy (+1 more)
 
 ### Community 418 - "Community 418"
 Cohesion: 0.10
@@ -2245,6 +2181,14 @@ Nodes (21): 8. Functional Requirements, FR-001: Remove Chat Mode state, FR-002: 
 ### Community 419 - "Community 419"
 Cohesion: 0.10
 Nodes (21): 8.10 Cancel running task, 8.11 Progress snapshot persistence, 8.12 Rich event payload для UI, 8.13 SSE requirements, 8.14 Event replay contract, 8.15 Final response persistence contract, 8.16 Event log retention и объём, 8.17 Errors (+13 more)
+
+### Community 420 - "Community 420"
+Cohesion: 0.16
+Nodes (18): api_transcribe_voice(), default_voice_upload_file_name(), normalized_voice_mime_type(), read_single_voice_upload(), AppState, HeaderMap, Into, Json (+10 more)
+
+### Community 423 - "Community 423"
+Cohesion: 0.44
+Nodes (10): bootstrap_loads_due_reminders_from_storage(), execute_reminder(), now_unix_secs(), provider_pause_and_resume_refresh_in_memory_queue(), provider_schedule_and_cancel_update_in_memory_queue(), reconcile_preserves_local_busy_snooze_without_rephasing_storage(), reminder_invocation(), reminder_provider() (+2 more)
 
 ### Community 424 - "Community 424"
 Cohesion: 0.11
@@ -2282,9 +2226,9 @@ Nodes (17): Checkpoint 1: Web orchestrator skeleton and config, Checkpoint 2: Ep
 Cohesion: 0.11
 Nodes (17): Completion Audit, Decisions, Final Verification, G1: Latest screenshot renders as an image, G2: Final artifacts render as images/thumbnails, Goal: browser-live visual preview in web console, Implementation Plan, Missing Inputs (+9 more)
 
-### Community 437 - "Community 437"
-Cohesion: 0.14
-Nodes (14): Available LLM Providers, DM Tool Restrictions, Features, File Handling, Infrastructure, Media, Memory, RBAC Configuration (+6 more)
+### Community 436 - "Community 436"
+Cohesion: 0.07
+Nodes (37): Web UI Agent Thinking Screenshot, Dark theme web console layout, Thinking elapsed timer (Thinking for Ns), Reasoning event activity panel, Thinking status button with dot and chevron, Web UI Settings page screenshot, Account panel showing login and role with logout button, Agent profiles panel with default profile selector, create/edit form, and profile list (+29 more)
 
 ### Community 438 - "Community 438"
 Cohesion: 0.11
@@ -2331,20 +2275,20 @@ Cohesion: 0.12
 Nodes (16): Access policy, Architecture, Configuration, Cursor contract, Error handling, Feature gating and module registry, Noise policy, Non-goals (+8 more)
 
 ### Community 451 - "Community 451"
-Cohesion: 0.12
-Nodes (16): Architecture Highlights, Configuration (.env), Deployment, Description, Features, Installation and Launch, Key Dependencies, License (+8 more)
+Cohesion: 0.04
+Nodes (49): Agent Architecture, API Keys (Mandatory), Architecture Highlights, Atomic Features (selection), Available LLM Providers, Browser Live sidecar in Compose, Configuration (.env), Context Isolation (+41 more)
 
 ### Community 452 - "Community 452"
 Cohesion: 0.36
 Nodes (4): LoopDetectionConfig, ConfigError, Default, Self
 
 ### Community 453 - "Community 453"
-Cohesion: 0.18
-Nodes (27): apply_reasoning_policy(), apply_streaming_policy(), apply_thinking_policy(), assistant_message(), assistant_message_requires_reasoning_content_with_empty_reasoning(), assistant_message_requires_reasoning_content_with_nonempty_reasoning(), assistant_message_with_empty_content_and_no_tool_calls_keeps_empty_string(), assistant_message_with_empty_content_and_tool_calls_sends_null_content() (+19 more)
+Cohesion: 0.11
+Nodes (40): apply_reasoning_policy(), apply_streaming_policy(), apply_thinking_policy(), assistant_message(), assistant_message_requires_reasoning_content_with_empty_reasoning(), assistant_message_requires_reasoning_content_with_nonempty_reasoning(), assistant_message_with_empty_content_and_no_tool_calls_keeps_empty_string(), assistant_message_with_empty_content_and_tool_calls_sends_null_content() (+32 more)
 
 ### Community 455 - "Community 455"
-Cohesion: 0.12
-Nodes (16): Browser Live Agent, Configuration, Deployment, Limits and warnings, Post-action observations, RAII session cleanup, Requirements, Rollback (+8 more)
+Cohesion: 0.05
+Nodes (44): Ad blocking, Architectural invariants, `browser_close`, `browser_debug`, `browser_execute`, `browser_extract`, Browser Live Agent, `browser_observe` (+36 more)
 
 ### Community 456 - "Community 456"
 Cohesion: 0.12
@@ -2365,10 +2309,6 @@ Nodes (16): 11.10 Final answer presentation, 11.11 Error states, 11.12 Loading/e
 ### Community 460 - "Community 460"
 Cohesion: 0.09
 Nodes (19): BlockingTestHook, Hook, HookRegistry, Box, Default, Self, Send, Sync (+11 more)
-
-### Community 461 - "Community 461"
-Cohesion: 0.22
-Nodes (4): AgentRunner, Error, Option, Result
 
 ### Community 462 - "Community 462"
 Cohesion: 0.40
@@ -2403,8 +2343,8 @@ Cohesion: 0.14
 Nodes (14): 12.1 Аутентификация, 12.2 Сессии, 12.3 Взаимодействие с агентом, 12.4 Markdown, 12.5 Надёжность, 12.6 Базовое управление, 12. User Stories, V1 (+6 more)
 
 ### Community 473 - "Community 473"
-Cohesion: 0.08
-Nodes (27): Web UI Agent Thinking Screenshot, Dark theme web console layout, Thinking elapsed timer (Thinking for Ns), Reasoning event activity panel, Thinking status button with dot and chevron, Web UI Settings page screenshot, Account panel showing login and role with logout button, Agent profiles panel with default profile selector, create/edit form, and profile list (+19 more)
+Cohesion: 0.25
+Nodes (5): runtime_context_from_user_input(), intercept_in_app_click(), navigate(), MouseEvent, Future
 
 ### Community 475 - "Community 475"
 Cohesion: 0.15
@@ -2542,10 +2482,6 @@ Nodes (9): 9. Phased Plan, Phase 0 — Recon and deletion map, Phase 1 — SQLx 
 Cohesion: 0.22
 Nodes (9): 6.1.1 Agent activation, cancellation and reset policy, 6.1 User flow, 6.2 State and persisted config, 6.3 Config, 6.4 Storage, 6.5 LLM API, 6.6 Provider route policy, 6.7 Modality and media architecture (+1 more)
 
-### Community 517 - "Community 517"
-Cohesion: 0.50
-Nodes (4): API Keys (Mandatory), Infrastructure, Supported LLM Providers for Agent Mode, System Requirements
-
 ### Community 518 - "Community 518"
 Cohesion: 0.25
 Nodes (8): 15.1 New service, 15.2 Chrome/Chromium dependency, 15.3 CDP port isolation, 15.4 Network mode, 15.5 Persistent vs ephemeral profiles, 15.6 Artifact volume, 15.7 Security hardening, 15. Docker Compose / deployment
@@ -2553,14 +2489,6 @@ Nodes (8): 15.1 New service, 15.2 Chrome/Chromium dependency, 15.3 CDP port isol
 ### Community 519 - "Community 519"
 Cohesion: 0.25
 Nodes (8): 19. Implementation Plan / Milestones, Milestone 0 — Contracts and plumbing, Milestone 1 — Durable web persistence, Milestone 2 — Auth foundation, Milestone 3 — Task/session API hardening, Milestone 4 — Frontend shell and auth pages, Milestone 5 — Task console and Markdown, Milestone 6 — Packaging, static serving, QA
-
-### Community 520 - "Community 520"
-Cohesion: 0.50
-Nodes (4): Atomic Features (selection), Browser Live sidecar in Compose, Feature Flags, Profile Features
-
-### Community 521 - "Community 521"
-Cohesion: 0.50
-Nodes (4): Context Isolation, Topic-Scoped AGENTS.md, Topic-Scoped Architecture, Topic-Scoped Flows
 
 ### Community 522 - "Community 522"
 Cohesion: 0.29
@@ -2578,10 +2506,6 @@ Nodes (7): 11.1 Unit tests, 11.2 SQL integration tests, 11.3 Web persistence con
 Cohesion: 0.29
 Nodes (7): 7. Provider Compatibility Policy, Keep, Keep with model-level gating, Media Capability Policy, Remove, Required Provider Categories, Requires verification
 
-### Community 527 - "Community 527"
-Cohesion: 0.29
-Nodes (7): Agent Architecture, Deterministic Context, Hooks System, Loop Protection, Prompt Cache Optimization, Runtime Compaction, Tool Providers
-
 ### Community 528 - "Community 528"
 Cohesion: 0.33
 Nodes (6): 12.1 UX, 12.2 SSE event types, 12.3 Event payload principles, 12.4 Flood control, 12.5 Access control, 12. Web UI requirements
@@ -2594,29 +2518,25 @@ Nodes (4): Color Tokens (OKLch), Layout Posture, Oxide Agent — Brand Spec, Typ
 Cohesion: 0.40
 Nodes (5): 18.1 Metrics, 18.2 Logs, 18.3 Tracing, 18.4 Provider accounting, 18. Observability
 
-### Community 539 - "Community 539"
-Cohesion: 0.06
-Nodes (36): messages_client_keeps_endpoint_key_and_profile(), MessagesClient, Client, Into, Result, Self, Value, messages_profile_preserves_anthropic_headers_and_endpoint_policy() (+28 more)
-
 ## Knowledge Gaps
-- **2165 isolated node(s):** `$schema`, `plugin`, `@opencode-ai/plugin`, `MessageRefParseError`, `BlockRefParseError` (+2160 more)
+- **2152 isolated node(s):** `$schema`, `plugin`, `@opencode-ai/plugin`, `MessageRefParseError`, `BlockRefParseError` (+2147 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **240 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **222 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `String` connect `File Delivery Tool` to `SSH Tools & File Editing`, `Web Auth & Session API`, `Web Search Tool`, `Sandbox Docker Management`, `Build System & Module Registry`, `AGENTS.md Tool Module`, `Browser Tool Actions`, `Browser Console & Network Capture`, `CRW Scrape Client`, `Life Principal & Identity`, `Storage Facade`, `Agent Memory Storage`, `Web Task API Contracts`, `Life Event System`, `Reminder Context & Tools`, `Tool Surface Activation`, `Search Probe`, `Session Management`, `Sandbox Broker`, `CRW Client`, `Compaction Scope`, `Reminder Scheduling`, `Manager Control Plane Ops`, `Compiled Capabilities`, `Web Transport & Browser Events`, `Browser DOM Extract Types`, `Community 539`, `Sandbox File Operations`, `LLM Provider Base`, `Config System`, `Agent Controls & Callbacks`, `LLM Model Discovery`, `Agent Hooks Controls`, `Hook Context`, `Browser Artifacts`, `Agent Memory Rendering`, `Prompt Composer`, `Manager Audit Trail`, `Media File Handling`, `LLM Types & Tool Calls`, `Life Identity Links`, `Life Routes API`, `Browser Sidecar Client`, `Web App State`, `Web API Responses`, `Agent Tools Audit`, `Browser Test Support`, `Sub-Agent Delegation`, `ChatGPT Provider`, `Compaction Admission`, `Reminder Schedule Events`, `History Recording`, `Jira MCP Client`, `HTML to Markdown`, `Agent Settings & Routes`, `LLM Provider Trait`, `Telegram Agent Mode Screenshot`, `Compression Tool`, `Compaction Blocks`, `Sub-Agent Delegation Config`, `Unauthorized Cache`, `Browser Action Status`, `Adblock Engine`, `Telegram Callbacks`, `Composer & Clipboard`, `Tool Runtime Config`, `Protocol Profiles`, `yt-dlp Provider`, `Media Preprocessor`, `Wiki Memory Backend`, `Task Runner`, `In-Memory Web UI Store`, `Default Infra Config`, `Auth Helpers`, `Agent Execution Profile`, `Forum Topics`, `Message Handling`, `Agent Profile Config`, `Web Task Contracts`, `File Delivery Worker`, `Task Executor`, `Life Run`, `Session Caching`, `Wiki Memory Planner`, `LLM Request Policies`, `Stack Logs Selector`, `Identity Display`, `File Delivery Types`, `E2E Delegation Tests`, `Tool Definitions`, `OpenCode Go Provider Body`, `Topic Routing`, `Life Console UI`, `Manager Shared Ops`, `Webfetch Error Detection`, `Runner State`, `Main Binary & CLI`, `Web Auth Bootstrap`, `Browser Viewport`, `Web Streaming Signals`, `Stack Logs Tool`, `HTML Utils`, `Agent Runner Hooks`, `Budget & Token Tracking`, `Memory Capture`, `Path Tool`, `SSE Backfill`, `Structured Output`, `Batched Text Input`, `Todos Tool Card`, `Compaction Archive`, `Agent Executor Transitions`, `User Config Management`, `Auto Title`, `Compaction Strategy`, `Progress Labels`, `Activity Drawer UI`, `Web Session API`, `Model Catalog`, `Manager Stub`, `stderr Handling`, `Model Discovery Config`, `OpenCode Go Model Discovery`, `Auth Session Events`, `Compaction Regression Tests`, `Wiki Cache`, `OpenRouter Provider`, `Activity Button State`, `Auto Title Logic`, `Reminder Notifier`, `ChatGPT Auth File`, `Hermetic Agent Test`, `Agent Profiles API`, `Browser Execute Plan`, `Wiki Memory Config`, `Topic Sandbox Management`, `Runner Tools`, `Wiki Memory Execution`, `Loop Detection Service`, `Output Window`, `OpenCode Go Provider Utils`, `Input Intent Classification`, `Wiki Bootstrap`, `Web Console Entry`, `SSE Task Stream`, `Agent Effort Profile`, `LLM Loop Detector`, `Messages Client`, `Execution Config`, `SQLx Storage Backend`, `ZAI Audit Tests`, `Compaction Renderer`, `Test Hooks`, `Topic Lifecycle Mock`, `History Recovery`, `Tool Group Activation`, `Chat Completions Response`, `Compaction Backend`, `Recording Topic Lifecycle`, `Google Blog Source`, `Agent View`, `Web Console Dev`, `ID Utilities`, `AGENTS.md Provider`, `Tool Executor Registry`, `OpenCode Go Throttle`, `Browser Artifact Tests`, `Noop Storage`, `Topic Route Resolution`, `Web Record Models`, `Executor Config`, `Agent Events`, `ChatGPT Login CLI`, `CDP Connection`, `CI/CD Workflows`, `LLM Image Calls`, `OpenCode Go Concurrency`, `HTTP Utilities`, `Browser Observe`, `DB Helpers`, `Kokoro TTS Client`, `Runner Config`, `Tool Failure Classification`, `Anthropic Provider`, `Response Reasoning Policy`, `LLM Provider Build`, `History Batch Completion`, `Recorded Tool Requests`, `Web Console Prototype`, `Policy Hooks`, `Capabilities Interface`, `API Error Types`, `Diagnostic Scope`, `LLM Summary Backend`, `Tool Loop Detector`, `File Edit Traits`, `Browser Action Verification`, `Module Registry Snapshots`, `Sub-Agent Delegation Tests`, `Life Telegram Delivery`, `Life Bootstrap`, `Public Config API`, `Sub-Agent Reports`, `Anthropic Request Building`, `Model Routes API`, `Consent Script Builder`, `Content Loop Detector`, `Manager Topic Lifecycle`, `Token Budget Estimation`, `GitHub Gist Source`, `Web Settings Panel`, `Agent Executor State`, `Search Budget Hook`, `Lazy Tool Tests`, `Chat Completions Client`, `Streaming Tool Calls`, `Protocol Inference`, `JSON Decode Retry`, `Web Health & API`, `Compaction Types`, `Runner Memory Conversion`, `Compaction Module`, `SQLx Config`, `DB Error Types`, `Browser Live Events`, `Completion Check Hook`, `Media Input`, `Reddit Source`, `Rust Packages Source`, `PyPI Source`, `Signal Handling`, `Sandbox Scope`, `Life Executor`, `Life Agent Executor`, `Web Components`, `Module Runtime Config`, `Static Assets`, `Payload Fields`, `LLM Error Types`, `SSE Decoding`, `Quiescence Verify`, `Loop Detection Config`, `Topic Contexts`, `ChatGPT Auth Flow`, `Wiki Backend Interface`, `Life Input UI`, `Life Config`, `Wiki Memory Docs`, `List Action JS`, `Runtime Invocation`, `Loop Detection Docs`, `Timestamp Utils`, `CI Format Job`, `Models Module`, `Community 396`, `OpenRouter Provider Doc`, `Community 402`, `Community 403`, `Community 405`, `Community 409`, `Community 411`, `Community 452`, `Community 453`, `Community 460`, `Community 462`, `Community 467`, `Community 473`?**
-  _High betweenness centrality (0.546) - this node is a cross-community bridge._
-- **Why does `ToolDefinition` connect `Agent Memory Rendering` to `SSH Tools & File Editing`, `Lazy Tool Tests`, `Web Search Tool`, `Web Auth & Session API`, `Context Assembler`, `File Delivery Tool`, `OpenCode Go Model Discovery`, `Browser Tool Actions`, `AGENTS.md Tool Module`, `OpenRouter Provider`, `Telegram Chat & Agent Mode`, `Tool Surface Activation`, `A11y Snapshot`, `Topic Sandbox Management`, `Reminder Scheduling`, `Wiki Memory Execution`, `Community 409`, `Output Window`, `OpenCode Go Provider Utils`, `LLM Provider Base`, `Sandbox File Operations`, `Wiki Bootstrap`, `LLM Model Discovery`, `Hook Context`, `Life Activity UI`, `Prompt Composer`, `LLM Types & Tool Calls`, `Tool Group Activation`, `Agent Tools Audit`, `Sub-Agent Delegation`, `ChatGPT Provider`, `Compaction Admission`, `Smoke Client`, `ID Utilities`, `AGENTS.md Provider`, `Jira MCP Client`, `Tool Executor Registry`, `History Recording`, `Telegram Agent Mode Screenshot`, `Compression Tool`, `Provider E2E Tests`, `Sub-Agent Delegation Config`, `yt-dlp Provider`, `Community 453`, `Wiki Memory Backend`, `HTTP Utilities`, `Default Infra Config`, `DB Helpers`, `Community 460`, `Agent Execution Profile`, `Forum Topics`, `Runner Config`, `Chat Completions Profile`, `LLM Summary Backend`, `OpenCode Go Provider Body`, `Stack Logs Tool`, `Anthropic Request Building`, `Agent Runner Hooks`, `Structured Output`, `Sandbox & Tool Runtime Build`, `Compaction Archive`?**
-  _High betweenness centrality (0.034) - this node is a cross-community bridge._
+- **Why does `String` connect `File Delivery Tool` to `SSH Tools & File Editing`, `Web Auth & Session API`, `Web Search Tool`, `Sandbox Docker Management`, `Build System & Module Registry`, `AGENTS.md Tool Module`, `Browser Tool Actions`, `Browser Console & Network Capture`, `CRW Scrape Client`, `Life Principal & Identity`, `Storage Facade`, `Agent Memory Storage`, `Web Task API Contracts`, `Telegram Chat & Agent Mode`, `Life Event System`, `Reminder Context & Tools`, `Tool Surface Activation`, `Search Probe`, `Session Management`, `Sandbox Broker`, `CRW Client`, `Reminder Scheduling`, `Manager Control Plane Ops`, `Compiled Capabilities`, `Web Transport & Browser Events`, `Browser DOM Extract Types`, `LLM Provider Base`, `Sandbox File Operations`, `Agent Controls & Callbacks`, `Config System`, `LLM Model Discovery`, `Agent Hooks Controls`, `Hook Context`, `Browser Artifacts`, `Agent Memory Rendering`, `Prompt Composer`, `Manager Audit Trail`, `Media File Handling`, `LLM Types & Tool Calls`, `Life Identity Links`, `Life Routes API`, `Browser Sidecar Client`, `Web App State`, `Web API Responses`, `Agent Tools Audit`, `Browser Test Support`, `Sub-Agent Delegation`, `ChatGPT Provider`, `Compaction Admission`, `Reminder Schedule Events`, `History Recording`, `Jira MCP Client`, `HTML to Markdown`, `Agent Settings & Routes`, `LLM Provider Trait`, `Telegram Agent Mode Screenshot`, `Compression Tool`, `Compaction Blocks`, `Sub-Agent Delegation Config`, `Unauthorized Cache`, `Browser Action Status`, `Adblock Engine`, `Telegram Callbacks`, `Composer & Clipboard`, `Tool Runtime Config`, `Protocol Profiles`, `yt-dlp Provider`, `Media Preprocessor`, `Wiki Memory Backend`, `Task Runner`, `In-Memory Web UI Store`, `Default Infra Config`, `Auth Helpers`, `Route Failover`, `Agent Execution Profile`, `Forum Topics`, `Message Handling`, `Agent Profile Config`, `Web Task Contracts`, `File Delivery Worker`, `Task Executor`, `Life Run`, `Session Caching`, `Wiki Memory Planner`, `LLM Request Policies`, `Stack Logs Selector`, `Identity Display`, `File Delivery Types`, `E2E Delegation Tests`, `Tool Definitions`, `OpenCode Go Provider Body`, `Topic Routing`, `Life Console UI`, `Manager Shared Ops`, `Webfetch Error Detection`, `Runner State`, `Main Binary & CLI`, `Web Auth Bootstrap`, `Browser Viewport`, `Web Streaming Signals`, `Stack Logs Tool`, `HTML Utils`, `Agent Runner Hooks`, `Budget & Token Tracking`, `Memory Capture`, `Path Tool`, `SSE Backfill`, `Structured Output`, `Batched Text Input`, `Todos Tool Card`, `Compaction Archive`, `Agent Executor Transitions`, `User Config Management`, `Auto Title`, `Compaction Strategy`, `Progress Labels`, `Activity Drawer UI`, `Web Session API`, `Model Catalog`, `Manager Stub`, `stderr Handling`, `Model Discovery Config`, `OpenCode Go Model Discovery`, `Compaction Regression Tests`, `OpenRouter Provider`, `Activity Button State`, `Auto Title Logic`, `Reminder Notifier`, `ChatGPT Auth File`, `Hermetic Agent Test`, `Agent Profiles API`, `Browser Execute Plan`, `Wiki Memory Config`, `A11y Snapshot`, `Topic Sandbox Management`, `Runner Tools`, `Wiki Memory Execution`, `Loop Detection Service`, `Output Window`, `Browser Tool Card UI`, `Input Intent Classification`, `Web Console Entry`, `SSE Task Stream`, `Agent Effort Profile`, `LLM Loop Detector`, `Messages Client`, `Execution Config`, `SQLx Storage Backend`, `ZAI Audit Tests`, `Compaction Renderer`, `Test Hooks`, `Topic Lifecycle Mock`, `History Recovery`, `Tool Group Activation`, `Chat Completions Response`, `Compaction Backend`, `Recording Topic Lifecycle`, `Google Blog Source`, `Agent View`, `Web Console Dev`, `ID Utilities`, `AGENTS.md Provider`, `Tool Executor Registry`, `OpenCode Go Throttle`, `Noop Storage`, `Topic Route Resolution`, `Web Record Models`, `Executor Config`, `ChatGPT Login CLI`, `CDP Connection`, `CI/CD Workflows`, `LLM Image Calls`, `OpenCode Go Concurrency`, `HTTP Utilities`, `Browser Observe`, `DB Helpers`, `Agent Session`, `Kokoro TTS Client`, `Runner Config`, `Tool Failure Classification`, `Anthropic Provider`, `Response Reasoning Policy`, `LLM Provider Build`, `History Batch Completion`, `Recorded Tool Requests`, `Web Console Prototype`, `Capabilities Interface`, `API Error Types`, `Diagnostic Scope`, `LLM Summary Backend`, `Tool Loop Detector`, `File Edit Traits`, `Browser Action Verification`, `Module Registry Snapshots`, `Sub-Agent Delegation Tests`, `Life Telegram Delivery`, `Life Bootstrap`, `Public Config API`, `Sub-Agent Reports`, `Anthropic Request Building`, `Wiki Keys`, `Model Routes API`, `Consent Script Builder`, `Content Loop Detector`, `Manager Topic Lifecycle`, `Hooks Documentation`, `Token Budget Estimation`, `GitHub Gist Source`, `Web Settings Panel`, `Agent Executor State`, `Search Budget Hook`, `Lazy Tool Tests`, `HTTP Timeout & Client`, `Chat Completions Client`, `Streaming Tool Calls`, `Protocol Inference`, `JSON Decode Retry`, `Web Health & API`, `Compaction Types`, `Runner Memory Conversion`, `Compaction Module`, `SQLx Config`, `DB Error Types`, `Browser Live Events`, `Delivered Files UI`, `Completion Check Hook`, `Media Input`, `Reddit Source`, `Rust Packages Source`, `PyPI Source`, `Signal Handling`, `Sandbox Scope`, `Life Executor`, `Life Agent Executor`, `Web Components`, `Module Runtime Config`, `Payload Fields`, `LLM Error Types`, `Quiescence Verify`, `Loop Detection Config`, `Topic Contexts`, `ChatGPT Auth Flow`, `Browser Artifact Records`, `Life Input UI`, `Life Config`, `List Action JS`, `Runtime Invocation`, `Loop Detection Docs`, `Timestamp Utils`, `CI Clippy Job`, `Agent Execution Doc`, `Models Module`, `OpenCode Zen Provider Doc`, `Community 402`, `Community 405`, `Community 409`, `Community 420`, `Community 423`, `Community 436`, `Community 452`, `Community 453`, `Community 460`, `Community 462`, `Community 467`?**
+  _High betweenness centrality (0.545) - this node is a cross-community bridge._
+- **Why does `ToolDefinition` connect `Agent Memory Rendering` to `SSH Tools & File Editing`, `Lazy Tool Tests`, `Web Search Tool`, `Web Auth & Session API`, `Context Assembler`, `File Delivery Tool`, `OpenCode Go Model Discovery`, `Browser Tool Actions`, `AGENTS.md Tool Module`, `OpenRouter Provider`, `Compaction Types`, `Tool Surface Activation`, `Topic Sandbox Management`, `Completion Check Hook`, `Reminder Scheduling`, `Community 409`, `Runner Tools`, `LLM Provider Base`, `Sandbox File Operations`, `Wiki Bootstrap`, `LLM Model Discovery`, `Signal Handling`, `Hook Context`, `Life Activity UI`, `Prompt Composer`, `LLM Types & Tool Calls`, `Tool Group Activation`, `Agent Tools Audit`, `Payload Fields`, `Sub-Agent Delegation`, `ChatGPT Provider`, `Smoke Client`, `ID Utilities`, `AGENTS.md Provider`, `Jira MCP Client`, `Tool Executor Registry`, `History Recording`, `Telegram Agent Mode Screenshot`, `Compression Tool`, `Sub-Agent Delegation Config`, `Topic Contexts`, `yt-dlp Provider`, `Community 453`, `Default Infra Config`, `DB Helpers`, `Community 460`, `Agent Execution Profile`, `Forum Topics`, `Runner Config`, `Wiki Memory Docs`, `Policy Hooks`, `LLM Summary Backend`, `Timestamp Utils`, `OpenCode Go Provider Body`, `Stack Logs Tool`, `Anthropic Request Building`, `Structured Output`, `Sandbox & Tool Runtime Build`, `Compaction Archive`?**
+  _High betweenness centrality (0.032) - this node is a cross-community bridge._
 - **Why does `KnownMarkdownSource` connect `Google Blog Source` to `PyPI Source`, `Habr Source`, `Repo Host Classification`, `HTML to Markdown`, `GitHub Gist Source`, `Rust Packages Source`?**
   _High betweenness centrality (0.020) - this node is a cross-community bridge._
 - **What connects `$schema`, `plugin`, `@opencode-ai/plugin` to the rest of the system?**
-  _2181 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _2167 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `SSH Tools & File Editing` be split into smaller, more focused modules?**
-  _Cohesion score 0.06547619047619048 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04215116279069767 - nodes in this community are weakly interconnected._
 - **Should `Web Auth & Session API` be split into smaller, more focused modules?**
   _Cohesion score 0.05590135055783911 - nodes in this community are weakly interconnected._
 - **Should `Web Search Tool` be split into smaller, more focused modules?**
-  _Cohesion score 0.05440820395954992 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.054481792717086835 - nodes in this community are weakly interconnected._

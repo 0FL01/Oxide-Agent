@@ -152,6 +152,93 @@
   cursor: pointer;
 }
 
+.voice-recorder {
+  display: inline-flex;
+  align-items: center;
+}
+
+.voice-button,
+.voice-action {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.voice-button:hover,
+.voice-action:hover {
+  color: var(--fg);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+.voice-button:disabled,
+.voice-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.voice-pill {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-muted);
+}
+
+.voice-pill.recording {
+  color: var(--fg);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.12);
+}
+
+.voice-action {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 16px;
+}
+
+.voice-action.confirm {
+  color: var(--accent);
+}
+
+.voice-timer,
+.voice-status-copy {
+  font: 600 12px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+.voice-waveform {
+  height: 28px;
+  min-width: 152px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.voice-waveform-bar {
+  width: 3px;
+  min-height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.78;
+  transition: height 0.08s ease-out, opacity 0.15s ease-out;
+}
+
 .composer-notice {
   margin: 0 0 8px;
   border-radius: 8px;

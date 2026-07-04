@@ -1,8 +1,8 @@
 use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
     ApiLifeEventsResponse, ApiLifeLargeInputRequest, ApiLifeStateResponse, ApiLifeSubmitRequest,
-    ApiLifeSubmitResponse, ApiLifeTurnsResponse, AuthUserResponse, BootstrapRequest,
-    CancelTaskResponse, ChangePasswordRequest, CreateAgentProfileRequest,
+    ApiLifeSubmitResponse, ApiLifeTurnsResponse, ApiVoiceTranscriptionResponse, AuthUserResponse,
+    BootstrapRequest, CancelTaskResponse, ChangePasswordRequest, CreateAgentProfileRequest,
     CreateAgentProfileResponse, CreateSessionRequest, CreateSessionResponse, CreateTaskRequest,
     CreateTaskResponse, CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse,
     ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
@@ -421,6 +421,36 @@ impl ApiClient {
         }
 
         let builder = self.with_csrf(with_credentials(Request::post("/api/v1/life/uploads")))?;
+        decode(builder.body(form_data)?.send().await?).await
+    }
+
+    pub async fn transcribe_voice(
+        &self,
+        file: &web_sys::File,
+        duration_ms: Option<u32>,
+    ) -> Result<ApiVoiceTranscriptionResponse, ApiClientError> {
+        let form_data = web_sys::FormData::new().map_err(|error| {
+            ApiClientError::Browser(format!("form data init failed: {error:?}"))
+        })?;
+        form_data
+            .append_with_blob_and_filename("audio", file, &file.name())
+            .map_err(|error| {
+                ApiClientError::Browser(format!(
+                    "failed to append voice recording '{}': {error:?}",
+                    file.name()
+                ))
+            })?;
+        if let Some(duration_ms) = duration_ms {
+            form_data
+                .append_with_str("duration_ms", &duration_ms.to_string())
+                .map_err(|error| {
+                    ApiClientError::Browser(format!("failed to append voice duration: {error:?}"))
+                })?;
+        }
+
+        let builder = self.with_csrf(with_credentials(Request::post(
+            "/api/v1/voice/transcriptions",
+        )))?;
         decode(builder.body(form_data)?.send().await?).await
     }
 
