@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use crate::domain::{
     ClaimedLifeDelivery, DeliveryId, LifeDeliveryOutbox, LifeEvent, LifeIdentityLink, LifeInput,
-    LifePrincipal, LifeRun, LifeTransportBinding, LifeTransportId, LifeTurn, PrincipalUserId,
-    ProviderSubject, RunId, TimestampMillis,
+    LifePrincipal, LifeRun, LifeRunStatus, LifeTransportBinding, LifeTransportId, LifeTurn,
+    PrincipalUserId, ProviderSubject, RunId, TimestampMillis,
 };
 
 /// Durable running-run lease duration.
@@ -75,6 +75,20 @@ pub struct ClaimedLifeInputRun {
     /// User turn content loaded from `life_turns` at claim time.
     /// Avoids a separate round-trip when the executor needs the user message.
     pub user_content: String,
+}
+
+/// Durable cancellation transition result for a life run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelLifeRunOutcome {
+    /// The running run was transitioned to `cancelled` by this call.
+    Cancelled,
+    /// The run already existed but was no longer running.
+    AlreadyTerminal {
+        /// Current terminal status.
+        status: LifeRunStatus,
+    },
+    /// No run with this id belongs to the principal.
+    NotFound,
 }
 
 /// Async Postgres repository boundary for source-of-truth life state.
@@ -204,20 +218,46 @@ pub trait LifeStorageRepository: Send + Sync {
     async fn next_event_seq(&self, run_id: RunId) -> LifeStorageResult<i64>;
 
     /// Marks a running run as completed.
+    ///
+    /// Returns `true` when this call won the terminal transition. Returns
+    /// `false` when the run was already moved out of `running` by another
+    /// owner-visible transition such as cancellation.
     async fn complete_run(
         &self,
         run_id: RunId,
         finished_at: TimestampMillis,
         last_checkpoint_at: TimestampMillis,
-    ) -> LifeStorageResult<()>;
+    ) -> LifeStorageResult<bool>;
 
     /// Marks a running run as failed.
+    ///
+    /// Returns `true` when this call won the terminal transition. Returns
+    /// `false` when the run was already moved out of `running`.
     async fn fail_run(
         &self,
         run_id: RunId,
         finished_at: TimestampMillis,
         error_text: &str,
-    ) -> LifeStorageResult<()>;
+    ) -> LifeStorageResult<bool>;
+
+    /// Cancels a running run owned by a principal.
+    ///
+    /// Cancellation is durable and transport-neutral. It also marks claimed
+    /// inputs whose originating turns are linked to the run as consumed, so a
+    /// user-requested stop cannot strand the permanent input queue.
+    async fn cancel_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+        cancelled_at: TimestampMillis,
+    ) -> LifeStorageResult<CancelLifeRunOutcome>;
+
+    /// Loads the current status for a principal-owned run.
+    async fn run_status(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+    ) -> LifeStorageResult<Option<LifeRunStatus>>;
 
     /// Claims the next due delivery row for a transport.
     async fn claim_next_delivery(

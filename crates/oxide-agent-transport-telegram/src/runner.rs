@@ -15,9 +15,12 @@ use crate::config::{
 use oxide_agent_core::{config::AgentSettings, llm, sandbox::SandboxScope, storage};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
-    domain::{LifeTransportId, TELEGRAM_TRANSPORT_ID},
+    domain::{
+        EventId, LifeEvent, LifeRunStatus, LifeTransportId, RunId, TELEGRAM_TRANSPORT_ID,
+        TimestampMillis,
+    },
     gateway::{LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission},
-    storage::{LifeStorageRepository, SqlxLifeStorage},
+    storage::{CancelLifeRunOutcome, LifeStorageRepository, SqlxLifeStorage},
     worker::LIFE_CONTEXT_KEY,
 };
 use std::sync::Arc;
@@ -40,7 +43,7 @@ const LIFE_TELEGRAM_BOT_TOKEN_ENV: &str = "LIFE_TELEGRAM_BOT_TOKEN";
 #[cfg(feature = "storage-sqlx")]
 const LIFE_READY_MESSAGE: &str = "Permanent Life Mode is ready. Send any private message here and I will answer in the shared Web/Telegram Life chat.";
 #[cfg(feature = "storage-sqlx")]
-const LIFE_HELP_MESSAGE: &str = "Send any non-command private message to talk to Life Mode. Commands: /start, /help, /status. No /life prefix is used.";
+const LIFE_HELP_MESSAGE: &str = "Send any non-command private message to talk to Life Mode. Commands: /start, /help, /status, /cancel. No /life prefix is used.";
 #[cfg(feature = "storage-sqlx")]
 const LIFE_UNSUPPORTED_INPUT_MESSAGE: &str =
     "This Life Mode chat supports text, voice, photo, video, and document messages.";
@@ -304,6 +307,11 @@ async fn handle_life_dedicated_message(
                 bot.send_message(msg.chat.id, status_text).await?;
                 return respond(());
             }
+            LifeTelegramInput::Cancel => {
+                let cancel_text = cancel_life_telegram_run(life_storage.as_ref(), &chat_id).await;
+                bot.send_message(msg.chat.id, cancel_text).await?;
+                return respond(());
+            }
             LifeTelegramInput::UnsupportedCommand => {
                 bot.send_message(
                     msg.chat.id,
@@ -469,6 +477,7 @@ enum LifeTelegramInput {
     Start,
     Help,
     Status,
+    Cancel,
     UnsupportedCommand,
 }
 
@@ -489,6 +498,7 @@ fn classify_life_telegram_text(text: &str) -> LifeTelegramInput {
         "/start" => LifeTelegramInput::Start,
         "/help" => LifeTelegramInput::Help,
         "/status" => LifeTelegramInput::Status,
+        "/cancel" => LifeTelegramInput::Cancel,
         _ => LifeTelegramInput::UnsupportedCommand,
     }
 }
@@ -529,6 +539,105 @@ async fn life_status_text(life_storage: &SqlxLifeStorage, chat_id: &str) -> Stri
             error!("Telegram life status lookup failed: {error}");
             "Life mode backend is unavailable. Try again later.".to_string()
         }
+    }
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn cancel_life_telegram_run(life_storage: &SqlxLifeStorage, chat_id: &str) -> String {
+    let Ok(transport_id) = LifeTransportId::new(TELEGRAM_TRANSPORT_ID) else {
+        return "Life mode transport is misconfigured.".to_string();
+    };
+    let binding = match life_storage
+        .resolve_transport_binding(&transport_id, &serde_json::json!({ "chat_id": chat_id }))
+        .await
+    {
+        Ok(Some(binding)) => binding,
+        Ok(None) => {
+            return "Life Mode bridge storage binding is not configured for this chat.".to_string();
+        }
+        Err(error) => {
+            error!("Telegram life cancel binding lookup failed: {error}");
+            return "Life mode backend is unavailable. Try again later.".to_string();
+        }
+    };
+
+    let active_run = match life_storage
+        .find_active_run(binding.principal_user_id)
+        .await
+    {
+        Ok(Some(run)) => run,
+        Ok(None) => return "No active Life Mode run to cancel.".to_string(),
+        Err(error) => {
+            error!("Telegram life active run lookup failed: {error}");
+            return "Life mode backend is unavailable. Try again later.".to_string();
+        }
+    };
+
+    let now = match current_life_timestamp() {
+        Ok(now) => now,
+        Err(message) => return message,
+    };
+    match life_storage
+        .cancel_run(binding.principal_user_id, active_run.run_id, now)
+        .await
+    {
+        Ok(CancelLifeRunOutcome::Cancelled) => {
+            if let Err(error) =
+                append_life_run_event(life_storage, active_run.run_id, "run_cancelled", now).await
+            {
+                error!("Telegram life cancel event append failed: {error}");
+            }
+            "Stopping Life Mode run…".to_string()
+        }
+        Ok(CancelLifeRunOutcome::AlreadyTerminal { status }) => {
+            format!("Life Mode run is already {}.", life_run_status_name(status))
+        }
+        Ok(CancelLifeRunOutcome::NotFound) => "No active Life Mode run to cancel.".to_string(),
+        Err(error) => {
+            error!("Telegram life cancel failed: {error}");
+            "Life mode backend is unavailable. Try again later.".to_string()
+        }
+    }
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn current_life_timestamp() -> Result<TimestampMillis, String> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Life mode clock error: {error}"))?;
+    let millis = i64::try_from(duration.as_millis())
+        .map_err(|error| format!("Life mode clock conversion error: {error}"))?;
+    Ok(TimestampMillis::new(millis))
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn append_life_run_event(
+    life_storage: &SqlxLifeStorage,
+    run_id: RunId,
+    kind: &str,
+    created_at: TimestampMillis,
+) -> oxide_agent_life::storage::LifeStorageResult<()> {
+    let seq = life_storage.next_event_seq(run_id).await?;
+    life_storage
+        .append_event(&LifeEvent {
+            event_id: EventId::new_v4(),
+            run_id,
+            seq,
+            kind: kind.to_owned(),
+            payload: serde_json::json!({}),
+            created_at,
+        })
+        .await
+}
+
+#[cfg(feature = "storage-sqlx")]
+const fn life_run_status_name(status: LifeRunStatus) -> &'static str {
+    match status {
+        LifeRunStatus::Queued => "queued",
+        LifeRunStatus::Running => "running",
+        LifeRunStatus::Completed => "completed",
+        LifeRunStatus::Failed => "failed",
+        LifeRunStatus::Cancelled => "cancelled",
     }
 }
 
@@ -896,6 +1005,10 @@ mod tests {
         assert_eq!(
             classify_life_telegram_text("/status"),
             LifeTelegramInput::Status
+        );
+        assert_eq!(
+            classify_life_telegram_text("/cancel"),
+            LifeTelegramInput::Cancel
         );
         assert_eq!(
             classify_life_telegram_text("/life remember this"),

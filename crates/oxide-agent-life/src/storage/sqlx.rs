@@ -17,8 +17,8 @@ use crate::domain::{
     ProviderSubject, RedactionState, RunId, TimestampMillis, TurnId, validate_delivery_worker_id,
 };
 use crate::storage::{
-    ClaimedLifeInputRun, LIFE_DELIVERY_CLAIM_MILLIS, LIFE_RUN_LEASE_MILLIS, LifeStorageError,
-    LifeStorageRepository, LifeStorageResult,
+    CancelLifeRunOutcome, ClaimedLifeInputRun, LIFE_DELIVERY_CLAIM_MILLIS, LIFE_RUN_LEASE_MILLIS,
+    LifeStorageError, LifeStorageRepository, LifeStorageResult,
 };
 
 /// SQLx-backed life storage repository.
@@ -86,6 +86,8 @@ impl SqlxLifeStorage {
             SET status = 'failed',
                 finished_at = $2,
                 error_text = COALESCE(error_text, 'run lease expired'),
+                lease_owner = NULL,
+                lease_expires_at = NULL,
                 updated_at = $2
             WHERE principal_user_id = $1
               AND status = 'running'
@@ -1000,6 +1002,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
             return Ok(None);
         };
         let user_content: String = input_row.get("user_content");
+        let turn_id: Uuid = input_row.get("turn_id");
 
         let lease_expires_at = Self::lease_expires_at(now);
         query::<Postgres>(
@@ -1018,6 +1021,20 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .bind(now.get())
         .bind(worker_id)
         .bind(lease_expires_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            UPDATE life_turns
+            SET run_id = $2
+            WHERE turn_id = $1 AND principal_user_id = $3
+            "#,
+        )
+        .bind(turn_id)
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -1124,6 +1141,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
             return Ok(None);
         };
         let user_content: String = input_row.get("user_content");
+        let turn_id: Uuid = input_row.get("turn_id");
 
         let lease_expires_at = Self::lease_expires_at(now);
         query::<Postgres>(
@@ -1142,6 +1160,20 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .bind(now.get())
         .bind(worker_id)
         .bind(lease_expires_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            UPDATE life_turns
+            SET run_id = $2
+            WHERE turn_id = $1 AND principal_user_id = $3
+            "#,
+        )
+        .bind(turn_id)
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -1295,11 +1327,16 @@ impl LifeStorageRepository for SqlxLifeStorage {
         run_id: RunId,
         finished_at: TimestampMillis,
         last_checkpoint_at: TimestampMillis,
-    ) -> LifeStorageResult<()> {
-        query::<Postgres>(
+    ) -> LifeStorageResult<bool> {
+        let result = query::<Postgres>(
             r#"
             UPDATE life_runs
-            SET status = 'completed', finished_at = $2, last_checkpoint_at = $3, updated_at = $2
+            SET status = 'completed',
+                finished_at = $2,
+                last_checkpoint_at = $3,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = $2
             WHERE run_id = $1 AND status = 'running'
             "#,
         )
@@ -1309,7 +1346,7 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .execute(&self.pool)
         .await
         .map_err(db_error)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     async fn fail_run(
@@ -1317,11 +1354,16 @@ impl LifeStorageRepository for SqlxLifeStorage {
         run_id: RunId,
         finished_at: TimestampMillis,
         error_text: &str,
-    ) -> LifeStorageResult<()> {
-        query::<Postgres>(
+    ) -> LifeStorageResult<bool> {
+        let result = query::<Postgres>(
             r#"
             UPDATE life_runs
-            SET status = 'failed', finished_at = $2, error_text = $3, updated_at = $2
+            SET status = 'failed',
+                finished_at = $2,
+                error_text = $3,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = $2
             WHERE run_id = $1 AND status = 'running'
             "#,
         )
@@ -1331,7 +1373,104 @@ impl LifeStorageRepository for SqlxLifeStorage {
         .execute(&self.pool)
         .await
         .map_err(db_error)?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn cancel_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+        cancelled_at: TimestampMillis,
+    ) -> LifeStorageResult<CancelLifeRunOutcome> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        Self::advisory_xact_lock_in_tx(&mut tx, principal_user_id).await?;
+
+        let row = query::<Postgres>(
+            r#"
+            SELECT status
+            FROM life_runs
+            WHERE run_id = $1 AND principal_user_id = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let Some(row) = row else {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(CancelLifeRunOutcome::NotFound);
+        };
+
+        let status = run_status_from_str(row.get::<&str, _>("status"))?;
+        if status != LifeRunStatus::Running {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(CancelLifeRunOutcome::AlreadyTerminal { status });
+        }
+
+        query::<Postgres>(
+            r#"
+            UPDATE life_runs
+            SET status = 'cancelled',
+                finished_at = $3,
+                error_text = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = $3
+            WHERE run_id = $1 AND principal_user_id = $2 AND status = 'running'
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .bind(cancelled_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            UPDATE life_inputs inputs
+            SET status = 'consumed', updated_at = $3
+            FROM life_turns turns
+            WHERE inputs.turn_id = turns.turn_id
+              AND turns.run_id = $1
+              AND inputs.principal_user_id = $2
+              AND inputs.status = 'claimed'
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .bind(cancelled_at.get())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(CancelLifeRunOutcome::Cancelled)
+    }
+
+    async fn run_status(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+    ) -> LifeStorageResult<Option<LifeRunStatus>> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT status
+            FROM life_runs
+            WHERE run_id = $1 AND principal_user_id = $2
+            "#,
+        )
+        .bind(run_id.as_uuid())
+        .bind(principal_user_id.get())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| run_status_from_str(row.get::<&str, _>("status")))
+            .transpose()
     }
 
     async fn claim_next_delivery(
@@ -2220,7 +2359,7 @@ mod tests {
                 .await,
             "mark first input consumed",
         );
-        must(
+        assert!(must(
             storage
                 .complete_run(
                     run_id,
@@ -2229,7 +2368,7 @@ mod tests {
                 )
                 .await,
             "complete run",
-        );
+        ));
 
         let follow_up_run_id = RunId::new_v4();
         let claimed_follow_up = must(
@@ -2499,23 +2638,9 @@ mod tests {
         assert_eq!(active.run_id, run_id);
         assert_eq!(active.status, LifeRunStatus::Running);
 
-        // life_turns.run_id should be NULL before linking.
-        let turn_row_before = must(
-            query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
-                .bind(turn.turn_id.as_uuid())
-                .fetch_one(storage.pool())
-                .await,
-            "load turn before link",
-        );
-        assert!(turn_row_before.get::<Option<Uuid>, _>("run_id").is_none());
-
-        // Link the originating turn to the run.
-        must(
-            storage.link_turn_to_run(turn.turn_id, run_id).await,
-            "link turn to run",
-        );
-
-        // life_turns.run_id should now be set.
+        // Claim/start atomically links the originating turn to the run.  This
+        // keeps later cancellation/terminal cleanup from depending on a caller
+        // to perform a second best-effort association after the run is visible.
         let turn_row_after = must(
             query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
                 .bind(turn.turn_id.as_uuid())
@@ -2561,7 +2686,7 @@ mod tests {
         assert!(blocked_follow_up.is_none());
 
         // Complete the run; find_active_run should return None.
-        must(
+        assert!(must(
             storage
                 .complete_run(
                     run_id,
@@ -2570,7 +2695,7 @@ mod tests {
                 )
                 .await,
             "complete run",
-        );
+        ));
         let no_active = must(
             storage.find_active_run(principal_user_id).await,
             "find active run after complete",
@@ -2592,12 +2717,6 @@ mod tests {
         .expect("follow-up should claim after active run completes");
         assert_eq!(claimed_follow_up.input.input_id, follow_up_input.input_id);
         assert_eq!(claimed_follow_up.user_content, "follow-up");
-        must(
-            storage
-                .link_turn_to_run(follow_up_turn.turn_id, follow_up_run_id)
-                .await,
-            "link follow-up turn to its own run",
-        );
         let follow_up_row = must(
             query::<Postgres>("SELECT run_id FROM life_turns WHERE turn_id = $1")
                 .bind(follow_up_turn.turn_id.as_uuid())
@@ -2608,6 +2727,123 @@ mod tests {
         assert_eq!(
             follow_up_row.get::<Option<Uuid>, _>("run_id"),
             Some(follow_up_run_id.as_uuid())
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlx_life_cancel_run_is_durable_and_consumes_claimed_input() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let principal_user_id = unique_principal_user_id();
+        let now = TimestampMillis::new(1_700_000_150_000);
+        must(
+            storage
+                .upsert_principal(&LifePrincipal {
+                    principal_user_id,
+                    profile_state: json!({}),
+                    operating_profile: json!({}),
+                    settings: json!({}),
+                    schema_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await,
+            "upsert principal",
+        );
+
+        let turn = user_turn(principal_user_id, "cancel me", now);
+        must(storage.append_turn(&turn).await, "append turn");
+        let input = queued_input(principal_user_id, turn.turn_id, now);
+        must(storage.enqueue_input(&input).await, "enqueue input");
+        let run_id = RunId::new_v4();
+        must(
+            storage
+                .claim_input_and_start_run(
+                    principal_user_id,
+                    input.input_id,
+                    run_id,
+                    "worker-sqlx",
+                    TimestampMillis::new(now.get() + 1),
+                )
+                .await,
+            "claim input",
+        )
+        .expect("input should claim");
+
+        let cancelled_at = TimestampMillis::new(now.get() + 2);
+        assert_eq!(
+            must(
+                storage
+                    .cancel_run(principal_user_id, run_id, cancelled_at)
+                    .await,
+                "cancel run"
+            ),
+            CancelLifeRunOutcome::Cancelled
+        );
+
+        assert_eq!(
+            must(
+                storage.run_status(principal_user_id, run_id).await,
+                "load run status"
+            ),
+            Some(LifeRunStatus::Cancelled)
+        );
+        assert!(
+            must(
+                storage.find_active_run(principal_user_id).await,
+                "find active after cancel"
+            )
+            .is_none()
+        );
+
+        let run_row = must(
+            query::<Postgres>(
+                "SELECT status, finished_at, lease_owner, lease_expires_at FROM life_runs WHERE run_id = $1",
+            )
+            .bind(run_id.as_uuid())
+            .fetch_one(storage.pool())
+            .await,
+            "load cancelled run row",
+        );
+        assert_eq!(run_row.get::<String, _>("status"), "cancelled");
+        assert_eq!(run_row.get::<i64, _>("finished_at"), cancelled_at.get());
+        assert!(run_row.get::<Option<String>, _>("lease_owner").is_none());
+        assert!(run_row.get::<Option<i64>, _>("lease_expires_at").is_none());
+
+        let input_row = must(
+            query::<Postgres>("SELECT status FROM life_inputs WHERE input_id = $1")
+                .bind(input.input_id.as_uuid())
+                .fetch_one(storage.pool())
+                .await,
+            "load cancelled input row",
+        );
+        assert_eq!(input_row.get::<String, _>("status"), "consumed");
+
+        assert!(!must(
+            storage
+                .complete_run(
+                    run_id,
+                    TimestampMillis::new(now.get() + 3),
+                    TimestampMillis::new(now.get() + 3),
+                )
+                .await,
+            "complete after cancel"
+        ));
+        assert_eq!(
+            must(
+                storage
+                    .cancel_run(
+                        principal_user_id,
+                        run_id,
+                        TimestampMillis::new(now.get() + 4),
+                    )
+                    .await,
+                "cancel already cancelled run"
+            ),
+            CancelLifeRunOutcome::AlreadyTerminal {
+                status: LifeRunStatus::Cancelled
+            }
         );
     }
 

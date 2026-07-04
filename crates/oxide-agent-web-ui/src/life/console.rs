@@ -38,6 +38,7 @@ pub fn LifeConsole() -> impl IntoView {
     let (active_run, set_active_run) = signal(None::<ApiLifeRunSummary>);
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
+    let (cancel_loading, set_cancel_loading) = signal(false);
 
     // ── Composer state ─────────────────────────────────────────────────
     let (input, set_input) = signal(String::new());
@@ -241,6 +242,31 @@ pub fn LifeConsole() -> impl IntoView {
         });
     });
 
+    let cancel_active_run = Callback::new(move |_| {
+        if cancel_loading.get_untracked() {
+            return;
+        }
+        let Some(run) = active_run.get_untracked() else {
+            return;
+        };
+        let run_id = run.run_id;
+        set_cancel_loading.set(true);
+        set_error.set(None);
+
+        spawn_ui(async move {
+            let client = auth.client();
+            match client.cancel_life_run(&run_id).await {
+                Ok(response) => {
+                    if response.status != "running" {
+                        set_active_run.set(None);
+                    }
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+            set_cancel_loading.set(false);
+        });
+    });
+
     let selected_run_has_older_events = Signal::derive(move || {
         selected_activity_run_id
             .get()
@@ -300,6 +326,14 @@ pub fn LifeConsole() -> impl IntoView {
                                     >
                                         <span>"Thinking"</span>
                                         <span class="chevron">"›"</span>
+                                    </button>
+                                    <button
+                                        class="btn-danger life-stop-run"
+                                        type="button"
+                                        disabled=move || cancel_loading.get()
+                                        on:click=move |_| cancel_active_run.run(())
+                                    >
+                                        {move || if cancel_loading.get() { "Stopping…" } else { "Stop" }}
                                     </button>
                                 </div>
                             }.into_any()

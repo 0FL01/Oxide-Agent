@@ -2,7 +2,7 @@
 use axum::response::sse::{Event, Sse};
 use axum::{
     Json,
-    extract::{Multipart, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::HeaderMap,
     http::StatusCode,
 };
@@ -12,15 +12,15 @@ use futures_util::stream::Stream;
 use oxide_agent_web_contracts::ApiLifeInputSensitivity;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::TaskAttachment;
+use oxide_agent_web_contracts::{
+    ApiLifeCancelRunResponse, ApiLifeEventsResponse, ApiLifeLargeInputRequest,
+    ApiLifeStateResponse, ApiLifeSubmitRequest, ApiLifeSubmitResponse, ApiLifeTurnsResponse,
+    ErrorCode, ErrorEnvelope, UploadTaskAttachmentsResponse,
+};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_web_contracts::{
     ApiLifeEventResponse, ApiLifeRunSummary, ApiLifeSseKeepalive, ApiLifeSseRunStatus,
     ApiLifeSseSnapshot, ApiLifeTurnResponse,
-};
-use oxide_agent_web_contracts::{
-    ApiLifeEventsResponse, ApiLifeLargeInputRequest, ApiLifeStateResponse, ApiLifeSubmitRequest,
-    ApiLifeSubmitResponse, ApiLifeTurnsResponse, ErrorCode, ErrorEnvelope,
-    UploadTaskAttachmentsResponse,
 };
 use serde::Deserialize;
 #[cfg(feature = "storage-sqlx")]
@@ -44,13 +44,13 @@ use oxide_agent_core::sandbox::SandboxScope;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_life::{
     domain::{
-        LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId, RedactionState, RunId,
-        WEB_TRANSPORT_ID,
+        LifeEvent, LifeRunStatus, LifeTransportId, LifeTurn, LifeTurnRole, PrincipalUserId,
+        RedactionState, RunId, TimestampMillis, WEB_TRANSPORT_ID,
     },
     gateway::{LifeGateway, LifeGatewayError, LifeInputSensitivity, LifeInputSubmission},
     storage::{
-        LifeStorageError, LifeStorageRepository, SqlxLifeStorage, encode_event_cursor,
-        encode_turn_cursor,
+        CancelLifeRunOutcome, LifeStorageError, LifeStorageRepository, SqlxLifeStorage,
+        encode_event_cursor, encode_turn_cursor,
     },
     worker::LIFE_CONTEXT_KEY,
 };
@@ -80,6 +80,15 @@ pub(crate) async fn api_life_large_input(
 ) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     life_large_input_for_user(&state, user.user_id, request).await
+}
+
+pub(crate) async fn api_cancel_life_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> Result<Json<ApiLifeCancelRunResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    cancel_life_run_for_user(&state, user.user_id, &run_id).await
 }
 
 pub(crate) async fn api_get_life_state(
@@ -553,6 +562,66 @@ async fn life_large_input_for_user(
 }
 
 #[cfg(feature = "storage-sqlx")]
+async fn cancel_life_run_for_user(
+    state: &AppState,
+    web_user_id: i64,
+    run_id: &str,
+) -> Result<Json<ApiLifeCancelRunResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let life_storage = state
+        .life_storage()
+        .ok_or_else(life_storage_unavailable_response)?;
+    let principal = PrincipalUserId::new(web_user_id).map_err(life_domain_error_response)?;
+    let run_id = RunId::from_uuid(uuid::Uuid::parse_str(run_id).map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationError,
+            "Invalid run_id in path.",
+            false,
+        )
+    })?);
+    let now = current_life_timestamp()?;
+
+    let outcome = life_storage
+        .cancel_run(principal, run_id, now)
+        .await
+        .map_err(life_storage_error_response)?;
+
+    let status = match outcome {
+        CancelLifeRunOutcome::Cancelled => {
+            if let Err(error) =
+                append_life_run_event(life_storage.as_ref(), run_id, "run_cancelled", now).await
+            {
+                tracing::warn!(run_id = %run_id, ?error, "failed to append life run_cancelled event after durable cancel");
+            }
+            "cancelled"
+        }
+        CancelLifeRunOutcome::AlreadyTerminal { status } => life_run_status_name(status),
+        CancelLifeRunOutcome::NotFound => {
+            return Err(api_error(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Life run not found.",
+                false,
+            ));
+        }
+    };
+
+    Ok(Json(ApiLifeCancelRunResponse {
+        run_id: run_id.to_string(),
+        status: status.to_owned(),
+    }))
+}
+
+#[cfg(not(feature = "storage-sqlx"))]
+async fn cancel_life_run_for_user(
+    _state: &AppState,
+    _web_user_id: i64,
+    _run_id: &str,
+) -> Result<Json<ApiLifeCancelRunResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    Err(life_storage_unavailable_response())
+}
+
+#[cfg(feature = "storage-sqlx")]
 async fn list_life_turns_for_user(
     state: &AppState,
     web_user_id: i64,
@@ -714,6 +783,60 @@ fn life_storage_unavailable_response() -> (StatusCode, Json<ErrorEnvelope>) {
         "Life mode requires SQLx/Postgres storage.",
         true,
     )
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn current_life_timestamp() -> Result<TimestampMillis, (StatusCode, Json<ErrorEnvelope>)> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::Internal,
+                format!("System clock error: {error}"),
+                true,
+            )
+        })?;
+    let millis = i64::try_from(duration.as_millis()).map_err(|error| {
+        api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::Internal,
+            format!("System clock conversion error: {error}"),
+            true,
+        )
+    })?;
+    Ok(TimestampMillis::new(millis))
+}
+
+#[cfg(feature = "storage-sqlx")]
+async fn append_life_run_event(
+    life_storage: &SqlxLifeStorage,
+    run_id: RunId,
+    kind: &str,
+    created_at: TimestampMillis,
+) -> oxide_agent_life::storage::LifeStorageResult<()> {
+    let seq = life_storage.next_event_seq(run_id).await?;
+    life_storage
+        .append_event(&LifeEvent {
+            event_id: oxide_agent_life::domain::EventId::new_v4(),
+            run_id,
+            seq,
+            kind: kind.to_owned(),
+            payload: serde_json::json!({}),
+            created_at,
+        })
+        .await
+}
+
+#[cfg(feature = "storage-sqlx")]
+const fn life_run_status_name(status: LifeRunStatus) -> &'static str {
+    match status {
+        LifeRunStatus::Queued => "queued",
+        LifeRunStatus::Running => "running",
+        LifeRunStatus::Completed => "completed",
+        LifeRunStatus::Failed => "failed",
+        LifeRunStatus::Cancelled => "cancelled",
+    }
 }
 
 #[cfg(feature = "storage-sqlx")]

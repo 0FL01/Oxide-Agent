@@ -10,10 +10,12 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::domain::{
-    EventId, InputId, LifeEvent, LifeInput, PrincipalUserId, RunId, TimestampMillis, TurnId,
+    EventId, InputId, LifeEvent, LifeInput, PrincipalUserId, RunId, TimestampMillis,
 };
 use crate::storage::LIFE_RUN_LEASE_MILLIS;
-use crate::storage::{ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository};
+use crate::storage::{
+    CancelLifeRunOutcome, ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository,
+};
 
 /// Stable life context key for hot-memory checkpoints.
 pub const LIFE_CONTEXT_KEY: &str = "life";
@@ -115,6 +117,11 @@ pub enum LifeWorkerProcessResult {
         /// Stable hot-memory checkpoint scope.
         stable_memory_scope: StableLifeMemoryScope,
     },
+    /// A run was cancelled by an owner request.
+    Cancelled {
+        /// Cancelled run id.
+        run_id: RunId,
+    },
 }
 
 /// Worker orchestration errors.
@@ -129,6 +136,12 @@ pub enum LifeWorkerError {
     /// Executor failed.
     #[error("life worker executor error: {0}")]
     Executor(String),
+    /// Executor observed an owner-requested cancellation.
+    #[error("life worker run cancelled for run {run_id}")]
+    Cancelled {
+        /// Cancelled run id.
+        run_id: RunId,
+    },
     /// The running lease is no longer owned by this worker.
     #[error("life worker run lease lost for run {run_id}")]
     LostLease {
@@ -220,9 +233,6 @@ pub trait LifeWorkerStore: Send + Sync {
         now: TimestampMillis,
     ) -> LifeWorkerResult<bool>;
 
-    /// Links a transcript turn to a run by setting `life_turns.run_id`.
-    async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()>;
-
     /// Synchronously persists the stable life hot-memory checkpoint.
     async fn save_life_memory_checkpoint(
         &self,
@@ -244,7 +254,7 @@ pub trait LifeWorkerStore: Send + Sync {
         run_id: RunId,
         finished_at: TimestampMillis,
         last_checkpoint_at: TimestampMillis,
-    ) -> LifeWorkerResult<()>;
+    ) -> LifeWorkerResult<bool>;
 
     /// Marks a run failed.
     async fn fail_run(
@@ -252,7 +262,15 @@ pub trait LifeWorkerStore: Send + Sync {
         run_id: RunId,
         finished_at: TimestampMillis,
         error_text: &str,
-    ) -> LifeWorkerResult<()>;
+    ) -> LifeWorkerResult<bool>;
+
+    /// Cancels a run.
+    async fn cancel_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+        cancelled_at: TimestampMillis,
+    ) -> LifeWorkerResult<CancelLifeRunOutcome>;
 }
 
 #[async_trait]
@@ -319,12 +337,6 @@ where
             .map_err(Into::into)
     }
 
-    async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {
-        LifeStorageRepository::link_turn_to_run(self, turn_id, run_id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn save_life_memory_checkpoint(
         &self,
         stable_scope: &StableLifeMemoryScope,
@@ -364,7 +376,7 @@ where
         run_id: RunId,
         finished_at: TimestampMillis,
         last_checkpoint_at: TimestampMillis,
-    ) -> LifeWorkerResult<()> {
+    ) -> LifeWorkerResult<bool> {
         LifeStorageRepository::complete_run(self, run_id, finished_at, last_checkpoint_at)
             .await
             .map_err(Into::into)
@@ -375,8 +387,19 @@ where
         run_id: RunId,
         finished_at: TimestampMillis,
         error_text: &str,
-    ) -> LifeWorkerResult<()> {
+    ) -> LifeWorkerResult<bool> {
         LifeStorageRepository::fail_run(self, run_id, finished_at, error_text)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn cancel_run(
+        &self,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+        cancelled_at: TimestampMillis,
+    ) -> LifeWorkerResult<CancelLifeRunOutcome> {
+        LifeStorageRepository::cancel_run(self, principal_user_id, run_id, cancelled_at)
             .await
             .map_err(Into::into)
     }
@@ -514,10 +537,6 @@ where
                 });
             }
 
-            self.store
-                .link_turn_to_run(claimed_run.input.turn_id, claimed_run.run_id)
-                .await?;
-
             self.append_event(claimed_run.run_id, "run_started", started_at)
                 .await?;
 
@@ -557,9 +576,15 @@ where
                     self.store
                         .mark_input_consumed(claimed_run.input.input_id, finished_at)
                         .await?;
-                    self.store
+                    let completed = self
+                        .store
                         .complete_run(claimed_run.run_id, finished_at, outcome.final_checkpoint_at)
                         .await?;
+                    if !completed {
+                        return Ok(LifeWorkerProcessResult::Cancelled {
+                            run_id: claimed_run.run_id,
+                        });
+                    }
                     self.append_event(claimed_run.run_id, "run_completed", finished_at)
                         .await?;
 
@@ -582,12 +607,35 @@ where
                     };
                     claimed = next_claimed;
                 }
+                Err(LifeWorkerError::Cancelled { .. }) => {
+                    let finished_at = self.clock.now()?;
+                    self.store
+                        .mark_input_consumed(claimed_run.input.input_id, finished_at)
+                        .await?;
+                    let cancelled = self
+                        .store
+                        .cancel_run(principal_user_id, claimed_run.run_id, finished_at)
+                        .await?;
+                    if matches!(cancelled, CancelLifeRunOutcome::Cancelled) {
+                        self.append_event(claimed_run.run_id, "run_cancelled", finished_at)
+                            .await?;
+                    }
+                    return Ok(LifeWorkerProcessResult::Cancelled {
+                        run_id: claimed_run.run_id,
+                    });
+                }
                 Err(error) => {
                     let error_text = error.to_string();
                     let finished_at = self.clock.now()?;
-                    self.store
+                    let failed = self
+                        .store
                         .fail_run(claimed_run.run_id, finished_at, &error_text)
                         .await?;
+                    if !failed {
+                        return Ok(LifeWorkerProcessResult::Cancelled {
+                            run_id: claimed_run.run_id,
+                        });
+                    }
                     self.append_event(claimed_run.run_id, "run_failed", finished_at)
                         .await?;
                     return Err(LifeWorkerError::Executor(error_text));
@@ -732,6 +780,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_marks_run_cancelled_when_executor_is_cancelled() {
+        let principal = PrincipalUserId::new(100506).expect("positive principal");
+        let input_id = InputId::new_v4();
+        let store = FakeWorkerStore::with_claim(principal, input_id);
+        let run_id = store
+            .claim
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .expect("claim should exist")
+            .run
+            .run_id;
+        let worker = LifeWorker::new_with_clock(
+            store.clone(),
+            RecordingExecutor::cancelled(run_id),
+            FixedWorkerClock::new([
+                TimestampMillis::new(10),
+                TimestampMillis::new(20),
+                TimestampMillis::new(30),
+            ]),
+            "worker-a",
+        );
+
+        let result = worker
+            .process_principal_input(ProcessPrincipalInput {
+                principal_user_id: principal,
+                input_id,
+            })
+            .await
+            .expect("cancelled run should be handled as terminal");
+
+        assert_eq!(result, LifeWorkerProcessResult::Cancelled { run_id });
+        assert_eq!(*store.cancelled_runs.lock().expect("lock"), vec![run_id]);
+        assert_eq!(*store.consumed_inputs.lock().expect("lock"), vec![input_id]);
+        assert!(store.completed_runs.lock().expect("lock").is_empty());
+        assert!(store.failed_runs.lock().expect("lock").is_empty());
+        assert_eq!(store.event_kinds(), vec!["run_started", "run_cancelled"]);
+    }
+
+    #[tokio::test]
     async fn execute_claimed_run_executes_follow_up_inputs_as_separate_runs() {
         let principal = PrincipalUserId::new(100503).expect("positive principal");
         let input_id = InputId::new_v4();
@@ -806,18 +894,16 @@ mod tests {
         };
         assert_eq!(run_id, follow_up_run_id);
 
-        // Each input is linked to and executed by its own run.
-        let linked = store.linked_turns.lock().expect("lock").clone();
-        assert_eq!(linked.len(), 2);
-        assert_eq!(linked[0].1, expected_run_id);
-        assert_eq!(linked[1].0, follow_up_turn_id);
-        assert_eq!(linked[1].1, follow_up_run_id);
-
+        // Each input is executed and consumed by its own claimed run; the
+        // durable turn/run association is owned by the storage claim boundary.
         let consumed = store.consumed_inputs.lock().expect("lock").clone();
         assert_eq!(consumed, vec![input_id, follow_up_input.input_id]);
 
         let contexts = seen_contexts.lock().expect("lock").clone();
         assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0].run.run_id, expected_run_id);
+        assert_eq!(contexts[1].run.run_id, follow_up_run_id);
+        assert_eq!(contexts[1].run.input.turn_id, follow_up_turn_id);
         assert_eq!(contexts[0].run.user_content, "test user content");
         assert_eq!(contexts[1].run.user_content, "follow-up content");
 
@@ -931,7 +1017,6 @@ mod tests {
             LifeWorkerError::LostLease { run_id: observed } if observed == run_id
         ));
         assert!(store.events.lock().expect("lock").is_empty());
-        assert!(store.linked_turns.lock().expect("lock").is_empty());
         assert!(store.consumed_inputs.lock().expect("lock").is_empty());
         assert!(store.completed_runs.lock().expect("lock").is_empty());
         assert!(store.failed_runs.lock().expect("lock").is_empty());
@@ -943,10 +1028,10 @@ mod tests {
         events: Arc<Mutex<Vec<LifeEvent>>>,
         completed_runs: Arc<Mutex<Vec<RunId>>>,
         failed_runs: Arc<Mutex<Vec<RunId>>>,
+        cancelled_runs: Arc<Mutex<Vec<RunId>>>,
         consumed_inputs: Arc<Mutex<Vec<InputId>>>,
         checkpoints: Arc<Mutex<Vec<RecordedCheckpoint>>>,
         queued_claims: Arc<Mutex<Vec<ClaimedLifeInputRun>>>,
-        linked_turns: Arc<Mutex<Vec<(TurnId, RunId)>>>,
         claim_next_worker_ids: Arc<Mutex<Vec<String>>>,
     }
 
@@ -994,10 +1079,10 @@ mod tests {
                 events: Arc::new(Mutex::new(Vec::new())),
                 completed_runs: Arc::new(Mutex::new(Vec::new())),
                 failed_runs: Arc::new(Mutex::new(Vec::new())),
+                cancelled_runs: Arc::new(Mutex::new(Vec::new())),
                 consumed_inputs: Arc::new(Mutex::new(Vec::new())),
                 checkpoints: Arc::new(Mutex::new(Vec::new())),
                 queued_claims: Arc::new(Mutex::new(Vec::new())),
-                linked_turns: Arc::new(Mutex::new(Vec::new())),
                 claim_next_worker_ids: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -1057,14 +1142,6 @@ mod tests {
             Ok(true)
         }
 
-        async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeWorkerResult<()> {
-            self.linked_turns
-                .lock()
-                .expect("lock")
-                .push((turn_id, run_id));
-            Ok(())
-        }
-
         async fn save_life_memory_checkpoint(
             &self,
             stable_scope: &StableLifeMemoryScope,
@@ -1096,9 +1173,9 @@ mod tests {
             run_id: RunId,
             _finished_at: TimestampMillis,
             _last_checkpoint_at: TimestampMillis,
-        ) -> LifeWorkerResult<()> {
+        ) -> LifeWorkerResult<bool> {
             self.completed_runs.lock().expect("lock").push(run_id);
-            Ok(())
+            Ok(true)
         }
 
         async fn fail_run(
@@ -1106,9 +1183,19 @@ mod tests {
             run_id: RunId,
             _finished_at: TimestampMillis,
             _error_text: &str,
-        ) -> LifeWorkerResult<()> {
+        ) -> LifeWorkerResult<bool> {
             self.failed_runs.lock().expect("lock").push(run_id);
-            Ok(())
+            Ok(true)
+        }
+
+        async fn cancel_run(
+            &self,
+            _principal_user_id: PrincipalUserId,
+            run_id: RunId,
+            _cancelled_at: TimestampMillis,
+        ) -> LifeWorkerResult<CancelLifeRunOutcome> {
+            self.cancelled_runs.lock().expect("lock").push(run_id);
+            Ok(CancelLifeRunOutcome::Cancelled)
         }
     }
 
@@ -1138,6 +1225,14 @@ mod tests {
                 seen_contexts: Arc::new(Mutex::new(Vec::new())),
             }
         }
+
+        fn cancelled(run_id: RunId) -> Self {
+            Self {
+                outcome: Err(LifeWorkerError::Cancelled { run_id }),
+                seen_context: Arc::new(Mutex::new(None)),
+                seen_contexts: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
     }
 
     #[async_trait]
@@ -1156,6 +1251,9 @@ mod tests {
             );
             match &self.outcome {
                 Ok(outcome) => Ok(outcome.clone()),
+                Err(LifeWorkerError::Cancelled { run_id }) => {
+                    Err(LifeWorkerError::Cancelled { run_id: *run_id })
+                }
                 Err(error) => Err(LifeWorkerError::Executor(error.to_string())),
             }
         }

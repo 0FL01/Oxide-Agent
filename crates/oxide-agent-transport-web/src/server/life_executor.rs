@@ -21,8 +21,8 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::ReminderThreadKind;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_life::domain::{
-    EventId, INTERNAL_TRANSPORT_ID, LifeEvent, LifeTransportId, LifeTurn, LifeTurnRole,
-    PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
+    EventId, INTERNAL_TRANSPORT_ID, LifeEvent, LifeRunStatus, LifeTransportId, LifeTurn,
+    LifeTurnRole, PrincipalUserId, RedactionState, RunId, TimestampMillis, TurnId,
 };
 use oxide_agent_life::storage::LifeStorageRepository;
 use oxide_agent_life::worker::{
@@ -31,8 +31,12 @@ use oxide_agent_life::worker::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+const LIFE_RUN_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Durable memory checkpoint that delegates to the configured storage provider.
 ///
@@ -244,6 +248,39 @@ impl LifeAgentExecutor {
         );
         Ok(turn_id)
     }
+
+    async fn watch_durable_cancellation(
+        life_storage: Arc<oxide_agent_life::storage::SqlxLifeStorage>,
+        principal_user_id: PrincipalUserId,
+        run_id: RunId,
+        cancellation_token: CancellationToken,
+    ) {
+        let mut interval = tokio::time::interval(LIFE_RUN_CANCELLATION_POLL_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                () = cancellation_token.cancelled() => return,
+                _ = interval.tick() => {
+                    match life_storage.run_status(principal_user_id, run_id).await {
+                        Ok(Some(LifeRunStatus::Running)) => {}
+                        Ok(Some(status)) => {
+                            info!(run_id = %run_id, ?status, "life run durable status is terminal; cancelling executor token");
+                            cancellation_token.cancel();
+                            return;
+                        }
+                        Ok(None) => {
+                            warn!(run_id = %run_id, "life run disappeared while executing; cancelling executor token");
+                            cancellation_token.cancel();
+                            return;
+                        }
+                        Err(error) => {
+                            warn!(run_id = %run_id, ?error, "failed to poll durable life run cancellation status");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -262,6 +299,14 @@ impl LifeRunExecutor for LifeAgentExecutor {
         let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
         let memory_scope = AgentMemoryScope::new(user_id, LIFE_CONTEXT_KEY, LIFE_FLOW_ID);
         let mut session = AgentSession::new_with_scopes(session_id, sandbox_scope, memory_scope);
+        let cancellation_token = CancellationToken::new();
+        session.cancellation_token = cancellation_token.clone();
+        let cancellation_watcher = tokio::spawn(Self::watch_durable_cancellation(
+            Arc::clone(&self.life_storage),
+            principal_user_id,
+            run_id,
+            cancellation_token.clone(),
+        ));
 
         // 2. Hydrate AgentMemory from durable storage (agent_memory_snapshots).
         self.hydrate_memory(&mut session, user_id).await;
@@ -320,19 +365,27 @@ impl LifeRunExecutor for LifeAgentExecutor {
         // 6. Execute the user input with progress events bridged to
         //    life_events. The executor drops `event_tx` when it finishes,
         //    which closes the channel and ends the consumer loop.
-        let outcome = executor
+        let execution_result = executor
             .execute_user_input_with_options(
                 AgentUserInput::new(user_content),
                 Some(event_tx),
                 AgentExecutionOptions::default(),
             )
-            .await
-            .map_err(|error| LifeWorkerError::Executor(error.to_string()))?;
+            .await;
 
         // 7. Await the event bridge — the channel is closed when the
         //    executor drops its sender, ensuring all events are flushed
         //    before the run completes.
         let _ = event_bridge.await;
+        cancellation_watcher.abort();
+
+        let outcome = match execution_result {
+            Ok(outcome) => outcome,
+            Err(_error) if cancellation_token.is_cancelled() => {
+                return Err(LifeWorkerError::Cancelled { run_id });
+            }
+            Err(error) => return Err(LifeWorkerError::Executor(error.to_string())),
+        };
 
         // 8. Force a synchronous final memory checkpoint so the full
         //    conversation history (including this run's messages) is

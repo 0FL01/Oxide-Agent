@@ -31,6 +31,12 @@ pub struct ApiLifeSubmitResponse {
     pub run_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiLifeCancelRunResponse {
+    pub run_id: String,
+    pub status: String,
+}
+
 /// Request body for `POST /api/v1/life/large-input`.
 ///
 /// Stages large text content as a file in the stable life sandbox and returns

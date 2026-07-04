@@ -14,11 +14,11 @@ use tower_http::trace::TraceLayer;
 use super::life_routes::api_life_sse_stream;
 use super::types::is_production_run_mode;
 use super::{
-    AppState, api_bootstrap, api_cancel_task, api_change_password, api_create_agent_profile,
-    api_create_session_with_request, api_create_task, api_create_task_version,
-    api_delete_agent_profile, api_delete_session, api_download_artifact, api_download_task_file,
-    api_get_life_state, api_get_session, api_get_settings, api_get_task, api_get_task_events,
-    api_get_task_progress, api_life_large_input, api_life_upload_attachments,
+    AppState, api_bootstrap, api_cancel_life_run, api_cancel_task, api_change_password,
+    api_create_agent_profile, api_create_session_with_request, api_create_task,
+    api_create_task_version, api_delete_agent_profile, api_delete_session, api_download_artifact,
+    api_download_task_file, api_get_life_state, api_get_session, api_get_settings, api_get_task,
+    api_get_task_events, api_get_task_progress, api_life_large_input, api_life_upload_attachments,
     api_list_agent_profiles, api_list_life_events, api_list_life_turns, api_list_model_routes,
     api_list_sessions, api_list_tasks, api_login, api_logout, api_me, api_privacy_hard_wipe_life,
     api_public_config, api_refresh_model_routes, api_register, api_resume_task,
@@ -48,6 +48,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/life/state", get(api_get_life_state))
         .route("/api/v1/life/state", delete(api_privacy_hard_wipe_life))
         .route("/api/v1/life/inputs", post(api_submit_life_input))
+        .route(
+            "/api/v1/life/runs/:run_id/cancel",
+            post(api_cancel_life_run),
+        )
         .route("/api/v1/life/uploads", post(api_life_upload_attachments))
         .route("/api/v1/life/large-input", post(api_life_large_input))
         .route("/api/v1/life/turns", get(api_list_life_turns))

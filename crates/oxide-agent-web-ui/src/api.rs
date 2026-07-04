@@ -1,11 +1,12 @@
 use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
-    ApiLifeEventsResponse, ApiLifeLargeInputRequest, ApiLifeStateResponse, ApiLifeSubmitRequest,
-    ApiLifeSubmitResponse, ApiLifeTurnsResponse, ApiVoiceTranscriptionResponse, AuthUserResponse,
-    BootstrapRequest, CancelTaskResponse, ChangePasswordRequest, CreateAgentProfileRequest,
-    CreateAgentProfileResponse, CreateSessionRequest, CreateSessionResponse, CreateTaskRequest,
-    CreateTaskResponse, CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse,
-    ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
+    ApiLifeCancelRunResponse, ApiLifeEventsResponse, ApiLifeLargeInputRequest,
+    ApiLifeStateResponse, ApiLifeSubmitRequest, ApiLifeSubmitResponse, ApiLifeTurnsResponse,
+    ApiVoiceTranscriptionResponse, AuthUserResponse, BootstrapRequest, CancelTaskResponse,
+    ChangePasswordRequest, CreateAgentProfileRequest, CreateAgentProfileResponse,
+    CreateSessionRequest, CreateSessionResponse, CreateTaskRequest, CreateTaskResponse,
+    CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse, ErrorCode,
+    ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
     ListAgentProfilesResponse, ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse,
     LoginRequest, OkResponse, RegisterRequest, ResumeTaskRequest, ResumeTaskResponse,
     TaskEventsResponse, UpdateAgentProfileRequest, UpdateAgentProfileResponse,
@@ -363,6 +364,14 @@ impl ApiClient {
         request: &ApiLifeSubmitRequest,
     ) -> Result<ApiLifeSubmitResponse, ApiClientError> {
         self.post("/api/v1/life/inputs", request, true).await
+    }
+
+    pub async fn cancel_life_run(
+        &self,
+        run_id: &str,
+    ) -> Result<ApiLifeCancelRunResponse, ApiClientError> {
+        self.post_empty(&format!("/api/v1/life/runs/{run_id}/cancel"))
+            .await
     }
 
     pub async fn get_life_state(&self) -> Result<ApiLifeStateResponse, ApiClientError> {

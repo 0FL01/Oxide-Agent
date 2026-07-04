@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::domain::{InputId, LifeRun, PrincipalUserId, RunId, TimestampMillis, TurnId};
+use crate::domain::{InputId, LifeRun, PrincipalUserId, RunId, TimestampMillis};
 use crate::storage::{ClaimedLifeInputRun, LifeStorageError, LifeStorageRepository};
 use crate::worker::{LifeWorkerClock, LifeWorkerError};
 
@@ -81,9 +81,6 @@ pub trait LifeRuntimeStore: Send + Sync {
         &self,
         principal_user_id: PrincipalUserId,
     ) -> LifeRuntimeResult<Option<LifeRun>>;
-
-    /// Link a transcript turn to a run.
-    async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeRuntimeResult<()>;
 }
 
 #[async_trait]
@@ -116,12 +113,6 @@ where
         principal_user_id: PrincipalUserId,
     ) -> LifeRuntimeResult<Option<LifeRun>> {
         LifeStorageRepository::find_active_run(self, principal_user_id)
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeRuntimeResult<()> {
-        LifeStorageRepository::link_turn_to_run(self, turn_id, run_id)
             .await
             .map_err(Into::into)
     }
@@ -191,8 +182,6 @@ where
         {
             Some(claimed) => {
                 let run_id = claimed.run.run_id;
-                let turn_id = claimed.input.turn_id;
-                self.store.link_turn_to_run(turn_id, run_id).await?;
                 Ok(WakeOutcome::Started {
                     run_id,
                     claimed: Box::new(claimed),
@@ -220,13 +209,10 @@ mod tests {
     use crate::domain::{LifeInput, LifeInputStatus, LifeRun, LifeRunStatus, TurnId};
     use crate::storage::LifeStorageError;
 
-    type LinkedTurn = (TurnId, RunId);
-
     #[derive(Clone, Default)]
     struct FakeRuntimeStore {
         claim_result: Arc<Mutex<Option<ClaimedLifeInputRun>>>,
         active_run: Arc<Mutex<Option<LifeRun>>>,
-        linked_turns: Arc<Mutex<Vec<LinkedTurn>>>,
         claim_called: Arc<Mutex<bool>>,
     }
 
@@ -235,7 +221,6 @@ mod tests {
             Self {
                 claim_result: Arc::new(Mutex::new(Some(claimed))),
                 active_run: Arc::new(Mutex::new(None)),
-                linked_turns: Arc::new(Mutex::new(Vec::new())),
                 claim_called: Arc::new(Mutex::new(false)),
             }
         }
@@ -244,13 +229,8 @@ mod tests {
             Self {
                 claim_result: Arc::new(Mutex::new(None)),
                 active_run: Arc::new(Mutex::new(Some(run))),
-                linked_turns: Arc::new(Mutex::new(Vec::new())),
                 claim_called: Arc::new(Mutex::new(false)),
             }
-        }
-
-        fn linked_turns(&self) -> Vec<LinkedTurn> {
-            self.linked_turns.lock().expect("lock").clone()
         }
     }
 
@@ -273,14 +253,6 @@ mod tests {
             _principal_user_id: PrincipalUserId,
         ) -> LifeRuntimeResult<Option<LifeRun>> {
             Ok(self.active_run.lock().expect("lock").clone())
-        }
-
-        async fn link_turn_to_run(&self, turn_id: TurnId, run_id: RunId) -> LifeRuntimeResult<()> {
-            self.linked_turns
-                .lock()
-                .expect("lock")
-                .push((turn_id, run_id));
-            Ok(())
         }
     }
 
@@ -350,11 +322,9 @@ mod tests {
         };
         assert_eq!(returned_run_id, run_id);
 
-        // Originating turn should be linked to the run.
-        let linked = store.linked_turns();
-        assert_eq!(linked.len(), 1);
-        assert_eq!(linked[0].0, turn_id);
-        assert_eq!(linked[0].1, run_id);
+        // Originating turn/run association is guaranteed by the storage claim
+        // transaction; the runtime handle only exposes the claimed run to the
+        // caller for execution.
     }
 
     #[tokio::test]
@@ -395,8 +365,7 @@ mod tests {
         };
         assert_eq!(run_id, active_run_id);
 
-        // No turn should be linked (input stays queued for a later run).
-        assert!(store.linked_turns().is_empty());
+        // No claim means no storage-side association is created by this handle.
     }
 
     #[tokio::test]
@@ -442,13 +411,6 @@ mod tests {
                 _principal_user_id: PrincipalUserId,
             ) -> LifeRuntimeResult<Option<LifeRun>> {
                 Ok(None)
-            }
-            async fn link_turn_to_run(
-                &self,
-                _turn_id: TurnId,
-                _run_id: RunId,
-            ) -> LifeRuntimeResult<()> {
-                Ok(())
             }
         }
 
