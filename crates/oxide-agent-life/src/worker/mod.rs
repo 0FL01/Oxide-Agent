@@ -407,6 +407,12 @@ impl<S, E, C> LifeWorker<S, E, C> {
             worker_id: worker_id.into(),
         }
     }
+
+    /// Durable lease owner id used for run claims and heartbeats.
+    #[must_use]
+    pub fn worker_id(&self) -> &str {
+        &self.worker_id
+    }
 }
 
 impl<S, E, C> LifeWorker<S, E, C>
@@ -443,6 +449,33 @@ where
         self.execute_claimed_run(claimed).await
     }
 
+    /// Claims and processes the oldest queued input for a principal, if any.
+    ///
+    /// This keeps durable run lease ownership inside the worker boundary: callers
+    /// provide only the principal whose queue should be drained, while the worker
+    /// supplies its own `worker_id` to the storage claim and to all heartbeats.
+    pub async fn process_next_queued_input(
+        &self,
+        principal_user_id: PrincipalUserId,
+    ) -> LifeWorkerResult<LifeWorkerProcessResult> {
+        let started_at = self.clock.now()?;
+        let run_id = RunId::new_v4();
+        let Some(claimed) = self
+            .store
+            .claim_next_queued_input_and_start_run(
+                principal_user_id,
+                run_id,
+                &self.worker_id,
+                started_at,
+            )
+            .await?
+        else {
+            return Ok(LifeWorkerProcessResult::NotClaimed);
+        };
+
+        self.execute_claimed_run(claimed).await
+    }
+
     /// Executes an already-claimed run to completion.
     ///
     /// This is the entry point for the runtime handle path: the handle claims
@@ -457,12 +490,29 @@ where
     ) -> LifeWorkerResult<LifeWorkerProcessResult> {
         let mut claimed = claimed;
         loop {
+            if claimed.run.lease_owner.as_deref() != Some(self.worker_id.as_str()) {
+                return Err(LifeWorkerError::LostLease {
+                    run_id: claimed.run.run_id,
+                });
+            }
+
             let started_at = match claimed.run.started_at {
                 Some(ts) => ts,
                 None => self.clock.now()?,
             };
             let claimed_run = ClaimedLifeRun::from(claimed);
             let principal_user_id = claimed_run.input.principal_user_id;
+
+            let heartbeat_at = self.clock.now()?;
+            let still_owned = self
+                .store
+                .heartbeat_run_lease(claimed_run.run_id, &self.worker_id, heartbeat_at)
+                .await?;
+            if !still_owned {
+                return Err(LifeWorkerError::LostLease {
+                    run_id: claimed_run.run_id,
+                });
+            }
 
             self.store
                 .link_turn_to_run(claimed_run.input.turn_id, claimed_run.run_id)
@@ -584,7 +634,11 @@ mod tests {
         let worker = LifeWorker::new_with_clock(
             store.clone(),
             executor,
-            FixedWorkerClock::new([TimestampMillis::new(10), TimestampMillis::new(20)]),
+            FixedWorkerClock::new([
+                TimestampMillis::new(10),
+                TimestampMillis::new(20),
+                TimestampMillis::new(30),
+            ]),
             "worker-a",
         );
 
@@ -657,7 +711,11 @@ mod tests {
         let worker = LifeWorker::new_with_clock(
             store.clone(),
             RecordingExecutor::failure("executor boom"),
-            FixedWorkerClock::new([TimestampMillis::new(10), TimestampMillis::new(20)]),
+            FixedWorkerClock::new([
+                TimestampMillis::new(10),
+                TimestampMillis::new(20),
+                TimestampMillis::new(30),
+            ]),
             "worker-a",
         );
 
@@ -729,7 +787,12 @@ mod tests {
         let worker = LifeWorker::new_with_clock(
             store.clone(),
             executor,
-            FixedWorkerClock::new([TimestampMillis::new(20), TimestampMillis::new(40)]),
+            FixedWorkerClock::new([
+                TimestampMillis::new(20),
+                TimestampMillis::new(40),
+                TimestampMillis::new(50),
+                TimestampMillis::new(60),
+            ]),
             "worker-a",
         );
 
@@ -769,6 +832,111 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn process_next_queued_input_claims_with_worker_owned_id() {
+        let principal = PrincipalUserId::new(100504).expect("positive principal");
+        let now = TimestampMillis::new(10);
+        let input_id = InputId::new_v4();
+        let turn_id = TurnId::new_v4();
+        let run_id = RunId::new_v4();
+        let store = FakeWorkerStore::without_claim();
+        store
+            .queued_claims
+            .lock()
+            .expect("lock")
+            .push(ClaimedLifeInputRun {
+                input: LifeInput {
+                    input_id,
+                    principal_user_id: principal,
+                    turn_id,
+                    status: LifeInputStatus::Queued,
+                    claimed_by: None,
+                    claimed_at: None,
+                    created_at: now,
+                    updated_at: now,
+                },
+                run: LifeRun {
+                    run_id,
+                    principal_user_id: principal,
+                    status: crate::domain::LifeRunStatus::Running,
+                    started_at: Some(now),
+                    finished_at: None,
+                    last_checkpoint_at: None,
+                    error_text: None,
+                    lease_owner: Some("worker-a".to_owned()),
+                    lease_expires_at: Some(TimestampMillis::new(now.get() + LIFE_RUN_LEASE_MILLIS)),
+                    last_heartbeat_at: Some(now),
+                    created_at: now,
+                    updated_at: now,
+                },
+                user_content: "queued content".to_owned(),
+            });
+
+        let worker = LifeWorker::new_with_clock(
+            store.clone(),
+            RecordingExecutor::success(TimestampMillis::new(30)),
+            FixedWorkerClock::new([
+                TimestampMillis::new(10),
+                TimestampMillis::new(20),
+                TimestampMillis::new(30),
+            ]),
+            "worker-a",
+        );
+
+        let result = worker
+            .process_next_queued_input(principal)
+            .await
+            .expect("worker should process queued input");
+
+        let LifeWorkerProcessResult::Completed {
+            run_id: completed_run,
+            ..
+        } = result
+        else {
+            panic!("expected completed result");
+        };
+        assert_eq!(completed_run, run_id);
+        let claim_worker_ids = store.claim_next_worker_ids.lock().expect("lock").clone();
+        assert_eq!(claim_worker_ids, vec!["worker-a".to_owned(); 2]);
+        assert_eq!(store.event_kinds(), vec!["run_started", "run_completed"]);
+    }
+
+    #[tokio::test]
+    async fn execute_claimed_run_rejects_foreign_lease_before_side_effects() {
+        let principal = PrincipalUserId::new(100505).expect("positive principal");
+        let input_id = InputId::new_v4();
+        let store = FakeWorkerStore::with_claim(principal, input_id);
+        let mut claimed = store
+            .claim
+            .lock()
+            .expect("lock")
+            .take()
+            .expect("claim should be present");
+        let run_id = claimed.run.run_id;
+        claimed.run.lease_owner = Some("other-worker".to_owned());
+
+        let worker = LifeWorker::new_with_clock(
+            store.clone(),
+            RecordingExecutor::success(TimestampMillis::new(30)),
+            FixedWorkerClock::new(Vec::<TimestampMillis>::new()),
+            "worker-a",
+        );
+
+        let error = worker
+            .execute_claimed_run(claimed)
+            .await
+            .expect_err("foreign lease owner should fail before execution");
+        assert!(matches!(
+            error,
+            LifeWorkerError::LostLease { run_id: observed } if observed == run_id
+        ));
+        assert!(store.events.lock().expect("lock").is_empty());
+        assert!(store.linked_turns.lock().expect("lock").is_empty());
+        assert!(store.consumed_inputs.lock().expect("lock").is_empty());
+        assert!(store.completed_runs.lock().expect("lock").is_empty());
+        assert!(store.failed_runs.lock().expect("lock").is_empty());
+    }
+
     #[derive(Clone)]
     struct FakeWorkerStore {
         claim: Arc<Mutex<Option<ClaimedLifeInputRun>>>,
@@ -779,6 +947,7 @@ mod tests {
         checkpoints: Arc<Mutex<Vec<RecordedCheckpoint>>>,
         queued_claims: Arc<Mutex<Vec<ClaimedLifeInputRun>>>,
         linked_turns: Arc<Mutex<Vec<(TurnId, RunId)>>>,
+        claim_next_worker_ids: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeWorkerStore {
@@ -829,6 +998,7 @@ mod tests {
                 checkpoints: Arc::new(Mutex::new(Vec::new())),
                 queued_claims: Arc::new(Mutex::new(Vec::new())),
                 linked_turns: Arc::new(Mutex::new(Vec::new())),
+                claim_next_worker_ids: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -868,9 +1038,13 @@ mod tests {
             &self,
             _principal_user_id: PrincipalUserId,
             _run_id: RunId,
-            _worker_id: &str,
+            worker_id: &str,
             _now: TimestampMillis,
         ) -> LifeWorkerResult<Option<ClaimedLifeInputRun>> {
+            self.claim_next_worker_ids
+                .lock()
+                .expect("lock")
+                .push(worker_id.to_owned());
             Ok(self.queued_claims.lock().expect("lock").pop())
         }
 

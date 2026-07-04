@@ -4,9 +4,9 @@
 //! the web UI are woken inline by the HTTP route. Inputs submitted by other
 //! transports (e.g. Telegram) are written to the shared Postgres database but
 //! nobody wakes the executor. This worker polls for queued inputs across all
-//! principals, claims them, and spawns execution via [`LifeWorker`].
+//! principals and asks [`LifeWorker`] to claim and execute them with its own
+//! durable lease owner id.
 
-use oxide_agent_life::domain::{RunId, TimestampMillis};
 use oxide_agent_life::storage::{LifeStorageRepository, SqlxLifeStorage};
 use oxide_agent_life::worker::{LifeWorker, SystemLifeWorkerClock};
 use std::sync::Arc;
@@ -16,7 +16,6 @@ use tracing::{error, info};
 use super::AppState;
 use super::types::LifeExecutor;
 
-const LIFE_RUN_WORKER_ID: &str = "web-life-run-worker";
 const LIFE_RUN_WORKER_IDLE_SLEEP: Duration = Duration::from_secs(2);
 
 /// Spawns the background life run polling worker.
@@ -53,39 +52,12 @@ async fn run_life_run_loop(
         };
 
         for principal in principals {
-            let now = now_millis();
-            let run_id = RunId::new_v4();
-
-            match LifeStorageRepository::claim_next_queued_input_and_start_run(
-                &life_storage,
-                principal,
-                run_id,
-                LIFE_RUN_WORKER_ID,
-                now,
-            )
-            .await
-            {
-                Ok(Some(claimed)) => {
-                    let worker = life_worker.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = worker.execute_claimed_run(claimed).await {
-                            error!("Life run execution failed for principal {principal}: {err}");
-                        }
-                    });
+            let worker = life_worker.clone();
+            tokio::spawn(async move {
+                if let Err(err) = worker.process_next_queued_input(principal).await {
+                    error!("Life run worker processing failed for principal {principal}: {err}");
                 }
-                Ok(None) => {
-                    // No queued input or an active run already exists — the
-                    // active run's worker will chain to follow-up inputs
-                    // after completion.
-                }
-                Err(err) => {
-                    error!("Life run worker claim failed for principal {principal}: {err}");
-                }
-            }
+            });
         }
     }
-}
-
-fn now_millis() -> TimestampMillis {
-    TimestampMillis::new(chrono::Utc::now().timestamp_millis())
 }

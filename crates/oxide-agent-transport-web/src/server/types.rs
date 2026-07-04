@@ -337,7 +337,7 @@ impl AppState {
         ));
         let life_runtime: LifeRuntimeHandleType = Arc::new(LifeRuntimeHandle::new(
             life_storage.as_ref().clone(),
-            "web-life-worker",
+            life_worker.worker_id().to_owned(),
         ));
 
         let mut state = Self::new_with_web_store_kind(

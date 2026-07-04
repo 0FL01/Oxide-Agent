@@ -71,6 +71,7 @@ impl AgentRunner {
             tool_schema_tokens = snapshot.tool_schema_tokens,
             total_input_tokens = snapshot.total_input_tokens,
             reserved_output_tokens = snapshot.reserved_output_tokens,
+            hard_reserve_tokens = snapshot.hard_reserve_tokens,
             projected_total_tokens = snapshot.projected_total_tokens,
             context_window_tokens = snapshot.context_window_tokens,
             headroom_tokens = snapshot.headroom_tokens,
