@@ -5,11 +5,24 @@ use oxide_agent_web_contracts::{
 };
 use serde_json::Value;
 
-pub(super) fn artifact_image_url(session_id: &str, task_id: &str, artifact_uri: &str) -> String {
+pub(super) fn artifact_image_url(
+    session_id: Option<&str>,
+    task_id: Option<&str>,
+    artifact_uri: &str,
+) -> Option<String> {
+    let browser_path = artifact_uri.strip_prefix("artifact://browser/");
     let path = artifact_uri
         .strip_prefix("artifact://")
         .unwrap_or(artifact_uri);
-    format!("/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/{path}")
+    match (
+        session_id.filter(|value| !value.is_empty()),
+        task_id.filter(|value| !value.is_empty()),
+    ) {
+        (Some(session_id), Some(task_id)) => Some(format!(
+            "/api/v1/sessions/{session_id}/tasks/{task_id}/artifacts/{path}"
+        )),
+        _ => browser_path.map(|path| format!("/api/v1/browser-artifacts/{path}")),
+    }
 }
 
 pub(super) fn artifact_filename(artifact_uri: &str) -> String {
@@ -290,22 +303,57 @@ mod tests {
     }
 
     #[test]
-    fn artifact_image_url_strips_artifact_scheme() {
+    fn artifact_image_url_uses_direct_browser_artifact_route_without_task_identity() {
         assert_eq!(
             artifact_image_url(
-                "sess-1",
-                "task-1",
+                None,
+                None,
                 "artifact://browser/owner/br/step-0001-milestone.jpg"
             ),
-            "/api/v1/sessions/sess-1/tasks/task-1/artifacts/browser/owner/br/step-0001-milestone.jpg"
+            Some("/api/v1/browser-artifacts/owner/br/step-0001-milestone.jpg".to_string())
         );
     }
 
     #[test]
-    fn artifact_image_url_leaves_non_artifact_uris_unchanged() {
+    fn artifact_image_url_keeps_browser_artifacts_task_scoped_with_task_identity() {
         assert_eq!(
-            artifact_image_url("sess-1", "task-1", "browser/owner/br/step-0001.jpg"),
-            "/api/v1/sessions/sess-1/tasks/task-1/artifacts/browser/owner/br/step-0001.jpg"
+            artifact_image_url(
+                Some("sess-1"),
+                Some("task-1"),
+                "artifact://browser/owner/br/step-0001-milestone.jpg"
+            ),
+            Some(
+                "/api/v1/sessions/sess-1/tasks/task-1/artifacts/browser/owner/br/step-0001-milestone.jpg"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn artifact_image_url_does_not_use_empty_life_task_identity_for_browser_artifacts() {
+        assert_eq!(
+            artifact_image_url(
+                Some(""),
+                Some(""),
+                "artifact://browser/life-task/br-1/step-0001-milestone.jpg"
+            ),
+            Some("/api/v1/browser-artifacts/life-task/br-1/step-0001-milestone.jpg".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_image_url_keeps_legacy_task_artifacts_task_scoped() {
+        assert_eq!(
+            artifact_image_url(Some("sess-1"), Some("task-1"), "sandbox/output.txt"),
+            Some("/api/v1/sessions/sess-1/tasks/task-1/artifacts/sandbox/output.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_image_url_rejects_task_scoped_artifacts_without_task_identity() {
+        assert_eq!(
+            artifact_image_url(None, Some("task-1"), "sandbox/output.txt"),
+            None
         );
     }
 

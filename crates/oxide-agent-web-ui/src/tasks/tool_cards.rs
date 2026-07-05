@@ -1103,9 +1103,11 @@ fn BrowserToolCard(
         <ToolDetails open=default_open>
             {move || {
                 screenshot_uri.as_ref().and_then(|uri| {
-                    let sid = session_id_for_artifact.as_deref()?;
-                    let tid = task_id_for_artifact.as_deref()?;
-                    let image_url = artifact_image_url(sid, tid, uri);
+                    let image_url = artifact_image_url(
+                        session_id_for_artifact.as_deref(),
+                        task_id_for_artifact.as_deref(),
+                        uri,
+                    )?;
                     let filename = artifact_filename(uri);
                     let dimensions = screenshot_width.zip(screenshot_height);
                     let alt = dimensions

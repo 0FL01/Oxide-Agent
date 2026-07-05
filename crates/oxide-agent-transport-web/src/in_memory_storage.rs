@@ -14,9 +14,9 @@ use chrono::Utc;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, StorageError,
-    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
-    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
+    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
+    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,6 +35,7 @@ pub struct InMemoryStorage {
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
     agent_profiles: RwLock<HashMap<(i64, String), AgentProfileRecord>>,
+    browser_artifacts: RwLock<HashMap<String, BrowserArtifactRecord>>,
 }
 
 impl InMemoryStorage {
@@ -50,6 +51,7 @@ impl InMemoryStorage {
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
             agent_profiles: RwLock::new(HashMap::new()),
+            browser_artifacts: RwLock::new(HashMap::new()),
         }
     }
 
@@ -222,6 +224,40 @@ impl crate::api::StorageProvider for InMemoryStorage {
         _storage_key: String,
     ) -> Result<Option<String>, StorageError> {
         Ok(None)
+    }
+
+    async fn save_browser_artifact(
+        &self,
+        record: BrowserArtifactRecord,
+    ) -> Result<(), StorageError> {
+        let mut artifacts = self.browser_artifacts.write().await;
+        artifacts.insert(record.artifact_uri.clone(), record);
+        Ok(())
+    }
+
+    async fn load_browser_artifact(
+        &self,
+        user_id: i64,
+        artifact_uri: &str,
+    ) -> Result<Option<BrowserArtifactData>, StorageError> {
+        let artifacts = self.browser_artifacts.read().await;
+        Ok(artifacts
+            .get(artifact_uri)
+            .filter(|record| record.user_id == user_id)
+            .cloned()
+            .map(Into::into))
+    }
+
+    async fn delete_browser_artifacts_by_context_key(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<u64, StorageError> {
+        let mut artifacts = self.browser_artifacts.write().await;
+        let before = artifacts.len();
+        artifacts
+            .retain(|_, record| !(record.user_id == user_id && record.context_key == context_key));
+        Ok((before - artifacts.len()) as u64)
     }
 
     // --- Topic agents md ---

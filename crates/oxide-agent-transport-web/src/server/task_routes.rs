@@ -1044,20 +1044,10 @@ pub(crate) async fn api_download_artifact(
                 .await
             {
                 Ok(Some(artifact)) => {
-                    let mut response = Response::new(Body::from(artifact.data));
-                    let hdrs = response.headers_mut();
-                    // Browser screenshots are immutable (unique URI with
-                    // sequence number). Allow browser caching for 1 hour.
-                    hdrs.insert(
-                        CACHE_CONTROL,
-                        HeaderValue::from_static("private, max-age=3600"),
-                    );
-                    hdrs.insert(
-                        CONTENT_TYPE,
-                        HeaderValue::from_str(&artifact.mime_type)
-                            .unwrap_or_else(|_| HeaderValue::from_static("image/jpeg")),
-                    );
-                    return Ok(response);
+                    return Ok(browser_artifact_response(
+                        artifact.data,
+                        &artifact.mime_type,
+                    ));
                 }
                 Ok(None) => {
                     // Not in Postgres — fall through to filesystem (legacy).
@@ -1110,6 +1100,67 @@ pub(crate) async fn api_download_artifact(
     Ok(response)
 }
 
+pub(crate) async fn api_download_browser_artifact(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let Some(storage) = state.storage() else {
+        return Err(not_found_response());
+    };
+    let path = sanitize_artifact_path_string(&path).map_err(|_| {
+        api_error(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Forbidden,
+            "browser artifact path contains disallowed components",
+            false,
+        )
+    })?;
+    let artifact_uri = format!("artifact://browser/{path}");
+
+    match storage
+        .load_browser_artifact(user.user_id, &artifact_uri)
+        .await
+    {
+        Ok(Some(artifact)) => Ok(browser_artifact_response(
+            artifact.data,
+            &artifact.mime_type,
+        )),
+        Ok(None) => Err(not_found_response()),
+        Err(error) => {
+            tracing::warn!(
+                user_id = user.user_id,
+                artifact_uri = %artifact_uri,
+                ?error,
+                "failed to load browser artifact"
+            );
+            Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::BackendUnavailable,
+                "browser artifact storage is unavailable",
+                true,
+            ))
+        }
+    }
+}
+
+fn browser_artifact_response(data: Vec<u8>, mime_type: &str) -> Response {
+    let mut response = Response::new(Body::from(data));
+    let headers = response.headers_mut();
+    // Browser screenshots are immutable (unique URI with sequence number).
+    // Allow browser caching for 1 hour.
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(mime_type).unwrap_or_else(|_| HeaderValue::from_static("image/jpeg")),
+    );
+    response
+}
+
 fn sanitize_artifact_path(path: &StdPath) -> Result<StdPathBuf, ()> {
     let mut result = StdPathBuf::new();
     for component in path.components() {
@@ -1119,6 +1170,18 @@ fn sanitize_artifact_path(path: &StdPath) -> Result<StdPathBuf, ()> {
         }
     }
     Ok(result)
+}
+
+fn sanitize_artifact_path_string(path: &str) -> Result<String, ()> {
+    let cleaned = sanitize_artifact_path(StdPath::new(path))?;
+    if cleaned.as_os_str().is_empty() {
+        return Err(());
+    }
+    Ok(cleaned
+        .iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 fn mime_type_from_path(path: &StdPath) -> &'static str {

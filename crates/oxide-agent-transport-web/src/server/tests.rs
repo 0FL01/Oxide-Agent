@@ -27,6 +27,7 @@ use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
 use oxide_agent_core::llm::{LlmClient, LlmProvider};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
+use oxide_agent_core::storage::{BrowserArtifactRecord, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileSelection, CreateAgentProfileRequest,
@@ -46,6 +47,7 @@ use oxide_agent_web_contracts::{
 use tokio::sync::Notify;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
+use crate::in_memory_storage::InMemoryStorage;
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord};
 
 use super::EVENT_LOGS;
@@ -2091,6 +2093,150 @@ async fn api_download_artifact_rejects_foreign_and_traversal() {
     );
 
     let _ = tokio::fs::remove_dir_all(&artifact_dir).await;
+}
+
+#[tokio::test]
+async fn api_download_browser_artifact_serves_owned_durable_image_without_web_task() {
+    use tower::Service as _;
+
+    let mut state = test_app_state();
+    let now = chrono::Utc::now();
+    let owner = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register owner");
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register second user");
+    let (_, _, owner_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login owner");
+    let (_, _, foreign_token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "bob".to_string(),
+            password: "another correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login foreign user");
+
+    let artifact_uri = "artifact://browser/life-task/br-1/step-0001-milestone.jpg";
+    let storage = Arc::new(InMemoryStorage::new());
+    storage
+        .save_browser_artifact(BrowserArtifactRecord {
+            artifact_uri: artifact_uri.to_string(),
+            user_id: owner.user_id,
+            context_key: "life".to_string(),
+            session_id: "br-1".to_string(),
+            task_id: "life-task".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            data: b"life-jpeg-bytes".to_vec(),
+            bytes: 15,
+            sha256: None,
+        })
+        .await
+        .expect("save browser artifact");
+    let storage_provider: Arc<dyn StorageProvider> = storage;
+    state.storage = Some(storage_provider);
+
+    let mut app = super::build_router(state);
+    let response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/api/v1/browser-artifacts/life-task/br-1/step-0001-milestone.jpg")
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("browser artifact request"),
+        )
+        .await
+        .expect("browser artifact response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::CONTENT_TYPE],
+        axum::http::HeaderValue::from_static("image/jpeg")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read browser artifact body");
+    assert_eq!(body.as_ref(), b"life-jpeg-bytes");
+
+    let foreign_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/api/v1/browser-artifacts/life-task/br-1/step-0001-milestone.jpg")
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={foreign_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("foreign browser artifact request"),
+        )
+        .await
+        .expect("foreign browser artifact response");
+    assert_eq!(foreign_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let traversal_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/api/v1/browser-artifacts/../etc/passwd")
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("traversal browser artifact request"),
+        )
+        .await
+        .expect("traversal browser artifact response");
+    assert_eq!(
+        traversal_response.status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+
+    let unauthenticated_response = app
+        .call(
+            axum::http::Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/api/v1/browser-artifacts/life-task/br-1/step-0001-milestone.jpg")
+                .body(axum::body::Body::empty())
+                .expect("unauthenticated browser artifact request"),
+        )
+        .await
+        .expect("unauthenticated browser artifact response");
+    assert_eq!(
+        unauthenticated_response.status(),
+        axum::http::StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
