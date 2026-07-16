@@ -36,8 +36,6 @@ Default branch: `main`.
 - `oxide-browser-contracts` - Shared REST contract types between the native browser sidecar and the core browser-live client; independent of core/runtime internals.
 - `oxide-browser-sidecar` - Native Rust Chromium sidecar binary; talks CDP directly, serves the browser-live REST API (sessions, actions, snapshots, screenshots).
 
-For the current file structure inside any crate, run `graphify query "<area>"` against the knowledge graph in `graphify-out/`.
-
 ## Architectural invariants
 
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
@@ -55,8 +53,6 @@ For the current file structure inside any crate, run `graphify query "<area>"` a
 - Gemini models are valid only through OpenRouter; no direct Gemini provider is maintained.
 
 ## Key Subsystems
-
-For current file/module structure inside any subsystem, run `graphify query "<subsystem name>"`.
 
 ### Agent execution
 - Runner in `agent/runner/`; executor slices in `agent/executor/`.
@@ -193,23 +189,9 @@ feat(sources): add bybit proof of reserves source
 - `docs/lazy-tool-migration.md` - lazy tool registration migration guide.
 - `README.md` - product overview and user-facing setup notes.
 - `.env.example` - runtime configuration examples.
-- For codebase structure questions, use `graphify query "<question>"` against `graphify-out/graph.json` instead of browsing source files.
 
 ## System extension
 
 - New transport: `crates/oxide-agent-transport-<name>`; SDK and handlers inside the transport crate.
 - Runtime/core must not depend on a specific transport SDK.
 - Separate `oxide-agent-<name>-bot` binary if needed.
-
-## graphify
-
-This project has a knowledge graph at `graphify-out/` with god nodes, community structure, and cross-file relationships.
-
-When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
-- Dirty `graphify-out/` files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If `graphify-out/wiki/index.md` exists, use it for broad navigation instead of raw source browsing.
-- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
