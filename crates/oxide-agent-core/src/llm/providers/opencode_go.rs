@@ -444,6 +444,8 @@ impl LlmProvider for OpenCodeGoProvider {
         max_tokens: u32,
     ) -> Result<String, LlmError> {
         let protocol = self.resolve_model_protocol(model_id).await;
+        let temperature =
+            effective_temperature(self.profile, model_id, OPENCODE_GO_CHAT_TEMPERATURE);
         let request_kind = match protocol {
             ModelProtocol::OpenAiChatCompletions => "chat_completion",
             ModelProtocol::AnthropicMessages => "messages",
@@ -458,6 +460,7 @@ impl LlmProvider for OpenCodeGoProvider {
                 user_message,
                 model_id,
                 max_tokens,
+                temperature,
             ),
             ModelProtocol::AnthropicMessages => {
                 let thinking = messages::response::is_reasoning_model(model_id)
@@ -468,7 +471,7 @@ impl LlmProvider for OpenCodeGoProvider {
                     user_message,
                     normalize_model_id(model_id),
                     max_tokens,
-                    OPENCODE_GO_CHAT_TEMPERATURE,
+                    temperature,
                     thinking,
                 )
             }
@@ -486,7 +489,7 @@ impl LlmProvider for OpenCodeGoProvider {
             api_base,
             model_id,
             max_tokens,
-            temperature: OPENCODE_GO_CHAT_TEMPERATURE,
+            temperature,
             json_mode: false,
             body: &body,
         });
@@ -546,11 +549,19 @@ impl LlmProvider for OpenCodeGoProvider {
         }
 
         let protocol = self.resolve_model_protocol(model_id).await;
+        let temperature =
+            effective_temperature(self.profile, model_id, OPENCODE_GO_CHAT_TEMPERATURE);
         let (request_kind, api_base, body) = match protocol {
             ModelProtocol::OpenAiChatCompletions => (
                 "image_analysis",
                 self.chat_client.endpoint(),
-                build_image_analysis_body(&image_bytes, text_prompt, system_prompt, model_id),
+                build_image_analysis_body(
+                    &image_bytes,
+                    text_prompt,
+                    system_prompt,
+                    model_id,
+                    temperature,
+                ),
             ),
             ModelProtocol::AnthropicMessages => {
                 return Err(LlmError::api_error(format!(
@@ -571,7 +582,7 @@ impl LlmProvider for OpenCodeGoProvider {
             api_base,
             model_id,
             max_tokens: OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS,
-            temperature: OPENCODE_GO_CHAT_TEMPERATURE,
+            temperature,
             json_mode: false,
             body: &body,
         });
@@ -620,6 +631,11 @@ impl LlmProvider for OpenCodeGoProvider {
             json_mode,
             reasoning_effort,
         } = request;
+        let temperature = effective_temperature(
+            self.profile,
+            model_id,
+            temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+        );
         let protocol = self.resolve_model_protocol(model_id).await;
         let request_kind = match protocol {
             ModelProtocol::OpenAiChatCompletions => "chat_with_tools",
@@ -635,7 +651,7 @@ impl LlmProvider for OpenCodeGoProvider {
                 tools,
                 model_id,
                 max_tokens,
-                temperature,
+                Some(temperature),
                 json_mode,
                 reasoning_effort,
             ),
@@ -649,7 +665,7 @@ impl LlmProvider for OpenCodeGoProvider {
                     tools,
                     normalize_model_id(model_id),
                     max_tokens,
-                    temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+                    temperature,
                     thinking,
                 )
             }
@@ -666,7 +682,7 @@ impl LlmProvider for OpenCodeGoProvider {
             api_base,
             model_id,
             max_tokens,
-            temperature: temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+            temperature,
             json_mode,
             body: &body,
         });
@@ -717,6 +733,20 @@ fn normalize_model_id_for_prefix<'a>(model_id: &'a str, model_prefix: &str) -> &
     let trimmed = model_id.trim();
     let prefix = format!("{}/", model_prefix.trim().trim_end_matches('/'));
     trimmed.strip_prefix(&prefix).unwrap_or(trimmed)
+}
+
+fn effective_temperature(
+    profile: OpenCodeProviderProfile,
+    model_id: &str,
+    configured_temperature: f32,
+) -> f32 {
+    if profile.provider_id == OPENCODE_GO_PROVIDER_ID
+        && normalize_model_id_for_prefix(model_id, profile.model_prefix) == "mimo-v2.5"
+    {
+        0.0
+    } else {
+        configured_temperature
+    }
 }
 
 fn derive_messages_api_base(api_base: &str) -> String {
@@ -835,15 +865,18 @@ fn build_chat_completion_body(
     user_message: &str,
     model_id: &str,
     max_tokens: u32,
+    temperature: f32,
 ) -> Value {
-    chat_completions_request::build_text_body(
+    let mut body = chat_completions_request::build_text_body(
         system_prompt,
         history,
         user_message,
         normalize_model_id(model_id),
         max_tokens,
         opencode_chat_request_options(model_id, None),
-    )
+    );
+    body["temperature"] = json!(temperature);
+    body
 }
 
 fn build_image_analysis_body(
@@ -851,6 +884,7 @@ fn build_image_analysis_body(
     text_prompt: &str,
     system_prompt: &str,
     model_id: &str,
+    temperature: f32,
 ) -> Value {
     chat_completions_request::build_image_body(
         image_bytes,
@@ -859,7 +893,7 @@ fn build_image_analysis_body(
         system_prompt,
         normalize_model_id(model_id),
         OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS,
-        OPENCODE_GO_CHAT_TEMPERATURE,
+        temperature,
         opencode_chat_request_options(model_id, None),
     )
 }
@@ -939,8 +973,9 @@ mod tests {
     use super::{
         OpenCodeGoAdaptiveThrottle, OpenCodeGoProvider, OpenCodeProviderProfile,
         build_chat_completion_body, build_tool_chat_body, derive_messages_api_base,
-        normalize_model_id, opencode_go_should_throttle, parse_chat_response, parse_tool_calls,
-        parse_usage, prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
+        effective_temperature, normalize_model_id, opencode_go_should_throttle,
+        parse_chat_response, parse_tool_calls, parse_usage, prepare_structured_messages,
+        prepare_tools_json, unsupported_protocol_error,
     };
     use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
     use crate::llm::providers::messages::MessagesProfile;
@@ -948,8 +983,8 @@ mod tests {
     use crate::llm::providers::opencode_go::discovery::OpenCodeGoDiscoveryConfig;
     use crate::llm::support::http::create_http_client;
     use crate::llm::{
-        LlmError, LlmProvider, Message, MessageContentPart, ToolCall, ToolCallCorrelation,
-        ToolCallFunction, ToolDefinition,
+        ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolCall,
+        ToolCallCorrelation, ToolCallFunction, ToolDefinition,
     };
     use base64::Engine as _;
     use serde_json::json;
@@ -1066,6 +1101,61 @@ mod tests {
     }
 
     #[test]
+    fn mimo_v2_5_temperature_is_zero_only_for_opencode_go() {
+        for model_id in ["mimo-v2.5", "opencode-go/mimo-v2.5"] {
+            assert_eq!(
+                effective_temperature(OpenCodeProviderProfile::go(), model_id, 0.8),
+                0.0
+            );
+        }
+        assert_eq!(
+            effective_temperature(OpenCodeProviderProfile::go(), "mimo-v2.5-pro", 0.8),
+            0.8
+        );
+        assert_eq!(
+            effective_temperature(OpenCodeProviderProfile::zen(), "mimo-v2.5", 0.8),
+            0.8
+        );
+    }
+
+    #[tokio::test]
+    async fn mimo_v2_5_tool_request_overrides_configured_temperature() {
+        let models_url =
+            run_static_json_server(r#"{"data":[{"id":"mimo-v2.5","object":"model"}]}"#, 4).await;
+        let (chat_endpoint, request_rx) = run_capture_server(
+            "/v1/chat/completions",
+            r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let provider = OpenCodeGoProvider::new_with_profile_and_client_and_discovery(
+            "token".to_string(),
+            chat_endpoint,
+            "http://127.0.0.1:9/v1/messages".to_string(),
+            reqwest::Client::new(),
+            OpenCodeGoDiscoveryConfig::new(models_url, Duration::from_secs(600), BTreeMap::new()),
+            OpenCodeProviderProfile::go(),
+        );
+
+        provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[],
+                tools: &[],
+                model_id: "opencode-go/mimo-v2.5",
+                max_tokens: 32,
+                temperature: Some(0.8),
+                json_mode: false,
+                reasoning_effort: None,
+            })
+            .await
+            .expect("tool response succeeds");
+
+        let body = request_body(&request_rx.await.expect("request captured"));
+        assert_eq!(body["model"], json!("mimo-v2.5"));
+        assert_eq!(body["temperature"], json!(0.0));
+    }
+
+    #[test]
     fn opencode_go_openai_branch_delegates_to_chat_completions_profile() {
         let provider = OpenCodeGoProvider::new_with_profile_and_client_and_discovery(
             " token ".to_string(),
@@ -1178,6 +1268,7 @@ mod tests {
             "hello",
             "opencode-go/deepseek-v4-flash",
             32000,
+            0.7,
         );
 
         assert_eq!(body["model"], json!("deepseek-v4-flash"));
@@ -1210,7 +1301,8 @@ mod tests {
 
     #[test]
     fn reasoning_effort_in_openai_text_body() {
-        let body = build_chat_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000);
+        let body =
+            build_chat_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000, 0.7);
         assert_eq!(body["reasoning_effort"], json!("high"));
     }
 
@@ -1239,7 +1331,7 @@ mod tests {
 
     #[test]
     fn no_reasoning_params_for_non_reasoning_models() {
-        let body = build_chat_completion_body("system", &[], "hello", "gpt-4o", 32000);
+        let body = build_chat_completion_body("system", &[], "hello", "gpt-4o", 32000, 0.7);
         assert!(body.get("reasoning_effort").is_none());
     }
 

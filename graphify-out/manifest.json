@@ -1050,8 +1050,8 @@
     "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/opencode_go.rs": {
-    "mtime": 1783093803.760332,
-    "ast_hash": "53e2f3322c9f2f94646178ea9ff5bcaa",
+    "mtime": 1784195786.720901,
+    "ast_hash": "ddaac0885095037d1fa17edb2c53571f",
     "semantic_hash": ""
   },
   "crates/oxide-agent-core/src/llm/providers/opencode_go/discovery.rs": {
