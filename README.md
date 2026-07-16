@@ -123,7 +123,7 @@ The Web Interface is a Leptos SPA with a dark theme, SSE streaming, and markdown
 ### API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** - recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** - recommended route: `mimo-v2.5` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
 | **Zhipu AI (ZAI)** | `OPENAI_BASE_PROVIDERS__1__*` | Configure as OpenAI Base profile `zai` for GLM routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
@@ -135,7 +135,7 @@ For Supabase Postgres or small local deployments, keep the shared SQLx pool cons
 ### Supported LLM Providers for Agent Mode
 The bot supports these Agent Mode provider routes/profiles with tool calling:
 
-*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) - **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, reasoning content parsing, adaptive throttling, and unbounded retry.
+*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) - **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `mimo-v2.5` with provider `opencode-go`. Supports native tool calls (strict), reasoning content parsing, adaptive throttling, and unbounded retry.
 *   **OpenCode Zen** - Free-tier filtered variant of OpenCode Go. Same provider code, filtered to free-only models via discovery. Provider alias: `opencode-zen`.
 *   **ChatGPT/Codex** (`CHATGPT_AUTH_PATH`) - Headless OAuth provider for OpenAI Codex Responses API at `chatgpt.com/backend-api/codex/responses`. SSE streaming. No audio/image support. Use `cargo run -p oxide-agent-telegram-bot --bin chatgpt-login -- login` for initial auth.
 *   **Zhipu AI / ZAI** (`OPENAI_BASE_PROVIDERS__1__PROFILE=zai`) - Alternative OpenAI Base profile for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
@@ -231,12 +231,12 @@ Plain `docker-compose.web.yml` is remote-Postgres friendly and expects `OXIDE_DA
 Set explicit agent and media routes through `.env`.
 
 *   **Agent and Sub-agent (Recommended Models)**
-  For the best performance in Agent Mode, it is highly recommended to use **deepseek-v4-flash** for both the Main Agent and Sub-Agent (via **OpenCode Go** provider). This route offers strict tool calling, structured output support, reasoning content, adaptive throttling, and unlimited retry for reliable agent execution.
+  The default OpenCode Go route uses **mimo-v2.5** for both the Main Agent and Sub-Agent. This route supports strict native tool calling, reasoning content, adaptive throttling, and unlimited retry.
 ```dotenv
-AGENT_MODEL_ID="deepseek-v4-flash"
+AGENT_MODEL_ID="mimo-v2.5"
 AGENT_MODEL_PROVIDER="opencode-go"
 
-SUB_AGENT_MODEL_ID="deepseek-v4-flash"
+SUB_AGENT_MODEL_ID="mimo-v2.5"
 SUB_AGENT_MODEL_PROVIDER="opencode-go"
 ```
 
@@ -277,8 +277,8 @@ VISION_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI/OpenAI Base (GLM-4.7)
-AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+# Priority: OpenCode Go (MiMo V2.5) > ZAI/OpenAI Base (GLM-4.7)
+AGENT_MODEL_ROUTES__0__ID="mimo-v2.5"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 

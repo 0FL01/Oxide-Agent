@@ -1502,10 +1502,10 @@ mod tests {
     async fn resolve_title_model_uses_session_selection_not_global_bootstrap() {
         let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
         let registry = SessionRegistry::new();
-        // Global route is the OpenCode Go bootstrap default (deepseek-v4-flash).
+        // Global route is the OpenCode Go bootstrap default (mimo-v2.5).
         let settings = Arc::new(AgentSettings {
             agent_model_routes: Some(vec![ModelInfo {
-                id: "opencode-go/deepseek-v4-flash".to_string(),
+                id: "opencode-go/mimo-v2.5".to_string(),
                 provider: "opencode_go".to_string(),
                 max_output_tokens: 32_000,
                 context_window_tokens: 200_000,
@@ -1517,22 +1517,22 @@ mod tests {
         let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
 
         // Per-session selection overrides the global bootstrap route so side
-        // tasks (auto-title) use the user's saved default model, not deepseek.
+        // tasks (auto-title) use the user's saved default model, not the bootstrap route.
         let model = manager
             .resolve_title_model(Some(&ModelSelection {
-                qualified_id: "opencode-go/mimo-v2.5".to_string(),
+                qualified_id: "opencode-go/kimi-k2.6".to_string(),
             }))
             .await;
-        assert_eq!(model.id, "opencode-go/mimo-v2.5");
+        assert_eq!(model.id, "opencode-go/kimi-k2.6");
         assert_eq!(model.provider, "opencode-go");
         assert!(
-            !model.id.contains("deepseek-v4-flash"),
+            !model.id.contains("mimo-v2.5"),
             "side task model must not fall back to bootstrap when a session selection exists"
         );
 
         // Without a selection, the global configured route is the fallback.
         let fallback = manager.resolve_title_model(None).await;
-        assert_eq!(fallback.id, "opencode-go/deepseek-v4-flash");
+        assert_eq!(fallback.id, "opencode-go/mimo-v2.5");
     }
 
     #[tokio::test]

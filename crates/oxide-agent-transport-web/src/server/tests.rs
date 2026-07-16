@@ -706,7 +706,7 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
     assert!(response.provider_available);
     assert_eq!(
         response.default_model_id.as_deref(),
-        Some("opencode-go/deepseek-v4-flash")
+        Some("opencode-go/mimo-v2.5")
     );
     assert!(response.routes.is_empty());
 
@@ -4495,10 +4495,10 @@ fn test_app_state_with_llm_provider(
     provider: Arc<dyn LlmProvider>,
 ) -> (AppState, FakeSandboxControl) {
     let settings = Arc::new(AgentSettings {
-        agent_model_id: Some("opencode-go/deepseek-v4-flash".to_string()),
+        agent_model_id: Some("opencode-go/mimo-v2.5".to_string()),
         agent_model_provider: Some("opencode_go".to_string()),
         agent_model_routes: Some(vec![ModelInfo {
-            id: "opencode-go/deepseek-v4-flash".to_string(),
+            id: "opencode-go/mimo-v2.5".to_string(),
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
