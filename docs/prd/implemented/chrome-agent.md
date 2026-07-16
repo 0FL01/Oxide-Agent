@@ -193,7 +193,7 @@ OpenCode Go usage/pricing docs указывают щедрые лимиты дл
     }
   ],
   "max_tokens": 4096,
-  "temperature": 0.0
+  "temperature": 0.3
 }
 ```
 

@@ -743,7 +743,7 @@ fn effective_temperature(
     if profile.provider_id == OPENCODE_GO_PROVIDER_ID
         && normalize_model_id_for_prefix(model_id, profile.model_prefix) == "mimo-v2.5"
     {
-        0.0
+        0.3
     } else {
         configured_temperature
     }
@@ -1101,11 +1101,11 @@ mod tests {
     }
 
     #[test]
-    fn mimo_v2_5_temperature_is_zero_only_for_opencode_go() {
+    fn mimo_v2_5_temperature_is_point_three_only_for_opencode_go() {
         for model_id in ["mimo-v2.5", "opencode-go/mimo-v2.5"] {
             assert_eq!(
                 effective_temperature(OpenCodeProviderProfile::go(), model_id, 0.8),
-                0.0
+                0.3
             );
         }
         assert_eq!(
@@ -1152,7 +1152,10 @@ mod tests {
 
         let body = request_body(&request_rx.await.expect("request captured"));
         assert_eq!(body["model"], json!("mimo-v2.5"));
-        assert_eq!(body["temperature"], json!(0.0));
+        let temperature = body["temperature"]
+            .as_f64()
+            .expect("temperature is numeric");
+        assert!((temperature - 0.3).abs() < 1e-6);
     }
 
     #[test]
