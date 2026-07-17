@@ -2149,3 +2149,11 @@ fn xml_tag_returns_none_for_missing_tag() {
     assert!(xml_tag_text("no tags here", "title").is_none());
     assert!(xml_tag_block("no tags here", "title").is_none());
 }
+#[test]
+fn web_markdown_accepts_stringified_numeric_arguments() {
+    let args = parse_web_markdown_args(r#"{"timeout_secs":"12","max_chars":"9000"}"#)
+        .expect("stringified unsigned integers should parse");
+
+    assert_eq!(args.timeout_secs, Some(12));
+    assert_eq!(args.max_chars, Some(9_000));
+}

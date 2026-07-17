@@ -1,6 +1,8 @@
 //! Capability-oriented tool modules.
 
 use super::ToolExecutor;
+#[cfg(oxide_module_tool_webfetch_md)]
+use super::arguments::deserialize_optional_unsigned;
 use super::surface::{CapabilityGroup, ToolSurfaceHandle, ToolVisibility};
 #[cfg(oxide_module_tool_webfetch_md)]
 use super::{
@@ -1051,15 +1053,15 @@ struct WebCrawlerArgs {
     url: Option<String>,
     #[serde(default)]
     read: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_unsigned")]
     timeout_secs: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_unsigned")]
     max_chars: Option<usize>,
     /// Render mode: `http` (default), `lightpanda`, or `playwright`.
     #[serde(default)]
     render: Option<String>,
     /// Milliseconds to wait after JS rendering for late content (rendered modes only).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_unsigned")]
     render_wait_ms: Option<u64>,
 }
 
@@ -1534,6 +1536,25 @@ fn web_crawler_crw_failure_payload(
 mod web_crawler_tests {
     use super::*;
     use crate::agent::providers::webfetch_md::{FetchedMarkdownDocument, OutputWindow};
+
+    #[test]
+    fn web_crawler_accepts_stringified_numeric_arguments() {
+        let args = parse_web_crawler_args(
+            r#"{"timeout_secs":"10","max_chars":"8000","render_wait_ms":"3000"}"#,
+        )
+        .expect("stringified unsigned integers should parse");
+
+        assert_eq!(args.timeout_secs, Some(10));
+        assert_eq!(args.max_chars, Some(8_000));
+        assert_eq!(args.render_wait_ms, Some(3_000));
+    }
+
+    #[test]
+    fn web_crawler_rejects_invalid_stringified_numeric_arguments() {
+        assert!(parse_web_crawler_args(r#"{"max_chars":"many"}"#).is_err());
+        assert!(parse_web_crawler_args(r#"{"timeout_secs":"-1"}"#).is_err());
+        assert!(parse_web_crawler_args(r#"{"render_wait_ms":"1.5"}"#).is_err());
+    }
 
     #[test]
     fn web_crawler_webfetch_timeout_defaults_to_ten_seconds() {

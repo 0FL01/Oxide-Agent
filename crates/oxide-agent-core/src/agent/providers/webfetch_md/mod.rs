@@ -22,6 +22,7 @@ pub(crate) use delivery::{
 };
 pub(crate) use fetch::FetchedMarkdownDocument;
 
+use crate::agent::tool_runtime::arguments::deserialize_optional_unsigned;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -60,9 +61,9 @@ pub(crate) struct WebMarkdownArgs {
     pub url: Option<String>,
     #[serde(default)]
     pub read: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_unsigned")]
     pub timeout_secs: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_unsigned")]
     pub max_chars: Option<usize>,
 }
 

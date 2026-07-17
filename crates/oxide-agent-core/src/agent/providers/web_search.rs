@@ -3,6 +3,7 @@
 //! Exposes one LLM-facing `web_search` tool and keeps CRW, Tavily, and Brave
 //! as private indexed-search backends selected by runtime configuration.
 
+use crate::agent::tool_runtime::arguments::deserialize_unsigned;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -92,7 +93,10 @@ struct WebSearchArgs {
     query: String,
     #[serde(default)]
     provider: Option<String>,
-    #[serde(default = "default_max_results")]
+    #[serde(
+        default = "default_max_results",
+        deserialize_with = "deserialize_unsigned"
+    )]
     max_results: u8,
     #[serde(default)]
     language: Option<String>,
@@ -1242,6 +1246,23 @@ fn retry_delay(attempt: usize) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_search_accepts_stringified_max_results() {
+        let args: WebSearchArgs =
+            serde_json::from_str(r#"{"query":"rust async","max_results":"7"}"#)
+                .expect("stringified max_results should parse");
+
+        assert_eq!(args.max_results, 7);
+    }
+
+    #[test]
+    fn web_search_rejects_out_of_range_stringified_max_results() {
+        assert!(
+            serde_json::from_str::<WebSearchArgs>(r#"{"query":"rust async","max_results":"256"}"#)
+                .is_err()
+        );
+    }
 
     struct StaticBackend {
         kind: WebSearchBackendKind,

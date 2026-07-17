@@ -3,6 +3,7 @@
 //! Tool capability modules own typed executor construction; callers register
 //! executors through the runtime registry rather than provider-specific paths.
 
+pub(crate) mod arguments;
 pub mod artifacts;
 pub mod config;
 pub mod executor;
