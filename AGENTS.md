@@ -116,7 +116,7 @@ Default branch: `main`.
 - Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated via the module registry.
 - Sandbox: `sandbox-fileops` (`read_file`/`write_file`/`apply_file_edit`/`list_files`), `sandbox-exec` (`execute_command`), `sandbox-recreate` (`recreate_sandbox`).
 - Search: `web_search` (one tool, multiple backends: CRW, Tavily, Brave), `crw` (scrape), `retrieve-tools` (tool group activation).
-- Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with explicit render modes: `render:"http"` (default), `render:"lightpanda"`, `render:"playwright"`. No fallback — the agent chooses the render mode explicitly. `docker-compose.web.yml` defaults merge mode to true.
+- Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with `render:"http"` (default), `render:"lightpanda"`, and `render:"playwright"`. HTTP mode falls back once to Lightpanda for anti-bot, 403, or 429 failures; explicit rendered modes do not cascade. `docker-compose.web.yml` defaults merge mode to true.
 - Browser: `browser_live` tools (see Browser Live above).
 - Media: `audio-stt` (transcription), `vision-image` (description), `vision-video` (description).
 - Integrations: `jira-mcp`, `mattermost-mcp` (runtime-disabled, enabled via `topic_agent_tools_enable`), `ssh-mcp`.

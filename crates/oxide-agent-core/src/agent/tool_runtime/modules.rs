@@ -1176,6 +1176,19 @@ impl WebCrawlerToolExecutor {
                 Ok(output)
             }
             Err(webfetch_error) => {
+                #[cfg(oxide_module_tool_crw)]
+                if self.crw.is_some() && web_crawler_should_fallback_to_lightpanda(&webfetch_error)
+                {
+                    tracing::warn!(
+                        url,
+                        error = %webfetch_error,
+                        "web_crawler HTTP fetch failed, trying Lightpanda fallback"
+                    );
+                    return self
+                        .execute_rendered(invocation, normalizer, args, url, RenderMode::Lightpanda)
+                        .await;
+                }
+
                 let message =
                     WebFetchMdProvider::failure_message(Some(&webfetch_args), &webfetch_error);
                 let mut output = normalizer.failure(invocation, message);
@@ -1405,7 +1418,7 @@ fn web_crawler_tool_definition() -> ToolDefinition {
         name: TOOL_WEB_CRAWLER.to_string(),
         description: concat!(
             "Fetch one known http/https URL as Markdown. ",
-            "Use render:\"http\" for static pages (default), ",
+            "Use render:\"http\" for static pages (default); anti-bot, HTTP 403, and HTTP 429 failures automatically fall back once to Lightpanda. ",
             "render:\"lightpanda\" for lightweight JS rendering, ",
             "or render:\"playwright\" for full browser rendering of SPAs and dynamic content. ",
             "If a render mode returns only a shell or loading placeholder, ",
@@ -1427,7 +1440,7 @@ fn web_crawler_tool_definition() -> ToolDefinition {
                 "render": {
                     "type": "string",
                     "enum": ["http", "lightpanda", "playwright"],
-                    "description": "Render mode: http (default, no JS), lightpanda (lightweight JS), playwright (full browser). Use http for static pages; lightpanda or playwright for SPAs and JS-rendered content."
+                    "description": "Render mode: http (default, with one Lightpanda fallback for anti-bot/403/429 failures), lightpanda (lightweight JS), playwright (full browser). Use lightpanda or playwright directly for SPAs and JS-rendered content."
                 },
                 "render_wait_ms": {
                     "type": "integer",
@@ -1457,6 +1470,15 @@ fn parse_web_crawler_args(arguments: &str) -> anyhow::Result<WebCrawlerArgs> {
 fn web_crawler_webfetch_timeout_secs(args: &WebCrawlerArgs) -> u64 {
     args.timeout_secs
         .unwrap_or(WEB_CRAWLER_DEFAULT_WEBFETCH_TIMEOUT_SECS)
+}
+
+#[cfg(all(oxide_module_tool_webfetch_md, oxide_module_tool_crw))]
+fn web_crawler_should_fallback_to_lightpanda(error: &anyhow::Error) -> bool {
+    match WebFetchMdProvider::error_kind(error) {
+        "anti_bot" => true,
+        "http_status" => matches!(WebFetchMdProvider::http_status_code(error), Some(403 | 429)),
+        _ => false,
+    }
 }
 
 #[cfg(oxide_module_tool_webfetch_md)]
@@ -1536,6 +1558,21 @@ fn web_crawler_crw_failure_payload(
 mod web_crawler_tests {
     use super::*;
     use crate::agent::providers::webfetch_md::{FetchedMarkdownDocument, OutputWindow};
+    #[cfg(oxide_module_tool_crw)]
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, TurnId,
+    };
+    #[cfg(oxide_module_tool_crw)]
+    use crate::agent::{identity::SessionId, tool_runtime::ToolTimeoutConfig};
+    #[cfg(oxide_module_tool_crw)]
+    use crate::llm::InvocationId;
+    #[cfg(oxide_module_tool_crw)]
+    use chrono::Utc;
+    #[cfg(oxide_module_tool_crw)]
+    use std::{net::SocketAddr, path::PathBuf, time::Duration};
+    #[cfg(oxide_module_tool_crw)]
+    use tokio::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 
     #[test]
     fn web_crawler_accepts_stringified_numeric_arguments() {
@@ -1575,6 +1612,82 @@ mod web_crawler_tests {
         };
 
         assert_eq!(web_crawler_webfetch_timeout_secs(&args), 3);
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    #[test]
+    fn web_crawler_falls_back_only_for_supported_http_failures() {
+        assert!(web_crawler_should_fallback_to_lightpanda(&anyhow::anyhow!(
+            "reddit rss returned non-success status: 429 Too Many Requests"
+        )));
+        assert!(web_crawler_should_fallback_to_lightpanda(&anyhow::anyhow!(
+            "web_markdown fetch returned non-success status: 403 Forbidden"
+        )));
+        assert!(web_crawler_should_fallback_to_lightpanda(&anyhow::anyhow!(
+            "web_markdown blocked by anti-bot protection"
+        )));
+        assert!(!web_crawler_should_fallback_to_lightpanda(
+            &anyhow::anyhow!(
+                "web_markdown fetch returned non-success status: 500 Internal Server Error"
+            )
+        ));
+        assert!(!web_crawler_should_fallback_to_lightpanda(
+            &anyhow::anyhow!("refusing to fetch private URL")
+        ));
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    #[tokio::test]
+    async fn web_crawler_reddit_rss_429_falls_back_to_lightpanda() {
+        let rss_addr =
+            serve_web_crawler_http_once("429 Too Many Requests", "text/plain", "rate limited")
+                .await;
+        let crw_addr = serve_web_crawler_http_once(
+            "200 OK",
+            "application/json",
+            r##"{"success":true,"data":{"markdown":"# Rendered Reddit content","metadata":{"url":"https://www.reddit.com/r/test/comments/abc/thread/","statusCode":200,"renderedWith":"lightpanda"}}}"##,
+        )
+        .await;
+        let webfetch_client = reqwest::Client::builder()
+            .resolve("www.reddit.com", rss_addr)
+            .build()
+            .expect("webfetch test client");
+        let crw = CrwScrapeClient::new(
+            &format!("http://{crw_addr}"),
+            Duration::from_secs(5),
+            "test-token".to_string(),
+        )
+        .expect("CRW test client");
+        let executor = WebCrawlerToolExecutor {
+            webfetch: WebFetchMdProvider::with_client(webfetch_client),
+            crw: Some(Arc::new(crw)),
+            name: ToolName::from(TOOL_WEB_CRAWLER),
+            spec: web_crawler_tool_definition(),
+        };
+        let invocation = web_crawler_test_invocation();
+        let args = WebCrawlerArgs {
+            url: Some("http://www.reddit.com/r/test/comments/abc/thread/".to_string()),
+            ..WebCrawlerArgs::default()
+        };
+
+        let output = executor
+            .execute_crawler(&invocation, args)
+            .await
+            .expect("crawler execution");
+        let payload = output.structured_payload.expect("structured payload");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert_eq!(payload["backend"], "crw_scrape");
+        assert_eq!(payload["render"], "lightpanda");
+        assert_eq!(payload["rendered_with"], "lightpanda");
+        assert_eq!(payload["status_code"], 200);
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("Rendered Reddit content"))
+        );
     }
 
     #[test]
@@ -1732,6 +1845,64 @@ mod web_crawler_tests {
         assert_eq!(payload["provider_unavailable"], true);
         assert_eq!(payload["success"], false);
         assert_eq!(payload["retryable"], false);
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    async fn serve_web_crawler_http_once(
+        status: &'static str,
+        content_type: &'static str,
+        body: &'static str,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("test server address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept test request");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.expect("read test request");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write test response");
+        });
+        addr
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    fn web_crawler_test_invocation() -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(7),
+            turn_id: TurnId::from("turn_web_crawler"),
+            batch_id: ToolBatchId::from("batch_web_crawler"),
+            batch_index: 0,
+            invocation_id: InvocationId::from("invocation_web_crawler"),
+            tool_call_id: ToolCallId::from("call_web_crawler"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(TOOL_WEB_CRAWLER),
+            raw_provider_payload: json!({}),
+            raw_arguments: json!({}).to_string(),
+            normalized_arguments: json!({}),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(PathBuf::from(".")),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
     }
 }
 

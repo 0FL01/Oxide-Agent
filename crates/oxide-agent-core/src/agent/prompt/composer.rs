@@ -279,7 +279,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         }
         if has_tool(&tool_names, "web_crawler") {
             lines.push(
-                "Use `web_crawler` after search to read selected result URLs as Markdown; it tries lightweight fetch first and falls back to browser rendering only for anti-bot/JavaScript blocks."
+                "Use `web_crawler` after search to read selected result URLs as Markdown; its default HTTP mode falls back once to Lightpanda for anti-bot, HTTP 403, or HTTP 429 failures. Select `lightpanda` or `playwright` directly for known JavaScript-heavy pages."
                     .to_string(),
             );
         } else if has_tool(&tool_names, "web_markdown") {

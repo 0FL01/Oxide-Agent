@@ -97,7 +97,7 @@ impl WebFetchMdProvider {
     }
 
     #[cfg(test)]
-    fn with_client(client: reqwest::Client) -> Self {
+    pub(crate) fn with_client(client: reqwest::Client) -> Self {
         Self {
             client,
             delivery: MarkdownDeliveryCache::default(),
@@ -154,6 +154,12 @@ impl WebFetchMdProvider {
     #[must_use]
     pub(crate) fn error_kind(error: &anyhow::Error) -> &'static str {
         error::webfetch_error_kind(error)
+    }
+
+    #[cfg(oxide_module_tool_crw)]
+    #[must_use]
+    pub(crate) fn http_status_code(error: &anyhow::Error) -> Option<u16> {
+        error::webfetch_http_status_code(error)
     }
 
     fn tool_definition() -> ToolDefinition {

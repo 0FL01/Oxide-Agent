@@ -85,7 +85,7 @@ SearXNG requires a custom `settings.yml` (`docker/searxng/settings.yml`) that en
 
 The CRW image (debian:bookworm-slim) contains no wget or curl, so healthchecks use bash `/dev/tcp` probes. Oxide exposes CRW-backed tools only when both `OXIDE_CRW_BASE_URL` and `OXIDE_CRW_API_TOKEN` are explicitly configured.
 
-External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first and CRW scrape fallback; set it to `false` to expose split lightweight `web_markdown` fetches.
+External CRW, Kokoro, and Silero are configured through `.env.example`. If a service URL is unset, the related tool is disabled or falls back to its compiled default. The web compose entrypoint defaults `OXIDE_WEB_CRAWLER_MERGE=true`, so web tasks see one `web_crawler` URL-to-Markdown tool backed by webfetch first; anti-bot, HTTP 403, and HTTP 429 failures fall back once to CRW Lightpanda. Explicit Lightpanda and Playwright modes run only the selected renderer. Set merge mode to `false` to expose split lightweight `web_markdown` fetches.
 
 Browser Live sidecar: the `browser-sidecar` service is included in all Compose files but is disabled by default. To enable it, set `BROWSER_AGENT_ENABLED=true` and a non-empty `BROWSER_AGENT_SIDECAR_TOKEN` in `.env`, then verify health at `http://127.0.0.1:8787/healthz`. See `docs/browser-live.md` for the full setup checklist and troubleshooting.
 
