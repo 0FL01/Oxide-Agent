@@ -116,8 +116,8 @@
   font-size: 12px;
 }
 
-.composer-effort-select {
-  width: 112px;
+.composer-model-select {
+  width: min(280px, 38vw);
   min-height: 32px;
   padding: 0 26px 0 10px;
   font-size: 12px;
@@ -127,8 +127,8 @@
   border-color: var(--border-subtle);
 }
 
-.composer-effort-select:hover,
-.composer-effort-select:focus {
+.composer-model-select:hover,
+.composer-model-select:focus {
   color: var(--fg);
   background: var(--bg-panel-soft);
 }

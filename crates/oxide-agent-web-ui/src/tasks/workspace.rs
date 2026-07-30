@@ -6,25 +6,26 @@ use crate::voice::VoiceRecorderControl;
 use futures_util::join;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
-    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskAttachment,
-    TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
-    UserSettingsResponse,
+    AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode, ModelRouteView,
+    ModelSelection, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary,
+    TaskAttachment, TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary,
+    UpdateSessionProfileRequest, UpdateUserSettingsRequest, UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, time::Duration};
 
+use super::WEB_AGENT_EFFORT;
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
-    AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
+    AgentProfileSelect, ModelRouteSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    merge_voice_transcript, persist_default_effort, reset_composer_textarea_height,
-    submit_parent_form_on_ctrl_enter, task_input_limit_notice, task_input_too_long,
+    merge_voice_transcript, reset_composer_textarea_height, submit_parent_form_on_ctrl_enter,
+    task_input_limit_notice, task_input_too_long,
 };
 use super::lightbox::{Lightbox, LightboxContext, LightboxImage};
 use super::profile::{
-    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
-    agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
+    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_profile_selection_from_value,
+    profile_value_to_id,
 };
 use super::state::{
     browser_now_millis, latest_editable_task_id, latest_task, remove_session_summary,
@@ -73,6 +74,15 @@ fn cached_settings_profiles() -> Option<SettingsProfilesCacheEntry> {
             .filter(|entry| now - entry.loaded_at_ms <= SETTINGS_PROFILES_CACHE_TTL_MS)
             .cloned()
     })
+}
+
+fn update_cached_settings(settings: UserSettingsResponse) {
+    SETTINGS_PROFILES_CACHE.with(|cache| {
+        if let Some(entry) = cache.borrow_mut().as_mut() {
+            entry.loaded_at_ms = now_ms();
+            entry.settings = settings;
+        }
+    });
 }
 
 async fn load_settings_profiles(
@@ -243,8 +253,10 @@ fn Workspace(
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (profiles_loaded, set_profiles_loaded) = signal(false);
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
-    let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
-    let (effort_touched, set_effort_touched) = signal(false);
+    let (model_routes, set_model_routes) = signal(Vec::<ModelRouteView>::new());
+    let (selected_model, set_selected_model) = signal(String::new());
+    let (welcome_model, set_welcome_model) = signal(String::new());
+    let (model_touched, set_model_touched) = signal(false);
     let textarea_ref = NodeRef::<html::Textarea>::new();
 
     let (drawer_open, set_drawer_open) = signal(false);
@@ -283,12 +295,27 @@ fn Workspace(
         set_profiles_loaded.set(true);
         spawn_ui(async move {
             let client = auth.client();
-            let (settings, loaded_profiles) = load_settings_profiles(&client).await;
-            if let Some(settings) = settings {
-                apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
-            }
+            let ((settings, loaded_profiles), routes_result) =
+                join!(load_settings_profiles(&client), client.list_model_routes());
             if let Some(loaded_profiles) = loaded_profiles {
                 set_profiles.set(loaded_profiles);
+            }
+            match routes_result {
+                Ok(response) => {
+                    let initial_model = settings
+                        .and_then(|settings| settings.default_model_selection)
+                        .map(|selection| selection.qualified_id)
+                        .or(response.default_model_id)
+                        .unwrap_or_default();
+                    set_model_routes.set(response.routes);
+                    if !model_touched.get() {
+                        set_welcome_model.set(initial_model.clone());
+                        if session_id.get_untracked().is_none() {
+                            set_selected_model.set(initial_model);
+                        }
+                    }
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
             }
         });
     });
@@ -324,6 +351,14 @@ fn Workspace(
 
             match session_result {
                 Ok(response) => {
+                    set_selected_model.set(
+                        response
+                            .session
+                            .model_selection
+                            .as_ref()
+                            .map(|selection| selection.qualified_id.clone())
+                            .unwrap_or_default(),
+                    );
                     set_selected_profile.set(
                         response
                             .session
@@ -446,6 +481,7 @@ fn Workspace(
             set_loading.set(false);
             // Reset profile to welcome default
             set_selected_profile.set(PROFILE_VALUE_DEFAULT.to_string());
+            set_selected_model.set(welcome_model.get());
         }
     });
 
@@ -560,6 +596,39 @@ fn Workspace(
         }
     });
 
+    let on_model_change = Callback::new(move |ev: leptos::ev::Event| {
+        let qualified_id = event_target_value(&ev);
+        if !model_routes
+            .get_untracked()
+            .iter()
+            .any(|route| route.qualified_id == qualified_id && route.runnable)
+        {
+            return;
+        }
+        set_model_touched.set(true);
+        set_selected_model.set(qualified_id.clone());
+        set_welcome_model.set(qualified_id.clone());
+        set_error.set(None);
+        spawn_ui(async move {
+            let client = auth.client();
+            let settings = match client.settings().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    set_error.set(Some(error.to_string()));
+                    return;
+                }
+            };
+            let request = UpdateUserSettingsRequest {
+                default_model_selection: Some(ModelSelection { qualified_id }),
+                default_agent_profile_id: settings.default_agent_profile_id,
+            };
+            match client.update_settings(&request).await {
+                Ok(settings) => update_cached_settings(settings),
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+        });
+    });
+
     let is_waiting = move || {
         active_task
             .get()
@@ -593,19 +662,21 @@ fn Workspace(
         }
         set_loading.set(true);
         set_error.set(None);
-        let effort = selected_effort.get();
 
         match session_id.get() {
             // ── Welcome flow ──────────────────────────────────────────
             None => {
                 let agent_profile_selection =
                     agent_profile_selection_from_value(&selected_profile.get());
+                let model_selection = (!selected_model.get().is_empty()).then(|| ModelSelection {
+                    qualified_id: selected_model.get(),
+                });
                 spawn_ui(async move {
                     let client = auth.client();
                     // 1. Create session
                     let session_id = match client
                         .create_session(&CreateSessionRequest {
-                            model_selection: None,
+                            model_selection,
                             agent_profile_selection,
                         })
                         .await
@@ -647,7 +718,7 @@ fn Workspace(
                             &CreateTaskRequest {
                                 input_markdown: task_input,
                                 attachments,
-                                effort: Some(effort),
+                                effort: Some(WEB_AGENT_EFFORT),
                             },
                         )
                         .await
@@ -708,7 +779,7 @@ fn Workspace(
                                 &ResumeTaskRequest {
                                     input_markdown: task_input,
                                     attachments,
-                                    effort: Some(effort),
+                                    effort: Some(WEB_AGENT_EFFORT),
                                 },
                             )
                             .await
@@ -719,7 +790,7 @@ fn Workspace(
                                 &CreateTaskRequest {
                                     input_markdown: task_input,
                                     attachments,
-                                    effort: Some(effort),
+                                    effort: Some(WEB_AGENT_EFFORT),
                                 },
                             )
                             .await
@@ -880,7 +951,6 @@ fn Workspace(
                                                         set_sessions,
                                                     },
                                                     set_error,
-                                                    selected_effort,
                                                 }
                                             />
                                         }
@@ -979,15 +1049,13 @@ fn Workspace(
                                     include_default=include_default_profile
                                     on_change=on_profile_change
                                 />
-                                <AgentEffortSelect
-                                    selected_effort=selected_effort
-                                    disabled=Signal::derive(move || loading.get() || is_running())
-                                    on_change=Callback::new(move |ev| {
-                                        let effort = agent_effort_from_value(&event_target_value(&ev));
-                                        set_effort_touched.set(true);
-                                        set_selected_effort.set(effort);
-                                        persist_default_effort(auth, effort, set_error);
+                                <ModelRouteSelect
+                                    routes=model_routes
+                                    selected_model=selected_model
+                                    disabled=Signal::derive(move || {
+                                        loading.get() || session_id.get().is_some() || model_routes.get().is_empty()
                                     })
+                                    on_change=on_model_change
                                 />
                                 <label class="button secondary composer-attach-button">
                                     <input

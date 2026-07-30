@@ -81,10 +81,6 @@ impl ApiClient {
         .await
     }
 
-    pub async fn refresh_model_routes(&self) -> Result<ListModelRoutesResponse, ApiClientError> {
-        self.post_empty("/api/v1/model-routes/refresh").await
-    }
-
     pub async fn settings(&self) -> Result<UserSettingsResponse, ApiClientError> {
         decode(
             with_credentials(Request::get("/api/v1/settings"))

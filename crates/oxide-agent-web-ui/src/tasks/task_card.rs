@@ -3,11 +3,12 @@ use crate::markdown::MarkdownContent;
 use crate::utils::spawn_ui;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    AgentEffort, CreateTaskVersionRequest, PersistedTaskEvent, TaskAttachment, TaskEventKind,
-    TaskSummary, UserMessageEventPayload,
+    CreateTaskVersionRequest, PersistedTaskEvent, TaskAttachment, TaskEventKind, TaskSummary,
+    UserMessageEventPayload,
 };
 use std::collections::HashMap;
 
+use super::WEB_AGENT_EFFORT;
 use super::activity::ThinkingButton;
 use super::composer::MessageAttachments;
 use super::delivered_files::{
@@ -55,7 +56,6 @@ pub(super) struct TaskCardSignals {
     pub(super) set_activity_task_id: WriteSignal<Option<String>>,
     pub(super) stream_signals: StreamUiSignals,
     pub(super) set_error: WriteSignal<Option<String>>,
-    pub(super) selected_effort: ReadSignal<AgentEffort>,
 }
 
 #[component]
@@ -77,7 +77,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_activity_task_id,
         stream_signals,
         set_error,
-        selected_effort,
     } = signals;
     let (editing, set_editing) = signal(false);
     let initial_versions = versions_for_group(&tasks.get_untracked(), &version_group_id);
@@ -141,7 +140,6 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_drawer_open,
         stream_signals,
         set_error,
-        selected_effort,
     };
     let version_signals = VersionSwitchSignals {
         set_editing,
@@ -663,7 +661,6 @@ struct TaskInputEditSignals {
     set_drawer_open: WriteSignal<bool>,
     stream_signals: StreamUiSignals,
     set_error: WriteSignal<Option<String>>,
-    selected_effort: ReadSignal<AgentEffort>,
 }
 
 #[component]
@@ -685,7 +682,6 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
         set_drawer_open,
         stream_signals,
         set_error,
-        selected_effort,
     } = signals;
     let auth = use_auth();
     let submit_edit = {
@@ -699,7 +695,7 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
             let request = CreateTaskVersionRequest {
                 input_markdown: draft.get(),
                 attachments: attachments.clone(),
-                effort: Some(selected_effort.get()),
+                effort: Some(WEB_AGENT_EFFORT),
             };
             let session_id = session_id.clone();
             let task_id = task_id.clone();

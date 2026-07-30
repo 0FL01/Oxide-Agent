@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install cargo-chef && \
-    cargo install --version 0.21.14 trunk && \
+    cargo install --locked --version 0.21.14 trunk && \
     cargo install --version 0.2.122 wasm-bindgen-cli
 
 FROM chef AS planner

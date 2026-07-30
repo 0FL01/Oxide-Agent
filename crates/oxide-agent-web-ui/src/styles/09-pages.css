@@ -110,28 +110,6 @@
   font-size: 12px;
 }
 
-.model-settings-form {
-  display: grid;
-  gap: 12px;
-}
-
-.model-route-select {
-  min-height: 36px;
-  padding: 8px 10px;
-}
-
-.model-route-select option:disabled {
-  color: var(--text-faint);
-}
-
-.model-settings-note {
-  margin: -4px 0 0;
-}
-
-.model-route-meta {
-  margin: 0;
-}
-
 .model-settings-actions {
   display: flex;
   flex-wrap: wrap;

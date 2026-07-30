@@ -123,7 +123,6 @@ pub(crate) async fn api_update_settings(
         true,
     )
     .await?;
-    record.default_effort = request.default_effort;
     record.updated_at = chrono::Utc::now();
     state
         .web_store
@@ -142,7 +141,6 @@ fn user_settings_response_from_record(record: &WebUserRecord) -> UserSettingsRes
     UserSettingsResponse {
         default_model_selection: record.default_model_selection.clone(),
         default_agent_profile_id: record.default_agent_profile_id.clone(),
-        default_effort: record.default_effort,
     }
 }
 

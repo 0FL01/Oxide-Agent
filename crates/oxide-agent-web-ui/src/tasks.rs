@@ -11,4 +11,8 @@ mod tool_cards;
 mod versions;
 mod workspace;
 
+use oxide_agent_web_contracts::AgentEffort;
+
+pub(super) const WEB_AGENT_EFFORT: AgentEffort = AgentEffort::Heavy;
+
 pub use workspace::TaskConsole;

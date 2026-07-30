@@ -30,7 +30,7 @@ use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 use oxide_agent_core::storage::{BrowserArtifactRecord, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileSelection, CreateAgentProfileRequest,
+    AgentProfileSelection, CreateAgentProfileRequest,
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
@@ -752,7 +752,6 @@ async fn api_settings_round_trips_default_model_selection() {
     .await
     .expect("settings response");
     assert_eq!(initial.default_model_selection, None);
-    assert_eq!(initial.default_effort, None);
     assert_eq!(
         state
             .user_settings_cache
@@ -771,7 +770,6 @@ async fn api_settings_round_trips_default_model_selection() {
         axum::Json(UpdateUserSettingsRequest {
             default_model_selection: Some(selected),
             default_agent_profile_id: None,
-            default_effort: Some(AgentEffort::Heavy),
         }),
     )
     .await
@@ -782,7 +780,6 @@ async fn api_settings_round_trips_default_model_selection() {
             qualified_id: "opencode-go/kimi-k2.6".to_string(),
         })
     );
-    assert_eq!(updated.default_effort, Some(AgentEffort::Heavy));
     let stored = state
         .web_store
         .load_user(user.user_id)
@@ -793,7 +790,6 @@ async fn api_settings_round_trips_default_model_selection() {
         stored.default_model_selection,
         updated.default_model_selection
     );
-    assert_eq!(stored.default_effort, updated.default_effort);
     assert_eq!(
         state
             .user_settings_cache
@@ -811,7 +807,6 @@ async fn api_settings_round_trips_default_model_selection() {
                 qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
             }),
             default_agent_profile_id: None,
-            default_effort: None,
         }),
     )
     .await
@@ -831,7 +826,6 @@ async fn api_settings_round_trips_default_model_selection() {
                 qualified_id: "openai-base:local/hf.co/test/model".to_string(),
             }),
             default_agent_profile_id: None,
-            default_effort: None,
         }),
     )
     .await
@@ -851,7 +845,6 @@ async fn api_settings_round_trips_default_model_selection() {
                 qualified_id: "other-provider/model".to_string(),
             }),
             default_agent_profile_id: None,
-            default_effort: None,
         }),
     )
     .await
@@ -913,7 +906,6 @@ async fn api_create_session_persists_request_user_default_and_fallback_model_sel
                 qualified_id: "opencode-go/kimi-k2.6".to_string(),
             }),
             default_agent_profile_id: None,
-            default_effort: None,
         }),
     )
     .await
@@ -1023,7 +1015,6 @@ async fn api_agent_profile_default_and_session_selection_persist() {
         axum::Json(UpdateUserSettingsRequest {
             default_model_selection: None,
             default_agent_profile_id: Some(created_profile.profile.agent_id.clone()),
-            default_effort: None,
         }),
     )
     .await

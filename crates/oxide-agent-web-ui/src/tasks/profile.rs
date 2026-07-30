@@ -1,36 +1,7 @@
-use leptos::prelude::{Get, ReadSignal, Set, WriteSignal};
-use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileSelection, AgentProfileView, UserSettingsResponse,
-};
+use oxide_agent_web_contracts::{AgentProfileSelection, AgentProfileView};
 
 pub(super) const PROFILE_VALUE_DEFAULT: &str = "__default__";
 pub(super) const PROFILE_VALUE_NONE: &str = "__none__";
-
-pub(super) fn agent_effort_value(effort: AgentEffort) -> &'static str {
-    match effort {
-        AgentEffort::Standard => "standard",
-        AgentEffort::Extended => "extended",
-        AgentEffort::Heavy => "heavy",
-    }
-}
-
-pub(super) fn agent_effort_from_value(value: &str) -> AgentEffort {
-    match value {
-        "extended" => AgentEffort::Extended,
-        "heavy" => AgentEffort::Heavy,
-        _ => AgentEffort::Standard,
-    }
-}
-
-pub(super) fn apply_loaded_default_effort(
-    settings: UserSettingsResponse,
-    effort_touched: ReadSignal<bool>,
-    set_selected_effort: WriteSignal<AgentEffort>,
-) {
-    if !effort_touched.get() {
-        set_selected_effort.set(settings.default_effort.unwrap_or(AgentEffort::Standard));
-    }
-}
 
 pub(super) fn missing_profile_option_label(
     profiles: &[AgentProfileView],

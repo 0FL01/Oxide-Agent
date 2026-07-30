@@ -1,14 +1,8 @@
-use crate::auth::AuthContext;
-use crate::utils::spawn_ui;
 use leptos::{html, prelude::*};
-use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileView, TaskAttachment, UpdateUserSettingsRequest,
-};
+use oxide_agent_web_contracts::{AgentProfileView, ModelRouteView, TaskAttachment};
 use wasm_bindgen::JsValue;
 
-use super::profile::{
-    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
-};
+use super::profile::{PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, missing_profile_option_label};
 
 #[derive(Clone)]
 pub(crate) struct PendingAttachmentFile {
@@ -49,50 +43,62 @@ pub(crate) fn AgentProfileSelect(
 }
 
 #[component]
-pub(crate) fn AgentEffortSelect(
-    selected_effort: ReadSignal<AgentEffort>,
+pub(crate) fn ModelRouteSelect(
+    routes: ReadSignal<Vec<ModelRouteView>>,
+    selected_model: ReadSignal<String>,
     disabled: Signal<bool>,
     on_change: Callback<leptos::ev::Event>,
 ) -> impl IntoView {
     view! {
         <select
-            class="composer-effort-select"
-            title="Effort controls agent loop depth and research budget"
-            aria-label="Agent effort"
-            prop:value=move || agent_effort_value(selected_effort.get())
+            class="composer-model-select"
+            title="Model for new sessions"
+            aria-label="Model"
+            prop:value=selected_model
             disabled=move || disabled.get()
             on:change=move |ev| on_change.run(ev)
         >
-            <option value="standard">"Standard"</option>
-            <option value="extended">"Extended"</option>
-            <option value="heavy">"Heavy"</option>
+            {move || selected_model_missing_option(routes, selected_model)}
+            <For
+                each=move || routes.get()
+                key=|route| route.qualified_id.clone()
+                children=move |route| {
+                    let value = route.qualified_id.clone();
+                    view! {
+                        <option value=value.clone() disabled=!route.runnable>
+                            {model_route_option_label(&route)}
+                        </option>
+                    }
+                }
+            />
         </select>
     }
 }
 
-pub(crate) fn persist_default_effort(
-    auth: AuthContext,
-    effort: AgentEffort,
-    set_error: WriteSignal<Option<String>>,
-) {
-    spawn_ui(async move {
-        let client = auth.client();
-        let settings = match client.settings().await {
-            Ok(settings) => settings,
-            Err(error) => {
-                set_error.set(Some(error.to_string()));
-                return;
-            }
-        };
-        let request = UpdateUserSettingsRequest {
-            default_model_selection: settings.default_model_selection,
-            default_agent_profile_id: settings.default_agent_profile_id,
-            default_effort: Some(effort),
-        };
-        if let Err(error) = client.update_settings(&request).await {
-            set_error.set(Some(error.to_string()));
-        }
-    });
+fn model_route_option_label(route: &ModelRouteView) -> String {
+    if route.supports_image_input {
+        format!("{} · image", route.qualified_id)
+    } else {
+        route.qualified_id.clone()
+    }
+}
+
+fn selected_model_missing_option(
+    routes: ReadSignal<Vec<ModelRouteView>>,
+    selected_model: ReadSignal<String>,
+) -> Option<impl IntoView> {
+    let selected = selected_model.get();
+    if selected.is_empty()
+        || routes
+            .get()
+            .iter()
+            .any(|route| route.qualified_id == selected)
+    {
+        return None;
+    }
+    Some(view! {
+        <option value=selected.clone() disabled=true>{format!("{selected} · unavailable")}</option>
+    })
 }
 
 fn selected_profile_missing_option(

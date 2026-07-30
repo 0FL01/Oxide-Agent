@@ -382,17 +382,16 @@ impl SqlxWebUiStore {
         let role = enum_to_sql(&record.role, "web user role")?;
         let status = enum_to_sql(&record.status, "web user status")?;
         let model_selection = optional_json(&record.default_model_selection, "model selection")?;
-        let effort = optional_enum_to_sql(&record.default_effort, "agent effort")?;
         let schema_version = u32_to_i32(record.schema_version, "web user schema_version")?;
 
         query::<Postgres>(
             r#"
             INSERT INTO web_users (
                 user_id, login, normalized_login, password_hash, role, status,
-                default_model_selection, default_agent_profile_id, default_effort,
-                last_login_at, schema_version, created_at, updated_at
+                default_model_selection, default_agent_profile_id, last_login_at,
+                schema_version, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (user_id) DO UPDATE SET
                 login = EXCLUDED.login,
                 normalized_login = EXCLUDED.normalized_login,
@@ -401,7 +400,6 @@ impl SqlxWebUiStore {
                 status = EXCLUDED.status,
                 default_model_selection = EXCLUDED.default_model_selection,
                 default_agent_profile_id = EXCLUDED.default_agent_profile_id,
-                default_effort = EXCLUDED.default_effort,
                 last_login_at = EXCLUDED.last_login_at,
                 schema_version = EXCLUDED.schema_version,
                 updated_at = EXCLUDED.updated_at
@@ -415,7 +413,6 @@ impl SqlxWebUiStore {
         .bind(status)
         .bind(model_selection)
         .bind(&record.default_agent_profile_id)
-        .bind(effort)
         .bind(record.last_login_at)
         .bind(schema_version)
         .bind(record.created_at)
@@ -835,7 +832,7 @@ impl WebUiStore for SqlxWebUiStore {
         let row = query::<Postgres>(
             r#"
             SELECT user_id, login, normalized_login, password_hash, role, status,
-                   default_model_selection, default_agent_profile_id, default_effort,
+                   default_model_selection, default_agent_profile_id,
                    last_login_at, schema_version, created_at, updated_at
             FROM web_users
             WHERE user_id = $1
@@ -1863,10 +1860,6 @@ fn row_to_user(row: &PgRow) -> WebUiStoreResult<WebUserRecord> {
         row_value::<Option<Value>>(row, "default_model_selection")?,
         "model selection",
     )?;
-    let default_effort = optional_enum_from_sql(
-        row_value::<Option<String>>(row, "default_effort")?,
-        "agent effort",
-    )?;
     Ok(WebUserRecord {
         schema_version: i32_to_u32(row_value(row, "schema_version")?, "web user schema_version")?,
         user_id: row_value(row, "user_id")?,
@@ -1877,7 +1870,6 @@ fn row_to_user(row: &PgRow) -> WebUiStoreResult<WebUserRecord> {
         status,
         default_model_selection,
         default_agent_profile_id: row_value(row, "default_agent_profile_id")?,
-        default_effort,
         created_at: row_value(row, "created_at")?,
         updated_at: row_value(row, "updated_at")?,
         last_login_at: row_value(row, "last_login_at")?,
@@ -2203,9 +2195,7 @@ mod tests {
     use chrono::Duration;
     use oxide_agent_core::agent::progress::FileDeliveryKind;
     use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
-    use oxide_agent_web_contracts::{
-        AgentEffort, ProgressSnapshot, TaskEventKind, TaskStatus, UserRole,
-    };
+    use oxide_agent_web_contracts::{ProgressSnapshot, TaskEventKind, TaskStatus, UserRole};
 
     use crate::persistence::WebUserStatus;
 
@@ -2257,7 +2247,6 @@ mod tests {
             status: WebUserStatus::Active,
             default_model_selection: None,
             default_agent_profile_id: None,
-            default_effort: Some(AgentEffort::Standard),
             created_at: now,
             updated_at: now,
             last_login_at: None,
