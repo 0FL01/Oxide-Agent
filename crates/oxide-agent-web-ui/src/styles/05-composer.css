@@ -117,7 +117,7 @@
 }
 
 .composer-model-select {
-  width: min(280px, 38vw);
+  width: min(200px, 38vw);
   min-height: 32px;
   padding: 0 26px 0 10px;
   font-size: 12px;
