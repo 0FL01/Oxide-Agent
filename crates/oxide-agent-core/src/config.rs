@@ -2279,9 +2279,9 @@ pub const AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS: u32 = 32_000;
 /// Default main-agent model max output tokens.
 pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Default main-agent model context window tokens.
-pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
+pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 320_000;
 /// Default internal main-agent context budget when no model window is configured.
-pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 200_000;
+pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 320_000;
 /// Default sub-agent model max output tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Max forced continuations when todos incomplete

@@ -235,6 +235,7 @@ Set explicit agent and media routes through `.env`.
 ```dotenv
 AGENT_MODEL_ID="mimo-v2.5"
 AGENT_MODEL_PROVIDER="opencode-go"
+AGENT_MODEL_CONTEXT_WINDOW_TOKENS=320000
 
 SUB_AGENT_MODEL_ID="mimo-v2.5"
 SUB_AGENT_MODEL_PROVIDER="opencode-go"
