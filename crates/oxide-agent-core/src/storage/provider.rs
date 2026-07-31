@@ -21,6 +21,30 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         config: UserConfig,
     ) -> Result<(), StorageError>;
+    /// Get the selected Agent model for one transport context.
+    async fn get_context_agent_model_selection(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        Ok(None)
+    }
+    /// Atomically set or clear the selected Agent model for one transport context.
+    async fn set_context_agent_model_selection(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        qualified_id: Option<String>,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = qualified_id;
+        Err(StorageError::Config(
+            "context model selection is not implemented for this storage provider".to_string(),
+        ))
+    }
     /// Update user state.
     async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError>;
     /// Get user state.

@@ -15,6 +15,7 @@ use oxide_agent_core::agent::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
     PendingUserInput,
 };
+use oxide_agent_core::config::ModelInfo;
 use oxide_agent_web_contracts::{
     AgentEffort as WebAgentEffort, PersistedTaskEvent, ProgressSnapshot,
     TaskStatus as ApiTaskStatus, WebTaskRecord,
@@ -33,6 +34,7 @@ struct TaskExecutorCtx {
     task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     web_task: Option<WebTaskPersistence>,
     queued_at: Instant,
+    model_routes: Vec<ModelInfo>,
 }
 
 #[derive(Clone)]
@@ -51,6 +53,7 @@ struct ExecutorTaskCtx {
     session_id: String,
     task_id: String,
     run_request: TaskRunRequest,
+    model_routes: Vec<ModelInfo>,
     executor_arc: Arc<tokio::sync::RwLock<oxide_agent_core::agent::AgentExecutor>>,
     tx: mpsc::Sender<oxide_agent_core::agent::AgentEvent>,
     timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
@@ -89,6 +92,7 @@ pub(crate) async fn spawn_registered_task(
     session_id: String,
     running_task: RunningTask,
     run_request: TaskRunRequest,
+    model_routes: Vec<ModelInfo>,
     web_task: Option<WebTaskPersistence>,
 ) {
     let queued_at = Instant::now();
@@ -131,6 +135,7 @@ pub(crate) async fn spawn_registered_task(
         task_timeline,
         web_task,
         queued_at,
+        model_routes,
     };
     let task_handles = state.task_handles.clone();
     let tid_for_cleanup = task_id.clone();
@@ -294,6 +299,7 @@ async fn execute_agent_task(
         session_id,
         task_id,
         run_request,
+        &ctx.model_routes,
         tx.clone(),
         (*cancellation_token).clone(),
     )
@@ -322,6 +328,7 @@ async fn execute_agent_task(
         session_id: session_id.to_string(),
         task_id: tid,
         run_request,
+        model_routes: ctx.model_routes,
         executor_arc,
         tx,
         timeline_map: ctx.task_timeline.clone(),
@@ -438,6 +445,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             session_id,
             task_id,
             run_request,
+            model_routes,
             executor_arc,
             tx,
             timeline_map,
@@ -472,6 +480,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
                 "web task executor latency"
             );
+            executor.set_model_routes_override(model_routes);
             match run_request {
                 TaskRunRequest::Execute {
                     input: task_text,

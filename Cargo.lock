@@ -2850,6 +2850,7 @@ dependencies = [
  "oxide-agent-transport-web",
  "serde",
  "serde_json",
+ "sha2",
  "teloxide",
  "tokio",
  "tokio-util",

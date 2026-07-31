@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use moka::future::Cache;
 use oxide_agent_core::storage::SqlxStorage;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
-    WebTaskRecord,
+    ModelSelection, PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus,
+    WebSessionRecord, WebTaskRecord,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -1024,7 +1024,6 @@ impl WebUiStore for SqlxWebUiStore {
                 context_key = EXCLUDED.context_key,
                 context_keys = EXCLUDED.context_keys,
                 agent_flow_id = EXCLUDED.agent_flow_id,
-                model_selection = EXCLUDED.model_selection,
                 agent_profile_id = EXCLUDED.agent_profile_id,
                 active_task_id = EXCLUDED.active_task_id,
                 last_task_status = EXCLUDED.last_task_status,
@@ -1036,7 +1035,7 @@ impl WebUiStore for SqlxWebUiStore {
                 auto_title_next_attempt_at = EXCLUDED.auto_title_next_attempt_at,
                 auto_title_last_error = EXCLUDED.auto_title_last_error,
                 schema_version = EXCLUDED.schema_version,
-                updated_at = EXCLUDED.updated_at
+                updated_at = GREATEST(web_sessions.updated_at, EXCLUDED.updated_at)
             "#,
         )
         .bind(record.user_id)
@@ -1075,8 +1074,39 @@ impl WebUiStore for SqlxWebUiStore {
             None,
             None,
         );
-        self.cache_session_record(&record).await;
+        self.session_cache
+            .invalidate(&SessionCacheKey::from_record(&record))
+            .await;
         Ok(())
+    }
+
+    async fn set_session_model_selection(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        model_selection: &ModelSelection,
+        updated_at: DateTime<Utc>,
+    ) -> WebUiStoreResult<bool> {
+        let model_selection = optional_json(&Some(model_selection), "model selection")?;
+        let result = query::<Postgres>(
+            r#"
+            UPDATE web_sessions
+            SET model_selection = $3,
+                updated_at = GREATEST(updated_at, $4)
+            WHERE user_id = $1 AND session_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(model_selection)
+        .bind(updated_at)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?;
+        self.session_cache
+            .invalidate(&SessionCacheKey::new(user_id, session_id))
+            .await;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn load_session(

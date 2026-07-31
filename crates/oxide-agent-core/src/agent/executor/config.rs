@@ -99,6 +99,11 @@ impl AgentExecutor {
     ///
     /// An empty route list clears the override and restores global settings.
     pub fn set_model_routes_override(&mut self, routes: Vec<ModelInfo>) {
+        let context_budget = routes.first().map_or_else(
+            || self.settings.get_agent_internal_context_budget_tokens(),
+            |model| self.settings.agent_internal_context_budget_for_model(model),
+        );
+        self.session.set_context_window_tokens(context_budget);
         self.model_routes_override = if routes.is_empty() {
             None
         } else {

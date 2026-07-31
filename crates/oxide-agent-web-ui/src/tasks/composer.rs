@@ -52,7 +52,7 @@ pub(crate) fn ModelRouteSelect(
     view! {
         <select
             class="composer-model-select"
-            title="Model for new sessions"
+            title="Agent model"
             aria-label="Model"
             prop:value=selected_model
             disabled=move || disabled.get()

@@ -9,8 +9,8 @@ use oxide_agent_web_contracts::{
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateSessionResponse as ApiCreateSessionResponse, ErrorCode, ErrorEnvelope,
     GetSessionResponse, ListSessionsResponse, OkResponse, TaskAttachment,
-    UpdateSessionProfileRequest, UpdateSessionRequest, UpdateSessionResponse,
-    UploadTaskAttachmentsResponse, WebSessionRecord, WebTaskRecord,
+    UpdateSessionModelRequest, UpdateSessionProfileRequest, UpdateSessionRequest,
+    UpdateSessionResponse, UploadTaskAttachmentsResponse, WebSessionRecord, WebTaskRecord,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,9 +26,9 @@ use super::{
     api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
     backend_unavailable_response, canonical_model_selection, default_session_model_selection,
     load_current_user_record, load_execution_profile_for_agent_profile_id, load_owned_session,
-    resolve_session_agent_profile_id, session_detail_from_record, session_summary_from_record,
-    store_error_response, validate_optional_agent_profile_id, validate_session_title,
-    web_chat_upload_limit_mb, web_max_sandbox_containers_per_user,
+    not_found_response, resolve_session_agent_profile_id, session_detail_from_record,
+    session_summary_from_record, store_error_response, validate_optional_agent_profile_id,
+    validate_session_title, web_chat_upload_limit_mb, web_max_sandbox_containers_per_user,
 };
 
 async fn reconcile_web_sandbox_orphans_with_sessions(
@@ -485,6 +485,35 @@ pub(crate) async fn api_update_session_profile(
         .session_manager
         .set_session_execution_profile(&session_id, agent_profile_id, execution_profile)
         .await;
+    Ok(Json(UpdateSessionResponse {
+        session: session_detail_from_record(record),
+    }))
+}
+
+pub(crate) async fn api_update_session_model(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<UpdateSessionModelRequest>,
+) -> Result<Json<UpdateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let _record = load_owned_session(&state, user.user_id, &session_id).await?;
+    let model_selection = canonical_model_selection(request.model_selection)?;
+    let updated = state
+        .web_store
+        .set_session_model_selection(
+            user.user_id,
+            &session_id,
+            &model_selection,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(store_error_response)?;
+    if !updated {
+        return Err(not_found_response());
+    }
+    invalidate_session_summaries_cache(&state, user.user_id).await;
+    let record = load_owned_session(&state, user.user_id, &session_id).await?;
     Ok(Json(UpdateSessionResponse {
         session: session_detail_from_record(record),
     }))

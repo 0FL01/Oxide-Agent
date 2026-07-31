@@ -479,6 +479,14 @@ fn control_commands_are_recognized_for_topic_gate_bypass() {
         parse_agent_control_command(Some("/c")),
         Some(AgentControlCommand::ShowControls)
     );
+    assert_eq!(
+        parse_agent_control_command(Some("🧠 Model")),
+        Some(AgentControlCommand::ShowModelSelector)
+    );
+    assert_eq!(
+        parse_agent_control_command(Some("/model")),
+        Some(AgentControlCommand::ShowModelSelector)
+    );
 }
 
 #[test]

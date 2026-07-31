@@ -9,7 +9,8 @@ use oxide_agent_web_contracts::{
     AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode, ModelRouteView,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary,
     TaskAttachment, TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary,
-    UpdateSessionProfileRequest, UpdateUserSettingsRequest, UserSettingsResponse,
+    UpdateSessionModelRequest, UpdateSessionProfileRequest, UpdateUserSettingsRequest,
+    UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, time::Duration};
 
@@ -257,6 +258,7 @@ fn Workspace(
     let (selected_model, set_selected_model) = signal(String::new());
     let (welcome_model, set_welcome_model) = signal(String::new());
     let (model_touched, set_model_touched) = signal(false);
+    let (model_updating, set_model_updating) = signal(false);
     let textarea_ref = NodeRef::<html::Textarea>::new();
 
     let (drawer_open, set_drawer_open) = signal(false);
@@ -605,10 +607,43 @@ fn Workspace(
         {
             return;
         }
+        let previous_model = selected_model.get_untracked();
         set_model_touched.set(true);
         set_selected_model.set(qualified_id.clone());
-        set_welcome_model.set(qualified_id.clone());
         set_error.set(None);
+        if let Some(sid) = session_id.get_untracked() {
+            set_model_updating.set(true);
+            spawn_ui(async move {
+                let client = auth.client();
+                let request = UpdateSessionModelRequest {
+                    model_selection: ModelSelection { qualified_id },
+                };
+                match client.update_session_model(&sid, &request).await {
+                    Ok(response) => {
+                        set_selected_model.set(
+                            response
+                                .session
+                                .model_selection
+                                .as_ref()
+                                .map(|selection| selection.qualified_id.clone())
+                                .unwrap_or_default(),
+                        );
+                        upsert_session_summary(
+                            set_sessions,
+                            session_detail_to_summary(response.session),
+                        );
+                    }
+                    Err(error) => {
+                        set_selected_model.set(previous_model);
+                        set_error.set(Some(error.to_string()));
+                    }
+                }
+                set_model_updating.set(false);
+            });
+            return;
+        }
+
+        set_welcome_model.set(qualified_id.clone());
         spawn_ui(async move {
             let client = auth.client();
             let settings = match client.settings().await {
@@ -1053,7 +1088,7 @@ fn Workspace(
                                     routes=model_routes
                                     selected_model=selected_model
                                     disabled=Signal::derive(move || {
-                                        loading.get() || session_id.get().is_some() || model_routes.get().is_empty()
+                                        loading.get() || model_updating.get() || model_routes.get().is_empty()
                                     })
                                     on_change=on_model_change
                                 />

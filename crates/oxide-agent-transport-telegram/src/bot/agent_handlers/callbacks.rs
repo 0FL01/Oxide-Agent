@@ -1,11 +1,12 @@
 use super::{
     AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext,
-    ResetSessionOutcome, RunAgentTaskTextContext, SESSION_REGISTRY, SessionTransportContext,
-    agent_mode_session_keys, automatic_agent_control_markup, cancel_and_clear_session,
-    cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
-    clear_cancel_confirmation_message, clear_pending_cancel_message, ensure_session_exists,
-    handle_clear_memory_confirmation, handle_recreate_container_confirmation,
-    is_agent_task_running, manager_default_chat_id, outbound_thread_from_callback,
+    ModelCallbackAction, ModelCallbackContext, ResetSessionOutcome, RunAgentTaskTextContext,
+    SESSION_REGISTRY, SessionTransportContext, agent_mode_session_keys,
+    automatic_agent_control_markup, cancel_and_clear_session, cancel_status_inline_markup,
+    cancel_status_reply_markup, cleanup_abandoned_empty_flow, clear_cancel_confirmation_message,
+    clear_pending_cancel_message, ensure_session_exists, handle_clear_memory_confirmation,
+    handle_model_callback, handle_recreate_container_confirmation, is_agent_task_running,
+    manager_default_chat_id, outbound_thread_from_callback, parse_model_callback_action,
     renew_cancellation_token, reset_session, resolve_existing_session_id, run_agent_task_with_text,
     save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
     send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
@@ -54,6 +55,7 @@ struct LoopCallbackContext {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AgentCallbackAction {
+    Model(ModelCallbackAction),
     LoopRetry,
     LoopReset,
     LoopCancel,
@@ -75,6 +77,9 @@ struct AgentCallbackContext {
 }
 
 pub(crate) fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAction> {
+    if let Some(action) = parse_model_callback_action(data) {
+        return Some(AgentCallbackAction::Model(action));
+    }
     if data == AGENT_CALLBACK_DETACH {
         return Some(AgentCallbackAction::Detach);
     }
@@ -227,6 +232,7 @@ async fn handle_loop_retry(
             user_id: retry_ctx.user_id,
             task_text,
             storage,
+            agent_settings: settings.agent.clone(),
             context_key: retry_ctx.context_key,
             agent_flow_id: retry_ctx.agent_flow_id,
             message_thread_id: retry_ctx.outbound_thread.message_thread_id,
@@ -534,6 +540,7 @@ async fn dispatch_agent_callback(
     ctx: AgentCallbackContext,
 ) -> Result<()> {
     match action {
+        AgentCallbackAction::Model(_) => unreachable!("model callbacks are dispatched early"),
         AgentCallbackAction::Attach(selected_flow_id) => {
             handle_attach_flow_callback(&ctx, selected_flow_id).await
         }
@@ -593,8 +600,25 @@ pub async fn handle_agent_callback(
     };
 
     let Some(action) = parse_agent_callback_action(data) else {
+        if data.starts_with("m:") {
+            answer_agent_callback(&bot, q.id.clone(), Some("Invalid model action")).await;
+        }
         return Ok(());
     };
+
+    if let AgentCallbackAction::Model(model_action) = &action
+        && model_action
+            .owner_id()
+            .is_some_and(|owner_id| owner_id != q.from.id.0.cast_signed())
+    {
+        answer_agent_callback(
+            &bot,
+            q.id.clone(),
+            Some("This model selector belongs to another user"),
+        )
+        .await;
+        return Ok(());
+    }
 
     let msg = q
         .message
@@ -605,6 +629,24 @@ pub async fn handle_agent_callback(
     let user_id = q.from.id.0.cast_signed();
     let chat_id = msg.chat.id;
     let thread_spec = resolve_thread_spec(&msg);
+    if let AgentCallbackAction::Model(model_action) = &action {
+        let context_key = storage_context_key(chat_id, thread_spec);
+        answer_agent_callback(&bot, q.id.clone(), None).await;
+        return handle_model_callback(
+            model_action.clone(),
+            ModelCallbackContext {
+                bot: &bot,
+                chat_id,
+                message_id: msg.id,
+                outbound_thread: outbound_thread_from_callback(&q),
+                user_id,
+                context_key: &context_key,
+                storage: &storage,
+                settings: &settings,
+            },
+        )
+        .await;
+    }
     let (agent_flow_id, _) =
         ensure_current_agent_flow_id(&storage, user_id, chat_id, thread_spec).await?;
     let session_keys =

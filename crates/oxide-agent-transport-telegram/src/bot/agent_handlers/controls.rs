@@ -39,6 +39,7 @@ pub(crate) enum AgentControlCommand {
     RecreateContainer,
     ExitAgentMode,
     ShowControls,
+    ShowModelSelector,
 }
 
 pub(crate) struct ConfirmationSendCtx<'a> {
@@ -59,6 +60,7 @@ pub(crate) fn parse_agent_control_command(text: Option<&str>) -> Option<AgentCon
         Some("🗜 Compact Context") => Some(AgentControlCommand::CompactContext),
         Some("🔄 Recreate Container") => Some(AgentControlCommand::RecreateContainer),
         Some("⬅️ Exit Agent Mode") => Some(AgentControlCommand::ExitAgentMode),
+        Some("🧠 Model") | Some("/model") => Some(AgentControlCommand::ShowModelSelector),
         Some("/c") => Some(AgentControlCommand::ShowControls),
         _ => None,
     }

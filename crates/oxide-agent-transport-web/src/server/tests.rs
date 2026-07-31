@@ -34,8 +34,8 @@ use oxide_agent_web_contracts::{
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
-    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
-    UpdateUserSettingsRequest, WebSessionRecord, WebTaskRecord,
+    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionModelRequest,
+    UpdateSessionProfileRequest, UpdateUserSettingsRequest, WebSessionRecord, WebTaskRecord,
 };
 #[cfg(feature = "profile-web-embedded-opencode-local")]
 use oxide_agent_web_contracts::{
@@ -63,8 +63,8 @@ use super::{
     api_create_session, api_create_session_with_request, api_create_task_version,
     api_delete_agent_profile, api_delete_session, api_get_session, api_get_settings,
     api_get_task_events, api_get_task_progress, api_list_agent_profiles, api_list_sessions,
-    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
-    parse_web_bool,
+    api_update_session_model, api_update_session_profile, api_update_settings, auth_cookie_value,
+    csrf_header_value, parse_web_bool,
 };
 #[cfg(feature = "profile-web-embedded-opencode-local")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task, api_update_session};
@@ -894,7 +894,7 @@ async fn api_create_session_persists_request_user_default_and_fallback_model_sel
     assert_eq!(
         fallback_record.model_selection,
         Some(ModelSelection {
-            qualified_id: "opencode-go/deepseek-v4-flash".to_string(),
+            qualified_id: "opencode-go/mimo-v2.5".to_string(),
         })
     );
 
@@ -952,6 +952,81 @@ async fn api_create_session_persists_request_user_default_and_fallback_model_sel
         Some(ModelSelection {
             qualified_id: "opencode-go/glm-5".to_string(),
         })
+    );
+}
+
+#[tokio::test]
+async fn api_update_session_model_applies_to_an_active_session_without_clobbering_task_state() {
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (user, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+    let axum::Json(created) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created.session.session_id;
+    let mut active_record = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load session")
+        .expect("session exists");
+    active_record.active_task_id = Some("active-task".to_string());
+    active_record.last_task_status = Some(ApiTaskStatus::Running);
+    state
+        .web_store
+        .save_session(active_record)
+        .await
+        .expect("save active task state");
+
+    let axum::Json(updated) = api_update_session_model(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(session_id.clone()),
+        axum::Json(UpdateSessionModelRequest {
+            model_selection: ModelSelection {
+                qualified_id: "opencode-go/glm-5".to_string(),
+            },
+        }),
+    )
+    .await
+    .expect("update active session model");
+
+    assert_eq!(
+        updated.session.model_selection,
+        Some(ModelSelection {
+            qualified_id: "opencode-go/glm-5".to_string(),
+        })
+    );
+    assert_eq!(
+        updated.session.active_task_id.as_deref(),
+        Some("active-task")
+    );
+    assert_eq!(
+        updated.session.last_task_status,
+        Some(ApiTaskStatus::Running)
     );
 }
 

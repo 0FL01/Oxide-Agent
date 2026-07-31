@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
-    WebTaskRecord,
+    ModelSelection, PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus,
+    WebSessionRecord, WebTaskRecord,
 };
 use tokio::sync::RwLock;
 
@@ -151,13 +151,32 @@ impl WebUiStore for InMemoryWebUiStore {
         Ok(revoked)
     }
 
-    async fn save_session(&self, record: WebSessionRecord) -> WebUiStoreResult<()> {
+    async fn save_session(&self, mut record: WebSessionRecord) -> WebUiStoreResult<()> {
         record.validate_web_record()?;
-        self.sessions.write().await.insert(
-            Self::session_key(record.user_id, &record.session_id),
-            record,
-        );
+        let key = Self::session_key(record.user_id, &record.session_id);
+        let mut sessions = self.sessions.write().await;
+        if let Some(existing) = sessions.get(&key) {
+            record.model_selection = existing.model_selection.clone();
+            record.updated_at = record.updated_at.max(existing.updated_at);
+        }
+        sessions.insert(key, record);
         Ok(())
+    }
+
+    async fn set_session_model_selection(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        model_selection: &ModelSelection,
+        updated_at: DateTime<Utc>,
+    ) -> WebUiStoreResult<bool> {
+        let mut sessions = self.sessions.write().await;
+        let Some(record) = sessions.get_mut(&Self::session_key(user_id, session_id)) else {
+            return Ok(false);
+        };
+        record.model_selection = Some(model_selection.clone());
+        record.updated_at = record.updated_at.max(updated_at);
+        Ok(true)
     }
 
     async fn load_session(
@@ -550,7 +569,8 @@ impl WebUiStore for InMemoryWebUiStore {
 mod tests {
     use chrono::{DateTime, Duration, Utc};
     use oxide_agent_web_contracts::{
-        PersistedTaskEvent, TaskEventKind, TaskStatus, UserRole, WebSessionRecord, WebTaskRecord,
+        ModelSelection, PersistedTaskEvent, TaskEventKind, TaskStatus, UserRole, WebSessionRecord,
+        WebTaskRecord,
     };
 
     use super::super::{WebAuthSessionRecord, WebUiStore, WebUserRecord, WebUserStatus};
@@ -805,6 +825,39 @@ mod tests {
                 .events
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn model_selection_is_not_clobbered_by_stale_session_save() {
+        let store = InMemoryWebUiStore::new();
+        let now = Utc::now();
+        let stale = session_record(1, "session", now);
+        store
+            .save_session(stale.clone())
+            .await
+            .expect("save session");
+
+        let selected = ModelSelection {
+            qualified_id: "opencode-go/model-b".to_string(),
+        };
+        assert!(
+            store
+                .set_session_model_selection(1, "session", &selected, now + Duration::seconds(1))
+                .await
+                .expect("set model selection")
+        );
+        store
+            .save_session(stale)
+            .await
+            .expect("save stale session snapshot");
+
+        let saved = store
+            .load_session(1, "session")
+            .await
+            .expect("load session")
+            .expect("session exists");
+        assert_eq!(saved.model_selection, Some(selected));
+        assert_eq!(saved.updated_at, now + Duration::seconds(1));
     }
 
     #[tokio::test]

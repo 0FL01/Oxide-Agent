@@ -456,7 +456,7 @@ impl WebSessionManager {
         self.agent_settings.clone()
     }
 
-    async fn model_routes_override_for_selection(
+    pub(crate) async fn model_routes_override_for_selection(
         &self,
         selection: Option<&ModelSelection>,
     ) -> Option<Vec<ModelInfo>> {
@@ -518,10 +518,21 @@ impl WebSessionManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_search_probe_executor(
         &self,
         parent_session_id: &str,
         options: SearchProbeRuntimeOptions,
+    ) -> Option<AgentExecutor> {
+        self.create_search_probe_executor_with_model_routes(parent_session_id, options, None)
+            .await
+    }
+
+    pub(crate) async fn create_search_probe_executor_with_model_routes(
+        &self,
+        parent_session_id: &str,
+        options: SearchProbeRuntimeOptions,
+        model_routes: Option<&[ModelInfo]>,
     ) -> Option<AgentExecutor> {
         let parent_meta = self.get_session(parent_session_id).await?;
         let probe_sid = derive_search_probe_session_id(parent_session_id);
@@ -529,11 +540,13 @@ impl WebSessionManager {
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
 
-        if let Some(model_routes) = self
+        if let Some(model_routes) = model_routes {
+            executor.set_model_routes_override(model_routes.to_vec());
+        } else if let Some(parent_routes) = self
             .model_routes_override_for_selection(parent_meta.model_selection.as_ref())
             .await
         {
-            executor.set_model_routes_override(model_routes);
+            executor.set_model_routes_override(parent_routes);
         }
 
         executor.set_execution_profile(search_probe_execution_profile(options));

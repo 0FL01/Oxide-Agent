@@ -1,6 +1,6 @@
 use super::{
     SESSION_REGISTRY, cancel_status_inline_markup, finalize_cancel_status_if_needed,
-    is_task_cancelled_error, save_memory_after_task, send_agent_message,
+    is_task_cancelled_error, save_memory_after_task, selected_model_routes, send_agent_message,
     should_preserve_pending_file_input,
 };
 use crate::bot::agent_handlers::{
@@ -13,7 +13,7 @@ use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
 use anyhow::{Result, anyhow};
 use oxide_agent_core::agent::{AgentExecutionOutcome, SessionId, progress::AgentEvent};
-use oxide_agent_core::config::{AgentSettings, get_agent_max_iterations};
+use oxide_agent_core::config::{AgentSettings, ModelInfo, get_agent_max_iterations};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -52,6 +52,7 @@ pub(crate) struct RunAgentTaskTextContext {
     pub(crate) user_id: i64,
     pub(crate) task_text: String,
     pub(crate) storage: Arc<dyn StorageProvider>,
+    pub(crate) agent_settings: Arc<AgentSettings>,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,
     pub(crate) message_thread_id: Option<ThreadId>,
@@ -70,6 +71,7 @@ pub(crate) struct RunUserInputResumeContext {
     pub(crate) user_id: i64,
     pub(crate) user_input: String,
     pub(crate) storage: Arc<dyn StorageProvider>,
+    pub(crate) agent_settings: Arc<AgentSettings>,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,
     pub(crate) message_thread_id: Option<ThreadId>,
@@ -273,6 +275,7 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
         user_id,
         task_text,
         storage: ctx.storage,
+        agent_settings: ctx.agent_settings,
         context_key: ctx.context_key,
         agent_flow_id: ctx.agent_flow_id,
         message_thread_id: ctx.message_thread_id,
@@ -286,11 +289,18 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
 }
 
 pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
+    let model_routes = selected_model_routes(
+        &ctx.storage,
+        &ctx.agent_settings,
+        ctx.user_id,
+        &ctx.context_key,
+    )
+    .await;
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;
     let task_text = ctx.task_text;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_agent_task(session_id, &task_text, progress_tx).await
+        execute_agent_task(session_id, &task_text, model_routes, progress_tx).await
     })
     .await
 }
@@ -308,11 +318,18 @@ pub(crate) async fn run_agent_task_continuation_with_text(
 }
 
 pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Result<()> {
+    let model_routes = selected_model_routes(
+        &ctx.storage,
+        &ctx.agent_settings,
+        ctx.user_id,
+        &ctx.context_key,
+    )
+    .await;
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;
     let user_input = ctx.user_input;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_user_input_resume(session_id, user_input, progress_tx).await
+        execute_user_input_resume(session_id, user_input, model_routes, progress_tx).await
     })
     .await
 }
@@ -717,9 +734,10 @@ async fn deliver_task_result(
                 let final_markup = ctx
                     .use_inline_flow_controls
                     .then(|| {
-                        crate::bot::views::agent_flow_inline_keyboard_with_toggle(
+                        crate::bot::views::agent_flow_inline_keyboard_with_options(
                             &ctx.agent_flow_id,
                             ctx.attach_detach_enabled,
+                            ctx.use_inline_progress_controls,
                         )
                     })
                     .filter(|markup| !markup.inline_keyboard.is_empty());
@@ -803,6 +821,7 @@ fn should_suppress_completed_response(ctx: &TaskDeliveryContext, response: &str)
 async fn execute_agent_task(
     session_id: SessionId,
     task: &str,
+    model_routes: Vec<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
     let executor_arc = SESSION_REGISTRY
@@ -828,6 +847,7 @@ async fn execute_agent_task(
         ));
     }
 
+    executor.set_model_routes_override(model_routes);
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.execute(task, progress_tx).await
 }
@@ -865,6 +885,7 @@ async fn execute_agent_task_continuation(
 pub(crate) async fn execute_user_input_resume(
     session_id: SessionId,
     user_input: String,
+    model_routes: Vec<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
     let executor_arc = SESSION_REGISTRY
@@ -884,6 +905,7 @@ pub(crate) async fn execute_user_input_resume(
         ));
     }
 
+    executor.set_model_routes_override(model_routes);
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor
         .resume_after_user_input(user_input, progress_tx)

@@ -21,6 +21,8 @@ pub const LOOP_CALLBACK_RESET: &str = "reset_task";
 pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
 /// Callback data for cancelling the current task from topic controls
 pub const AGENT_CALLBACK_CANCEL_TASK: &str = "agent:cancel";
+/// Callback data for opening the Agent model selector.
+pub const AGENT_CALLBACK_MODEL_OPEN: &str = "m:o";
 /// Callback prefix for attaching a specific topic-scoped agent flow.
 pub const AGENT_CALLBACK_ATTACH_PREFIX: &str = "agent:attach:";
 /// Callback data for detaching into a fresh topic-scoped agent flow.
@@ -144,6 +146,7 @@ pub struct DefaultAgentView;
 
 impl AgentView for DefaultAgentView {
     fn welcome_message(model_name: &str) -> String {
+        let model_name = html_escape::encode_text(model_name);
         format!(
             r#"🤖 <b>Agent Mode Activated - {}</b>
 
@@ -311,16 +314,20 @@ pub fn loop_type_label(loop_type: LoopType) -> &'static str {
 /// ```
 #[must_use]
 pub fn get_agent_keyboard() -> KeyboardMarkup {
-    KeyboardMarkup::new(vec![vec![KeyboardButton::new("❌ Cancel Task")]]).resize_keyboard()
+    KeyboardMarkup::new(vec![vec![
+        KeyboardButton::new("❌ Cancel Task"),
+        KeyboardButton::new("🧠 Model"),
+    ]])
+    .resize_keyboard()
 }
 
 /// Get topic-friendly inline controls for agent mode.
 #[must_use]
 pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        "❌ Cancel Task",
-        AGENT_CALLBACK_CANCEL_TASK,
-    )]])
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback("❌ Cancel Task", AGENT_CALLBACK_CANCEL_TASK),
+        InlineKeyboardButton::callback("🧠 Model", AGENT_CALLBACK_MODEL_OPEN),
+    ]])
 }
 
 /// Get inline controls for an active progress message in topics.
@@ -369,17 +376,34 @@ pub fn agent_flow_inline_keyboard_with_toggle(
     agent_flow_id: &str,
     attach_detach_enabled: bool,
 ) -> InlineKeyboardMarkup {
-    if !attach_detach_enabled {
-        return empty_inline_keyboard();
-    }
+    agent_flow_inline_keyboard_with_options(agent_flow_id, attach_detach_enabled, false)
+}
 
-    InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback(
-            "🔗 Attach",
-            format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
-        ),
-        InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
-    ]])
+/// Get inline flow controls with an optional Agent model button.
+#[must_use]
+pub fn agent_flow_inline_keyboard_with_options(
+    agent_flow_id: &str,
+    attach_detach_enabled: bool,
+    include_model: bool,
+) -> InlineKeyboardMarkup {
+    let mut rows = Vec::new();
+
+    if attach_detach_enabled {
+        rows.push(vec![
+            InlineKeyboardButton::callback(
+                "🔗 Attach",
+                format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
+            ),
+            InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
+        ]);
+    }
+    if include_model {
+        rows.push(vec![InlineKeyboardButton::callback(
+            "🧠 Model",
+            AGENT_CALLBACK_MODEL_OPEN,
+        )]);
+    }
+    InlineKeyboardMarkup::new(rows)
 }
 
 /// Get the loop action inline keyboard
@@ -462,17 +486,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_control_keyboards_only_include_cancel_task() {
+    fn agent_control_keyboards_include_cancel_and_model() {
         let keyboard = get_agent_keyboard();
         let buttons: Vec<_> = keyboard.keyboard.iter().flatten().collect();
-        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons.len(), 2);
         assert_eq!(buttons[0].text, "❌ Cancel Task");
+        assert_eq!(buttons[1].text, "🧠 Model");
         assert_no_browser_control_text(&buttons[0].text);
 
         let inline = get_agent_inline_keyboard();
         let inline_buttons: Vec<_> = inline.inline_keyboard.iter().flatten().collect();
-        assert_eq!(inline_buttons.len(), 1);
+        assert_eq!(inline_buttons.len(), 2);
         assert_eq!(inline_buttons[0].text, "❌ Cancel Task");
+        assert_eq!(inline_buttons[1].text, "🧠 Model");
         assert_no_browser_control_text(&inline_buttons[0].text);
         assert_no_browser_control_text(&format!("{:?}", inline_buttons[0].kind));
     }

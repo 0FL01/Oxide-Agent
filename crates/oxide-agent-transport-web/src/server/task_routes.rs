@@ -10,6 +10,7 @@ use axum::{
 };
 use oxide_agent_core::agent::providers::sandbox::SandboxRuntime;
 use oxide_agent_core::agent::{AgentMemory, AgentMessageAttachment, AgentUserInput};
+use oxide_agent_core::config::ModelInfo;
 use oxide_agent_core::sandbox::SandboxFileOps;
 use oxide_agent_web_contracts::{
     CancelTaskResponse as ApiCancelTaskResponse, CreateTaskRequest as ApiCreateTaskRequest,
@@ -555,6 +556,7 @@ async fn spawn_persisted_registered_task(
     task_id: String,
     running_task: RunningTask,
     run_request: TaskRunRequest,
+    model_routes: Vec<ModelInfo>,
 ) {
     let persistence = WebTaskPersistence {
         web_store: state.web_store.clone(),
@@ -568,6 +570,7 @@ async fn spawn_persisted_registered_task(
         session_id,
         running_task,
         run_request,
+        model_routes,
         Some(persistence),
     )
     .await;
@@ -640,6 +643,11 @@ pub(crate) async fn api_create_task(
     phase_started_at = Instant::now();
 
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
+    let model_routes = state
+        .session_manager
+        .model_routes_override_for_selection(session.model_selection.as_ref())
+        .await
+        .unwrap_or_default();
     log_create_task_phase(
         user.user_id,
         &session_id,
@@ -799,6 +807,7 @@ pub(crate) async fn api_create_task(
             input: execution_input,
             effort: request.effort,
         },
+        model_routes,
     )
     .await;
     log_create_task_phase(
@@ -1204,6 +1213,11 @@ pub(crate) async fn api_create_task_version(
 ) -> Result<Json<ApiCreateTaskVersionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
+    let model_routes = state
+        .session_manager
+        .model_routes_override_for_selection(session.model_selection.as_ref())
+        .await
+        .unwrap_or_default();
     let attachments = validate_task_attachments(&request.attachments)?;
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
@@ -1364,6 +1378,7 @@ pub(crate) async fn api_create_task_version(
             input: execution_input,
             effort: request.effort,
         },
+        model_routes,
     )
     .await;
 
@@ -1384,6 +1399,11 @@ pub(crate) async fn api_resume_task(
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
     let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
     let session = load_owned_session(&state, user.user_id, &session_id).await?;
+    let model_routes = state
+        .session_manager
+        .model_routes_override_for_selection(session.model_selection.as_ref())
+        .await
+        .unwrap_or_default();
     let mut task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     if task.status != ApiTaskStatus::WaitingForUserInput {
         return Err(api_error(
@@ -1485,6 +1505,7 @@ pub(crate) async fn api_resume_task(
             input: execution_input,
             effort: request.effort,
         },
+        model_routes,
     )
     .await;
 

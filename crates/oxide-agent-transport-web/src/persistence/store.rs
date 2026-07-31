@@ -2,8 +2,8 @@ use std::fmt;
 
 use async_trait::async_trait;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
-    WebTaskRecord,
+    ModelSelection, PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus,
+    WebSessionRecord, WebTaskRecord,
 };
 
 use super::{
@@ -91,6 +91,14 @@ pub trait WebUiStore: Send + Sync {
     ) -> WebUiStoreResult<u64>;
 
     async fn save_session(&self, record: WebSessionRecord) -> WebUiStoreResult<()>;
+
+    async fn set_session_model_selection(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        model_selection: &ModelSelection,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> WebUiStoreResult<bool>;
 
     async fn load_session(
         &self,

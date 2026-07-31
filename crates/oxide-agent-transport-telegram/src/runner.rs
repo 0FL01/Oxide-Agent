@@ -699,6 +699,21 @@ async fn handle_command(
             bot::agent_handlers::cancel_agent_task(bot, msg, dialogue, storage, settings).await
         }
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
+        Command::Model => {
+            let thread_spec = bot::resolve_thread_spec(&msg);
+            let user_id = msg.from.as_ref().map_or(0, |user| user.id.0.cast_signed());
+            let context_key = bot::context::storage_context_key(msg.chat.id, thread_spec);
+            bot::agent_handlers::show_model_selector(
+                &bot,
+                msg.chat.id,
+                bot::build_outbound_thread_params(thread_spec),
+                user_id,
+                &context_key,
+                &storage,
+                &settings,
+            )
+            .await
+        }
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,
     };

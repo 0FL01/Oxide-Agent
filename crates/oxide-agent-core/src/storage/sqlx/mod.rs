@@ -342,6 +342,62 @@ impl StorageProvider for SqlxStorage {
         tx.commit().await.map_err(db_error)
     }
 
+    async fn get_context_agent_model_selection(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT agent_model_qualified_id
+            FROM user_contexts
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        row.map(|row| row_value::<Option<String>>(&row, "agent_model_qualified_id"))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    async fn set_context_agent_model_selection(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        qualified_id: Option<String>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_contexts (
+                user_id, context_key, agent_model_qualified_id,
+                schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, 1, $4, $4)
+            ON CONFLICT (user_id, context_key) DO UPDATE
+            SET agent_model_qualified_id = EXCLUDED.agent_model_qualified_id,
+                version = user_contexts.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_contexts.agent_model_qualified_id
+                  IS DISTINCT FROM EXCLUDED.agent_model_qualified_id
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(qualified_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+
     async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         ensure_user_row_in_tx(&mut tx, user_id).await?;

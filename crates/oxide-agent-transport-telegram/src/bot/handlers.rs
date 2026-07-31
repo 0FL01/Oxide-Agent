@@ -16,10 +16,7 @@ use std::sync::Arc;
 use teloxide::{
     dispatching::dialogue::InMemStorage,
     prelude::*,
-    types::{
-        InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup, ParseMode,
-        ReplyMarkup,
-    },
+    types::{InlineKeyboardMarkup, KeyboardMarkup, ParseMode, ReplyMarkup},
     utils::command::BotCommands,
 };
 use tracing::info;
@@ -145,6 +142,9 @@ pub enum Command {
     /// Reset the current agent session
     #[command(description = "Reset the current agent session.")]
     Clear,
+    /// Select the Agent model for this chat
+    #[command(description = "Select the Agent model for this chat.")]
+    Model,
     /// Check bot health
     #[command(description = "Check bot health.")]
     Healthcheck,
@@ -164,16 +164,12 @@ pub enum Command {
 /// ```
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
-    let keyboard = vec![vec![KeyboardButton::new("❌ Cancel Task")]];
-    KeyboardMarkup::new(keyboard).resize_keyboard()
+    crate::bot::views::get_agent_keyboard()
 }
 
 #[must_use]
 fn get_main_inline_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        "❌ Cancel Task",
-        crate::bot::views::AGENT_CALLBACK_CANCEL_TASK,
-    )]])
+    crate::bot::views::get_agent_inline_keyboard()
 }
 
 fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
@@ -236,7 +232,14 @@ pub async fn start(
         .map_err(|e| anyhow!(e.to_string()))?;
 
     info!("User {user_id} ({user_name}) is allowed. Activated agent mode.");
-    let model_id = settings.agent.get_configured_agent_model().id;
+    let context_key = crate::bot::context::storage_context_key(msg.chat.id, thread_spec);
+    let model_id = crate::bot::agent_handlers::current_model_label(
+        &storage,
+        &settings.agent,
+        user_id,
+        &context_key,
+    )
+    .await;
     let mut req = bot
         .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
         .parse_mode(ParseMode::Html);
@@ -300,7 +303,14 @@ pub async fn help(
         .await
         .map_err(|e| anyhow!(e.to_string()))?;
 
-    let model_id = settings.agent.get_configured_agent_model().id;
+    let context_key = crate::bot::context::storage_context_key(msg.chat.id, thread_spec);
+    let model_id = crate::bot::agent_handlers::current_model_label(
+        &storage,
+        &settings.agent,
+        user_id,
+        &context_key,
+    )
+    .await;
     let mut req = bot
         .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
         .parse_mode(ParseMode::Html);

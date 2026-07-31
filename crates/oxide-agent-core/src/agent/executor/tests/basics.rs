@@ -55,6 +55,7 @@ async fn prepare_execution_uses_executor_model_routes_override() {
         },
     ];
     executor.set_model_routes_override(override_routes.clone());
+    assert_eq!(executor.session().memory.max_tokens(), 16_000);
 
     let prepared = executor
         .prepare_execution("use selected model", None, AgentExecutionOptions::default())
@@ -67,6 +68,10 @@ async fn prepare_execution_uses_executor_model_routes_override() {
     );
     assert_eq!(prepared.runner_config.model_max_output_tokens, 2_000);
     assert_eq!(prepared.runner_config.model_routes, override_routes);
+
+    executor.set_model_routes_override(Vec::new());
+    assert_eq!(executor.session().memory.max_tokens(), 8_000);
+    assert!(executor.model_routes_override().is_none());
 }
 
 #[tokio::test]

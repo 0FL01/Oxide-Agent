@@ -9,6 +9,7 @@ use oxide_agent_core::agent::progress::AgentEventSource;
 use oxide_agent_core::agent::{
     AgentEvent, AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
 };
+use oxide_agent_core::config::ModelInfo;
 use oxide_agent_web_contracts::AgentEffort as WebAgentEffort;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -112,6 +113,7 @@ struct SearchProbeRunCtx<'a> {
     task_id: &'a str,
     original_input: &'a AgentUserInput,
     parent_effort: Option<WebAgentEffort>,
+    model_routes: Option<&'a [ModelInfo]>,
     config: &'a SearchProbeConfig,
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
@@ -125,6 +127,7 @@ struct SearchProbeFinalizeCtx<'a> {
     previous_final_message: Option<&'a str>,
     generation: u8,
     partial_handoff: &'a SearchProbeHandoff,
+    model_routes: Option<&'a [ModelInfo]>,
     config: &'a SearchProbeConfig,
     progress_tx: &'a mpsc::Sender<AgentEvent>,
     cancellation_token: &'a CancellationToken,
@@ -210,16 +213,18 @@ pub(crate) async fn maybe_run_search_probe(
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
+    model_routes: &[ModelInfo],
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
     let config = SearchProbeConfig::from_env();
-    maybe_run_search_probe_with_runtime(
+    maybe_run_search_probe_with_runtime_and_model_routes(
         session_manager,
         session_id,
         task_id,
         run_request,
         &config,
+        Some(model_routes),
         progress_tx,
         cancellation_token,
     )
@@ -247,12 +252,36 @@ async fn maybe_run_search_probe_with_config(
     .await
 }
 
+#[cfg(test)]
 async fn maybe_run_search_probe_with_runtime(
     session_manager: &WebSessionManager,
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
     config: &SearchProbeConfig,
+    progress_tx: mpsc::Sender<AgentEvent>,
+    cancellation_token: CancellationToken,
+) -> (TaskRunRequest, SearchProbeRunOutcome) {
+    maybe_run_search_probe_with_runtime_and_model_routes(
+        session_manager,
+        session_id,
+        task_id,
+        run_request,
+        config,
+        None,
+        progress_tx,
+        cancellation_token,
+    )
+    .await
+}
+
+async fn maybe_run_search_probe_with_runtime_and_model_routes(
+    session_manager: &WebSessionManager,
+    session_id: &str,
+    task_id: &str,
+    run_request: TaskRunRequest,
+    config: &SearchProbeConfig,
+    model_routes: Option<&[ModelInfo]>,
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
@@ -301,6 +330,7 @@ async fn maybe_run_search_probe_with_runtime(
                 task_id,
                 original_input: &input,
                 parent_effort: effort,
+                model_routes,
                 config,
                 progress_tx,
                 cancellation_token,
@@ -334,6 +364,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         task_id,
         original_input,
         parent_effort,
+        model_routes,
         config,
         progress_tx,
         cancellation_token,
@@ -389,12 +420,13 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         }
 
         let Some(mut executor) = session_manager
-            .create_search_probe_executor(
+            .create_search_probe_executor_with_model_routes(
                 session_id,
                 SearchProbeRuntimeOptions {
                     tool_allowlist: config.tool_allowlist.clone(),
                     prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
                 },
+                model_routes,
             )
             .await
         else {
@@ -490,6 +522,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
                 previous_final_message: previous_final_message.as_deref(),
                 generation,
                 partial_handoff: &handoff,
+                model_routes,
                 config,
                 progress_tx: &progress_tx,
                 cancellation_token: &cancellation_token,
@@ -534,6 +567,7 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
         previous_final_message,
         generation,
         partial_handoff,
+        model_routes,
         config,
         progress_tx,
         cancellation_token,
@@ -555,12 +589,13 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
     }
 
     let Some(mut executor) = session_manager
-        .create_search_probe_executor(
+        .create_search_probe_executor_with_model_routes(
             session_id,
             SearchProbeRuntimeOptions {
                 tool_allowlist: Vec::new(),
                 prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
             },
+            model_routes,
         )
         .await
     else {

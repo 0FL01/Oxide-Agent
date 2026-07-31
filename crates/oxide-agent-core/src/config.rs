@@ -1033,6 +1033,14 @@ impl AgentSettings {
         )
     }
 
+    /// Returns the internal Agent Mode context budget for a specific model.
+    pub fn agent_internal_context_budget_for_model(&self, model: &ModelInfo) -> usize {
+        resolve_internal_context_budget_tokens(
+            model.context_window_tokens,
+            self.get_agent_internal_context_budget_tokens(),
+        )
+    }
+
     /// Returns the internal sub-agent context budget, inheriting the main-agent budget by default.
     pub fn get_sub_agent_internal_context_budget_tokens(&self) -> usize {
         resolve_internal_context_budget_tokens(

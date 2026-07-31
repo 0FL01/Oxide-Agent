@@ -107,6 +107,86 @@ async fn sqlx_user_config_roundtrips_without_rewriting_unchanged_contexts() {
 }
 
 #[tokio::test]
+async fn sqlx_context_model_selection_is_atomic_and_context_scoped() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let user_id = unique_user_id();
+    let first_context = "telegram:100:200";
+    let second_context = "telegram:100:201";
+
+    storage
+        .set_context_agent_model_selection(
+            user_id,
+            first_context,
+            Some("provider/model-a".to_string()),
+        )
+        .await
+        .expect("first model selection should be stored");
+    storage
+        .set_context_agent_model_selection(
+            user_id,
+            second_context,
+            Some("provider/model-b".to_string()),
+        )
+        .await
+        .expect("second model selection should be stored");
+
+    let mut stale_aggregate = UserConfig::default();
+    stale_aggregate.contexts.insert(
+        first_context.to_string(),
+        UserContextConfig {
+            state: Some("active".to_string()),
+            ..UserContextConfig::default()
+        },
+    );
+    stale_aggregate
+        .contexts
+        .insert(second_context.to_string(), UserContextConfig::default());
+    storage
+        .update_user_config(user_id, stale_aggregate)
+        .await
+        .expect("aggregate update should preserve field-owned selections");
+
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, first_context)
+            .await
+            .expect("first selection should load")
+            .as_deref(),
+        Some("provider/model-a")
+    );
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, second_context)
+            .await
+            .expect("second selection should load")
+            .as_deref(),
+        Some("provider/model-b")
+    );
+
+    storage
+        .set_context_agent_model_selection(user_id, first_context, None)
+        .await
+        .expect("first selection should clear");
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, first_context)
+            .await
+            .expect("cleared selection should load"),
+        None
+    );
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, second_context)
+            .await
+            .expect("second selection should remain")
+            .as_deref(),
+        Some("provider/model-b")
+    );
+}
+
+#[tokio::test]
 async fn sqlx_agent_memory_and_flow_records_are_scoped() {
     let Some(storage) = sqlx_test_storage().await else {
         return;

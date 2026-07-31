@@ -3,12 +3,12 @@ use super::{
     BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
     SessionTransportContext, agent_mode_session_keys, automatic_agent_control_markup,
     build_batched_text_task_context, cancel_agent_task, configure_active_session,
-    confirm_destructive_action, ensure_agent_flow_session_keys, ensure_session_exists,
-    exit_agent_mode, handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
-    is_agent_mode_context, manager_control_plane_enabled, manager_default_chat_id,
-    parse_agent_control_command, resolve_execution_profile, resolve_topic_infra_config,
-    route_allows_agent_processing, show_agent_controls, spawn_agent_task, use_inline_flow_controls,
-    use_inline_topic_controls,
+    confirm_destructive_action, current_model_label, ensure_agent_flow_session_keys,
+    ensure_session_exists, exit_agent_mode, handle_batched_text_input_if_needed,
+    handle_running_agent_message_if_needed, is_agent_mode_context, manager_control_plane_enabled,
+    manager_default_chat_id, parse_agent_control_command, resolve_execution_profile,
+    resolve_topic_infra_config, route_allows_agent_processing, show_agent_controls,
+    show_model_selector, spawn_agent_task, use_inline_flow_controls, use_inline_topic_controls,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, sandbox_scope, set_current_context_state, storage_context_key,
@@ -69,7 +69,7 @@ pub async fn activate_agent_mode(
 
     ensure_session_exists(EnsureSessionContext {
         session_keys,
-        context_key,
+        context_key: context_key.clone(),
         agent_flow_id,
         agent_flow_created,
         sandbox_scope,
@@ -96,7 +96,7 @@ pub async fn activate_agent_mode(
     .await?;
     dialogue.update(State::AgentMode).await?;
 
-    let model_id = settings.agent.get_configured_agent_model().id;
+    let model_id = current_model_label(&storage, &settings.agent, user_id, &context_key).await;
     let mut req = bot
         .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
         .parse_mode(ParseMode::Html);
@@ -348,5 +348,20 @@ async fn handle_agent_control_command(
         }
         AgentControlCommand::ExitAgentMode => exit_agent_mode(bot, msg, dialogue, storage).await,
         AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage, settings).await,
+        AgentControlCommand::ShowModelSelector => {
+            let thread_spec = resolve_thread_spec(&msg);
+            let user_id = msg.from.as_ref().map_or(0, |user| user.id.0.cast_signed());
+            let context_key = storage_context_key(msg.chat.id, thread_spec);
+            show_model_selector(
+                &bot,
+                msg.chat.id,
+                build_outbound_thread_params(thread_spec),
+                user_id,
+                &context_key,
+                &storage,
+                &settings,
+            )
+            .await
+        }
     }
 }

@@ -199,6 +199,7 @@ async fn process_due_reminder(
         user_id: prepared.reminder.user_id,
         task_text: scheduled_reminder_task_text(&prepared.reminder, silent_no_change_enabled),
         storage: storage.clone(),
+        agent_settings: settings.agent.clone(),
         context_key: prepared.reminder.context_key.clone(),
         agent_flow_id: prepared.reminder.flow_id.clone(),
         message_thread_id: build_outbound_thread_params(prepared.thread_spec).message_thread_id,
