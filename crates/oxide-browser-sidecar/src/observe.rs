@@ -260,7 +260,7 @@ pub async fn build_observation(
     let con_items: Vec<_> = capture::drain_console_js(&cdp)
         .await
         .into_iter()
-        .chain(capture.drain_console().into_iter())
+        .chain(capture.drain_console())
         .collect();
 
     // Merge into persistent history.
