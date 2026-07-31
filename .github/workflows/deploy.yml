@@ -8,6 +8,13 @@ on:
 env:
   RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
 
+permissions:
+  contents: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -87,3 +94,8 @@ jobs:
               test "$(docker inspect -f "{{.State.Status}}" oxide_agent)" = running
               docker compose -f docker-compose.telegram.yml ps
             '
+
+      - name: Publish deployment marker
+        run: |
+          git tag -f production-deployed "$GITHUB_SHA"
+          git push --force origin refs/tags/production-deployed
