@@ -67,6 +67,21 @@ jobs:
               cp "$SRCDIR/tmp/deploy.env" "$SRCDIR/build_context/.env"
               rm "$SRCDIR/tmp/app-source.tar.gz" "$SRCDIR/tmp/deploy.env"
               cd "$SRCDIR/build_context"
-              docker compose -f docker-compose.telegram.yml up -d --build --remove-orphans --force-recreate
+              docker compose -f docker-compose.telegram.yml build
+              docker compose -f docker-compose.telegram.yml stop oxide_agent || true
+              umask 077
+              mkdir -p "$SRCDIR/backups"
+              BACKUP="$SRCDIR/backups/pre-model-selection-$(date -u +%Y%m%dT%H%M%SZ).sql"
+              docker run --rm --network host \
+                --env-file "$SRCDIR/build_context/.env" \
+                postgres:16-alpine \
+                sh -c "pg_dump --no-owner --no-privileges \"\$OXIDE_DATABASE_URL\"" \
+                > "$BACKUP"
+              test -s "$BACKUP"
+              gzip "$BACKUP"
+              OXIDE_DATABASE_MIGRATE_ON_STARTUP=true \
+                docker compose -f docker-compose.telegram.yml up -d --no-build --remove-orphans --force-recreate
+              sleep 10
+              test "$(docker inspect -f "{{.State.Status}}" oxide_agent)" = running
               docker compose -f docker-compose.telegram.yml ps
             '

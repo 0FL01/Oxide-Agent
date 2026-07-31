@@ -35,28 +35,11 @@ pub(crate) async fn api_refresh_model_routes(
 
 async fn model_routes_response(state: &AppState, refresh: bool) -> ListModelRoutesResponse {
     let llm = state.session_manager.llm_client();
-    let mut models = Vec::new();
-    if let Some(go_models) = if refresh {
-        llm.refresh_opencode_go_models().await
+    let models = if refresh {
+        llm.refresh_discovered_models().await
     } else {
-        llm.opencode_go_models().await
-    } {
-        models.extend(go_models);
-    }
-    if let Some(zen_models) = if refresh {
-        llm.refresh_opencode_zen_models().await
-    } else {
-        llm.opencode_zen_models().await
-    } {
-        models.extend(zen_models);
-    }
-    if let Some(openai_base_models) = if refresh {
-        llm.refresh_openai_base_models().await
-    } else {
-        llm.openai_base_models().await
-    } {
-        models.extend(openai_base_models);
-    }
+        llm.discovered_models().await
+    };
     let routes = models
         .into_iter()
         .map(model_route_view_from_discovered)

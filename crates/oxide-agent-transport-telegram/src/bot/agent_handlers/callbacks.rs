@@ -642,6 +642,7 @@ pub async fn handle_agent_callback(
                 user_id,
                 context_key: &context_key,
                 storage: &storage,
+                llm: &llm,
                 settings: &settings,
             },
         )

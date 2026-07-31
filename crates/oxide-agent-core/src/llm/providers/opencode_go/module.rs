@@ -59,6 +59,7 @@ pub(crate) fn build_model_catalog(
     Some(catalog)
 }
 
+#[cfg(oxide_module_llm_provider_opencode_zen)]
 pub(crate) fn build_zen_model_catalog(
     settings: &AgentSettings,
     http_client: reqwest::Client,

@@ -120,6 +120,11 @@ struct TaskProgressRuntime {
     tx: tokio::sync::mpsc::Sender<AgentEvent>,
 }
 
+enum ModelOverrideUpdate {
+    Keep,
+    Set(Option<ModelInfo>),
+}
+
 struct TaskProgressDelivery {
     message_id: MessageId,
     reply_markup: Option<InlineKeyboardMarkup>,
@@ -295,7 +300,7 @@ pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Re
         ctx.user_id,
         &ctx.context_key,
     )
-    .await;
+    .await?;
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;
     let task_text = ctx.task_text;
@@ -308,11 +313,24 @@ pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Re
 pub(crate) async fn run_agent_task_continuation_with_text(
     ctx: RunAgentTaskTextContext,
 ) -> Result<()> {
+    let model = selected_model(
+        &ctx.storage,
+        &ctx.agent_settings,
+        ctx.user_id,
+        &ctx.context_key,
+    )
+    .await?;
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;
     let user_context = ctx.task_text;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_agent_task_continuation(session_id, vec![user_context], progress_tx).await
+        execute_agent_task_continuation(
+            session_id,
+            vec![user_context],
+            ModelOverrideUpdate::Set(model),
+            progress_tx,
+        )
+        .await
     })
     .await
 }
@@ -324,7 +342,7 @@ pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Res
         ctx.user_id,
         &ctx.context_key,
     )
-    .await;
+    .await?;
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;
     let user_input = ctx.user_input;
@@ -468,6 +486,7 @@ where
                     result = execute_agent_task_continuation(
                         ctx.session_id,
                         followups,
+                        ModelOverrideUpdate::Keep,
                         next_progress_tx,
                     )
                     .await;
@@ -855,6 +874,7 @@ async fn execute_agent_task(
 async fn execute_agent_task_continuation(
     session_id: SessionId,
     followups: Vec<String>,
+    model_override: ModelOverrideUpdate,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
     let executor_arc = SESSION_REGISTRY
@@ -876,6 +896,10 @@ async fn execute_agent_task_continuation(
 
     for followup in followups {
         executor.enqueue_runtime_context(followup);
+    }
+
+    if let ModelOverrideUpdate::Set(model) = model_override {
+        executor.set_model_override(model);
     }
 
     executor.session_mut().cancellation_token = (*cancellation_token).clone();

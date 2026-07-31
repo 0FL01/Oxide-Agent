@@ -13,11 +13,11 @@ use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    /// Provider-specific discovered-model sources, registered at construction time.
+    /// Discovered-model sources, registered at construction time.
     ///
     /// Always present so the struct shape is stable across all Cargo feature profiles;
     /// the Vec is empty when no discovery-capable provider is compiled.
-    discovered_model_sources: Vec<(&'static str, Arc<dyn DiscoveredModelSource>)>,
+    discovered_model_sources: Vec<Arc<dyn DiscoveredModelSource>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit vision model name for image/video requests.
@@ -81,11 +81,6 @@ pub trait DiscoveredModelSource: Send + Sync {
     /// Forces a network refresh and returns the updated model list.
     async fn refresh(&self) -> Vec<DiscoveredLlmModel>;
 }
-
-/// Discovered-model source IDs used as registry keys inside [`LlmClient`].
-const SOURCE_ID_OPENCODE_GO: &str = "opencode-go";
-const SOURCE_ID_OPENCODE_ZEN: &str = "opencode-zen";
-const SOURCE_ID_OPENAI_BASE: &str = "openai-base";
 
 /// Internal plain-text completion use cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,26 +211,30 @@ impl LlmClient {
             )),
             allow(unused_mut)
         )]
-        let mut discovered_model_sources: Vec<(
-            &'static str,
-            Arc<dyn DiscoveredModelSource>,
-        )> = Vec::new();
+        let mut discovered_model_sources: Vec<Arc<dyn DiscoveredModelSource>> = Vec::new();
         #[cfg(oxide_module_llm_provider_opencode_go)]
         {
             providers::opencode_go::discovery::init_models_dev_catalog(
                 support::http::create_http_client(),
             );
-            if let Some(catalog) = providers::opencode_go::module::build_model_catalog(
-                settings,
-                support::http::create_http_client(),
-            ) {
-                discovered_model_sources.push((SOURCE_ID_OPENCODE_GO, catalog));
+            if settings.is_module_enabled("llm-provider/opencode-go")
+                && let Some(catalog) = providers::opencode_go::module::build_model_catalog(
+                    settings,
+                    support::http::create_http_client(),
+                )
+            {
+                discovered_model_sources.push(catalog);
             }
-            if let Some(catalog) = providers::opencode_go::module::build_zen_model_catalog(
-                settings,
-                support::http::create_http_client(),
-            ) {
-                discovered_model_sources.push((SOURCE_ID_OPENCODE_ZEN, catalog));
+            #[cfg(oxide_module_llm_provider_opencode_zen)]
+            {
+                if settings.is_module_enabled("llm-provider/opencode-zen")
+                    && let Some(catalog) = providers::opencode_go::module::build_zen_model_catalog(
+                        settings,
+                        support::http::create_http_client(),
+                    )
+                {
+                    discovered_model_sources.push(catalog);
+                }
             }
         }
         #[cfg(all(
@@ -243,11 +242,13 @@ impl LlmClient {
             oxide_module_llm_provider_opencode_go
         ))]
         {
-            for catalog in providers::openai_base::module::build_model_catalogs(
-                settings,
-                support::http::create_http_client(),
-            ) {
-                discovered_model_sources.push((SOURCE_ID_OPENAI_BASE, catalog));
+            if settings.is_module_enabled("llm-provider/openai-base") {
+                for catalog in providers::openai_base::module::build_model_catalogs(
+                    settings,
+                    support::http::create_http_client(),
+                ) {
+                    discovered_model_sources.push(catalog);
+                }
             }
         }
 
@@ -286,74 +287,22 @@ impl LlmClient {
         provider_names
     }
 
-    /// Returns OpenCode Go discovered models when the provider is compiled and configured.
-    pub async fn opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let (_, source) = self
-            .discovered_model_sources
-            .iter()
-            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
-        Some(source.models().await)
-    }
-
-    /// Refreshes OpenCode Go discovered models when the provider is compiled and configured.
-    pub async fn refresh_opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let (_, source) = self
-            .discovered_model_sources
-            .iter()
-            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_GO)?;
-        Some(source.refresh().await)
-    }
-
-    /// Returns free OpenCode Zen discovered models when the provider is compiled and configured.
-    pub async fn opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let (_, source) = self
-            .discovered_model_sources
-            .iter()
-            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
-        Some(source.models().await)
-    }
-
-    /// Refreshes free OpenCode Zen discovered models when the provider is compiled and configured.
-    pub async fn refresh_opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let (_, source) = self
-            .discovered_model_sources
-            .iter()
-            .find(|(id, _)| *id == SOURCE_ID_OPENCODE_ZEN)?;
-        Some(source.refresh().await)
-    }
-
-    /// Returns OpenAI Base discovered models when the provider is compiled and configured.
-    pub async fn openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let sources: Vec<_> = self
-            .discovered_model_sources
-            .iter()
-            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
-            .collect();
-        if sources.is_empty() {
-            return None;
-        }
+    /// Returns all discovered models from runtime-enabled providers.
+    pub async fn discovered_models(&self) -> Vec<DiscoveredLlmModel> {
         let mut models = Vec::new();
-        for (_, source) in sources {
+        for source in &self.discovered_model_sources {
             models.extend(source.models().await);
         }
-        Some(models)
+        models
     }
 
-    /// Refreshes OpenAI Base discovered models when the provider is compiled and configured.
-    pub async fn refresh_openai_base_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
-        let sources: Vec<_> = self
-            .discovered_model_sources
-            .iter()
-            .filter(|(id, _)| *id == SOURCE_ID_OPENAI_BASE)
-            .collect();
-        if sources.is_empty() {
-            return None;
-        }
+    /// Refreshes every runtime-enabled discovered-model source.
+    pub async fn refresh_discovered_models(&self) -> Vec<DiscoveredLlmModel> {
         let mut models = Vec::new();
-        for (_, source) in sources {
+        for source in &self.discovered_model_sources {
             models.extend(source.refresh().await);
         }
-        Some(models)
+        models
     }
 
     /// Returns the provider for the given name
@@ -772,12 +721,47 @@ impl LlmClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternalTextPurpose, LlmClient};
+    use super::{DiscoveredLlmModel, DiscoveredModelSource, InternalTextPurpose, LlmClient};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::MockLlmProvider;
     #[cfg(oxide_module_llm_provider_openrouter)]
     use crate::llm::{ChatResponse, Message};
+    use chrono::Utc;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestDiscoveredModelSource {
+        provider_id: &'static str,
+        model_id: &'static str,
+        refreshes: Arc<AtomicUsize>,
+    }
+
+    impl TestDiscoveredModelSource {
+        fn models(&self, source: &str) -> Vec<DiscoveredLlmModel> {
+            vec![DiscoveredLlmModel {
+                provider_id: self.provider_id.to_string(),
+                model_id: self.model_id.to_string(),
+                qualified_id: format!("{}/{}", self.provider_id, self.model_id),
+                display_name: self.model_id.to_string(),
+                protocol: "openai_chat_completions".to_string(),
+                supports_image_input: false,
+                source: source.to_string(),
+                fetched_at: Utc::now(),
+            }]
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DiscoveredModelSource for TestDiscoveredModelSource {
+        async fn models(&self) -> Vec<DiscoveredLlmModel> {
+            self.models("cache")
+        }
+
+        async fn refresh(&self) -> Vec<DiscoveredLlmModel> {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            self.models("network")
+        }
+    }
 
     fn with_provider_key(
         mut settings: AgentSettings,
@@ -789,6 +773,59 @@ mod tests {
             ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
         );
         settings
+    }
+
+    #[tokio::test]
+    async fn discovered_models_preserve_source_order_and_refresh_every_source() {
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let mut llm = LlmClient::new(&AgentSettings::default());
+        llm.discovered_model_sources = vec![
+            Arc::new(TestDiscoveredModelSource {
+                provider_id: "first",
+                model_id: "a",
+                refreshes: Arc::clone(&refreshes),
+            }),
+            Arc::new(TestDiscoveredModelSource {
+                provider_id: "second",
+                model_id: "b",
+                refreshes: Arc::clone(&refreshes),
+            }),
+        ];
+
+        let listed = llm.discovered_models().await;
+        assert_eq!(
+            listed
+                .iter()
+                .map(|model| model.qualified_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first/a", "second/b"]
+        );
+
+        let refreshed = llm.refresh_discovered_models().await;
+        assert_eq!(refreshes.load(Ordering::SeqCst), 2);
+        assert!(refreshed.iter().all(|model| model.source == "network"));
+    }
+
+    #[cfg(oxide_module_llm_provider_opencode_go)]
+    #[test]
+    fn disabled_opencode_modules_do_not_register_discovery_sources() {
+        let mut settings = with_provider_key(
+            AgentSettings::default(),
+            "llm-provider/opencode-go",
+            "test-opencode-key",
+        );
+        settings.modules.insert(
+            "llm-provider/opencode-go".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        );
+        settings.modules.insert(
+            "llm-provider/opencode-zen".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        );
+
+        let llm = LlmClient::new(&settings);
+
+        assert!(llm.discovered_model_sources.is_empty());
     }
 
     #[cfg(oxide_module_llm_provider_openrouter)]

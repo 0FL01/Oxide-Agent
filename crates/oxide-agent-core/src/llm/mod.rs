@@ -7,6 +7,7 @@
 mod capabilities;
 mod client;
 mod error;
+mod model_selection;
 mod provider;
 /// Implementations of specific LLM providers
 pub mod providers;
@@ -20,6 +21,7 @@ pub(crate) use capabilities::{
 pub(crate) use client::InternalTextPurpose;
 pub use client::{DiscoveredLlmModel, DiscoveredModelSource, LlmClient};
 pub use error::LlmError;
+pub use model_selection::{canonical_model_id, resolve_model_selection};
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;

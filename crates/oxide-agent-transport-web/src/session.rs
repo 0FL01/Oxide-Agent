@@ -33,11 +33,10 @@ use oxide_agent_core::agent::{
     AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
     ToolAccessPolicy,
 };
-use oxide_agent_core::config::{
-    AgentSettings, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-    DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS, ModelInfo,
-};
-use oxide_agent_core::llm::LlmClient;
+#[cfg(test)]
+use oxide_agent_core::config::DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS;
+use oxide_agent_core::config::{AgentSettings, ModelInfo};
+use oxide_agent_core::llm::{LlmClient, resolve_model_selection};
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
@@ -233,163 +232,6 @@ pub(crate) fn web_task_pre_run_memory_flow_id(agent_flow_id: &str, task_id: &str
     format!("{agent_flow_id}:web-task-pre-run:{task_id}")
 }
 
-fn parse_web_model_id(value: &str) -> Option<(String, String)> {
-    let value = value.trim();
-    if let Some(model_id) = value.strip_prefix("opencode-go/") {
-        let model_id = model_id.trim();
-        return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-go".to_string(), model_id.to_string()));
-    }
-    if let Some(model_id) = value.strip_prefix("opencode-zen/") {
-        let model_id = model_id.trim();
-        return (!model_id.is_empty() && !model_id.contains('/'))
-            .then(|| ("opencode-zen".to_string(), model_id.to_string()));
-    }
-    if let Some(rest) = value.strip_prefix("openai-base:") {
-        let (name, model_id) = rest.split_once('/')?;
-        let name = normalized_openai_base_instance_name(name)?;
-        let model_id = model_id.trim();
-        return (!model_id.is_empty())
-            .then(|| (format!("openai-base:{name}"), model_id.to_string()));
-    }
-    if value.is_empty() || value.contains('/') {
-        return None;
-    }
-    Some(("opencode-go".to_string(), value.to_string()))
-}
-
-fn web_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
-    let value = value.trim();
-    if value.starts_with("opencode-go/")
-        || value.starts_with("opencode-zen/")
-        || value.starts_with("openai-base:")
-    {
-        let (prefix, model_id) = parse_web_model_id(value)?;
-        return (prefix == model_prefix).then(|| format!("{prefix}/{model_id}"));
-    }
-    if value.is_empty() || (!is_openai_base_prefix(model_prefix) && value.contains('/')) {
-        return None;
-    }
-    Some(format!("{model_prefix}/{value}"))
-}
-
-fn raw_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
-    let qualified = web_qualified_model_id_for_prefix(value, model_prefix)?;
-    qualified
-        .strip_prefix(&format!("{model_prefix}/"))
-        .map(ToString::to_string)
-}
-
-fn selected_web_model_route(
-    selected_qualified_id: &str,
-    selected_prefix: &str,
-    provider: &str,
-    configured_routes: &[ModelInfo],
-) -> ModelInfo {
-    configured_routes
-        .iter()
-        .find(|route| {
-            web_model_provider_prefix(&route.provider).as_deref() == Some(selected_prefix)
-                && web_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
-                    == Some(selected_qualified_id)
-        })
-        .cloned()
-        .and_then(|route| normalize_model_route(route, provider, provider))
-        .unwrap_or_else(|| ModelInfo {
-            id: if is_openai_base_prefix(selected_prefix) {
-                raw_model_id_for_prefix(selected_qualified_id, selected_prefix)
-                    .unwrap_or_else(|| selected_qualified_id.to_string())
-            } else {
-                selected_qualified_id.to_string()
-            },
-            provider: provider.to_string(),
-            max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
-            context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-        })
-}
-
-fn normalize_model_route(
-    mut route: ModelInfo,
-    opencode_go_provider: &str,
-    opencode_zen_provider: &str,
-) -> Option<ModelInfo> {
-    let id = route.id.trim();
-    let provider = route.provider.trim();
-    if id.is_empty() || provider.is_empty() {
-        return None;
-    }
-
-    if let Some(model_prefix) = web_model_provider_prefix(provider) {
-        route.id = if is_openai_base_prefix(&model_prefix) {
-            raw_model_id_for_prefix(id, &model_prefix)?
-        } else {
-            web_qualified_model_id_for_prefix(id, &model_prefix)?
-        };
-        route.provider = if model_prefix == "opencode-zen" {
-            opencode_zen_provider.to_string()
-        } else if is_openai_base_prefix(&model_prefix) {
-            preferred_provider_name(&model_prefix, opencode_go_provider)
-        } else {
-            opencode_go_provider.to_string()
-        };
-    } else {
-        route.id = id.to_string();
-        route.provider = provider.to_string();
-    }
-    if route.max_output_tokens == 0 {
-        route.max_output_tokens = DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS;
-    }
-    if route.context_window_tokens == 0 {
-        route.context_window_tokens = DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS;
-    }
-    Some(route)
-}
-
-fn normalized_provider_name(provider: &str) -> String {
-    provider
-        .trim()
-        .strip_prefix("llm-provider/")
-        .unwrap_or(provider.trim())
-        .replace('_', "-")
-        .to_ascii_lowercase()
-}
-
-fn web_model_provider_prefix(provider: &str) -> Option<String> {
-    let normalized = normalized_provider_name(provider);
-    match normalized.as_str() {
-        "opencode-go" => Some("opencode-go".to_string()),
-        "opencode-zen" => Some("opencode-zen".to_string()),
-        _ => normalized
-            .strip_prefix("openai-base:")
-            .and_then(normalized_openai_base_instance_name)
-            .map(|name| format!("openai-base:{name}")),
-    }
-}
-
-fn preferred_provider_name(model_prefix: &str, fallback: &str) -> String {
-    if is_openai_base_prefix(model_prefix) {
-        model_prefix.to_string()
-    } else {
-        fallback.to_string()
-    }
-}
-
-fn is_openai_base_prefix(prefix: &str) -> bool {
-    prefix.starts_with("openai-base:")
-}
-
-fn normalized_openai_base_instance_name(name: &str) -> Option<String> {
-    let name = name.trim().replace('_', "-").to_ascii_lowercase();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-    {
-        return None;
-    }
-    Some(name)
-}
-
 impl WebSessionManager {
     /// Create a new session manager.
     ///
@@ -459,19 +301,8 @@ impl WebSessionManager {
         selection: Option<&ModelSelection>,
     ) -> Option<ModelInfo> {
         let selection = selection?;
-        let (selected_prefix, _) = parse_web_model_id(&selection.qualified_id)?;
-        let selected_model_id =
-            web_qualified_model_id_for_prefix(&selection.qualified_id, &selected_prefix)?;
         let configured_routes = self.agent_settings.get_configured_agent_model_routes();
-        let selected_provider = self.preferred_web_model_provider_name(&selected_prefix);
-        let selected_route = selected_web_model_route(
-            &selected_model_id,
-            &selected_prefix,
-            &selected_provider,
-            &configured_routes,
-        );
-
-        Some(selected_route)
+        resolve_model_selection(&selection.qualified_id, &configured_routes)
     }
 
     /// Resolve the model to use for a per-session side task (e.g. auto-title)
@@ -495,23 +326,6 @@ impl WebSessionManager {
             .into_iter()
             .next()
             .unwrap_or_else(|| settings.get_configured_agent_model())
-    }
-
-    fn preferred_web_model_provider_name(&self, model_prefix: &str) -> String {
-        if is_openai_base_prefix(model_prefix) {
-            return model_prefix.to_string();
-        }
-        let (dash, underscore) = match model_prefix {
-            "opencode-zen" => ("opencode-zen", "opencode_zen"),
-            _ => ("opencode-go", "opencode_go"),
-        };
-        if self.llm.is_provider_available(dash) {
-            dash.to_string()
-        } else if self.llm.is_provider_available(underscore) {
-            underscore.to_string()
-        } else {
-            dash.to_string()
-        }
     }
 
     #[cfg(test)]

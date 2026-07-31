@@ -683,6 +683,7 @@ async fn handle_unauthorized(
 }
 
 #[cfg(feature = "storage-sqlx")]
+#[allow(clippy::too_many_arguments)]
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -690,6 +691,7 @@ async fn handle_command(
     storage: Arc<dyn storage::StorageProvider>,
     dialogue: Dialogue<State, InMemStorage<State>>,
     cache: Arc<UnauthorizedCache>,
+    llm: Arc<llm::LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
@@ -704,13 +706,16 @@ async fn handle_command(
             let user_id = msg.from.as_ref().map_or(0, |user| user.id.0.cast_signed());
             let context_key = bot::context::storage_context_key(msg.chat.id, thread_spec);
             bot::agent_handlers::show_model_selector(
-                &bot,
-                msg.chat.id,
-                bot::build_outbound_thread_params(thread_spec),
-                user_id,
-                &context_key,
-                &storage,
-                &settings,
+                bot::agent_handlers::ShowModelSelectorContext {
+                    bot: &bot,
+                    chat_id: msg.chat.id,
+                    outbound_thread: bot::build_outbound_thread_params(thread_spec),
+                    user_id,
+                    context_key: &context_key,
+                    storage: &storage,
+                    llm: &llm,
+                    settings: &settings,
+                },
             )
             .await
         }

@@ -57,8 +57,7 @@ docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.ym
 - Use PostgreSQL 15+ or Supabase Postgres.
 - Keep `OXIDE_DATABASE_MAX_CONNECTIONS=5` unless the database pool limit is known.
 - Docker images include migrations at `/app/migrations`.
-- `docker-compose.yml` (unified stack) enables startup migrations on the web service by default to avoid first-boot races on fresh remote databases.
-- `docker-compose.web.yml` enables startup migrations by default to avoid first-boot races on fresh remote databases.
+- `docker-compose.yml`, `docker-compose.telegram.yml`, and `docker-compose.web.yml` enable startup migrations by default to avoid serving traffic on a stale schema.
 - For production/Supabase, `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false` is safe only when a separate migration step is guaranteed before app startup.
 - `docker-compose.web.local-services.yml` provides local Postgres on `127.0.0.1:55432`; base `docker-compose.web.yml` expects a remote `OXIDE_DATABASE_URL`.
 - Keep `OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432` unless WAL, backups, and retention are reviewed.

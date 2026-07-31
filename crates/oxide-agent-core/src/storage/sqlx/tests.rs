@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use sha2::Digest;
 use sqlx_core::query::query;
+use sqlx_core::raw_sql::raw_sql;
 use sqlx_postgres::Postgres;
 
 use super::row_value;
@@ -184,6 +185,108 @@ async fn sqlx_context_model_selection_is_atomic_and_context_scoped() {
             .as_deref(),
         Some("provider/model-b")
     );
+}
+
+#[tokio::test]
+async fn sqlx_model_selection_migration_canonicalizes_legacy_values() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let user_id = unique_user_id();
+    let cases = [
+        (
+            "legacy-bootstrap",
+            Some("llm-provider/opencode-go/opencode-go/mimo-v2.5"),
+            Some("opencode-go/mimo-v2.5"),
+        ),
+        (
+            "legacy-openrouter",
+            Some("llm-provider/openrouter/google/gemini/model"),
+            Some("openrouter/google/gemini/model"),
+        ),
+        (
+            "canonical",
+            Some("openai-base:zai/vendor/model"),
+            Some("openai-base:zai/vendor/model"),
+        ),
+        ("default", None, None),
+    ];
+
+    for (context_key, stored, _) in cases {
+        storage
+            .set_context_agent_model_selection(
+                user_id,
+                context_key,
+                stored.map(ToString::to_string),
+            )
+            .await
+            .expect("migration fixture should be stored");
+    }
+
+    raw_sql(include_str!(
+        "../../../../../migrations/0014_canonicalize_user_context_agent_model.sql"
+    ))
+    .execute(storage.pool())
+    .await
+    .expect("model selection migration should succeed");
+
+    for (context_key, _, expected) in cases {
+        assert_eq!(
+            storage
+                .get_context_agent_model_selection(user_id, context_key)
+                .await
+                .expect("migrated selection should load")
+                .as_deref(),
+            expected
+        );
+    }
+
+    let malformed_user_id = unique_user_id();
+    storage
+        .set_context_agent_model_selection(
+            malformed_user_id,
+            "legacy",
+            Some("llm-provider/opencode-go/opencode-go/mimo-v2.5".to_string()),
+        )
+        .await
+        .expect("legacy fixture should be stored");
+    storage
+        .set_context_agent_model_selection(
+            malformed_user_id,
+            "malformed",
+            Some("broken".to_string()),
+        )
+        .await
+        .expect("malformed fixture should be stored");
+
+    let mut tx = storage
+        .pool()
+        .begin()
+        .await
+        .expect("transaction should begin");
+    let error = raw_sql(include_str!(
+        "../../../../../migrations/0014_canonicalize_user_context_agent_model.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .expect_err("malformed selection must abort migration");
+    assert!(error.to_string().contains("Cannot canonicalize malformed"));
+    tx.rollback()
+        .await
+        .expect("failed migration should roll back");
+
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(malformed_user_id, "legacy")
+            .await
+            .expect("legacy selection should load")
+            .as_deref(),
+        Some("llm-provider/opencode-go/opencode-go/mimo-v2.5")
+    );
+    storage
+        .set_context_agent_model_selection(malformed_user_id, "malformed", None)
+        .await
+        .expect("malformed fixture should be cleared");
 }
 
 #[tokio::test]
