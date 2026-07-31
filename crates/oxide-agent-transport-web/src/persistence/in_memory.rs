@@ -369,7 +369,7 @@ impl WebUiStore for InMemoryWebUiStore {
             .filter(|record| record.user_id == user_id && record.session_id == session_id)
             .cloned()
             .collect::<Vec<_>>();
-        tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        tasks.sort_by_key(|task| task.created_at);
         Ok(tasks)
     }
 
@@ -474,7 +474,7 @@ impl WebUiStore for InMemoryWebUiStore {
             .into_iter()
             .filter(|event| event.seq < before_seq)
             .collect::<Vec<_>>();
-        matching.sort_by(|a, b| b.seq.cmp(&a.seq));
+        matching.sort_by_key(|event| std::cmp::Reverse(event.seq));
 
         let has_more = matching.len() > limit;
         let mut events = matching.into_iter().take(limit).collect::<Vec<_>>();

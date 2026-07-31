@@ -74,13 +74,9 @@ pub fn resolve_thread_spec_from_context(
 #[must_use]
 pub fn build_outbound_thread_params(spec: TelegramThreadSpec) -> OutboundThreadParams {
     let message_thread_id = match spec.kind {
-        TelegramThreadKind::Forum => spec.thread_id.and_then(|thread_id| {
-            if thread_id == general_forum_topic_id() {
-                None
-            } else {
-                Some(thread_id)
-            }
-        }),
+        TelegramThreadKind::Forum => spec
+            .thread_id
+            .filter(|&thread_id| thread_id != general_forum_topic_id()),
         TelegramThreadKind::Dm => spec.thread_id,
         TelegramThreadKind::None => None,
     };

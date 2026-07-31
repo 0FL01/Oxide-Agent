@@ -152,7 +152,7 @@ Default branch: `main`.
 - One Cargo feature can map to multiple module IDs (e.g. `llm-opencode-go` → `llm-provider/opencode-go` and `llm-provider/opencode-zen`). The registry models this as separate module records sharing one `cargo_feature`.
 
 ### Format and lint
-- `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` must both pass before finishing. CI enforces both.
+- Do not commit until `cargo clippy --workspace --all-targets --all-features -- -D warnings` and `cargo fmt --all -- --check` both pass. CI enforces both.
 - When touching `oxide-agent-web-ui`, also verify the wasm target: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`. Leptos `view!` macro expansion differs between native and wasm; native-only checks do not catch ownership/move errors that surface under the real trunk build. For a full frontend gate, run `trunk build --release` from `crates/oxide-agent-web-ui`.
 
 ### Testing

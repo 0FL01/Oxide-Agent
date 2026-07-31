@@ -71,7 +71,7 @@ pub(crate) fn merge_turns(
                 }
             }
         }
-        items.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        items.sort_by_key(|item| item.created_at);
     });
 }
 

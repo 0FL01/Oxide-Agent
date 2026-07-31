@@ -328,10 +328,10 @@ fn format_grouped_steps(state: &ProgressState) -> Vec<String> {
     }
 
     let mut sorted_completed: Vec<_> = completed_counts.into_iter().collect();
-    sorted_completed.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_completed.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     let mut sorted_failed: Vec<_> = failed_counts.into_iter().collect();
-    sorted_failed.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_failed.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     sorted_completed
         .into_iter()

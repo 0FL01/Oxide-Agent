@@ -141,10 +141,10 @@ fn last_task_activity(messages: &[AgentMessage]) -> (Option<String>, bool) {
     for message in &messages[last_task_index + 1..] {
         has_activity = true;
         match message.resolved_kind() {
-            AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning => {
-                if !message.content.trim().is_empty() {
-                    final_response = Some(message.content.clone());
-                }
+            AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+                if !message.content.trim().is_empty() =>
+            {
+                final_response = Some(message.content.clone());
             }
             _ => {}
         }

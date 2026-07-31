@@ -933,12 +933,9 @@ impl WebSessionManager {
         // Update session last_activity_at.
         {
             let mut sessions = self.sessions.write().await;
-            if let Some(meta) = sessions.get_mut(session_id) {
-                meta.last_activity_at = Utc::now();
-                meta.status = SessionStatus::Processing;
-            } else {
-                return None;
-            }
+            let meta = sessions.get_mut(session_id)?;
+            meta.last_activity_at = Utc::now();
+            meta.status = SessionStatus::Processing;
         }
 
         let task_meta = TaskMeta {
@@ -975,12 +972,9 @@ impl WebSessionManager {
 
         {
             let mut sessions = self.sessions.write().await;
-            if let Some(meta) = sessions.get_mut(session_id) {
-                meta.last_activity_at = Utc::now();
-                meta.status = SessionStatus::Processing;
-            } else {
-                return None;
-            }
+            let meta = sessions.get_mut(session_id)?;
+            meta.last_activity_at = Utc::now();
+            meta.status = SessionStatus::Processing;
         }
 
         let task_id = task_id.to_string();
