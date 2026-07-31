@@ -1,6 +1,6 @@
 # Goal: Restore the workspace Clippy CI gate
 
-Status: active
+Status: complete
 Source: User instruction and `.github/workflows/ci.yml` Clippy job
 Last updated: 2026-07-31
 
@@ -32,8 +32,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Explicit user instruction.
   - Acceptance: One commit containing the complete remediation is present on `origin/main`.
   - Primary evidence: Successful `git push origin main` and clean synchronized status.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Commit `c737dba2` was pushed to `origin/main`; `git status --short --branch` reported `main...origin/main` with no changes.
 
 ### Constraints
 
@@ -55,17 +55,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3.
-- Smallest next action: review the bounded diff, commit it, and push `main`.
-- Expected evidence: successful push and synchronized clean status.
-- Stop or replan if: review finds an out-of-envelope change or the remote rejects the push.
+- Closes: R1-R3.
+- Smallest next action: None; closure check passed.
+- Expected evidence: Recorded below.
+- Stop or replan if: Not applicable; the objective is complete.
 
 ## Current State
 
-- Resolved: R1 and R2; RECON, lint remediation, and validation are complete.
-- Last relevant evidence: The exact Rust 1.97.1 Clippy gate and `cargo fmt --all -- --check` pass; the required web UI wasm check also passes.
+- Resolved: R1-R3.
+- Last relevant evidence: Commit `c737dba2` is on synchronized `origin/main`; all required checks passed before commit.
 - Blocker: None.
-- Next: Review, commit, and push.
+- Next: None.
 
 ## Material Decisions
 
@@ -77,10 +77,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-07-31: RECON confirmed `.github/workflows/ci.yml` runs the exact all-features gate and local Rust 1.94 could not detect Rust 1.97 lints; updated the local stable toolchain to 1.97.1.
 - 2026-07-31: Fixed the eight user-reported diagnostics; the exact gate progressed through the transports and surfaced one additional web UI sort diagnostic.
 - 2026-07-31: Fixed the final web UI diagnostic; the exact Clippy gate, formatter check, and web UI wasm check passed.
+- 2026-07-31: Reviewed the bounded diff, committed it as `c737dba2`, pushed `main`, and verified a clean synchronized status.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status: active
+- Resolved outcomes: R1 exact Clippy gate; R2 pre-commit repository directive; R3 commit and push.
+- Commands and artifacts: exact all-features Clippy gate, formatter check, web UI wasm check, `AGENTS.md`, and commit `c737dba2`.
+- Constraint and diff-scope check: behavior-preserving lint rewrites only; no dependencies, schemas, configuration surfaces, services, migrations, tests, or abstractions added.
+- Final status: complete
