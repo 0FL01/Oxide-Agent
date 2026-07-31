@@ -57,12 +57,12 @@ impl Hook for SubAgentSafetyHook {
                     };
                 }
             }
-            HookEvent::BeforeTool { tool_name, .. } => {
-                if self.config.blocked_tools.contains(tool_name) {
-                    return HookResult::Block {
-                        reason: format!("Tool '{tool_name}' is blocked for sub-agents"),
-                    };
-                }
+            HookEvent::BeforeTool { tool_name, .. }
+                if self.config.blocked_tools.contains(tool_name) =>
+            {
+                return HookResult::Block {
+                    reason: format!("Tool '{tool_name}' is blocked for sub-agents"),
+                };
             }
             _ => {}
         }

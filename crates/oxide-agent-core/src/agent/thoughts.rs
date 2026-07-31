@@ -148,7 +148,7 @@ pub fn extract_reasoning_summary(reasoning: &str, max_len: usize) -> String {
     } else {
         format!(
             "{}...",
-            &first_sentence.chars().take(max_len - 3).collect::<String>()
+            first_sentence.chars().take(max_len - 3).collect::<String>()
         )
     }
 }

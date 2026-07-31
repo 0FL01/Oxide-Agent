@@ -183,10 +183,7 @@ where
     let mut captured = Vec::with_capacity(max_bytes.min(8192));
     let mut chunk = [0_u8; 8192];
 
-    loop {
-        let Ok(read) = reader.read(&mut chunk).await else {
-            break;
-        };
+    while let Ok(read) = reader.read(&mut chunk).await {
         if read == 0 {
             break;
         }

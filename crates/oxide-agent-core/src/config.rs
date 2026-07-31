@@ -772,8 +772,8 @@ impl AgentSettings {
         }
 
         let parsed_routes: Vec<ModelInfo> = routes
-            .into_iter()
-            .filter_map(|(_index, route)| route.into_model_info())
+            .into_values()
+            .filter_map(|route| route.into_model_info())
             .collect();
 
         (!parsed_routes.is_empty()).then_some(parsed_routes)

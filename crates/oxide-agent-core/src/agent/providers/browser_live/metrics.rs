@@ -34,11 +34,9 @@ impl BrowserMetricsSnapshot {
     /// Average sidecar request latency in milliseconds, or zero if no requests.
     #[must_use]
     pub fn sidecar_latency_ms_avg(&self) -> u64 {
-        if self.sidecar_requests == 0 {
-            0
-        } else {
-            self.sidecar_latency_ms_total / self.sidecar_requests
-        }
+        self.sidecar_latency_ms_total
+            .checked_div(self.sidecar_requests)
+            .unwrap_or_default()
     }
 }
 

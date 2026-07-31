@@ -736,7 +736,7 @@ impl ProgressState {
         // Use command preview if available, otherwise show tool name
         let description = command_preview
             .map(|preview| format!("🔧 {}", crate::utils::truncate_str(preview, 60)))
-            .unwrap_or_else(|| format!("Execution: {}", &name));
+            .unwrap_or_else(|| format!("Execution: {}", name));
 
         self.steps.push(Step {
             description,
