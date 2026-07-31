@@ -66,15 +66,6 @@ impl HookRegistry {
                     );
                     return result;
                 }
-                HookResult::RequestCompaction { reason, context } => {
-                    debug!(
-                        hook = hook.name(),
-                        reason = %reason,
-                        context_len = context.as_ref().map(|value| value.len()).unwrap_or(0),
-                        "Hook requesting compaction"
-                    );
-                    return result;
-                }
                 HookResult::ForceIteration { reason, .. } => {
                     info!(
                         hook = hook.name(),

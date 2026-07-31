@@ -26,7 +26,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         agent_timeout_secs: Some(30),
         ..AgentSettings::default()

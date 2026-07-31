@@ -587,7 +587,6 @@ mod tests {
             max_output_tokens: 1000,
             context_window_tokens: 0,
             provider: "llm-provider/opencode-go".to_string(),
-            weight: 1,
         };
         assert_eq!(title_reasoning_effort(&model), Some("none"));
     }
@@ -599,7 +598,6 @@ mod tests {
             max_output_tokens: 1000,
             context_window_tokens: 0,
             provider: "openai-base:zai".to_string(),
-            weight: 1,
         };
         assert_eq!(title_reasoning_effort(&model), Some("low"));
     }

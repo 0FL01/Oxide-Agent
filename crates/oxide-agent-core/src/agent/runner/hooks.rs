@@ -209,7 +209,7 @@ impl AgentRunner {
         &mut self,
         result: HookResult,
         ctx: &mut AgentRunnerContext<'_>,
-        state: Option<&mut RunState>,
+        _state: Option<&mut RunState>,
     ) -> anyhow::Result<Option<String>> {
         match result {
             HookResult::Continue => Ok(None),
@@ -219,15 +219,6 @@ impl AgentRunner {
             }
             HookResult::InjectTransientContext(context) => {
                 self.inject_transient_context(ctx, context);
-                Ok(None)
-            }
-            HookResult::RequestCompaction { context, .. } => {
-                if let Some(context) = context {
-                    self.inject_transient_context(ctx, context);
-                }
-                if let Some(state) = state {
-                    state.request_manual_compaction();
-                }
                 Ok(None)
             }
             HookResult::Block { reason } => Err(anyhow::anyhow!(reason)),

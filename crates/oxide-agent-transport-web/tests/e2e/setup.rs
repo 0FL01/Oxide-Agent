@@ -47,7 +47,6 @@ pub fn setup_web_test_with_custom_providers(llm_provider: Arc<SequencedLlmProvid
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         sub_agent_model_id: Some(model_id.clone()),
         sub_agent_model_provider: Some("opencode_go".to_string()),
@@ -56,7 +55,6 @@ pub fn setup_web_test_with_custom_providers(llm_provider: Arc<SequencedLlmProvid
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
@@ -90,7 +88,6 @@ pub fn setup_web_test_with_structured_main_provider(
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -127,7 +124,6 @@ pub async fn setup_test() -> AppState {
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()

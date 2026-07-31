@@ -228,27 +228,23 @@ pub(crate) async fn current_model_label(
     }
 }
 
-pub(crate) async fn selected_model_routes(
+pub(crate) async fn selected_model(
     storage: &Arc<dyn StorageProvider>,
     settings: &AgentSettings,
     user_id: i64,
     context_key: &str,
-) -> Vec<ModelInfo> {
+) -> Option<ModelInfo> {
     let selected = match selected_id(storage, user_id, context_key).await {
         Ok(selected) => selected,
         Err(error) => {
-            warn!(%error, "Failed to load Telegram model selection; using default routes");
-            return Vec::new();
+            warn!(%error, "Failed to load Telegram model selection; using default model");
+            return None;
         }
     };
-    let Some(selected) = selected else {
-        return Vec::new();
-    };
+    let selected = selected?;
     configured_models(settings)
         .into_iter()
         .find(|model| qualified_model_id(model) == selected)
-        .into_iter()
-        .collect()
 }
 
 pub(crate) async fn show_model_selector(
@@ -368,7 +364,6 @@ mod tests {
                         provider: "test".to_string(),
                         max_output_tokens: 1_000,
                         context_window_tokens: 8_000,
-                        weight: 1,
                     })
                     .collect(),
             ),

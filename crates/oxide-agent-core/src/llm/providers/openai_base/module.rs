@@ -442,14 +442,12 @@ mod tests {
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "openai-base:zai".to_string(),
-            weight: 1,
         };
         let conservative = crate::config::ModelInfo {
             id: "glm-5".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "openai-base:zai".to_string(),
-            weight: 1,
         };
 
         let module = OpenAIBaseProviderModule;

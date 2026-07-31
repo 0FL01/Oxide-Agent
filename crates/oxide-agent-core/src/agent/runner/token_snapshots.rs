@@ -18,8 +18,9 @@ impl AgentRunner {
             ctx.task,
             ctx.system_prompt,
             &ctx.tools,
-            &ctx.config.model_name,
-            ctx.config.model_max_output_tokens,
+            &ctx.config.model.id,
+            ctx.config.model.max_output_tokens,
+            ctx.config.model.context_window_tokens,
             ctx.config.is_sub_agent,
         );
         let policy = CompactionPolicy::default();
@@ -54,17 +55,13 @@ impl AgentRunner {
         phase: &str,
         snapshot: &TokenSnapshot,
     ) {
-        let planned_provider = ctx
-            .config
-            .model_provider
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+        let planned_provider = &ctx.config.model.provider;
         info!(
             task_id = %ctx.task_id,
             iteration,
             phase,
             planned_provider = planned_provider,
-            planned_model = %ctx.config.model_name,
+            planned_model = %ctx.config.model.id,
             is_sub_agent = ctx.config.is_sub_agent,
             hot_memory_tokens = snapshot.hot_memory_tokens,
             system_prompt_tokens = snapshot.system_prompt_tokens,

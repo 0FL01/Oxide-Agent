@@ -113,7 +113,7 @@ struct SearchProbeRunCtx<'a> {
     task_id: &'a str,
     original_input: &'a AgentUserInput,
     parent_effort: Option<WebAgentEffort>,
-    model_routes: Option<&'a [ModelInfo]>,
+    model: Option<&'a ModelInfo>,
     config: &'a SearchProbeConfig,
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
@@ -127,7 +127,7 @@ struct SearchProbeFinalizeCtx<'a> {
     previous_final_message: Option<&'a str>,
     generation: u8,
     partial_handoff: &'a SearchProbeHandoff,
-    model_routes: Option<&'a [ModelInfo]>,
+    model: Option<&'a ModelInfo>,
     config: &'a SearchProbeConfig,
     progress_tx: &'a mpsc::Sender<AgentEvent>,
     cancellation_token: &'a CancellationToken,
@@ -213,18 +213,18 @@ pub(crate) async fn maybe_run_search_probe(
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
-    model_routes: &[ModelInfo],
+    model: Option<&ModelInfo>,
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
     let config = SearchProbeConfig::from_env();
-    maybe_run_search_probe_with_runtime_and_model_routes(
+    maybe_run_search_probe_with_runtime_and_model(
         session_manager,
         session_id,
         task_id,
         run_request,
         &config,
-        Some(model_routes),
+        model,
         progress_tx,
         cancellation_token,
     )
@@ -262,7 +262,7 @@ async fn maybe_run_search_probe_with_runtime(
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
-    maybe_run_search_probe_with_runtime_and_model_routes(
+    maybe_run_search_probe_with_runtime_and_model(
         session_manager,
         session_id,
         task_id,
@@ -275,13 +275,13 @@ async fn maybe_run_search_probe_with_runtime(
     .await
 }
 
-async fn maybe_run_search_probe_with_runtime_and_model_routes(
+async fn maybe_run_search_probe_with_runtime_and_model(
     session_manager: &WebSessionManager,
     session_id: &str,
     task_id: &str,
     run_request: TaskRunRequest,
     config: &SearchProbeConfig,
-    model_routes: Option<&[ModelInfo]>,
+    model: Option<&ModelInfo>,
     progress_tx: mpsc::Sender<AgentEvent>,
     cancellation_token: CancellationToken,
 ) -> (TaskRunRequest, SearchProbeRunOutcome) {
@@ -330,7 +330,7 @@ async fn maybe_run_search_probe_with_runtime_and_model_routes(
                 task_id,
                 original_input: &input,
                 parent_effort: effort,
-                model_routes,
+                model,
                 config,
                 progress_tx,
                 cancellation_token,
@@ -364,7 +364,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         task_id,
         original_input,
         parent_effort,
-        model_routes,
+        model,
         config,
         progress_tx,
         cancellation_token,
@@ -420,13 +420,13 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
         }
 
         let Some(mut executor) = session_manager
-            .create_search_probe_executor_with_model_routes(
+            .create_search_probe_executor_with_model(
                 session_id,
                 SearchProbeRuntimeOptions {
                     tool_allowlist: config.tool_allowlist.clone(),
                     prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
                 },
-                model_routes,
+                model,
             )
             .await
         else {
@@ -522,7 +522,7 @@ async fn run_search_probe_generations(ctx: SearchProbeRunCtx<'_>) -> SearchProbe
                 previous_final_message: previous_final_message.as_deref(),
                 generation,
                 partial_handoff: &handoff,
-                model_routes,
+                model,
                 config,
                 progress_tx: &progress_tx,
                 cancellation_token: &cancellation_token,
@@ -567,7 +567,7 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
         previous_final_message,
         generation,
         partial_handoff,
-        model_routes,
+        model,
         config,
         progress_tx,
         cancellation_token,
@@ -589,13 +589,13 @@ async fn run_forced_finalize(ctx: SearchProbeFinalizeCtx<'_>) -> Option<SearchPr
     }
 
     let Some(mut executor) = session_manager
-        .create_search_probe_executor_with_model_routes(
+        .create_search_probe_executor_with_model(
             session_id,
             SearchProbeRuntimeOptions {
                 tool_allowlist: Vec::new(),
                 prompt_instructions: Some(PROBE_PROFILE_PROMPT.to_string()),
             },
-            model_routes,
+            model,
         )
         .await
     else {
@@ -1667,7 +1667,6 @@ mod tests {
                 provider: "opencode-go".to_string(),
                 max_output_tokens: 32_000,
                 context_window_tokens: 200_000,
-                weight: 1,
             }]),
             agent_timeout_secs: Some(5),
             ..AgentSettings::default()

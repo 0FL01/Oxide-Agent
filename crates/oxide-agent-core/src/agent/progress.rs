@@ -322,17 +322,6 @@ pub enum AgentEvent {
         /// Error class (e.g. "network", "timeout", "server_error")
         error_class: String,
     },
-    /// LLM routing switched to a fallback provider after persistent rate limits.
-    ProviderFailoverActivated {
-        /// Previous provider name.
-        from_provider: String,
-        /// Previous model identifier.
-        from_model: String,
-        /// New provider name.
-        to_provider: String,
-        /// New model identifier.
-        to_model: String,
-    },
     /// Execution milestone for latency tracking.
     Milestone {
         /// Milestone name (e.g., "executor_lock_acquired", "thinking_sent", "llm_call_started")
@@ -434,8 +423,6 @@ pub struct ProgressState {
     pub last_history_repair_status: Option<String>,
     /// Current LLM retry status (cleared on success or final error)
     pub llm_retry: Option<LlmRetryState>,
-    /// Latest provider failover notice for the current run.
-    pub provider_failover_notice: Option<String>,
     /// Whether the loop-detected modal was already surfaced for this run.
     pub loop_notification_sent: bool,
 }
@@ -671,12 +658,6 @@ impl ProgressState {
                 provider,
                 error_class,
             ),
-            AgentEvent::ProviderFailoverActivated {
-                from_provider,
-                from_model,
-                to_provider,
-                to_model,
-            } => self.handle_provider_failover(from_provider, from_model, to_provider, to_model),
             AgentEvent::Milestone { name, timestamp_ms } => {
                 tracing::debug!(milestone = %name, timestamp_ms, "Execution milestone reached");
             }
@@ -705,7 +686,6 @@ impl ProgressState {
         // Clear any active LLM retry display: the agent is back to work,
         // so the user should no longer see the "retrying" banner.
         self.llm_retry = None;
-        self.provider_failover_notice = None;
         self.current_iteration += 1;
         self.complete_last_step();
         self.latest_token_snapshot = Some(snapshot.clone());
@@ -970,6 +950,7 @@ impl ProgressState {
         phase: CompactionPhase,
         skipped_reason: String,
     ) {
+        self.complete_last_step();
         self.last_compaction_status = Some(format!(
             "Compaction skipped ({}/{}) - {}",
             compaction_reason_label(reason),
@@ -1044,21 +1025,6 @@ impl ProgressState {
         self.error = None;
     }
 
-    fn handle_provider_failover(
-        &mut self,
-        from_provider: String,
-        from_model: String,
-        to_provider: String,
-        to_model: String,
-    ) {
-        self.llm_retry = None;
-        self.provider_failover_notice = Some(format!(
-            "Failover: {}:{} -> {}:{}",
-            from_provider, from_model, to_provider, to_model
-        ));
-        self.error = None;
-    }
-
     // Formatting is handled in the UI layer.
 }
 
@@ -1068,7 +1034,6 @@ fn compaction_reason_label(reason: CompactionReason) -> &'static str {
         CompactionReason::MidTurn => "mid-turn",
         CompactionReason::Manual => "manual",
         CompactionReason::ContextLimit => "context-limit",
-        CompactionReason::ModelDownshift => "model-downshift",
     }
 }
 
@@ -1077,7 +1042,6 @@ fn compaction_phase_label(phase: CompactionPhase) -> &'static str {
         CompactionPhase::PreSampling => "pre-sampling",
         CompactionPhase::MidTurn => "mid-turn",
         CompactionPhase::Manual => "manual",
-        CompactionPhase::ModelSwitch => "model-switch",
     }
 }
 
@@ -1164,6 +1128,34 @@ mod tests {
                 .repeated_compaction_warning
                 .as_deref()
                 .is_some_and(|warning| warning == "History compaction: 3x")
+        );
+    }
+
+    #[test]
+    fn skipped_runtime_compaction_completes_progress_step() {
+        let mut state = ProgressState::new(5);
+        state.update(AgentEvent::RuntimeCompactionStarted {
+            reason: CompactionReason::MidTurn,
+            phase: CompactionPhase::PreSampling,
+            backend: CompactionBackend::LocalLlmSummary,
+            provider: None,
+            route: None,
+            token_before: 2_000,
+            history_items_before: 10,
+        });
+        state.update(AgentEvent::RuntimeCompactionSkipped {
+            reason: CompactionReason::MidTurn,
+            phase: CompactionPhase::PreSampling,
+            skipped_reason: "No compressible range available".to_string(),
+        });
+
+        assert_eq!(state.steps.len(), 1);
+        assert_eq!(state.steps[0].status, super::StepStatus::Completed);
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("Compaction skipped"))
         );
     }
 }

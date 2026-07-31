@@ -21,8 +21,8 @@ impl AgentRunner {
             target: AGENT_LATENCY_TARGET,
             task_id = %ctx.task_id,
             session_id = ?ctx.session_id,
-            model = %ctx.config.model_name,
-            provider = ?ctx.config.model_provider,
+            model = %ctx.config.model.id,
+            provider = %ctx.config.model.provider,
             max_iterations = ctx.config.max_iterations,
             timeout_secs = ctx.config.timeout_secs,
             "Agent runner entered"
@@ -137,19 +137,6 @@ impl AgentRunner {
     ) -> Result<()> {
         Self::prune_stored_tool_failure_noise(ctx);
         self.apply_before_iteration_hooks(ctx, state)?;
-
-        let cancellation_token = ctx.agent.cancellation_token().clone();
-        if state.take_manual_compaction_request() {
-            let Some(compaction_result) = Self::await_until_cancelled(
-                cancellation_token,
-                self.run_manual_compaction_checkpoint(ctx, state),
-            )
-            .await
-            else {
-                return Err(self.cancelled_error(ctx).await);
-            };
-            compaction_result?;
-        }
 
         if iteration == 0 {
             Self::emit_pre_run_compaction_done(ctx.progress_tx).await;

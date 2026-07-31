@@ -101,7 +101,7 @@ Response:
       "container_name": "oxide_agent",
       "stream": "stdout",
       "ordinal": 17,
-      "message": "provider failover activated after repeated 429 responses"
+      "message": "retrying LLM request after rate limit"
     }
   ],
   "suppressed": [

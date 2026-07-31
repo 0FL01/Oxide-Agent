@@ -203,7 +203,6 @@ mod tests {
                 max_output_tokens: 4096,
                 context_window_tokens: 128_000,
                 provider: "openrouter".to_string(),
-                weight: 1,
             };
             let capabilities = super::provider_capabilities_for_model(&route);
             assert!(capabilities.supports_tool_calling, "{model_id}");
@@ -223,7 +222,6 @@ mod tests {
                 max_output_tokens: 4096,
                 context_window_tokens: 128_000,
                 provider: "openrouter".to_string(),
-                weight: 1,
             };
             let capabilities = super::provider_capabilities_for_model(&route);
             assert!(!capabilities.supports_tool_calling, "{model_id}");
@@ -235,7 +233,6 @@ mod tests {
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "openrouter".to_string(),
-            weight: 1,
         };
 
         assert!(!super::provider_capabilities_for_model(&unknown).supports_tool_calling);
@@ -264,7 +261,6 @@ mod tests {
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "opencode-go".to_string(),
-            weight: 1,
         };
 
         let capabilities = super::provider_capabilities_for_model(&route);
@@ -282,7 +278,6 @@ mod tests {
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "opencode-go".to_string(),
-            weight: 1,
         };
 
         let capabilities = super::provider_capabilities_for_model(&route);
@@ -300,7 +295,6 @@ mod tests {
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "opencode_go".to_string(),
-            weight: 1,
         };
 
         let capabilities = super::provider_capabilities_for_model(&route);
@@ -330,7 +324,6 @@ mod tests {
                 max_output_tokens: 4096,
                 context_window_tokens: 128_000,
                 provider: "openrouter".to_string(),
-                weight: 1,
             };
             let openrouter = super::provider_vision_capabilities_for_model(&openrouter_media);
             assert!(

@@ -1124,26 +1124,26 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         }
     }
 
-    /// Resolve sub-agent model routes with priority:
+    /// Resolve the sub-agent model with priority:
     /// 1. Explicit sub-agent config (env/config)
     /// 2. Inherited parent session model (e.g. web UI selection)
-    /// 3. Global agent routes fallback
-    fn resolve_sub_agent_model_routes(&self) -> Vec<crate::config::ModelInfo> {
-        let explicit = self.settings.explicit_sub_agent_model_routes();
-        if !explicit.is_empty() {
+    /// 3. Global agent default
+    fn resolve_sub_agent_model(&self) -> crate::config::ModelInfo {
+        if let Some(explicit) = self
+            .settings
+            .explicit_sub_agent_model_routes()
+            .into_iter()
+            .next()
+        {
             return explicit;
         }
         if let Some(inherited) = self.inherited_model.clone() {
-            return vec![inherited];
+            return inherited;
         }
-        self.settings.get_configured_agent_model_routes()
+        self.settings.get_configured_agent_model()
     }
 
-    fn build_sub_agent_runner_config(
-        &self,
-        model: &crate::config::ModelInfo,
-        model_routes: Vec<crate::config::ModelInfo>,
-    ) -> AgentRunnerConfig {
+    fn build_sub_agent_runner_config(&self, model: &crate::config::ModelInfo) -> AgentRunnerConfig {
         AgentRunnerConfig::new(
             model.id.clone(),
             get_sub_agent_max_iterations(),
@@ -1151,8 +1151,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             self.settings.get_sub_agent_timeout_secs(),
             model.max_output_tokens,
         )
-        .with_model_provider(model.provider.clone())
-        .with_model_routes(model_routes)
+        .with_model(model.clone())
         .with_sub_agent(true)
     }
 
@@ -1172,11 +1171,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         let task_uuid = Uuid::new_v4();
         let task_id = format!("sub-{task_uuid}");
         let name = self.unique_sub_agent_display_name(task_uuid, reserved_names);
-        let model_routes = self.resolve_sub_agent_model_routes();
-        let model = model_routes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| self.settings.get_configured_sub_agent_model());
+        let model = self.resolve_sub_agent_model();
         let sub_agent_context_budget = self
             .settings
             .sub_agent_internal_context_budget_for_model(&model);
@@ -1244,7 +1239,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             todos_arc,
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
-            runner_config: self.build_sub_agent_runner_config(&model, model_routes),
+            runner_config: self.build_sub_agent_runner_config(&model),
             compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
@@ -2274,8 +2269,8 @@ mod tests {
             .await
             .expect("sub-agent preparation succeeds");
 
-        assert_eq!(prepared.runner_config.model_name, "sub-model");
-        assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
+        assert_eq!(prepared.runner_config.model.id, "sub-model");
+        assert_eq!(prepared.runner_config.model.max_output_tokens, 12_345);
         assert_eq!(prepared.sub_session.memory().max_tokens(), 96_000);
         assert_eq!(
             prepared.tool_runtime_registry.specs().len(),
@@ -2477,16 +2472,14 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 8192,
             context_window_tokens: 128_000,
-            weight: 1,
         };
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
                 .with_inherited_model(Some(inherited));
 
-        let routes = provider.resolve_sub_agent_model_routes();
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].id, "opencode-go/mimo-v2.5");
-        assert_eq!(routes[0].context_window_tokens, 128_000);
+        let model = provider.resolve_sub_agent_model();
+        assert_eq!(model.id, "opencode-go/mimo-v2.5");
+        assert_eq!(model.context_window_tokens, 128_000);
     }
 
     #[test]
@@ -2496,7 +2489,6 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 64_000,
-            weight: 1,
         };
         let settings = Arc::new(AgentSettings {
             sub_agent_model_routes: Some(vec![explicit]),
@@ -2507,15 +2499,13 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 8192,
             context_window_tokens: 128_000,
-            weight: 1,
         };
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings)
                 .with_inherited_model(Some(inherited));
 
-        let routes = provider.resolve_sub_agent_model_routes();
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].id, "opencode-go/sub-model");
+        let model = provider.resolve_sub_agent_model();
+        assert_eq!(model.id, "opencode-go/sub-model");
     }
 
     #[test]
@@ -2525,7 +2515,6 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 64_000,
-            weight: 1,
         };
         let settings = Arc::new(AgentSettings {
             agent_model_routes: Some(vec![agent_route]),
@@ -2535,9 +2524,8 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
 
-        let routes = provider.resolve_sub_agent_model_routes();
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
+        let model = provider.resolve_sub_agent_model();
+        assert_eq!(model.id, "opencode-go/deepseek-v4-flash");
     }
 
     fn sample_snapshot(context_window_tokens: usize) -> TokenSnapshot {

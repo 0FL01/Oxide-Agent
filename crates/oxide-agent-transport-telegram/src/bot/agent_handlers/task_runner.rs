@@ -1,6 +1,6 @@
 use super::{
     SESSION_REGISTRY, cancel_status_inline_markup, finalize_cancel_status_if_needed,
-    is_task_cancelled_error, save_memory_after_task, selected_model_routes, send_agent_message,
+    is_task_cancelled_error, save_memory_after_task, selected_model, send_agent_message,
     should_preserve_pending_file_input,
 };
 use crate::bot::agent_handlers::{
@@ -289,7 +289,7 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
 }
 
 pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Result<()> {
-    let model_routes = selected_model_routes(
+    let model = selected_model(
         &ctx.storage,
         &ctx.agent_settings,
         ctx.user_id,
@@ -300,7 +300,7 @@ pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Re
     let session_id = ctx.session_id;
     let task_text = ctx.task_text;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_agent_task(session_id, &task_text, model_routes, progress_tx).await
+        execute_agent_task(session_id, &task_text, model, progress_tx).await
     })
     .await
 }
@@ -318,7 +318,7 @@ pub(crate) async fn run_agent_task_continuation_with_text(
 }
 
 pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Result<()> {
-    let model_routes = selected_model_routes(
+    let model = selected_model(
         &ctx.storage,
         &ctx.agent_settings,
         ctx.user_id,
@@ -329,7 +329,7 @@ pub(crate) async fn run_user_input_resume(ctx: RunUserInputResumeContext) -> Res
     let session_id = ctx.session_id;
     let user_input = ctx.user_input;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_user_input_resume(session_id, user_input, model_routes, progress_tx).await
+        execute_user_input_resume(session_id, user_input, model, progress_tx).await
     })
     .await
 }
@@ -821,7 +821,7 @@ fn should_suppress_completed_response(ctx: &TaskDeliveryContext, response: &str)
 async fn execute_agent_task(
     session_id: SessionId,
     task: &str,
-    model_routes: Vec<ModelInfo>,
+    model: Option<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
     let executor_arc = SESSION_REGISTRY
@@ -847,7 +847,7 @@ async fn execute_agent_task(
         ));
     }
 
-    executor.set_model_routes_override(model_routes);
+    executor.set_model_override(model);
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.execute(task, progress_tx).await
 }
@@ -885,7 +885,7 @@ async fn execute_agent_task_continuation(
 pub(crate) async fn execute_user_input_resume(
     session_id: SessionId,
     user_input: String,
-    model_routes: Vec<ModelInfo>,
+    model: Option<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
     let executor_arc = SESSION_REGISTRY
@@ -905,7 +905,7 @@ pub(crate) async fn execute_user_input_resume(
         ));
     }
 
-    executor.set_model_routes_override(model_routes);
+    executor.set_model_override(model);
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor
         .resume_after_user_input(user_input, progress_tx)

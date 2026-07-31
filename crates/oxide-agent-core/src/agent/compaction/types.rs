@@ -123,8 +123,6 @@ pub enum CompactionReason {
     Manual,
     /// Provider reported or strongly implied context overflow.
     ContextLimit,
-    /// Route/failover selected a model with a smaller context window.
-    ModelDownshift,
 }
 
 /// Where compaction happens in the runtime flow.
@@ -136,8 +134,6 @@ pub enum CompactionPhase {
     MidTurn,
     /// Explicit manual compact operation.
     Manual,
-    /// During model route/failover switching.
-    ModelSwitch,
 }
 
 /// Backend that generated a compact handoff summary.
@@ -214,6 +210,8 @@ pub struct CompactionRequest<'a> {
     pub model_name: &'a str,
     /// Configured response token cap for the active model. This is not pre-reserved from input.
     pub model_max_output_tokens: u32,
+    /// Context window of the active model. Zero falls back to the memory limit.
+    pub context_window_tokens: u32,
     /// Whether the current execution is a sub-agent.
     pub is_sub_agent: bool,
 }
@@ -228,6 +226,7 @@ impl<'a> CompactionRequest<'a> {
         tools: &'a [ToolDefinition],
         model_name: &'a str,
         model_max_output_tokens: u32,
+        context_window_tokens: u32,
         is_sub_agent: bool,
     ) -> Self {
         Self {
@@ -237,6 +236,7 @@ impl<'a> CompactionRequest<'a> {
             tools,
             model_name,
             model_max_output_tokens,
+            context_window_tokens,
             is_sub_agent,
         }
     }

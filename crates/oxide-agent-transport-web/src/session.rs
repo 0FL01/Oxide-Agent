@@ -305,7 +305,6 @@ fn selected_web_model_route(
             provider: provider.to_string(),
             max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
             context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-            weight: 1,
         })
 }
 
@@ -343,7 +342,6 @@ fn normalize_model_route(
     if route.context_window_tokens == 0 {
         route.context_window_tokens = DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS;
     }
-    route.weight = route.weight.max(1);
     Some(route)
 }
 
@@ -456,10 +454,10 @@ impl WebSessionManager {
         self.agent_settings.clone()
     }
 
-    pub(crate) async fn model_routes_override_for_selection(
+    pub(crate) async fn model_override_for_selection(
         &self,
         selection: Option<&ModelSelection>,
-    ) -> Option<Vec<ModelInfo>> {
+    ) -> Option<ModelInfo> {
         let selection = selection?;
         let (selected_prefix, _) = parse_web_model_id(&selection.qualified_id)?;
         let selected_model_id =
@@ -473,7 +471,7 @@ impl WebSessionManager {
             &configured_routes,
         );
 
-        Some(vec![selected_route])
+        Some(selected_route)
     }
 
     /// Resolve the model to use for a per-session side task (e.g. auto-title)
@@ -487,10 +485,8 @@ impl WebSessionManager {
         &self,
         selection: Option<&ModelSelection>,
     ) -> ModelInfo {
-        if let Some(routes) = self.model_routes_override_for_selection(selection).await
-            && let Some(route) = routes.into_iter().next()
-        {
-            return route;
+        if let Some(model) = self.model_override_for_selection(selection).await {
+            return model;
         }
         // Last-resort fallback: global configured route (bootstrap).
         let settings = self.agent_settings();
@@ -524,15 +520,15 @@ impl WebSessionManager {
         parent_session_id: &str,
         options: SearchProbeRuntimeOptions,
     ) -> Option<AgentExecutor> {
-        self.create_search_probe_executor_with_model_routes(parent_session_id, options, None)
+        self.create_search_probe_executor_with_model(parent_session_id, options, None)
             .await
     }
 
-    pub(crate) async fn create_search_probe_executor_with_model_routes(
+    pub(crate) async fn create_search_probe_executor_with_model(
         &self,
         parent_session_id: &str,
         options: SearchProbeRuntimeOptions,
-        model_routes: Option<&[ModelInfo]>,
+        model: Option<&ModelInfo>,
     ) -> Option<AgentExecutor> {
         let parent_meta = self.get_session(parent_session_id).await?;
         let probe_sid = derive_search_probe_session_id(parent_session_id);
@@ -540,13 +536,13 @@ impl WebSessionManager {
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone());
 
-        if let Some(model_routes) = model_routes {
-            executor.set_model_routes_override(model_routes.to_vec());
-        } else if let Some(parent_routes) = self
-            .model_routes_override_for_selection(parent_meta.model_selection.as_ref())
+        if let Some(model) = model.cloned() {
+            executor.set_model_override(Some(model));
+        } else if let Some(parent_model) = self
+            .model_override_for_selection(parent_meta.model_selection.as_ref())
             .await
         {
-            executor.set_model_routes_override(parent_routes);
+            executor.set_model_override(Some(parent_model));
         }
 
         executor.set_execution_profile(search_probe_execution_profile(options));
@@ -799,18 +795,18 @@ impl WebSessionManager {
         );
         phase_started_at = Instant::now();
 
-        if let Some(model_routes) = self
-            .model_routes_override_for_selection(model_selection.as_ref())
+        if let Some(model) = self
+            .model_override_for_selection(model_selection.as_ref())
             .await
         {
-            executor.set_model_routes_override(model_routes);
+            executor.set_model_override(Some(model));
         }
         log_session_create_phase(
             user_id,
             &session_id,
             &context_key,
             &agent_flow_id,
-            "model_routes_resolved",
+            "model_resolved",
             started_at,
             phase_started_at,
         );
@@ -1452,14 +1448,12 @@ mod tests {
                     provider: "opencode_go".to_string(),
                     max_output_tokens: 32_000,
                     context_window_tokens: 200_000,
-                    weight: 1,
                 },
                 ModelInfo {
                     id: "glm-4.7".to_string(),
                     provider: "openai-base:zai".to_string(),
                     max_output_tokens: 16_000,
                     context_window_tokens: 128_000,
-                    weight: 1,
                 },
             ]),
             ..AgentSettings::default()
@@ -1484,31 +1478,18 @@ mod tests {
 
         let executor_arc = resolve_executor_arc(&manager, "model-selection-test").await;
         let executor = executor_arc.read().await;
-        let routes = executor
-            .model_routes_override()
-            .expect("model route override should be set");
+        let model = executor
+            .model_override()
+            .expect("model override should be set");
 
+        assert_eq!(model.id, "opencode-go/kimi-k2.6");
+        assert_eq!(model.provider, "opencode-go");
         assert_eq!(
-            routes.len(),
-            1,
-            "web model selection must not add fallback routes"
-        );
-        assert_eq!(routes[0].id, "opencode-go/kimi-k2.6");
-        assert_eq!(routes[0].provider, "opencode-go");
-        assert_eq!(
-            routes[0].max_output_tokens,
+            model.max_output_tokens,
             DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
         );
-        assert!(
-            routes
-                .iter()
-                .all(|route| route.id != "opencode-go/deepseek-v4-flash")
-        );
-        assert!(
-            routes
-                .iter()
-                .all(|route| route.provider != "openai-base:zai")
-        );
+        assert_ne!(model.id, "opencode-go/deepseek-v4-flash");
+        assert_ne!(model.provider, "openai-base:zai");
     }
 
     #[tokio::test]
@@ -1522,7 +1503,6 @@ mod tests {
                 provider: "opencode_go".to_string(),
                 max_output_tokens: 32_000,
                 context_window_tokens: 200_000,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         });
@@ -1559,14 +1539,12 @@ mod tests {
                     provider: "opencode_zen".to_string(),
                     max_output_tokens: 16_000,
                     context_window_tokens: 200_000,
-                    weight: 1,
                 },
                 ModelInfo {
                     id: "opencode-go/deepseek-v4-flash".to_string(),
                     provider: "opencode_go".to_string(),
                     max_output_tokens: 32_000,
                     context_window_tokens: 200_000,
-                    weight: 1,
                 },
             ]),
             ..AgentSettings::default()
@@ -1591,22 +1569,13 @@ mod tests {
 
         let executor_arc = resolve_executor_arc(&manager, "zen-model-selection-test").await;
         let executor = executor_arc.read().await;
-        let routes = executor
-            .model_routes_override()
-            .expect("model route override should be set");
+        let model = executor
+            .model_override()
+            .expect("model override should be set");
 
-        assert_eq!(
-            routes.len(),
-            1,
-            "web model selection must not add fallback routes"
-        );
-        assert_eq!(routes[0].id, "opencode-zen/deepseek-v4-flash-free");
-        assert_eq!(routes[0].provider, "opencode-zen");
-        assert!(
-            routes
-                .iter()
-                .all(|route| route.id != "opencode-go/deepseek-v4-flash")
-        );
+        assert_eq!(model.id, "opencode-zen/deepseek-v4-flash-free");
+        assert_eq!(model.provider, "opencode-zen");
+        assert_ne!(model.id, "opencode-go/deepseek-v4-flash");
     }
 
     #[tokio::test]
@@ -1619,7 +1588,6 @@ mod tests {
                 provider: "openai-base:local".to_string(),
                 max_output_tokens: 8_000,
                 context_window_tokens: 64_000,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         });
@@ -1643,15 +1611,14 @@ mod tests {
 
         let executor_arc = resolve_executor_arc(&manager, "openai-base-model-selection-test").await;
         let executor = executor_arc.read().await;
-        let routes = executor
-            .model_routes_override()
-            .expect("model route override should be set");
+        let model = executor
+            .model_override()
+            .expect("model override should be set");
 
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].id, "hf.co/test/model");
-        assert_eq!(routes[0].provider, "openai-base:local");
-        assert_eq!(routes[0].max_output_tokens, 8_000);
-        assert_eq!(routes[0].context_window_tokens, 64_000);
+        assert_eq!(model.id, "hf.co/test/model");
+        assert_eq!(model.provider, "openai-base:local");
+        assert_eq!(model.max_output_tokens, 8_000);
+        assert_eq!(model.context_window_tokens, 64_000);
     }
 
     #[tokio::test]
@@ -1664,7 +1631,6 @@ mod tests {
                 provider: "opencode_go".to_string(),
                 max_output_tokens: 32_000,
                 context_window_tokens: 200_000,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         });
@@ -1707,13 +1673,12 @@ mod tests {
         );
         assert!(probe.session().memory.get_messages().is_empty());
 
-        let routes = probe
-            .model_routes_override()
-            .expect("probe should inherit selected model route");
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].id, "opencode-go/deepseek-v4-flash");
-        assert_eq!(routes[0].provider, "opencode-go");
-        assert_eq!(routes[0].max_output_tokens, 32_000);
+        let model = probe
+            .model_override()
+            .expect("probe should inherit selected model");
+        assert_eq!(model.id, "opencode-go/deepseek-v4-flash");
+        assert_eq!(model.provider, "opencode-go");
+        assert_eq!(model.max_output_tokens, 32_000);
     }
 
     #[tokio::test]

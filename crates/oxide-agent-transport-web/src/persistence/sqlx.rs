@@ -2359,7 +2359,6 @@ mod tests {
                 last_history_repair_status: None,
                 latest_token_snapshot: None,
                 llm_retry: None,
-                provider_failover_notice: None,
             }),
             last_event_seq: 0,
             created_at: now,

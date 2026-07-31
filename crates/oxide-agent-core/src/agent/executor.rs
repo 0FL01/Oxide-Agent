@@ -164,7 +164,7 @@ pub struct AgentExecutor {
     runner: AgentRunner,
     session: AgentSession,
     settings: Arc<crate::config::AgentSettings>,
-    model_routes_override: Option<Vec<ModelInfo>>,
+    model_override: Option<ModelInfo>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,

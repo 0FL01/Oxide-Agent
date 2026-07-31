@@ -185,7 +185,6 @@ let result = self.hook_registry.execute(
 | `Continue` | `debug` | "Hook returned Continue" |
 | `InjectContext` | `debug` | "Hook injecting context" |
 | `InjectTransientContext` | `debug` | "Hook injecting transient context" |
-| `RequestCompaction` | `debug` | "Hook requesting compaction" |
 | `ForceIteration` | `info` | "Hook forcing iteration" |
 | `Block` | `info` | "Hook blocking action" |
 | `Finish` | `info` | "Hook requested finish" |

@@ -118,7 +118,6 @@ mod tests {
             provider: "llm-provider/openrouter".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
-            weight: 1,
         }
     }
 

@@ -265,6 +265,5 @@ pub(crate) fn progress_snapshot_from_serializable(
             .latest_token_snapshot
             .and_then(|snapshot| serde_json::to_value(snapshot).ok()),
         llm_retry: progress.llm_retry,
-        provider_failover_notice: progress.provider_failover_notice,
     }
 }

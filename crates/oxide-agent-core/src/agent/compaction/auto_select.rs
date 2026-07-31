@@ -1,7 +1,7 @@
 //! Automatic compression-range selection for engine-based compaction.
 //!
 //! When an automatic trigger fires (pre-sampling budget threshold, context-limit
-//! overflow, model downshift, hook/manual request), there is no agent to provide
+//! overflow or an operator request), there is no agent to provide
 //! a [`CompressionSelection`]. This module computes the optimal contiguous range
 //! to compress based on:
 //!
@@ -19,7 +19,6 @@
 //! and the caller should emit a `RuntimeCompactionSkipped` event.
 
 use super::block::CompressionSelection;
-use super::budget::count_tokens_cached;
 use super::refs::MessageRef;
 use super::state::CompactionState;
 use super::types::{AgentMessageKind, CompactionPolicy, is_browser_live_tool};
@@ -185,13 +184,9 @@ fn is_user_role(msg: &AgentMessage) -> bool {
     )
 }
 
-/// Token cost of a single message (content + reasoning).
+/// Token cost of one model-facing message, including tool metadata.
 fn message_token_cost(msg: &AgentMessage) -> usize {
-    let mut tokens = count_tokens_cached(&msg.content);
-    if let Some(reasoning) = &msg.reasoning {
-        tokens = tokens.saturating_add(count_tokens_cached(reasoning));
-    }
-    tokens
+    super::budget::estimate_message_tokens(msg)
 }
 
 /// Compute the target token budget for the recent tail.

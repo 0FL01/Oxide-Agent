@@ -55,7 +55,6 @@ impl AgentExecutor {
                     "", // system_prompt — not available outside a run; empty is conservative
                     CompactionReason::Manual,
                     CompactionPhase::Manual,
-                    true, // force
                 )
                 .await
                 .map_err(anyhow::Error::from)

@@ -50,7 +50,6 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::HistoryRepairApplied { .. } => "history_repair_applied".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
-        AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
         AgentEvent::SubAgent { .. } => "sub_agent".to_string(),
     }
@@ -770,9 +769,7 @@ fn persisted_event_from_agent_event(
 fn should_persist_browser_event(event: &AgentEvent) -> bool {
     !matches!(
         event,
-        AgentEvent::RateLimitRetrying { .. }
-            | AgentEvent::LlmRetrying { .. }
-            | AgentEvent::ProviderFailoverActivated { .. }
+        AgentEvent::RateLimitRetrying { .. } | AgentEvent::LlmRetrying { .. }
     )
 }
 
@@ -824,8 +821,7 @@ fn browser_event_parts(
         AgentEvent::RepeatedCompactionWarning { .. }
         | AgentEvent::HistoryRepairApplied { .. }
         | AgentEvent::RateLimitRetrying { .. }
-        | AgentEvent::LlmRetrying { .. }
-        | AgentEvent::ProviderFailoverActivated { .. } => maintenance_event_parts(event),
+        | AgentEvent::LlmRetrying { .. } => maintenance_event_parts(event),
     }
 }
 
@@ -1302,23 +1298,6 @@ fn maintenance_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value,
             false,
         ),
         AgentEvent::LlmRetrying { .. } => llm_retrying_event_parts(event),
-        AgentEvent::ProviderFailoverActivated {
-            from_provider,
-            from_model,
-            to_provider,
-            to_model,
-        } => (
-            TaskEventKind::ProviderFailoverActivated,
-            "Provider failover activated".to_string(),
-            json!({
-                "from_provider": from_provider,
-                "from_model": from_model,
-                "to_provider": to_provider,
-                "to_model": to_model,
-            }),
-            false,
-            false,
-        ),
         _ => unreachable!("maintenance_event_parts called with wrong event"),
     }
 }
@@ -2291,41 +2270,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_events_omits_provider_failover_browser_events() {
-        let event_log = TaskEventLog::new();
-        let (tx, rx) = mpsc::channel(8);
-
-        tx.send(AgentEvent::ProviderFailoverActivated {
-            from_provider: "llm-provider/opencode-go".to_string(),
-            from_model: "mimo-v2.5".to_string(),
-            to_provider: "llm-provider/backup".to_string(),
-            to_model: "backup-model".to_string(),
-        })
-        .await
-        .expect("send provider failover");
-        tx.send(AgentEvent::Finished).await.expect("send finished");
-        drop(tx);
-
-        let result = collect_events(
-            event_log,
-            rx,
-            Some(BrowserEventScope::new(
-                7,
-                "session-1".to_string(),
-                "task-1".to_string(),
-            )),
-            None,
-            None,
-            None,
-        )
-        .await;
-
-        assert_eq!(result.persisted_events.len(), 1);
-        assert_eq!(result.persisted_events[0].kind, TaskEventKind::Finished);
-        assert_eq!(result.persisted_events[0].seq, 1);
-    }
-
-    #[tokio::test]
     async fn collect_events_redacts_sensitive_tool_payload_previews() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
@@ -2650,7 +2594,6 @@ mod tests {
             last_history_repair_status: None,
             latest_token_snapshot: None,
             llm_retry: None,
-            provider_failover_notice: None,
         };
         log.notify_progress(snapshot.clone(), 5).await;
         match rx.recv().await {

@@ -9,7 +9,6 @@ mod hooks;
 mod lazy_tests;
 mod llm_calls;
 mod loop_detection;
-mod model_routes;
 mod response_dispatch;
 mod responses;
 mod runtime_compaction;
@@ -23,9 +22,7 @@ use crate::agent::hooks::HookRegistry;
 use crate::agent::loop_detection::{LoopDetectionConfig, LoopDetectionService};
 use crate::agent::memory::AgentMessage;
 use crate::llm::{LlmClient, Message};
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, timeout};
 
@@ -39,13 +36,6 @@ pub struct AgentRunner {
     hook_registry: HookRegistry,
     loop_detector: Arc<Mutex<LoopDetectionService>>,
     loop_detection_disabled_next_run: bool,
-    route_failover_state: RouteFailoverState,
-}
-
-#[derive(Debug, Default)]
-struct RouteFailoverState {
-    route_quarantine: HashMap<String, Instant>,
-    fallback_cursor: usize,
 }
 
 impl AgentRunner {
@@ -65,7 +55,6 @@ impl AgentRunner {
             hook_registry: HookRegistry::new(),
             loop_detector,
             loop_detection_disabled_next_run: false,
-            route_failover_state: RouteFailoverState::default(),
         }
     }
 
@@ -88,7 +77,6 @@ impl AgentRunner {
     /// Reset internal loop detector state.
     pub fn reset(&mut self) {
         self.loop_detection_disabled_next_run = false;
-        self.route_failover_state = RouteFailoverState::default();
         if let Ok(mut detector) = self.loop_detector.try_lock() {
             detector.reset(String::new());
         }

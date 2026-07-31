@@ -56,7 +56,7 @@ impl HotContextHealthHook {
 
         if hard {
             format!(
-                "{agent_kind} hot context hit the hard limit ({current_tokens}/{threshold_tokens} tokens). A compaction pass is running now. {compress_hint}"
+                "{agent_kind} hot context hit the hard limit ({current_tokens}/{threshold_tokens} tokens). {compress_hint}"
             )
         } else {
             format!(
@@ -95,14 +95,12 @@ impl Hook for HotContextHealthHook {
         let notice = self.build_notice(context, current_tokens, soft_limit, false);
         let hard_limit = self.effective_hard_limit(context);
         if current_tokens >= hard_limit {
-            let hard_notice = self.build_notice(context, current_tokens, hard_limit, true);
-            return HookResult::RequestCompaction {
-                reason: format!(
-                    "Hot context reached the hard threshold ({} >= {} tokens)",
-                    current_tokens, hard_limit
-                ),
-                context: Some(hard_notice),
-            };
+            return HookResult::InjectTransientContext(self.build_notice(
+                context,
+                current_tokens,
+                hard_limit,
+                true,
+            ));
         }
 
         HookResult::InjectTransientContext(notice)
@@ -140,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn hard_limit_requests_compaction() {
+    fn hard_limit_returns_transient_notice() {
         let hook = HotContextHealthHook::new();
 
         let result = hook.handle(
@@ -148,7 +146,7 @@ mod tests {
             &context(85, 100),
         );
 
-        assert!(matches!(result, HookResult::RequestCompaction { .. }));
+        assert!(matches!(result, HookResult::InjectTransientContext(_)));
     }
 
     #[test]

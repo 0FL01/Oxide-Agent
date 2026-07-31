@@ -50,7 +50,7 @@ pub struct AgentSettings {
     pub agent_model_context_window_tokens: Option<u32>,
     /// Agent model temperature override.
     pub agent_model_temperature: Option<f32>,
-    /// Optional weighted fallback routes for the main agent model.
+    /// Ordered model catalog for the main agent; the first entry is the default.
     #[serde(default)]
     pub agent_model_routes: Option<Vec<ModelInfo>>,
 
@@ -62,7 +62,7 @@ pub struct AgentSettings {
     pub sub_agent_max_output_tokens: Option<u32>,
     /// Sub-agent model context window tokens override
     pub sub_agent_context_window_tokens: Option<u32>,
-    /// Optional weighted fallback routes for the sub-agent model.
+    /// Ordered model catalog for sub-agents; the first entry is the default.
     #[serde(default)]
     pub sub_agent_model_routes: Option<Vec<ModelInfo>>,
 
@@ -701,7 +701,6 @@ impl AgentSettings {
             max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
             context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
             provider: "opencode-go".to_string(),
-            weight: 1,
         };
         self.agent_model_id = Some(route.id.clone());
         self.agent_model_provider = Some(route.provider.clone());
@@ -768,7 +767,6 @@ impl AgentSettings {
                 "PROVIDER" => route.provider = Some(value),
                 "MAX_OUTPUT_TOKENS" => route.max_output_tokens = value.parse::<u32>().ok(),
                 "CONTEXT_WINDOW_TOKENS" => route.context_window_tokens = value.parse::<u32>().ok(),
-                "WEIGHT" => route.weight = value.parse::<u32>().ok(),
                 _ => {}
             }
         }
@@ -800,7 +798,6 @@ impl AgentSettings {
             max_output_tokens,
             context_window_tokens,
             provider: provider.to_string(),
-            weight: default_model_route_weight(),
         }
     }
 
@@ -831,7 +828,6 @@ impl AgentSettings {
                         route.context_window_tokens
                     },
                     provider: provider.to_string(),
-                    weight: route.weight.max(1),
                 })
             })
             .collect()
@@ -923,7 +919,7 @@ impl AgentSettings {
         self.agent_model_temperature
     }
 
-    /// Returns the configured weighted routes for the main agent.
+    /// Returns the configured model catalog for the main agent.
     pub fn get_configured_agent_model_routes(&self) -> Vec<ModelInfo> {
         let routes = self
             .agent_model_routes
@@ -954,7 +950,7 @@ impl AgentSettings {
         self.resolve_execution_model(true)
     }
 
-    /// Returns the configured weighted routes for the sub-agent.
+    /// Returns the configured model catalog for sub-agents.
     ///
     /// Falls back to the main-agent routes when no explicit sub-agent model is
     /// configured. Use [`explicit_sub_agent_model_routes`] when you need to
@@ -1387,21 +1383,20 @@ mod tests {
     }
 
     #[test]
-    fn route_provider_validation_rejects_non_compiled_weighted_route() {
+    fn route_provider_validation_rejects_non_compiled_route() {
         let settings = AgentSettings {
             agent_model_routes: Some(vec![ModelInfo {
                 id: "route-model".to_string(),
                 provider: "removed-provider".to_string(),
                 max_output_tokens: 10_000,
                 context_window_tokens: 20_000,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         };
 
         let error = settings
             .validate_route_providers()
-            .expect_err("unknown weighted route provider should fail");
+            .expect_err("unknown route provider should fail");
 
         assert!(
             error
@@ -1461,14 +1456,12 @@ mod tests {
                 provider: "openrouter".to_string(),
                 max_output_tokens: 10_000,
                 context_window_tokens: 20_000,
-                weight: 1,
             }]),
             sub_agent_model_routes: Some(vec![ModelInfo {
                 id: "sub-agent-route".to_string(),
                 provider: "llm-provider/openrouter".to_string(),
                 max_output_tokens: 10_000,
                 context_window_tokens: 20_000,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         };
@@ -1766,7 +1759,6 @@ mod tests {
                 provider: "mock".to_string(),
                 max_output_tokens: 12_000,
                 context_window_tokens: 0,
-                weight: 1,
             }]),
             ..AgentSettings::default()
         };
@@ -1803,12 +1795,10 @@ mod tests {
         test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "anthropic");
         test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
         test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
-        test_set_env("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
         test_set_env("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
         test_set_env("AGENT_MODEL_ROUTES__1__PROVIDER", "openai-base:zai");
         test_set_env("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
         test_set_env("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
-        test_set_env("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
 
         let settings = AgentSettings::new()?;
         let routes = settings.get_configured_agent_model_routes();
@@ -1816,7 +1806,6 @@ mod tests {
 
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0].provider, "llm-provider/anthropic");
-        assert_eq!(routes[0].weight, 10);
         assert_eq!(routes[1].provider, "openai-base:zai");
         assert_eq!(primary.id, "claude-3-5-sonnet");
         assert_eq!(primary.provider, "llm-provider/anthropic");
@@ -1826,12 +1815,10 @@ mod tests {
             "AGENT_MODEL_ROUTES__0__PROVIDER",
             "AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS",
             "AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS",
-            "AGENT_MODEL_ROUTES__0__WEIGHT",
             "AGENT_MODEL_ROUTES__1__ID",
             "AGENT_MODEL_ROUTES__1__PROVIDER",
             "AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS",
             "AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS",
-            "AGENT_MODEL_ROUTES__1__WEIGHT",
             "OPENAI_BASE_PROVIDERS__1__NAME",
             "OPENAI_BASE_PROVIDERS__1__API_BASE",
             "OPENAI_BASE_PROVIDERS__1__API_KEY",
@@ -2220,13 +2207,6 @@ pub struct ModelInfo {
     pub context_window_tokens: u32,
     /// Provider name
     pub provider: String,
-    /// Relative selection weight when used in a fallback route pool.
-    #[serde(default = "default_model_route_weight")]
-    pub weight: u32,
-}
-
-const fn default_model_route_weight() -> u32 {
-    1
 }
 
 #[derive(Debug, Default)]
@@ -2235,7 +2215,6 @@ struct PartialModelRoute {
     provider: Option<String>,
     max_output_tokens: Option<u32>,
     context_window_tokens: Option<u32>,
-    weight: Option<u32>,
 }
 
 impl PartialModelRoute {
@@ -2251,10 +2230,6 @@ impl PartialModelRoute {
             provider,
             max_output_tokens: self.max_output_tokens.unwrap_or_default(),
             context_window_tokens: self.context_window_tokens.unwrap_or_default(),
-            weight: self
-                .weight
-                .unwrap_or_else(default_model_route_weight)
-                .max(1),
         })
     }
 }

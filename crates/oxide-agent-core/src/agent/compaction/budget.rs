@@ -35,7 +35,11 @@ pub fn estimate_request_budget(
     let system_prompt_tokens = estimate_text_tokens(request.system_prompt);
     let tool_schema_tokens = estimate_tool_tokens(request.tools);
     let hot_memory = estimate_hot_memory(agent);
-    let context_window_tokens = agent.memory().max_tokens();
+    let context_window_tokens = if request.context_window_tokens == 0 {
+        agent.memory().max_tokens()
+    } else {
+        request.context_window_tokens as usize
+    };
     let reserved_output_tokens = 0;
     let hard_reserve_tokens = policy.hard_reserve_tokens;
     let total_input_tokens = system_prompt_tokens
@@ -133,11 +137,25 @@ fn estimate_tool_tokens(tools: &[ToolDefinition]) -> usize {
 }
 
 pub(crate) fn estimate_message_tokens(message: &AgentMessage) -> usize {
-    let reasoning_tokens = message.reasoning.as_deref().map_or(0, estimate_text_tokens);
-    estimate_text_tokens(&message.content).saturating_add(reasoning_tokens)
+    let mut tokens = estimate_text_tokens(&message.content);
+    if let Some(reasoning) = message.reasoning.as_deref() {
+        tokens = tokens.saturating_add(estimate_text_tokens(reasoning));
+    }
+    if let Some(correlation) = message.resolved_tool_call_correlation() {
+        tokens = tokens.saturating_add(estimate_text_tokens(correlation.wire_tool_call_id()));
+    }
+    if let Some(name) = message.tool_name.as_deref() {
+        tokens = tokens.saturating_add(estimate_text_tokens(name));
+    }
+    if let Some(tool_calls) = message.tool_calls.as_ref() {
+        tokens = tokens.saturating_add(estimate_json_tokens(
+            &serde_json::to_value(tool_calls).unwrap_or(serde_json::Value::Null),
+        ));
+    }
+    tokens
 }
 
-fn estimate_rendered_messages_tokens(messages: &[Message]) -> usize {
+pub(crate) fn estimate_rendered_messages_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_rendered_message_tokens).sum()
 }
 
@@ -228,6 +246,7 @@ mod tests {
             &tools,
             "demo-model",
             512,
+            0,
             false,
         );
 
@@ -274,6 +293,7 @@ mod tests {
             &[],
             "demo-model",
             512,
+            0,
             false,
         );
 
@@ -322,6 +342,7 @@ mod tests {
             &[],
             "demo-model",
             512,
+            0,
             false,
         );
 

@@ -141,8 +141,8 @@ impl AgentRunner {
     fn missing_tool_runtime_registry_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
         anyhow!(
             "tool runtime registry is required for active tool calls; current provider={}, model={}",
-            ctx.config.model_provider.as_deref().unwrap_or("unknown"),
-            ctx.config.model_name,
+            ctx.config.model.provider,
+            ctx.config.model.id,
         )
     }
 
@@ -158,8 +158,8 @@ impl AgentRunner {
             .and_then(Result::ok)
         {
             warn!(
-                model = %ctx.config.model_name,
-                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                model = %ctx.config.model.id,
+                provider = %ctx.config.model.provider,
                 "Model returned structured-output JSON while structured output was disabled; applying fallback parser"
             );
 
@@ -244,8 +244,8 @@ impl AgentRunner {
                     finish_reason,
                     content_len,
                     tool_calls = response.tool_calls.len(),
-                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
-                    model = %ctx.config.model_name,
+                    provider = %ctx.config.model.provider,
+                    model = %ctx.config.model.id,
                     "LLM response truncated by provider (finish_reason=length)"
                 );
             } else {
@@ -290,16 +290,16 @@ impl AgentRunner {
                 && !reasoning.trim().is_empty()
             {
                 warn!(
-                    model = %ctx.config.model_name,
-                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    model = %ctx.config.model.id,
+                    provider = %ctx.config.model.provider,
                     reasoning_len = reasoning.len(),
                     "Model returned empty content with non-empty reasoning; promoting reasoning to content"
                 );
                 response.content = Some(reasoning);
             } else {
                 warn!(
-                    model = %ctx.config.model_name,
-                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    model = %ctx.config.model.id,
+                    provider = %ctx.config.model.provider,
                     "Model returned empty content"
                 );
             }

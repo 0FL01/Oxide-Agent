@@ -975,7 +975,6 @@ mod tests {
             provider: "openrouter".to_string(),
             max_output_tokens: 1024,
             context_window_tokens: 8192,
-            weight: 1,
         };
 
         let response = llm
@@ -1026,7 +1025,6 @@ mod tests {
             provider: "openrouter".to_string(),
             max_output_tokens: 1024,
             context_window_tokens: 8192,
-            weight: 1,
         };
 
         let response = llm

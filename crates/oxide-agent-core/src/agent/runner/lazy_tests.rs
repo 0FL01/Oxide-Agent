@@ -193,13 +193,12 @@ fn build_lazy_runner_context<'a>(
         storage: None,
         config: RunnerConfig::new("deepseek-v4-flash".to_string(), 5, 1, 30, 1024)
             .with_model_provider("opencode-go")
-            .with_model_routes(vec![ModelInfo {
+            .with_model(ModelInfo {
                 id: "deepseek-v4-flash".to_string(),
                 provider: "opencode-go".to_string(),
                 max_output_tokens: 1024,
                 context_window_tokens: 8192,
-                weight: 1,
-            }]),
+            }),
     };
     ctx = ctx.with_tool_surface(catalog, handle);
     ctx

@@ -3342,7 +3342,6 @@ async fn api_task_progress_is_auth_scoped_and_reads_persisted_snapshot() {
         last_history_repair_status: Some("History repaired".to_string()),
         latest_token_snapshot: None,
         llm_retry: Some(serde_json::json!({ "attempt": 2 })),
-        provider_failover_notice: Some("Failover: primary -> backup".to_string()),
     });
     state.web_store.save_task(task).await.expect("save task");
 
@@ -3362,10 +3361,6 @@ async fn api_task_progress_is_auth_scoped_and_reads_persisted_snapshot() {
         serde_json::json!([])
     );
     assert_eq!(progress.llm_retry.expect("retry snapshot")["attempt"], 2);
-    assert_eq!(
-        progress.provider_failover_notice.as_deref(),
-        Some("Failover: primary -> backup")
-    );
 
     let foreign = api_get_task_progress(
         axum::extract::State(state),
@@ -3427,7 +3422,6 @@ async fn live_progress_persister_updates_running_task_record() {
         provider: "mock".to_string(),
         error_class: Some("rate_limit".to_string()),
     });
-    progress.provider_failover_notice = Some("Failover: mock:a -> mock:b".to_string());
     tx.send(progress).expect("send live progress");
 
     let snapshot = wait_for_persisted_progress(&state, user_id, session_id, task_id).await;
@@ -3441,10 +3435,6 @@ async fn live_progress_persister_updates_running_task_record() {
         "Persist progress"
     );
     assert_eq!(snapshot.llm_retry.expect("retry persisted")["attempt"], 2);
-    assert_eq!(
-        snapshot.provider_failover_notice.as_deref(),
-        Some("Failover: mock:a -> mock:b")
-    );
 
     drop(tx);
     handle.await.expect("live progress persister joins");
@@ -4568,7 +4558,6 @@ fn test_app_state_with_llm_provider(
             provider: "opencode_go".to_string(),
             max_output_tokens: 32_000,
             context_window_tokens: 200_000,
-            weight: 1,
         }]),
         ..AgentSettings::default()
     });

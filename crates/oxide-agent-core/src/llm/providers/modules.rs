@@ -507,7 +507,6 @@ mod tests {
             provider: "llm-provider/opencode-go".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
-            weight: 1,
         };
 
         let capabilities =
@@ -533,7 +532,6 @@ mod tests {
                 provider: "llm-provider/openrouter".to_string(),
                 max_output_tokens: 4096,
                 context_window_tokens: 128_000,
-                weight: 1,
             };
 
             let capabilities = super::provider_vision_capabilities_for_model(&route)

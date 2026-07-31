@@ -257,11 +257,11 @@ The function name `refresh_messages_from_memory` was retained (not renamed to `r
 ### Rendered context metrics
 
 - `rendered_messages()` (`memory.rs:858`): full `Vec<Message>` from raw + state.
-- `rendered_token_count()` (`memory.rs:873`): token count of rendered output (may be smaller than raw `token_count()` when blocks are active).
+- `rendered_token_count()` (`memory.rs:872`): full model-facing estimate for rendered output, including content, reasoning, tool-call correlation IDs, tool names, and serialized tool calls. It may be smaller than raw context after blocks become active.
 - `rendered_item_count()` (`memory.rs:894`): item count of rendered output.
 - `compaction_state()` / `compaction_state_mut()` (`memory.rs:900-907`): read/write access to the overlay state.
 
-When `CompactionState` is empty, all three are identical to their raw-memory counterparts (identity rendering).
+When `CompactionState` is empty, rendered messages and item count are identity-equivalent to raw memory. The rendered token estimate can exceed the legacy raw text-only counter because it includes provider-facing tool metadata.
 
 ## 6. As-Built Architecture — Component Boundaries
 
@@ -291,13 +291,14 @@ When `CompactionState` is empty, all three are identical to their raw-memory cou
 │ (ctx.messages =     │    │ Controller     │
 │  rendered context)  │    │ compact_via_   │
 └─────────────────────┘    │ engine()       │
-                            └───────────────┘
-                                    ▲
-           ┌────────────────────────┴──────────────────────┐
-           │ All trigger paths                             │
-           │ (pre-sampling, context-limit,                 │
-           │  model-downshift, manual, compress tool)      │
-           └───────────────────────────────────────────────┘
+                             └───────────────┘
+                                     ▲
+            ┌────────────────────────┴──────────────────────┐
+            │ Automatic pre-sampling/context-limit and      │
+            │ transport operator triggers                   │
+            └───────────────────────────────────────────────┘
+
+Agent `compress` tool ── selection + summary ──► CompactionEngine
 
 ┌──────────────────────┐
 │ ContextAdmission     │  (stateless gate, not through engine)
@@ -329,7 +330,7 @@ pub fn apply_compression(
 
 ```rust
 pub async fn compact_via_engine(
-    &mut self,
+    &self,
     memory: &mut AgentMemory,
     route: &ModelInfo,
     task: &str,
@@ -337,7 +338,6 @@ pub async fn compact_via_engine(
     system_prompt: &str,
     reason: CompactionReason,
     phase: CompactionPhase,
-    force: bool,
 ) -> Result<EngineCompactionResult, CompactionControllerError>
 ```
 
@@ -346,9 +346,9 @@ pub async fn compact_via_engine(
 ```rust
 pub enum CompactionTrigger { PreRun, PreIteration, Manual }
 
-pub enum CompactionReason { PreTurn, MidTurn, Manual, ContextLimit, ModelDownshift }
+pub enum CompactionReason { PreTurn, MidTurn, Manual, ContextLimit }
 
-pub enum CompactionPhase { PreSampling, MidTurn, Manual, ModelSwitch }
+pub enum CompactionPhase { PreSampling, MidTurn, Manual }
 
 pub enum CompactionBackend { LocalLlmSummary }  // single-variant, retained
 
@@ -362,12 +362,10 @@ pub enum BudgetState { Healthy, Warning, ShouldCompact, OverLimit }
 | Context admission | `ContextAdmission::evaluate` (stateless gate) | `AdmissionDecision` (Inline/Manifest/ControlledPause) — **not through engine**, gate runs before `add_message` | — |
 | Pre-LLM budget | `maybe_run_runtime_pre_sampling_compaction` (`runtime_compaction.rs:40`) | `run_engine_compaction` → `compact_via_engine` | `PreTurn`/`MidTurn` / `PreSampling` |
 | Agent compress | `compress` tool → `apply_compress_through_engine` (`tools.rs:474`) | `CompactionEngine::apply_compression` directly (`tools.rs:506`) | — |
-| User/manual (runner) | `run_manual_compaction_checkpoint` (`runtime_compaction.rs:22`) | `run_engine_compaction` → `compact_via_engine` | `Manual` / `Manual` |
 | User/manual (transport) | `compact_current_context` (`executor/compaction.rs:14`) | `compact_via_engine` directly (`executor/compaction.rs:50`) | `Manual` / `Manual` |
-| Model downshift | `maybe_run_runtime_model_downshift_compaction` (`runtime_compaction.rs:84`) | `run_engine_compaction` → `compact_via_engine` | `ModelDownshift` / `ModelSwitch` |
 | Typed overflow | `error.is_context_overflow()` (`llm_calls.rs:578`) | `run_runtime_context_limit_compaction` → `run_engine_compaction` | `ContextLimit` / `MidTurn` |
 
-All compaction paths produce a `CompactionState` transition via `CompactionEngine::apply_compression`. The renderer then renders from the updated state on the next `refresh_messages_from_memory` call.
+The runner is the sole owner of the automatic threshold and evaluates the full rendered request against the active model context window. The controller performs no second budget decision; it only selects, summarizes, and applies. `HotContextHealthHook` is warning-only. All successful compaction paths produce a `CompactionState` transition via `CompactionEngine::apply_compression`, then the renderer rebuilds model-facing messages.
 
 **Deviation from Phase 0 design**: the original trigger matrix proposed separate engine methods (`admit_payload`, `compact_for_budget`, `compact_on_demand`, `emergency_shrink`). None of these exist. The actual API is simpler: one engine method (`apply_compression`) + one controller orchestrator (`compact_via_engine`) + one stateless admission gate (`ContextAdmission::evaluate`).
 

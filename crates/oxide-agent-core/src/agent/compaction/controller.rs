@@ -4,7 +4,7 @@ use super::refs::BlockRef;
 use super::{
     CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactionEngine,
     CompactionPhase, CompactionPolicy, CompactionReason, LocalLlmSummary, SummaryPart, auto_select,
-    count_tokens_cached,
+    count_tokens_cached, estimate_rendered_messages_tokens,
 };
 use crate::agent::memory::{AgentMemory, AgentMessage};
 use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, ModelInfo};
@@ -97,13 +97,9 @@ impl CompactionController {
 
     /// Run engine-based automatic compaction.
     ///
-    /// This is the unified path for all automatic triggers (pre-sampling,
-    /// context-limit, model-downshift, hook/manual). It selects a compressible
-    /// range, generates an LLM summary, and applies through `CompactionEngine`,
-    /// creating a block in `CompactionState` without destroying raw memory.
-    ///
-    /// When `force` is `false`, the budget threshold is checked first — if the
-    /// rendered context is within budget, compaction is skipped.
+    /// The caller owns trigger policy. This method selects a compressible range,
+    /// generates an LLM summary, and applies through `CompactionEngine`, creating
+    /// a block in `CompactionState` without destroying raw memory.
     pub async fn compact_via_engine(
         &self,
         memory: &mut AgentMemory,
@@ -113,7 +109,6 @@ impl CompactionController {
         system_prompt: &str,
         reason: CompactionReason,
         phase: CompactionPhase,
-        force: bool,
     ) -> Result<EngineCompactionResult, CompactionControllerError> {
         let policy = CompactionPolicy::default();
         let context_window = if route.context_window_tokens == 0 {
@@ -121,29 +116,6 @@ impl CompactionController {
         } else {
             route.context_window_tokens as usize
         };
-
-        // Budget threshold check (skip if not forced and within budget).
-        if !force {
-            let system_prompt_tokens = count_tokens_cached(system_prompt);
-            let tool_tokens = tool_schema_tokens(tools);
-            let hot_memory_tokens = memory.rendered_token_count();
-            let projected_total = system_prompt_tokens
-                .saturating_add(tool_tokens)
-                .saturating_add(hot_memory_tokens)
-                .saturating_add(policy.hard_reserve_tokens);
-            let compact_threshold =
-                context_window.saturating_mul(policy.compact_threshold_percent as usize) / 100;
-            let over_limit_threshold =
-                context_window.saturating_mul(policy.over_limit_threshold_percent as usize) / 100;
-
-            if projected_total < compact_threshold && projected_total < over_limit_threshold {
-                return Ok(EngineCompactionResult::Skipped(EngineCompactionSkipped {
-                    reason,
-                    phase,
-                    skipped_reason: "Context is within budget threshold".to_string(),
-                }));
-            }
-        }
 
         // Compute target token budget for the recent tail.
         let system_prompt_tokens = count_tokens_cached(system_prompt);
@@ -265,16 +237,9 @@ fn rendered_token_count_for_state(
     messages: &[AgentMessage],
     state: &super::CompactionState,
 ) -> usize {
-    super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default())
-        .iter()
-        .map(|message| {
-            let mut tokens = count_tokens_cached(&message.content);
-            if let Some(reasoning) = message.reasoning_content.as_deref() {
-                tokens = tokens.saturating_add(count_tokens_cached(reasoning));
-            }
-            tokens
-        })
-        .sum()
+    let rendered =
+        super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default());
+    estimate_rendered_messages_tokens(&rendered)
 }
 
 fn rendered_item_count_for_state(
@@ -476,7 +441,6 @@ mod tests {
             provider: "mock".to_string(),
             max_output_tokens: 512,
             context_window_tokens,
-            weight: 1,
         }
     }
 
@@ -534,7 +498,6 @@ mod tests {
                 "system prompt",
                 CompactionReason::Manual,
                 CompactionPhase::Manual,
-                true,
             )
             .await
             .expect("compaction succeeds");
@@ -577,7 +540,6 @@ mod tests {
                 "system prompt",
                 CompactionReason::Manual,
                 CompactionPhase::Manual,
-                true,
             )
             .await
             .expect("compaction call succeeds");

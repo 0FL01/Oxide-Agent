@@ -1,4 +1,4 @@
-//! LLM calling, retry, failover, and history repair helpers.
+//! LLM calling, retry, and history repair helpers.
 
 use super::AgentRunner;
 use super::types::{AgentRunnerContext, RunState};
@@ -15,7 +15,6 @@ use crate::llm::{
 };
 use crate::sandbox::SandboxFileOps;
 use anyhow::{Result, anyhow};
-use std::time::Duration;
 use tracing::{debug, info, warn};
 
 const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
@@ -23,7 +22,6 @@ const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 enum AttemptOutcome {
     Return(ChatResponse),
     RetrySameRoute,
-    FailoverToNextRoute(LlmError),
 }
 
 #[derive(Clone, Copy)]
@@ -253,9 +251,8 @@ impl AgentRunner {
                 target: AGENT_LATENCY_TARGET,
                 task_id = %ctx.task_id,
                 iteration,
-                model = %ctx.config.model_name,
-                provider = ?ctx.config.model_provider,
-                route_count = ctx.config.model_routes.len(),
+                model = %ctx.config.model.id,
+                provider = %ctx.config.model.provider,
                 "Agent first LLM call starting"
             );
             if let Some(tx) = ctx.progress_tx {
@@ -269,13 +266,7 @@ impl AgentRunner {
             }
         }
 
-        if ctx.config.model_routes.is_empty() {
-            return self
-                .call_llm_with_tools_single_route(ctx, state, iteration)
-                .await;
-        }
-
-        self.call_llm_with_tools_with_failover(ctx, state, iteration)
+        self.call_llm_with_tools_single_route(ctx, state, iteration)
             .await
     }
 
@@ -286,18 +277,16 @@ impl AgentRunner {
         iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
-        let provider_name = ctx
-            .config
-            .model_provider
-            .clone()
-            .or_else(|| {
-                self.llm_client
-                    .get_provider_name(&ctx.config.model_name)
-                    .ok()
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-        let model_name = ctx.config.model_name.clone();
-        let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
+        let mut model_info = ctx.config.model.clone();
+        let provider_name = if model_info.provider.is_empty() {
+            self.llm_client.get_provider_name(&model_info.id)?
+        } else {
+            model_info.provider.clone()
+        };
+        if model_info.provider.is_empty() {
+            model_info.provider.clone_from(&provider_name);
+        }
+        let model_name = model_info.id.clone();
         let json_mode = Self::structured_output_required_for_model(&model_info);
         let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
 
@@ -346,14 +335,15 @@ impl AgentRunner {
                 provider_name.as_str(),
                 model_name.as_str(),
             );
+            let request_model = Self::route_with_soft_output_cap(ctx, &model_info);
             let result = self
                 .llm_client
-                .chat_with_tools_single_attempt(
+                .chat_with_tools_single_attempt_for_model_info(
                     ctx.system_prompt,
                     ctx.date_suffix,
                     ctx.messages,
                     &ctx.tools,
-                    &ctx.config.model_name,
+                    &request_model,
                     ctx.config.temperature,
                     json_mode,
                     ctx.config.reasoning_effort.as_deref(),
@@ -381,151 +371,6 @@ impl AgentRunner {
                 AttemptOutcome::RetrySameRoute => {
                     attempt = attempt.saturating_add(1);
                     continue;
-                }
-                AttemptOutcome::FailoverToNextRoute(_) => {
-                    unreachable!("single-route path has no failover route")
-                }
-            }
-        }
-    }
-
-    async fn call_llm_with_tools_with_failover(
-        &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        state: &mut RunState,
-        iteration: usize,
-    ) -> Result<ChatResponse> {
-        let max_retries = LlmClient::MAX_RETRIES;
-
-        let mut exhausted_routes = std::collections::HashSet::new();
-        let mut pending_failover_from: Option<ModelInfo> = None;
-        let mut last_route_error: Option<LlmError> = None;
-
-        loop {
-            let Some(route_index) = self.select_model_route_index(ctx, &exhausted_routes) else {
-                let error = last_route_error.unwrap_or_else(|| {
-                    LlmError::unknown("No healthy model routes available".to_string())
-                });
-                Self::emit_llm_error(ctx.progress_tx, &error).await;
-                return Err(anyhow!("LLM call failed: {error}"));
-            };
-
-            let route = ctx.config.model_routes[route_index].clone();
-            let failover_from = pending_failover_from.take();
-            if let Some(from_route) = failover_from.as_ref() {
-                Self::emit_provider_failover(ctx.progress_tx, from_route, &route).await;
-            }
-            let previous_route_for_downshift = failover_from
-                .clone()
-                .or_else(|| (route_index != 0).then(|| ctx.config.model_routes[0].clone()));
-
-            ctx.config.model_name = route.id.clone();
-            ctx.config.model_max_output_tokens = route.max_output_tokens;
-            ctx.config.model_provider = Some(route.provider.clone());
-
-            let json_mode = Self::structured_output_required_for_model(&route);
-            let provider_name = route.provider.clone();
-            let capabilities = LlmClient::provider_capabilities_for_model(&route);
-
-            Self::log_llm_route_selected(
-                ctx,
-                state,
-                route_index,
-                route.provider.as_str(),
-                route.id.as_str(),
-                json_mode,
-            );
-
-            if !capabilities.can_run_agent_tools()
-                || !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode)
-            {
-                let error = LlmError::api_error(format!(
-                    "Tool-enabled agent calls are not supported for {} model `{}`",
-                    route.provider, route.id
-                ));
-                warn!(
-                    provider = route.provider,
-                    model = route.id,
-                    "Skipping model route due to unsupported tool capabilities"
-                );
-                exhausted_routes.insert(Self::route_key(&route));
-                pending_failover_from = Some(route.clone());
-                last_route_error = Some(error);
-                continue;
-            }
-
-            if let Some(previous_route) = previous_route_for_downshift {
-                self.maybe_run_runtime_model_downshift_compaction(
-                    ctx,
-                    state,
-                    &previous_route,
-                    &route,
-                )
-                .await?;
-            }
-
-            self.maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration, &route)
-                .await?;
-
-            let mut attempt = 1usize;
-            loop {
-                let attempt_max_retries = max_retries.max(attempt);
-                Self::refresh_messages_for_route(ctx, &route).await;
-                Self::log_llm_route_attempt_started(
-                    ctx,
-                    state,
-                    attempt,
-                    attempt_max_retries,
-                    Some(route_index),
-                    route.provider.as_str(),
-                    route.id.as_str(),
-                );
-                let request_route = Self::route_with_soft_output_cap(ctx, &route);
-                let result = self
-                    .llm_client
-                    .chat_with_tools_single_attempt_for_model_info(
-                        ctx.system_prompt,
-                        ctx.date_suffix,
-                        ctx.messages,
-                        &ctx.tools,
-                        &request_route,
-                        ctx.config.temperature,
-                        json_mode,
-                        ctx.config.reasoning_effort.as_deref(),
-                    )
-                    .await;
-
-                let attempt_result = self
-                    .handle_llm_attempt_result(
-                        ctx,
-                        state,
-                        LlmAttemptMetadata {
-                            provider_name: &provider_name,
-                            model_name: &route.id,
-                            route: &route,
-                            route_index: Some(route_index),
-                            capabilities,
-                            attempt,
-                            max_retries: attempt_max_retries,
-                        },
-                        result,
-                    )
-                    .await?;
-                match attempt_result {
-                    AttemptOutcome::Return(response) => return Ok(response),
-                    AttemptOutcome::RetrySameRoute => {
-                        attempt = attempt.saturating_add(1);
-                        continue;
-                    }
-                    AttemptOutcome::FailoverToNextRoute(error) => {
-                        let quarantine_for =
-                            Self::rate_limit_quarantine_duration(&error, max_retries);
-                        self.quarantine_model_route(&route, quarantine_for);
-                        exhausted_routes.insert(Self::route_key(&route));
-                        pending_failover_from = Some(route.clone());
-                        last_route_error = Some(error);
-                        break;
-                    }
                 }
             }
         }
@@ -654,10 +499,6 @@ impl AgentRunner {
                     return Ok(AttemptOutcome::RetrySameRoute);
                 }
 
-                if LlmClient::is_rate_limit_error(&error) && !ctx.config.model_routes.is_empty() {
-                    return Ok(AttemptOutcome::FailoverToNextRoute(error));
-                }
-
                 Self::emit_llm_error(ctx.progress_tx, &error).await;
                 Err(anyhow!("LLM call failed: {error}"))
             }
@@ -722,10 +563,6 @@ impl AgentRunner {
         true
     }
 
-    fn rate_limit_quarantine_duration(error: &LlmError, attempt: usize) -> Duration {
-        LlmClient::get_retry_delay(error, attempt).unwrap_or_else(|| Duration::from_secs(60))
-    }
-
     async fn emit_llm_error(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         error: &LlmError,
@@ -753,23 +590,6 @@ impl AgentRunner {
                     unbounded,
                     wait_secs,
                     provider: provider.to_string(),
-                })
-                .await;
-        }
-    }
-
-    async fn emit_provider_failover(
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        from_route: &ModelInfo,
-        to_route: &ModelInfo,
-    ) {
-        if let Some(tx) = progress_tx {
-            let _ = tx
-                .send(AgentEvent::ProviderFailoverActivated {
-                    from_provider: from_route.provider.clone(),
-                    from_model: from_route.id.clone(),
-                    to_provider: to_route.provider.clone(),
-                    to_model: to_route.id.clone(),
                 })
                 .await;
         }
@@ -938,6 +758,7 @@ impl AgentRunner {
             &ctx.tools,
             &route.id,
             route.max_output_tokens,
+            route.context_window_tokens,
             ctx.config.is_sub_agent,
         );
         let budget = estimate_request_budget(&policy, &request, ctx.agent);
@@ -969,6 +790,39 @@ impl AgentRunner {
             "opencode-go" | "opencode_go"
         )
     }
+
+    pub(super) fn json_mode_forbids_route(json_mode: bool, route: &ModelInfo) -> bool {
+        json_mode
+            && matches!(
+                route.provider.trim().to_ascii_lowercase().as_str(),
+                "chatgpt" | "openai-chatgpt" | "llm-provider/openai-chatgpt"
+            )
+    }
+
+    pub(super) fn structured_output_required_for_config(
+        &self,
+        config: &super::types::AgentRunnerConfig,
+    ) -> bool {
+        if !config.model.provider.is_empty() {
+            return Self::structured_output_required_for_model(&config.model);
+        }
+
+        match self.llm_client.get_model_info(&config.model.id) {
+            Ok(model) => Self::structured_output_required_for_model(&model),
+            Err(error) => {
+                warn!(
+                    model = config.model.id,
+                    error = %error,
+                    "Failed to resolve model info; defaulting to structured output"
+                );
+                true
+            }
+        }
+    }
+
+    pub(super) fn structured_output_required_for_model(model_info: &ModelInfo) -> bool {
+        LlmClient::supports_structured_output_for_model(model_info)
+    }
 }
 
 #[cfg(test)]
@@ -981,10 +835,9 @@ mod tests {
     use super::*;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
-    use crate::agent::progress::AgentEvent;
     use crate::agent::runner::test_support::{
-        build_llm_client, collect_progress_events, final_structured_response,
-        single_final_response_provider, stub_non_chat_methods,
+        build_llm_client, final_structured_response, single_final_response_provider,
+        stub_non_chat_methods,
     };
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, AgentSettings, ModelInfo};
@@ -1036,7 +889,6 @@ mod tests {
             provider: provider.to_string(),
             max_output_tokens: 256,
             context_window_tokens: 128_000,
-            weight: 1,
         }
     }
 
@@ -1399,7 +1251,6 @@ mod tests {
             provider: "mock".to_string(),
             max_output_tokens: 200_000,
             context_window_tokens: 200_000,
-            weight: 1,
         };
 
         let capped = AgentRunner::route_with_soft_output_cap(&ctx, &route);
@@ -1502,7 +1353,7 @@ mod tests {
 
     #[cfg(oxide_module_llm_provider_opencode_go)]
     #[tokio::test]
-    async fn run_fails_over_to_weighted_backup_after_persistent_rate_limits() {
+    async fn run_does_not_switch_model_after_persistent_rate_limits() {
         let mut primary = MockLlmProvider::new();
         primary
             .expect_chat_with_tools()
@@ -1516,10 +1367,7 @@ mod tests {
         stub_non_chat_methods(&mut primary);
 
         let mut backup = MockLlmProvider::new();
-        backup
-            .expect_chat_with_tools()
-            .times(1)
-            .return_once(|_| Ok(final_structured_response()));
+        backup.expect_chat_with_tools().times(0);
         stub_non_chat_methods(&mut backup);
 
         let settings = AgentSettings {
@@ -1537,23 +1385,22 @@ mod tests {
         let mut session = EphemeralSession::new(20_000);
         session
             .memory_mut()
-            .add_message(AgentMessage::user_task("Fail over after persistent 429"));
+            .add_message(AgentMessage::user_task("Stop after persistent 429"));
 
         let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
         let mut ctx = AgentRunnerContext {
-            task: "Fail over after persistent 429",
+            task: "Stop after persistent 429",
             system_prompt: "system prompt",
             date_suffix: "",
             tools,
             tool_catalog: None,
             tool_surface_handle: None,
             tool_runtime_registry: None,
-            progress_tx: Some(&progress_tx),
+            progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "runner-provider-failover",
+            task_id: "runner-no-provider-failover",
             messages: &mut messages,
             agent: &mut session,
             compaction_controller: None,
@@ -1562,44 +1409,18 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")
-                .with_model_routes(vec![
-                    ModelInfo {
-                        id: "deepseek-v4-pro".to_string(),
-                        max_output_tokens: 256,
-                        context_window_tokens: 128_000,
-                        provider: "llm-provider/opencode-go".to_string(),
-                        weight: 1,
-                    },
-                    ModelInfo {
-                        id: "deepseek-v4-flash".to_string(),
-                        max_output_tokens: 256,
-                        context_window_tokens: 128_000,
-                        provider: "opencode-go".to_string(),
-                        weight: 3,
-                    },
-                ]),
+                .with_model(ModelInfo {
+                    id: "deepseek-v4-pro".to_string(),
+                    max_output_tokens: 256,
+                    context_window_tokens: 128_000,
+                    provider: "llm-provider/opencode-go".to_string(),
+                }),
         };
 
-        let result = runner.run(&mut ctx).await.expect("runner succeeds");
-        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
-
-        drop(ctx);
-        drop(progress_tx);
-        let events = collect_progress_events(&mut progress_rx).await;
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                AgentEvent::ProviderFailoverActivated {
-                    from_provider,
-                    from_model,
-                    to_provider,
-                    to_model,
-                } if from_provider == "llm-provider/opencode-go"
-                    && from_model == "deepseek-v4-pro"
-                    && to_provider == "opencode-go"
-                    && to_model == "deepseek-v4-flash"
-            )
-        }));
+        assert!(
+            runner.run(&mut ctx).await.is_err(),
+            "persistent rate limits must surface without switching models"
+        );
     }
 
     #[cfg(oxide_module_llm_provider_opencode_go)]
@@ -1648,7 +1469,6 @@ mod tests {
         let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
         let mut ctx = AgentRunnerContext {
             task: "Stay on primary when it wakes up",
             system_prompt: "system prompt",
@@ -1657,7 +1477,7 @@ mod tests {
             tool_catalog: None,
             tool_surface_handle: None,
             tool_runtime_registry: None,
-            progress_tx: Some(&progress_tx),
+            progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-primary-recovery",
             messages: &mut messages,
@@ -1668,34 +1488,15 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")
-                .with_model_routes(vec![
-                    ModelInfo {
-                        id: "deepseek-v4-pro".to_string(),
-                        max_output_tokens: 256,
-                        context_window_tokens: 128_000,
-                        provider: "llm-provider/opencode-go".to_string(),
-                        weight: 1,
-                    },
-                    ModelInfo {
-                        id: "deepseek-v4-flash".to_string(),
-                        max_output_tokens: 256,
-                        context_window_tokens: 128_000,
-                        provider: "opencode-go".to_string(),
-                        weight: 2,
-                    },
-                ]),
+                .with_model(ModelInfo {
+                    id: "deepseek-v4-pro".to_string(),
+                    max_output_tokens: 256,
+                    context_window_tokens: 128_000,
+                    provider: "llm-provider/opencode-go".to_string(),
+                }),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
         assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
-
-        drop(ctx);
-        drop(progress_tx);
-        let events = collect_progress_events(&mut progress_rx).await;
-        assert!(
-            !events
-                .iter()
-                .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) })
-        );
     }
 }

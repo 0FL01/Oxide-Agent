@@ -1,7 +1,7 @@
 //! Runtime compaction orchestration for the agent runner.
 //!
-//! All automatic triggers (pre-sampling, context-limit, model-downshift,
-//! hook/manual) go through `CompactionController::compact_via_engine`, which
+//! Automatic pre-sampling and context-limit triggers go through
+//! `CompactionController::compact_via_engine`, which
 //! selects a compressible range, generates an LLM summary, and applies through
 //! `CompactionEngine` — creating a block in `CompactionState` without destroying
 //! raw memory. The renderer overlays the block at LLM call time.
@@ -10,33 +10,14 @@ use super::AgentRunner;
 use super::types::{AgentRunnerContext, RunState};
 use crate::agent::compaction::{
     BudgetState, CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest,
-    CompactionTrigger, EngineCompactionResult, count_tokens_cached, estimate_request_budget,
+    CompactionTrigger, EngineCompactionResult, estimate_request_budget,
 };
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind};
 use crate::config::ModelInfo;
-use crate::llm::LlmClient;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tracing::warn;
 
 impl AgentRunner {
-    pub(super) async fn run_manual_compaction_checkpoint(
-        &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        state: &mut RunState,
-    ) -> Result<()> {
-        let route = Self::primary_runtime_route(ctx, &self.llm_client)?;
-        self.run_engine_compaction(
-            ctx,
-            state,
-            &route,
-            CompactionReason::Manual,
-            CompactionPhase::Manual,
-            true,
-        )
-        .await?;
-        Ok(())
-    }
-
     pub(super) async fn maybe_run_runtime_pre_sampling_compaction(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -53,15 +34,8 @@ impl AgentRunner {
         } else {
             CompactionReason::MidTurn
         };
-        self.run_engine_compaction(
-            ctx,
-            state,
-            route,
-            reason,
-            CompactionPhase::PreSampling,
-            false,
-        )
-        .await
+        self.run_engine_compaction(ctx, state, route, reason, CompactionPhase::PreSampling)
+            .await
     }
 
     pub(super) async fn run_runtime_context_limit_compaction(
@@ -76,29 +50,6 @@ impl AgentRunner {
             route,
             CompactionReason::ContextLimit,
             CompactionPhase::MidTurn,
-            true,
-        )
-        .await
-    }
-
-    pub(super) async fn maybe_run_runtime_model_downshift_compaction(
-        &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        state: &mut RunState,
-        previous_route: &ModelInfo,
-        next_route: &ModelInfo,
-    ) -> Result<bool> {
-        if !Self::model_downshift_requires_compaction(ctx, previous_route, next_route) {
-            return Ok(false);
-        }
-
-        self.run_engine_compaction(
-            ctx,
-            state,
-            next_route,
-            CompactionReason::ModelDownshift,
-            CompactionPhase::ModelSwitch,
-            true,
         )
         .await
     }
@@ -114,6 +65,7 @@ impl AgentRunner {
             &ctx.tools,
             &route.id,
             route.max_output_tokens,
+            route.context_window_tokens,
             ctx.config.is_sub_agent,
         );
         let budget = estimate_request_budget(&CompactionPolicy::default(), &request, ctx.agent);
@@ -121,70 +73,6 @@ impl AgentRunner {
             budget.state,
             BudgetState::ShouldCompact | BudgetState::OverLimit
         )
-    }
-
-    fn model_downshift_requires_compaction(
-        ctx: &AgentRunnerContext<'_>,
-        previous_route: &ModelInfo,
-        next_route: &ModelInfo,
-    ) -> bool {
-        let previous_window = previous_route.context_window_tokens;
-        let next_window = next_route.context_window_tokens;
-        if previous_window == 0 || next_window == 0 || next_window >= previous_window {
-            return false;
-        }
-
-        let projected_total = Self::projected_total_tokens_for_route(ctx);
-        projected_total > next_window as usize
-    }
-
-    fn projected_total_tokens_for_route(ctx: &AgentRunnerContext<'_>) -> usize {
-        let policy = CompactionPolicy::default();
-        count_tokens_cached(ctx.system_prompt)
-            .saturating_add(Self::tool_schema_tokens(&ctx.tools))
-            .saturating_add(ctx.agent.memory().rendered_token_count())
-            .saturating_add(policy.hard_reserve_tokens)
-    }
-
-    fn primary_runtime_route(
-        ctx: &AgentRunnerContext<'_>,
-        llm_client: &LlmClient,
-    ) -> Result<ModelInfo> {
-        if let Some(route) = ctx.config.model_routes.first() {
-            return Ok(route.clone());
-        }
-
-        llm_client
-            .get_model_info(&ctx.config.model_name)
-            .or_else(|_| {
-                ctx.config
-                    .model_provider
-                    .clone()
-                    .map(|provider| ModelInfo {
-                        id: ctx.config.model_name.clone(),
-                        provider,
-                        max_output_tokens: ctx.config.model_max_output_tokens,
-                        context_window_tokens: ctx.agent.memory().max_tokens() as u32,
-                        weight: 1,
-                    })
-                    .ok_or_else(|| {
-                        crate::llm::LlmError::unknown(
-                            "No active model route available for compaction".to_string(),
-                        )
-                    })
-            })
-            .map_err(|error| anyhow!("No active model route available for compaction: {error}"))
-    }
-
-    fn tool_schema_tokens(tools: &[crate::llm::ToolDefinition]) -> usize {
-        tools.iter().fold(0usize, |acc, tool| {
-            let parameter_tokens = serde_json::to_string(&tool.parameters)
-                .ok()
-                .map_or(0, |params| count_tokens_cached(&params));
-            acc.saturating_add(count_tokens_cached(&tool.name))
-                .saturating_add(count_tokens_cached(&tool.description))
-                .saturating_add(parameter_tokens)
-        })
     }
 
     /// Unified engine-based compaction for all automatic triggers.
@@ -199,7 +87,6 @@ impl AgentRunner {
         route: &ModelInfo,
         reason: CompactionReason,
         phase: CompactionPhase,
-        force: bool,
     ) -> Result<bool> {
         let Some(controller) = ctx.compaction_controller else {
             return Ok(false);
@@ -226,7 +113,6 @@ impl AgentRunner {
                 ctx.system_prompt,
                 reason,
                 phase,
-                force,
             )
             .await;
 
@@ -401,8 +287,10 @@ impl AgentRunner {
 mod tests {
     use super::*;
     use crate::agent::compaction::{
-        CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
-        CompactionController, CompactionEngine, CompressionSelection, MessageRef, SummaryPart,
+        BudgetState, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+        CompactSummaryResult, CompactionController, CompactionEngine, CompactionPolicy,
+        CompactionRequest, CompactionTrigger, CompressionSelection, MessageRef, SummaryPart,
+        count_tokens_cached, estimate_request_budget,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -410,7 +298,7 @@ mod tests {
     use crate::agent::runner::test_support::{build_llm_client, collect_progress_events};
     use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
     use crate::config::ModelInfo;
-    use crate::llm::MockLlmProvider;
+    use crate::llm::{MockLlmProvider, ToolCall, ToolCallFunction};
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -482,18 +370,18 @@ mod tests {
             memory_scope: None,
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256)
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 256,
                     context_window_tokens: 100,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = crate::agent::runner::types::RunState::new();
 
+        let route = ctx.config.model.clone();
         runner
-            .run_manual_compaction_checkpoint(&mut ctx, &mut state)
+            .run_runtime_context_limit_compaction(&mut ctx, &mut state, &route)
             .await
             .expect("compaction succeeds");
 
@@ -574,8 +462,9 @@ mod tests {
         };
         let mut state = crate::agent::runner::types::RunState::new();
 
+        let route = ctx.config.model.clone();
         runner
-            .run_manual_compaction_checkpoint(&mut ctx, &mut state)
+            .run_runtime_context_limit_compaction(&mut ctx, &mut state, &route)
             .await
             .expect("compaction call succeeds");
 
@@ -591,6 +480,130 @@ mod tests {
                 .any(|e| matches!(e, AgentEvent::RuntimeCompactionSkipped { .. })),
             "should emit Skipped event"
         );
+    }
+
+    #[tokio::test]
+    async fn pre_sampling_compacts_metadata_heavy_tool_history_once() {
+        let compaction_controller = CompactionController::new(Arc::new(StaticSummaryBackend));
+        let llm_client = build_llm_client(MockLlmProvider::new());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(40_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Test compaction"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "",
+                vec![ToolCall::new(
+                    "call-large".to_string(),
+                    ToolCallFunction {
+                        name: "web_search".to_string(),
+                        arguments: format!(r#"{{"query":"{}"}}"#, "large ".repeat(30_000)),
+                    },
+                    false,
+                )],
+            ));
+        session.memory_mut().add_message(AgentMessage::tool(
+            "call-large",
+            "web_search",
+            "search completed",
+        ));
+        for index in 1..=3 {
+            session
+                .memory_mut()
+                .add_message(AgentMessage::user(format!("recent {index}")));
+        }
+
+        let route = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 256,
+            context_window_tokens: 40_000,
+        };
+        let tools = Vec::new();
+        let request = CompactionRequest::new(
+            CompactionTrigger::PreIteration,
+            "Test compaction",
+            "system prompt",
+            &tools,
+            &route.id,
+            route.max_output_tokens,
+            route.context_window_tokens,
+            false,
+        );
+        let policy = CompactionPolicy::default();
+        let budget_before = estimate_request_budget(&policy, &request, &session);
+        assert!(matches!(
+            budget_before.state,
+            BudgetState::ShouldCompact | BudgetState::OverLimit
+        ));
+        let content_only_projected = session
+            .memory()
+            .get_messages()
+            .iter()
+            .map(|message| {
+                count_tokens_cached(&message.content)
+                    + message.reasoning.as_deref().map_or(0, count_tokens_cached)
+            })
+            .sum::<usize>()
+            + count_tokens_cached(request.system_prompt)
+            + policy.hard_reserve_tokens;
+        assert!(content_only_projected < budget_before.compact_threshold_tokens);
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: request.task,
+            system_prompt: request.system_prompt,
+            date_suffix: "",
+            tools: tools.clone(),
+            tool_catalog: None,
+            tool_surface_handle: None,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "test-metadata-compaction",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: Some(&compaction_controller),
+            session_id: None,
+            memory_scope: None,
+            storage: None,
+            config: AgentRunnerConfig::new(route.id.clone(), 1, 1, 30, route.max_output_tokens)
+                .with_model(route.clone()),
+        };
+        let mut state = crate::agent::runner::types::RunState::new();
+
+        assert!(
+            runner
+                .maybe_run_runtime_pre_sampling_compaction(&mut ctx, &mut state, 1, &route)
+                .await
+                .expect("pre-sampling compaction succeeds")
+        );
+        assert!(ctx.agent.memory().compaction_state().has_active_blocks());
+        assert_eq!(state.compaction_count, 1);
+        let budget_after = estimate_request_budget(&policy, &request, ctx.agent);
+        assert!(
+            budget_after.projected_total_tokens < budget_before.projected_total_tokens,
+            "compaction should reduce the full model-facing request budget"
+        );
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        let runtime_events: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::RuntimeCompactionStarted { .. } => Some("started"),
+                AgentEvent::RuntimeCompactionCompleted { .. } => Some("completed"),
+                AgentEvent::RuntimeCompactionFailed { .. } => Some("failed"),
+                AgentEvent::RuntimeCompactionSkipped { .. } => Some("skipped"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(runtime_events, ["started", "completed"]);
     }
 
     #[test]
@@ -630,7 +643,6 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 256,
             context_window_tokens: 1_000,
-            weight: 1,
         };
 
         assert!(AgentRunner::runtime_compaction_threshold_reached(
@@ -672,11 +684,63 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 16_000,
             context_window_tokens: 100_000,
-            weight: 1,
         };
 
         assert!(!AgentRunner::runtime_compaction_threshold_reached(
             &ctx, &route
+        ));
+    }
+
+    #[test]
+    fn threshold_uses_active_model_context_window() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(100_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Test"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("large ".repeat(10_000)));
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let ctx = AgentRunnerContext {
+            task: "Test",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools,
+            tool_catalog: None,
+            tool_surface_handle: None,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "test-active-model-window",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            storage: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
+        };
+        let active_route = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 256,
+            context_window_tokens: 20_000,
+        };
+        let memory_sized_route = ModelInfo {
+            context_window_tokens: 100_000,
+            ..active_route.clone()
+        };
+
+        assert!(AgentRunner::runtime_compaction_threshold_reached(
+            &ctx,
+            &active_route
+        ));
+        assert!(!AgentRunner::runtime_compaction_threshold_reached(
+            &ctx,
+            &memory_sized_route
         ));
     }
 
@@ -741,7 +805,6 @@ mod tests {
             provider: "opencode-go".to_string(),
             max_output_tokens: 512,
             context_window_tokens: 20_000,
-            weight: 1,
         };
 
         assert!(!AgentRunner::runtime_compaction_threshold_reached(

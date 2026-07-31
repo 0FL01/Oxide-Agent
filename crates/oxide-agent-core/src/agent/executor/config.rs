@@ -67,7 +67,7 @@ impl AgentExecutor {
             runner,
             session,
             settings,
-            model_routes_override: None,
+            model_override: None,
             agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
@@ -95,26 +95,20 @@ impl AgentExecutor {
         self.execution_profile = execution_profile;
     }
 
-    /// Override the agent model failover routes for this executor.
-    ///
-    /// An empty route list clears the override and restores global settings.
-    pub fn set_model_routes_override(&mut self, routes: Vec<ModelInfo>) {
-        let context_budget = routes.first().map_or_else(
+    /// Override the active model for the next execution.
+    pub fn set_model_override(&mut self, model: Option<ModelInfo>) {
+        let context_budget = model.as_ref().map_or_else(
             || self.settings.get_agent_internal_context_budget_tokens(),
             |model| self.settings.agent_internal_context_budget_for_model(model),
         );
         self.session.set_context_window_tokens(context_budget);
-        self.model_routes_override = if routes.is_empty() {
-            None
-        } else {
-            Some(routes)
-        };
+        self.model_override = model;
     }
 
-    /// Return the currently configured per-executor model route override.
+    /// Return the currently configured per-executor model override.
     #[must_use]
-    pub fn model_routes_override(&self) -> Option<&[ModelInfo]> {
-        self.model_routes_override.as_deref()
+    pub const fn model_override(&self) -> Option<&ModelInfo> {
+        self.model_override.as_ref()
     }
 
     /// Attach topic-scoped AGENTS.md tooling.

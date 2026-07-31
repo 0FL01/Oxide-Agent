@@ -606,7 +606,6 @@ pub struct SerializableProgress {
     pub last_history_repair_status: Option<String>,
     pub latest_token_snapshot: Option<oxide_agent_core::agent::progress::TokenSnapshot>,
     pub llm_retry: Option<serde_json::Value>,
-    pub provider_failover_notice: Option<String>,
 }
 
 impl SerializableProgress {
@@ -629,7 +628,6 @@ impl SerializableProgress {
                 .llm_retry
                 .as_ref()
                 .and_then(|retry| serde_json::to_value(retry).ok()),
-            provider_failover_notice: state.provider_failover_notice.clone(),
         }
     }
 }

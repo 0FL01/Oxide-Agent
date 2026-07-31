@@ -122,7 +122,6 @@ mod tests {
             provider: provider.to_string(),
             max_output_tokens: 128,
             context_window_tokens: 1024,
-            weight: 1,
         }
     }
 

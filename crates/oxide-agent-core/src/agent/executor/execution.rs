@@ -151,8 +151,8 @@ impl AgentExecutor {
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id = %task_id,
-            model = %prepared.runner_config.model_name,
-            provider = ?prepared.runner_config.model_provider,
+            model = %prepared.runner_config.model.id,
+            provider = %prepared.runner_config.model.provider,
             tool_count = prepared.tools.len(),
             message_count = prepared.messages.len(),
             prepare_ms = prepare_started_at.elapsed().as_millis(),
@@ -378,21 +378,16 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let model_routes = self
-            .model_routes_override
+        let model = self
+            .model_override
             .clone()
-            .unwrap_or_else(|| self.settings.get_configured_agent_model_routes());
-        let model = model_routes
-            .first()
-            .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             model = %model.id,
             provider = ?model.provider,
-            route_count = model_routes.len(),
-            phase = "model_routes_resolved",
+            phase = "model_resolved",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -573,9 +568,8 @@ impl AgentExecutor {
                 timeout_secs,
                 model.max_output_tokens,
             )
-            .with_model_provider(model.provider.clone())
+            .with_model(model)
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes)
             .with_search_limit(search_limit)
             .with_reasoning_effort(options.reasoning_effort()),
             browser_cleanup,

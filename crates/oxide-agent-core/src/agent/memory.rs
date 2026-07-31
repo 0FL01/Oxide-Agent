@@ -5,7 +5,7 @@
 
 use crate::agent::compaction::{
     AgentMessageKind, ArchiveRef, CompactionRenderer, CompactionRetention, CompactionState,
-    RenderPolicy, count_tokens_cached,
+    RenderPolicy, count_tokens_cached, estimate_rendered_messages_tokens,
 };
 use crate::agent::providers::TodoList;
 use crate::agent::recovery::repair_agent_message_history_runtime;
@@ -865,24 +865,13 @@ impl AgentMemory {
 
     /// Estimated token count of the rendered model context.
     ///
-    /// When `CompactionState` is empty, this equals `token_count()` because
-    /// the renderer is identity. When active blocks exist, this counts tokens
-    /// from the rendered output (which replaces covered messages with block
-    /// summaries), and may be smaller than the raw transcript.
+    /// Includes the text and provider-facing tool metadata sent to the model.
+    /// Active blocks replace covered messages with summaries, so this may be
+    /// smaller than the raw transcript count.
     #[must_use]
     pub fn rendered_token_count(&self) -> usize {
         let rendered = self.rendered_messages();
-        rendered
-            .iter()
-            .map(|msg| {
-                let mut tokens = crate::agent::compaction::count_tokens_cached(&msg.content);
-                if let Some(reasoning) = &msg.reasoning_content {
-                    tokens = tokens
-                        .saturating_add(crate::agent::compaction::count_tokens_cached(reasoning));
-                }
-                tokens
-            })
-            .sum()
+        estimate_rendered_messages_tokens(&rendered)
     }
 
     /// Number of items in the rendered model context.

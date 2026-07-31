@@ -108,8 +108,8 @@ Default branch: `main`.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
 - Six provider modules: `openai-chatgpt` (OAuth/Codex Responses streaming), `anthropic` (generic Anthropic Messages, covers MiniMax), `openai-base` (OpenAI-compatible, covers ZAI/Mistral/custom), `opencode-go`, `opencode-zen`, `openrouter`. `opencode-go` and `opencode-zen` share one cargo feature (`llm-opencode-go`).
 - Anthropic Messages transport (`messages/`) is shared by `anthropic` and `opencode_go` providers.
-- ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
-- Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
+- ChatGPT: OAuth/Codex Responses streaming; structured-output/json-mode agent requests require a compatible selected model.
+- `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*` define ordered catalogs for manual model selection; the first configured route is the default. One execution uses one model and never fails over automatically.
 
 ### Tool providers
 

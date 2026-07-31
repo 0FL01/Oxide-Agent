@@ -4,8 +4,8 @@
 //! block refs) and creates/consumes blocks. It does NOT modify raw messages
 //! or render anything — that is the renderer's job (Phase 4).
 //!
-//! All triggers (admission, pre-LLM budget, agent compress, manual,
-//! model-downshift, typed overflow) go through this one engine.
+//! All state-changing compaction paths (pre-LLM budget, agent compress,
+//! operator manual, typed overflow) go through this one engine.
 
 use super::block::{CompressionBlock, CompressionSelection, SummaryPart, mark_consumed, new_block};
 use super::refs::{BlockRef, MessageRef};

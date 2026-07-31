@@ -173,6 +173,26 @@ mod tests {
     }
 
     #[test]
+    fn legacy_provider_failover_event_still_deserializes() {
+        let event: PersistedTaskEvent = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "task_id": "task-legacy",
+            "session_id": "session-legacy",
+            "user_id": 7,
+            "seq": 12,
+            "created_at": "2026-01-01T00:00:00Z",
+            "kind": "provider_failover_activated",
+            "summary": "legacy failover",
+            "payload": {},
+            "redacted": false,
+            "truncated": false
+        }))
+        .expect("legacy persisted event should deserialize");
+
+        assert_eq!(event.kind, TaskEventKind::ProviderFailoverActivated);
+    }
+
+    #[test]
     fn user_message_payload_serializes_attachments() {
         let payload = UserMessageEventPayload {
             input_markdown: "follow-up".to_string(),

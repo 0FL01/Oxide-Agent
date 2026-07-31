@@ -57,8 +57,6 @@ pub struct ProgressSnapshot {
     pub latest_token_snapshot: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_retry: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_failover_notice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,12 +335,11 @@ mod tests {
             last_history_repair_status: None,
             latest_token_snapshot: None,
             llm_retry: Some(serde_json::json!({ "attempt": 1, "max_attempts": 3 })),
-            provider_failover_notice: Some("Failover: a -> b".to_string()),
         };
 
         let value = serde_json::to_value(snapshot).expect("progress snapshot serializes");
         assert_eq!(value["current_todos"]["items"], serde_json::json!([]));
         assert_eq!(value["llm_retry"]["attempt"], 1);
-        assert_eq!(value["provider_failover_notice"], "Failover: a -> b");
+        assert!(value.get("provider_failover_notice").is_none());
     }
 }

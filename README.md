@@ -272,25 +272,23 @@ VISION_MODEL_PROVIDER="openrouter"
 ```
 
 <details>
-<summary>Weighted Model Routes (Failover)</summary>
+<summary>Model Route Catalogs</summary>
 
-Configure multiple weighted routes for automatic failover after persistent 429 errors:
+Configure the models available for manual selection. The first route is the default; an execution never switches models automatically:
 
 ```dotenv
 # Priority: OpenCode Go (MiMo V2.5) > ZAI/OpenAI Base (GLM-4.7)
 AGENT_MODEL_ROUTES__0__ID="mimo-v2.5"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
-AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
 AGENT_MODEL_ROUTES__1__PROVIDER="openai-base:zai"
-AGENT_MODEL_ROUTES__1__WEIGHT=5
 
 ```
 
 </details>
 
-Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUTES__N__*` for sub-agent failover.
+Use `AGENT_MODEL_ROUTES__N__*` for the main-agent catalog and `SUB_AGENT_MODEL_ROUTES__N__*` for the sub-agent catalog.
 
 ## Available LLM Providers
 

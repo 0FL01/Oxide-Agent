@@ -21,8 +21,8 @@ use tokio::sync::Mutex;
 /// Configuration for the agent runner.
 #[derive(Debug, Clone)]
 pub struct AgentRunnerConfig {
-    /// Model name to use for LLM calls.
-    pub model_name: String,
+    /// Active model for this execution.
+    pub model: ModelInfo,
     /// Maximum iterations before aborting.
     pub max_iterations: usize,
     /// Maximum forced continuations before stopping.
@@ -31,14 +31,8 @@ pub struct AgentRunnerConfig {
     pub is_sub_agent: bool,
     /// Soft timeout in seconds.
     pub timeout_secs: u64,
-    /// Reserved output token budget for the active model.
-    pub model_max_output_tokens: u32,
     /// Optional temperature override for main-agent tool calls.
     pub temperature: Option<f32>,
-    /// Active provider name for the current model.
-    pub model_provider: Option<String>,
-    /// Optional weighted fallback routes for this execution.
-    pub model_routes: Vec<ModelInfo>,
     /// Search tool call budget for this execution.
     pub search_limit: usize,
     /// Optional provider reasoning effort override.
@@ -56,15 +50,17 @@ impl AgentRunnerConfig {
         model_max_output_tokens: u32,
     ) -> Self {
         Self {
-            model_name,
+            model: ModelInfo {
+                id: model_name,
+                max_output_tokens: model_max_output_tokens,
+                context_window_tokens: 0,
+                provider: String::new(),
+            },
             max_iterations,
             continuation_limit,
             is_sub_agent: false,
             timeout_secs,
-            model_max_output_tokens,
             temperature: None,
-            model_provider: None,
-            model_routes: Vec::new(),
             search_limit: get_agent_search_limit(),
             reasoning_effort: None,
         }
@@ -80,7 +76,14 @@ impl AgentRunnerConfig {
     /// Set the active provider name.
     #[must_use]
     pub fn with_model_provider(mut self, model_provider: impl Into<String>) -> Self {
-        self.model_provider = Some(model_provider.into());
+        self.model.provider = model_provider.into();
+        self
+    }
+
+    /// Set the active model for this execution.
+    #[must_use]
+    pub fn with_model(mut self, model: ModelInfo) -> Self {
+        self.model = model;
         self
     }
 
@@ -88,13 +91,6 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
         self.temperature = temperature;
-        self
-    }
-
-    /// Set weighted fallback routes for the execution.
-    #[must_use]
-    pub fn with_model_routes(mut self, model_routes: Vec<ModelInfo>) -> Self {
-        self.model_routes = model_routes;
         self
     }
 
@@ -275,8 +271,6 @@ pub(super) struct RunState {
     pub structured_output_failures: usize,
     /// Number of applied compaction passes in this run.
     pub compaction_count: usize,
-    /// Whether the next pre-LLM turn should run manual compaction.
-    pub force_manual_compaction: bool,
     /// Substantive final-answer draft produced next to a terminal `write_todos` call.
     pub pending_final_draft: Option<PendingFinalDraft>,
 }
@@ -363,21 +357,8 @@ impl RunState {
             continuation_count: 0,
             structured_output_failures: 0,
             compaction_count: 0,
-            force_manual_compaction: false,
             pending_final_draft: None,
         }
-    }
-
-    /// Request a manual compaction pass before the next model call.
-    pub(super) fn request_manual_compaction(&mut self) {
-        self.force_manual_compaction = true;
-    }
-
-    /// Consume any pending manual compaction request.
-    pub(super) fn take_manual_compaction_request(&mut self) -> bool {
-        let requested = self.force_manual_compaction;
-        self.force_manual_compaction = false;
-        requested
     }
 }
 

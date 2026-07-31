@@ -3,9 +3,10 @@
 //! The unified compaction architecture preserves the raw transcript in
 //! `AgentMemory` and produces compacted model-facing context through a
 //! renderer overlay driven by `CompactionState`. The `CompactionEngine` is
-//! the sole mutation authority for compaction state. All triggers
-//! (pre-sampling, context-limit, model-downshift, manual, agent compress)
-//! go through `compact_via_engine` → `CompactionEngine::apply_compression`.
+//! the sole mutation authority for compaction state. Automatic pre-sampling,
+//! provider-confirmed context overflow, and transport manual triggers use
+//! `compact_via_engine`; the agent `compress` tool supplies its own selection
+//! and summary directly to `CompactionEngine::apply_compression`.
 
 pub mod admission;
 pub mod archive;
@@ -30,6 +31,7 @@ pub use admission::{
 };
 pub use archive::ArchiveRef;
 pub use block::{CompressionBlock, CompressionSelection, SummaryPart};
+pub(crate) use budget::estimate_rendered_messages_tokens;
 pub use budget::{count_tokens_cached, estimate_request_budget};
 pub use controller::{
     CompactionController, CompactionControllerError, EngineCompactionOutcome,

@@ -233,7 +233,7 @@ total_cost = input_cost + completion_tokens/1M * output_price
 - Workflow guidance из deterministic sorted toolset
 - Compact sorted tool-name list или `tools_hash` (не full schemas)
 
-**Не должен содержать:** task-scoped wiki, runtime injections, failover state, transient policy notes.
+**Не должен содержать:** task-scoped wiki, runtime injections, transient policy notes.
 
 ### `[STATIC_TOPIC_V1]` — стабилен для фиксированного topic
 
@@ -284,7 +284,6 @@ Cacheable boundary sub-agent: `[STATIC_GLOBAL_V1]` + `[STATIC_PROFILE_SUB_V1]` +
 | `profile_hash` | `Option<String>` | Profile changes = expected cache-boundary change |
 | `compacted_summary_hash` | `Option<String>` | Compaction churn detection |
 | `route_id` / `provider` / `model` | `String` | Cache behavior provider-specific |
-| `failover_from_route` | `Option<String>` | Failover почти гарантированно убивает cache locality |
 | `latency_ms` | `u64` | Cache hit → ниже TTFT |
 
 Provider parsers для cache tokens (**DONE** — все обновлены):

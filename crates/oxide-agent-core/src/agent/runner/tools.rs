@@ -30,25 +30,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
 
 fn current_execution_model_route(ctx: &AgentRunnerContext<'_>) -> Option<ModelInfo> {
-    if let Some(route) = ctx.config.model_routes.iter().find(|route| {
-        route.id == ctx.config.model_name
-            && ctx
-                .config
-                .model_provider
-                .as_deref()
-                .is_none_or(|provider| route.provider == provider)
-    }) {
-        return Some(route.clone());
-    }
-
-    let provider = ctx.config.model_provider.clone()?;
-    Some(ModelInfo {
-        id: ctx.config.model_name.clone(),
-        provider,
-        max_output_tokens: ctx.config.model_max_output_tokens,
-        context_window_tokens: 0,
-        weight: 1,
-    })
+    (!ctx.config.model.provider.is_empty()).then(|| ctx.config.model.clone())
 }
 
 fn runtime_session_id(ctx: &AgentRunnerContext<'_>) -> SessionId {
@@ -527,18 +509,17 @@ impl AgentRunner {
     /// for compaction threshold testing).
     pub(super) fn compute_admission_budget(ctx: &AgentRunnerContext<'_>) -> AdmissionBudget {
         let memory = ctx.agent.memory();
-        let route_context_window = ctx
-            .config
-            .model_routes
-            .first()
-            .map(|route| route.context_window_tokens as usize)
-            .unwrap_or_else(|| memory.max_tokens());
+        let route_context_window = if ctx.config.model.context_window_tokens == 0 {
+            memory.max_tokens()
+        } else {
+            ctx.config.model.context_window_tokens as usize
+        };
         AdmissionBudget {
             rendered_tokens: memory.rendered_token_count(),
             route_context_window,
             system_prompt_tokens: count_tokens_cached(ctx.system_prompt),
             tool_schema_tokens: Self::estimate_tool_schema_tokens(&ctx.tools),
-            hard_reserve: ctx.config.model_max_output_tokens as usize,
+            hard_reserve: ctx.config.model.max_output_tokens as usize,
         }
     }
 
@@ -802,13 +783,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -906,13 +886,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }])
+                })
                 .with_search_limit(1),
         };
         let mut state = RunState::new();
@@ -1008,13 +987,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1093,13 +1071,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1188,13 +1165,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1282,13 +1258,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1396,13 +1371,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let compress_args = r#"{
@@ -1441,8 +1415,6 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        // Old manual compaction trigger must NOT be set.
-        assert!(!state.force_manual_compaction);
         // Engine must have created an active block.
         assert!(ctx.agent.memory().compaction_state().has_active_blocks());
         // Tool result in memory must show compression success.
@@ -1509,13 +1481,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         // m0099 is out of range — engine must reject.
@@ -1555,7 +1526,6 @@ mod tests {
             .expect("runtime execution succeeds");
 
         assert!(result.is_none());
-        assert!(!state.force_manual_compaction);
         // No blocks should be created for invalid refs.
         assert!(!ctx.agent.memory().compaction_state().has_active_blocks());
         // Tool result must show structured error.
@@ -1619,13 +1589,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_calls = (0..6)
@@ -1723,13 +1692,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openrouter")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "openrouter".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1804,13 +1772,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("gemma4-12b-it-q8_0-mtp".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openai-base:local")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "gemma4-12b-it-q8_0-mtp".to_string(),
                     provider: "openai-base:local".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
@@ -1926,13 +1893,12 @@ mod tests {
             storage: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
-                .with_model_routes(vec![ModelInfo {
+                .with_model(ModelInfo {
                     id: "deepseek-v4-flash".to_string(),
                     provider: "opencode-go".to_string(),
                     max_output_tokens: 1024,
                     context_window_tokens: 8192,
-                    weight: 1,
-                }]),
+                }),
         };
         let mut state = RunState::new();
         let tool_call = ToolCall::new(
