@@ -384,7 +384,7 @@ mod tests {
             transport
                 .delivered_browser_artifacts
                 .lock()
-                .unwrap()
+                .expect("browser artifact lock should not be poisoned")
                 .is_empty()
         );
     }
