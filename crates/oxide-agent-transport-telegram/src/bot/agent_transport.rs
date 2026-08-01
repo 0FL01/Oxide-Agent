@@ -17,19 +17,14 @@ use tracing::warn;
 pub struct TelegramAgentTransport {
     bot: Bot,
     chat_id: ChatId,
-    progress_msg_id: MessageId,
     message_thread_id: Option<teloxide::types::ThreadId>,
-    progress_reply_markup: Option<InlineKeyboardMarkup>,
+    progress_target: Option<ProgressTarget>,
     delivered_browser_artifacts: Arc<Mutex<HashSet<String>>>,
 }
 
-/// Telegram transport that keeps agent-side progress events and file delivery working
-/// without creating or editing a visible progress/status message.
-pub struct SilentTelegramAgentTransport {
-    bot: Bot,
-    chat_id: ChatId,
-    message_thread_id: Option<teloxide::types::ThreadId>,
-    delivered_browser_artifacts: Arc<Mutex<HashSet<String>>>,
+struct ProgressTarget {
+    message_id: MessageId,
+    reply_markup: Option<InlineKeyboardMarkup>,
 }
 
 impl TelegramAgentTransport {
@@ -44,21 +39,17 @@ impl TelegramAgentTransport {
         Self {
             bot,
             chat_id,
-            progress_msg_id,
             message_thread_id,
-            progress_reply_markup: if use_inline_progress_controls {
-                Some(progress_inline_keyboard())
-            } else {
-                None
-            },
+            progress_target: Some(ProgressTarget {
+                message_id: progress_msg_id,
+                reply_markup: use_inline_progress_controls.then(progress_inline_keyboard),
+            }),
             delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
-}
 
-impl SilentTelegramAgentTransport {
-    /// Create a Telegram transport for silent progress handling.
-    pub fn new(
+    /// Create a Telegram transport without a visible progress message.
+    pub fn silent(
         bot: Bot,
         chat_id: ChatId,
         message_thread_id: Option<teloxide::types::ThreadId>,
@@ -67,6 +58,7 @@ impl SilentTelegramAgentTransport {
             bot,
             chat_id,
             message_thread_id,
+            progress_target: None,
             delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -124,94 +116,20 @@ fn progress_reply_markup_for_state(
 #[async_trait]
 impl AgentTransport for TelegramAgentTransport {
     async fn update_progress(&self, state: &ProgressState) -> Result<()> {
+        let Some(target) = &self.progress_target else {
+            return Ok(());
+        };
         let text = render_progress_html(state);
-        let reply_markup =
-            progress_reply_markup_for_state(self.progress_reply_markup.as_ref(), state);
+        let reply_markup = progress_reply_markup_for_state(target.reply_markup.as_ref(), state);
         // Preserve existing behavior: resilient helper handles retries and logging internally.
         let _ = crate::bot::resilient::edit_message_safe_resilient_with_markup(
             &self.bot,
             self.chat_id,
-            self.progress_msg_id,
+            target.message_id,
             &text,
             reply_markup,
         )
         .await;
-        Ok(())
-    }
-
-    async fn deliver_file(
-        &self,
-        mode: DeliveryMode,
-        kind: FileDeliveryKind,
-        file_name: &str,
-        content: &[u8],
-    ) -> Result<FileDeliveryReceipt> {
-        let decision =
-            browser_artifact_delivery_decision(file_name, &self.delivered_browser_artifacts);
-        if decision != BrowserArtifactDeliveryDecision::Deliver {
-            warn!(file_name = %file_name, decision = ?decision, "Suppressing browser artifact auto-delivery to Telegram");
-            return Ok(FileDeliveryReceipt::default());
-        }
-        match mode {
-            DeliveryMode::BestEffort => {
-                if let Err(e) = send_file_smart(
-                    &self.bot,
-                    self.chat_id,
-                    kind,
-                    file_name,
-                    content,
-                    self.message_thread_id,
-                )
-                .await
-                {
-                    warn!(file_name = %file_name, error = %e, "Failed to send file");
-                    return Err(e);
-                }
-                Ok(FileDeliveryReceipt::default())
-            }
-            DeliveryMode::Confirmed => {
-                oxide_agent_core::utils::retry_transport_operation(|| async {
-                    send_file_smart(
-                        &self.bot,
-                        self.chat_id,
-                        kind,
-                        file_name,
-                        content,
-                        self.message_thread_id,
-                    )
-                    .await
-                    .map(|_| FileDeliveryReceipt::default())
-                    .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
-                })
-                .await
-            }
-        }
-    }
-
-    async fn notify_loop_detected(&self, loop_type: LoopType, iteration: usize) -> Result<()> {
-        let text = format!(
-            "🔁 <b>Loop Detected in Task Execution</b>\nType: {}\nIteration: {}\n\nSelect an action:",
-            loop_type_label(loop_type),
-            iteration
-        );
-
-        let mut req = self
-            .bot
-            .send_message(self.chat_id, text)
-            .parse_mode(ParseMode::Html);
-        if let Some(thread_id) = self.message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-
-        req.reply_markup(loop_action_keyboard()).await?;
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl AgentTransport for SilentTelegramAgentTransport {
-    async fn update_progress(&self, _state: &ProgressState) -> Result<()> {
         Ok(())
     }
 
@@ -448,12 +366,28 @@ mod tests {
     use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
     use std::collections::HashSet;
     use std::sync::Mutex;
+    use teloxide::prelude::*;
 
     use super::{
-        BrowserArtifactDeliveryDecision, NativeSendKind, browser_artifact_delivery_decision,
-        progress_reply_markup_for_state, select_native_send_kind,
+        BrowserArtifactDeliveryDecision, NativeSendKind, TelegramAgentTransport,
+        browser_artifact_delivery_decision, progress_reply_markup_for_state,
+        select_native_send_kind,
     };
     use crate::bot::views::progress_inline_keyboard;
+
+    #[test]
+    fn silent_transport_omits_only_progress_target() {
+        let transport = TelegramAgentTransport::silent(Bot::new("token"), ChatId(1), None);
+
+        assert!(transport.progress_target.is_none());
+        assert!(
+            transport
+                .delivered_browser_artifacts
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn keeps_progress_controls_while_task_is_active() {

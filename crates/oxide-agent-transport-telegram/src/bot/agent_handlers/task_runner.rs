@@ -7,7 +7,7 @@ use crate::bot::agent_handlers::{
     media_route_unavailable_detail, preprocess_agent_message_input,
     send_multimodal_unavailable_message,
 };
-use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTransport};
+use crate::bot::agent_transport::TelegramAgentTransport;
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::DefaultAgentView;
@@ -592,7 +592,7 @@ fn start_silent_task_progress_runtime(ctx: &TaskDeliveryContext) -> TaskProgress
     let max_iterations = get_agent_max_iterations();
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentEvent>(100);
     let transport =
-        SilentTelegramAgentTransport::new(ctx.bot.clone(), ctx.chat_id, ctx.message_thread_id);
+        TelegramAgentTransport::silent(ctx.bot.clone(), ctx.chat_id, ctx.message_thread_id);
     let cfg = ProgressRuntimeConfig::new(max_iterations);
     let progress_handle = spawn_progress_runtime(transport, rx, cfg);
 

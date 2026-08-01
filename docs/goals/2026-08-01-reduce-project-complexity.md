@@ -44,13 +44,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.5 plan.
   - Acceptance: `AgentModeSessionKeys`, impossible todo-clear outcome, sole-implementation `AgentView` trait, and duplicate progress transport implementation are absent; session derivation, silent file delivery, loop notifications, thread targeting, and keyboard cleanup remain.
   - Primary evidence: Telegram library and topic/thread tests.
-  - Status: in_progress
-  - Evidence: Singleton session wrapper, impossible todo-clear result, sole `AgentView` trait, and dead view entries removed; all direct consumers use stable `SessionId` and inherent view methods; 143 Telegram tests pass after each checkpoint.
+  - Status: verified
+  - Evidence: Session wrapper, impossible cancellation state, sole view trait/dead entries, and duplicate silent transport removed; one transport keeps file/loop behavior and conditionally edits progress; 144 Telegram tests pass.
 - R6: Application code no longer maintains the unread `agent_flows` registry.
   - Source: Approved M1.6 plan.
   - Acceptance: Flow record APIs, reads, writes, mocks, and duplicate state are absent; active flow pointers and memory snapshots remain; the existing table and cleanup-only deletes remain for data retention and rollback.
   - Primary evidence: Core storage and Telegram flow lifecycle tests plus source search.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 - R7: Web, session runtime, and tool execution each have one internal owner for duplicated state.
   - Source: Approved M2 plan.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R5.
-- Smallest next action: Merge visible and silent Telegram progress adapters into one transport with an optional progress target.
-- Expected evidence: Telegram transport/library tests pass; silent mode still delivers files and loop notifications while only progress-message edits become conditional.
-- Stop or replan if: The two adapters have another reachable side-effect difference that cannot be represented by the optional target.
+- Closes: R6.
+- Smallest next action: Remove unread `agent_flows` record APIs, writers, implementations, mocks, and tests while retaining the table and cleanup-only SQL deletes.
+- Expected evidence: Core storage and Telegram flow tests pass; production source has no `AgentFlowRecord` read/write API or calls.
+- Stop or replan if: A production reader or non-shadow flow invariant is found.
 
 ## Current State
 
-- Resolved: R1-R4; R5 session/cancellation/view checkpoints.
-- Last relevant evidence: 143 Telegram tests passed after cancellation and view shell deletion; removed-symbol searches are empty.
+- Resolved: R1-R5.
+- Last relevant evidence: 144 Telegram tests passed with one `AgentTransport` implementation and silent target test.
 - Blocker: None.
-- Next: R5 progress transport consolidation.
+- Next: R6 unread flow registry deletion.
 
 ## Material Decisions
 
@@ -143,6 +143,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R4 completed by moving unique OpenRouter request assertions to the canonical owner and deleting the test helper (104 net LOC); request/response/OpenRouter tests passed. Next: R5.
 - 2026-08-01: R5 checkpoint 1 removed singleton `AgentModeSessionKeys` and no-choice lookup helpers; 143 Telegram tests passed. Next: cancellation/view shells.
 - 2026-08-01: R5 checkpoint 2 removed the impossible todo-clear result, sole view trait, and dead view entries; 143 Telegram tests passed. Next: progress transport.
+- 2026-08-01: R5 completed by merging visible/silent progress adapters behind an optional progress target; 144 Telegram tests passed. Next: R6.
 
 ## Completion
 
