@@ -201,33 +201,6 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                         .filter_command::<Command>()
                         .endpoint(handle_command),
                 )
-                .branch(
-                    dptree::case![State::Start]
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.text().is_some())
-                                .endpoint(handle_start_text),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.voice().is_some())
-                                .endpoint(handle_start_voice),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.photo().is_some())
-                                .endpoint(handle_start_photo),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.video().is_some())
-                                .endpoint(handle_start_video),
-                        )
-                        .branch(
-                            dptree::filter(|msg: Message| msg.document().is_some())
-                                .endpoint(handle_start_document),
-                        ),
-                )
                 .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
                 .branch(
                     dptree::case![State::AgentConfirmation(action)]
@@ -724,90 +697,6 @@ async fn handle_command(
     };
     if let Err(e) = res {
         error!("Command error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-sqlx")]
-async fn handle_start_text(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_text(
-        bot, msg, storage, llm, dialogue, settings,
-    ))
-    .await
-    {
-        error!("Text handler error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-sqlx")]
-async fn handle_start_voice(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot, msg, storage, llm, dialogue, settings,
-    ))
-    .await
-    {
-        error!("Voice handler error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-sqlx")]
-async fn handle_start_photo(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
-        error!("Photo handler error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-sqlx")]
-async fn handle_start_video(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings).await {
-        error!("Video handler error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-sqlx")]
-async fn handle_start_document(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    llm: Arc<llm::LlmClient>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-    settings: Arc<BotSettings>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
-    {
-        error!("Document handler error: {}", e);
     }
     respond(())
 }

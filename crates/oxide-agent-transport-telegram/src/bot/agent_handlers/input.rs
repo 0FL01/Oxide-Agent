@@ -5,7 +5,7 @@ use super::{
     run_user_input_resume, use_inline_flow_controls, use_inline_topic_controls,
 };
 use crate::bot::agent::{extract_agent_file_input, extract_agent_input};
-use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
+use crate::bot::context::ensure_current_agent_flow_id;
 use crate::bot::topic_route::{TopicRouteDecision, touch_dynamic_binding_activity_if_needed};
 use crate::bot::{OutboundThreadParams, TelegramThreadSpec};
 use anyhow::Result;
@@ -129,20 +129,6 @@ pub(crate) fn build_batched_text_task_context(
         use_inline_flow_controls: use_inline_flow_controls(active_session.thread_spec),
         attach_detach_enabled,
     }
-}
-
-pub(crate) async fn is_agent_mode_context(
-    storage: &Arc<dyn StorageProvider>,
-    user_id: i64,
-    chat_id: ChatId,
-    thread_spec: TelegramThreadSpec,
-) -> Result<bool> {
-    Ok(
-        current_context_state(storage, user_id, chat_id, thread_spec)
-            .await?
-            .as_deref()
-            == Some("agent_mode"),
-    )
 }
 
 pub(crate) async fn ensure_agent_flow_session(

@@ -68,13 +68,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M4 plan.
   - Acceptance: Topic route resolves once; first accepted text/media input is processed once; commands, controls, confirmations, DM fallback, mention gating, thread isolation, preprocessing, and one activity touch remain; the handlers-to-agent-handlers cycle is absent.
   - Primary evidence: Telegram ingress, confirmation, and topic/thread integration tests.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: `State::AgentMode` is the default and sole non-command dispatcher path; duplicated first-message modality handlers, handler cycle, and repeated routing/state/activity paths are absent. Non-DM destructive confirmations use thread-local inline callbacks. Full Telegram package tests (143 library plus integrations/docs) and the full-profile bot check pass.
 - R10: The repository supports one deployment profile and production Compose entrypoint.
   - Source: User confirmation that deployment will use one profile.
   - Acceptance: Root `docker-compose.yml` and `profile-full` are the supported deployment path; obsolete production split Compose files, slim Cargo profiles, reference profile TOMLs, and their CI/xtask/docs branches are absent; module registry and atomic module features remain.
   - Primary evidence: Module-registry check, full-profile workspace gates, root Compose validation, and release workflow inspection.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 - R11: The completed simplification is committed, pushed, built, and redeployed on the current host.
   - Source: Explicit user instruction.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R9.
-- Smallest next action: Trace the current `State::Start` and `State::AgentMode` non-command dispatch ordering, then replace the duplicated first-message wrappers with one ingress owner without changing command or confirmation precedence.
-- Expected evidence: One non-command dispatcher path processes text and supported media once, resolves topic routing once, and retains focused ingress/topic/thread tests.
-- Stop or replan if: Confirmation isolation or first-message behavior requires a new persisted state/config contract outside the approved ingress flow.
+- Closes: R10.
+- Smallest next action: Inventory direct consumers of the split Compose files, slim profile features, and reference profile TOMLs, then move those consumers to root `docker-compose.yml` and `profile-full` before deleting the obsolete variants.
+- Expected evidence: Module-registry check, full-profile workspace gates, root Compose validation, and workflow/docs source inspection all reference one supported deployment profile.
+- Stop or replan if: Removing a variant would require changing `.env*`, environment storage/generation, persistent data, or a separately supported local-service runtime contract.
 
 ## Current State
 
-- Resolved: R1-R8.
-- Last relevant evidence: Aggregate context replacement is absent; six real PostgreSQL context tests plus 55 storage, 54 manager, 144 Telegram, and 168 Web library tests pass.
+- Resolved: R1-R9.
+- Last relevant evidence: Telegram has one default non-command ingress, one topic-route resolution, and no handlers cycle; full Telegram package tests and full-profile bot check pass.
 - Blocker: None.
-- Next: R9 single Telegram ingress.
+- Next: R10 single deployment profile and Compose entrypoint.
 
 ## Material Decisions
 
@@ -154,6 +154,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R8 checkpoint 1 moved Telegram context state and flow persistence to field-scoped operations with atomic flow initialization and transactional DM mirroring; real PostgreSQL plus full Telegram/Web library tests pass. Next: manager context catalog operations.
 - 2026-08-01: R8 checkpoint 2 moved manager forum catalog writes/deletes and sandbox/catalog reads to row-scoped operations; 54 manager tests, Telegram cleanup integration, and five real PostgreSQL context tests pass. Next: remove aggregate config API.
 - 2026-08-01: R8 completed by deleting `UserConfig`, aggregate get/update storage APIs, and the unused standalone global-state writer (430 net LOC); concurrent PostgreSQL and full affected transport tests pass. Next: R9.
+- 2026-08-01: R9 replaced the `Start` modality fan-out and handlers cycle with one default Agent Mode ingress, one topic-route resolution, and private-chat-only dialogue confirmations (749 net LOC); full Telegram package tests and bot composition check pass. Next: R10.
 
 ## Completion
 

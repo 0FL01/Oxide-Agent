@@ -674,9 +674,12 @@ pub(crate) async fn confirm_destructive_action(
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
-    dialogue
-        .update(crate::bot::state::State::AgentConfirmation(action.clone()))
-        .await?;
+    let use_dialogue_confirmation = uses_dialogue_confirmation(thread_spec);
+    if use_dialogue_confirmation {
+        dialogue
+            .update(crate::bot::state::State::AgentConfirmation(action.clone()))
+            .await?;
+    }
 
     let message_text = match action {
         ConfirmationType::ClearMemory => DefaultAgentView::memory_clear_confirmation(),
@@ -692,11 +695,15 @@ pub(crate) async fn confirm_destructive_action(
     }
 
     req.reply_markup(crate::bot::views::confirmation_markup(
-        use_inline_topic_controls(thread_spec),
+        !use_dialogue_confirmation,
         action,
     ))
     .await?;
     Ok(())
+}
+
+pub(crate) fn uses_dialogue_confirmation(thread_spec: TelegramThreadSpec) -> bool {
+    matches!(thread_spec.kind, TelegramThreadKind::Dm)
 }
 
 /// User reply to a destructive-action confirmation prompt. Parsing rejects

@@ -14,7 +14,7 @@ use super::{
     remember_pending_cancel_message, remove_session, resolve_execution_profile,
     session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
     should_merge_text_batch, take_pending_cancel_confirmation, take_pending_cancel_message,
-    use_inline_flow_controls,
+    use_inline_flow_controls, uses_dialogue_confirmation,
 };
 use crate::bot::views::{
     AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -452,6 +452,22 @@ fn non_control_messages_do_not_bypass_topic_gate() {
     assert_eq!(parse_agent_control_command(Some("please help")), None);
     assert_eq!(parse_agent_control_command(Some("user@example.com")), None);
     assert_eq!(parse_agent_control_command(None), None);
+}
+
+#[test]
+fn text_confirmation_state_is_private_chat_only() {
+    assert!(uses_dialogue_confirmation(TelegramThreadSpec::new(
+        TelegramThreadKind::Dm,
+        None,
+    )));
+    assert!(!uses_dialogue_confirmation(TelegramThreadSpec::new(
+        TelegramThreadKind::Forum,
+        Some(ThreadId(MessageId(42))),
+    )));
+    assert!(!uses_dialogue_confirmation(TelegramThreadSpec::new(
+        TelegramThreadKind::None,
+        None,
+    )));
 }
 
 #[test]

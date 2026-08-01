@@ -14,11 +14,19 @@ pub enum ConfirmationType {
 /// Represents the current state of the user dialogue
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub enum State {
-    /// Initial state before bot access/context is resolved.
-    #[default]
-    Start,
     /// Agent mode for complex task execution
+    #[default]
     AgentMode,
     /// Confirmation for destructive agent actions
     AgentConfirmation(ConfirmationType),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::State;
+
+    #[test]
+    fn agent_mode_is_the_default_ingress_state() {
+        assert!(matches!(State::default(), State::AgentMode));
+    }
 }
