@@ -223,10 +223,10 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                         }
                     />
                     <ResumeUserMessages messages=resume_messages />
-                    {assistant_output}
                     <div class="task-action-row">
                         <ThinkingButton label=activity_label on_click=open_activity />
                     </div>
+                    {assistant_output}
                     {(!delivered_files.is_empty()).then(|| view! {
                         <DeliveredFilesMessage files=delivered_files.clone() />
                     })}
