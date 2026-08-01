@@ -26,9 +26,9 @@ use super::{
     api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
     backend_unavailable_response, canonical_model_selection, default_session_model_selection,
     load_current_user_record, load_execution_profile_for_agent_profile_id, load_owned_session,
-    not_found_response, resolve_session_agent_profile_id, session_detail_from_record,
-    session_summary_from_record, store_error_response, validate_optional_agent_profile_id,
-    validate_session_title, web_chat_upload_limit_mb, web_max_sandbox_containers_per_user,
+    not_found_response, resolve_session_agent_profile_id, session_summary_from_record,
+    store_error_response, validate_optional_agent_profile_id, validate_session_title,
+    web_chat_upload_limit_mb, web_max_sandbox_containers_per_user,
 };
 
 async fn reconcile_web_sandbox_orphans_with_sessions(
@@ -427,7 +427,7 @@ pub(crate) async fn api_get_session(
     let user = authenticated_user(&state, &headers).await?;
     let record = load_owned_session(&state, user.user_id, &session_id).await?;
     Ok(Json(GetSessionResponse {
-        session: session_detail_from_record(record),
+        session: session_summary_from_record(record),
     }))
 }
 
@@ -451,7 +451,7 @@ pub(crate) async fn api_update_session(
         .map_err(store_error_response)?;
     invalidate_session_summaries_cache(&state, user.user_id).await;
     Ok(Json(UpdateSessionResponse {
-        session: session_detail_from_record(record),
+        session: session_summary_from_record(record),
     }))
 }
 
@@ -486,7 +486,7 @@ pub(crate) async fn api_update_session_profile(
         .set_session_execution_profile(&session_id, agent_profile_id, execution_profile)
         .await;
     Ok(Json(UpdateSessionResponse {
-        session: session_detail_from_record(record),
+        session: session_summary_from_record(record),
     }))
 }
 
@@ -515,7 +515,7 @@ pub(crate) async fn api_update_session_model(
     invalidate_session_summaries_cache(&state, user.user_id).await;
     let record = load_owned_session(&state, user.user_id, &session_id).await?;
     Ok(Json(UpdateSessionResponse {
-        session: session_detail_from_record(record),
+        session: session_summary_from_record(record),
     }))
 }
 

@@ -30,7 +30,7 @@ use super::profile::{
 };
 use super::state::{
     browser_now_millis, latest_editable_task_id, latest_task, remove_session_summary,
-    session_detail_to_summary, summary_to_detail, upsert_session_summary, upsert_task_summary,
+    summary_to_detail, upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -368,10 +368,7 @@ fn Workspace(
                             .clone()
                             .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
                     );
-                    upsert_session_summary(
-                        set_sessions,
-                        session_detail_to_summary(response.session),
-                    );
+                    upsert_session_summary(set_sessions, response.session);
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
@@ -587,10 +584,7 @@ fn Workspace(
                                 .clone()
                                 .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
                         );
-                        upsert_session_summary(
-                            set_sessions,
-                            session_detail_to_summary(response.session),
-                        );
+                        upsert_session_summary(set_sessions, response.session);
                     }
                     Err(error) => set_error.set(Some(error.to_string())),
                 }
@@ -628,10 +622,7 @@ fn Workspace(
                                 .map(|selection| selection.qualified_id.clone())
                                 .unwrap_or_default(),
                         );
-                        upsert_session_summary(
-                            set_sessions,
-                            session_detail_to_summary(response.session),
-                        );
+                        upsert_session_summary(set_sessions, response.session);
                     }
                     Err(error) => {
                         set_selected_model.set(previous_model);
@@ -897,10 +888,7 @@ fn Workspace(
                         }
                     });
                     if let Ok(response) = client.get_session(&sid).await {
-                        upsert_session_summary(
-                            set_sessions,
-                            session_detail_to_summary(response.session),
-                        );
+                        upsert_session_summary(set_sessions, response.session);
                     }
                 }
                 Err(error) => set_error.set(Some(error.to_string())),

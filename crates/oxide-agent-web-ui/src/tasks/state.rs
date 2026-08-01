@@ -1,7 +1,6 @@
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionDetail, SessionSummary, TaskDetail, TaskEventKind, TaskStatus,
-    TaskSummary,
+    PersistedTaskEvent, SessionSummary, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde_json::Value;
 
@@ -83,20 +82,6 @@ pub(super) fn remove_session_summary(
     session_id: &str,
 ) {
     set_sessions.update(|items| items.retain(|item| item.session_id != session_id));
-}
-
-pub(super) fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
-    SessionSummary {
-        session_id: session.session_id,
-        title: session.title,
-        model_selection: session.model_selection,
-        agent_profile_id: session.agent_profile_id,
-        last_preview: session.last_preview,
-        active_task_id: session.active_task_id,
-        last_task_status: session.last_task_status,
-        created_at: session.created_at,
-        updated_at: session.updated_at,
-    }
 }
 
 pub(super) fn latest_task(tasks: &[TaskSummary]) -> Option<TaskSummary> {

@@ -108,22 +108,6 @@ pub struct SessionSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct SessionDetail {
-    pub session_id: String,
-    pub title: String,
-    #[serde(default)]
-    pub model_selection: Option<ModelSelection>,
-    #[serde(default)]
-    pub agent_profile_id: Option<String>,
-    pub last_preview: Option<String>,
-    pub active_task_id: Option<String>,
-    pub last_task_status: Option<TaskStatus>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub struct ListSessionsResponse {
     pub sessions: Vec<SessionSummary>,
 }
@@ -157,7 +141,7 @@ pub struct CreateSessionResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GetSessionResponse {
-    pub session: SessionDetail,
+    pub session: SessionSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,7 +166,7 @@ pub struct UpdateSessionModelRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct UpdateSessionResponse {
-    pub session: SessionDetail,
+    pub session: SessionSummary,
 }
 
 #[cfg(test)]

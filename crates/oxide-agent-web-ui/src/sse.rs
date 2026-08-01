@@ -5,8 +5,8 @@ use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourc
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, TaskDetail, TaskEventKind,
-    TaskStatus, TaskSummary,
+    PersistedTaskEvent, ProgressSnapshot, SessionSummary, TaskDetail, TaskEventKind, TaskStatus,
+    TaskSummary,
 };
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -512,8 +512,7 @@ async fn refresh_session_summary(config: &TaskStreamConfig) {
             if !stream_is_current(config) {
                 return;
             }
-            let summary = session_detail_to_summary(response.session);
-            upsert_session_summary(config.set_sessions, summary);
+            upsert_session_summary(config.set_sessions, response.session);
         }
         Err(error) => set_error_if_current(config, error.to_string()),
     }
@@ -573,20 +572,6 @@ fn upsert_session_summary(set_sessions: WriteSignal<Vec<SessionSummary>>, summar
                 .then_with(|| b.session_id.cmp(&a.session_id))
         });
     });
-}
-
-fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
-    SessionSummary {
-        session_id: session.session_id,
-        title: session.title,
-        model_selection: session.model_selection,
-        agent_profile_id: session.agent_profile_id,
-        last_preview: session.last_preview,
-        active_task_id: session.active_task_id,
-        last_task_status: session.last_task_status,
-        created_at: session.created_at,
-        updated_at: session.updated_at,
-    }
 }
 
 fn append_unique_event(events: WriteSignal<Vec<PersistedTaskEvent>>, event: PersistedTaskEvent) {

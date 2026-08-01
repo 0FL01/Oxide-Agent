@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R7.
-- Smallest next action: Consolidate Web's duplicate session DTO, session-ID derivation, flow checkpoint adapter, and attachment staging in separate focused checkpoints.
+- Smallest next action: Make Web session-ID derivation a single `WebSessionManager` owner and delete the task-executor copy.
 - Expected evidence: Web contracts/transport/UI tests pass and each duplicated mechanism has one owner.
 - Stop or replan if: A supposedly duplicate Web/Life path has different observable scope or lifecycle semantics.
 
 ## Current State
 
 - Resolved: R1-R6.
-- Last relevant evidence: 35 core storage, 168 Web, 144 Telegram library plus integration tests, and the focused SQLx memory-scope test passed after flow registry deletion.
+- Last relevant evidence: `SessionDetail` and duplicate backend/UI conversions are absent; 16 Web contracts tests, 168 Web transport tests, and the Web UI wasm check pass.
 - Blocker: None.
-- Next: R7 Web single-owner checkpoints.
+- Next: R7 Web session-ID derivation.
 
 ## Material Decisions
 
@@ -145,6 +145,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R5 checkpoint 2 removed the impossible todo-clear result, sole view trait, and dead view entries; 143 Telegram tests passed. Next: progress transport.
 - 2026-08-01: R5 completed by merging visible/silent progress adapters behind an optional progress target; 144 Telegram tests passed. Next: R6.
 - 2026-08-01: R6 removed the unread application `agent_flows` registry while retaining table cleanup for rollback; core/Web/Telegram tests passed and only cleanup SQL remains. Next: R7.
+- 2026-08-01: R7 checkpoint 1 made `SessionSummary` the sole session response DTO and deleted duplicate backend/UI conversions; contracts, Web transport, and wasm checks passed. Next: session-ID derivation.
 
 ## Completion
 
