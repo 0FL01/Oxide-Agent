@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 const SEARCH_PROBE_REASONING_PREFIX: &str = "Search Probe #";
 const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main answer.";
-const INLINE_PROGRESS_NARRATIVE_CHARS: usize = 600;
-const INLINE_PROGRESS_OPERATION_CHARS: usize = 240;
+const MAX_INLINE_PROGRESS_BLOCKS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct InlineTaskProgress {
-    pub(super) narrative: String,
-    pub(super) operation: Option<String>,
+pub(super) struct InlineProgressBlock {
+    pub(super) seq: u64,
+    pub(super) headline: String,
+    pub(super) detail: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +28,7 @@ pub(crate) enum ActivityLoadPhase {
 pub(crate) struct TaskActivityState {
     pub(super) phase: ActivityLoadPhase,
     pub(super) progress: Option<ProgressSnapshot>,
+    pub(super) run_floor_seq: u64,
     pub(super) before_seq: u64,
     pub(super) has_more: bool,
     pub(super) loading_older: bool,
@@ -38,6 +39,7 @@ impl TaskActivityState {
         Self {
             phase: ActivityLoadPhase::Loading,
             progress: None,
+            run_floor_seq: 0,
             before_seq: 0,
             has_more: false,
             loading_older: false,
@@ -48,6 +50,7 @@ impl TaskActivityState {
         Self {
             phase: ActivityLoadPhase::Ready,
             progress: None,
+            run_floor_seq: 0,
             before_seq: 0,
             has_more: false,
             loading_older: false,
@@ -110,14 +113,37 @@ pub(super) fn update_activity_progress(
         .progress = progress;
 }
 
-pub(super) fn inline_task_progress(
+pub(super) fn begin_activity_run(
+    states: &mut HashMap<String, TaskActivityState>,
+    task_id: String,
+    run_floor_seq: u64,
+) {
+    let state = states
+        .entry(task_id)
+        .or_insert_with(TaskActivityState::live);
+    state.phase = ActivityLoadPhase::Ready;
+    state.progress = None;
+    state.run_floor_seq = run_floor_seq;
+}
+
+pub(crate) fn stream_owner_matches(
+    owner: Option<&(String, u64)>,
+    task_id: &str,
+    generation: u64,
+) -> bool {
+    owner.is_some_and(|(owner_task_id, owner_generation)| {
+        owner_task_id == task_id && *owner_generation == generation
+    })
+}
+
+pub(super) fn inline_progress_blocks(
     task_id: &str,
     status: TaskStatus,
     events: &[PersistedTaskEvent],
     activity: Option<&TaskActivityState>,
-) -> Option<InlineTaskProgress> {
+) -> Vec<InlineProgressBlock> {
     if !matches!(status, TaskStatus::Queued | TaskStatus::Running) {
-        return None;
+        return Vec::new();
     }
 
     let current_run_start = events
@@ -125,47 +151,107 @@ pub(super) fn inline_task_progress(
         .filter(|event| event.task_id == task_id && event.kind == TaskEventKind::UserMessage)
         .map(|event| event.seq)
         .max()
-        .unwrap_or(0);
-    let narrative = events
+        .unwrap_or(0)
+        .max(activity.map_or(0, |state| state.run_floor_seq));
+    let mut blocks: Vec<_> = events
         .iter()
-        .filter(|event| {
-            event.task_id == task_id
-                && event.kind == TaskEventKind::Reasoning
-                && event.seq > current_run_start
-        })
-        .filter_map(|event| reasoning_event_summary(event).map(|summary| (event.seq, summary)))
-        .max_by_key(|(seq, _)| *seq)
-        .map(|(_, summary)| summary);
-    let operation = activity
-        .and_then(|state| state.progress.as_ref())
-        .and_then(|progress| progress.current_thought.as_deref())
-        .and_then(normalize_reasoning_text);
-
-    let (narrative, operation) = match (narrative, operation) {
-        (Some(narrative), Some(operation))
-            if !reasoning_texts_are_equivalent(&narrative, &operation) =>
-        {
-            (narrative, Some(operation))
-        }
-        (Some(narrative), _) => (narrative, None),
-        (None, Some(operation)) => (operation, None),
-        (None, None) => (
-            match status {
-                TaskStatus::Queued => "Queued...",
-                TaskStatus::Running => "Thinking...",
+        .filter(|event| event.task_id == task_id && event.seq > current_run_start)
+        .filter_map(inline_progress_block)
+        .collect();
+    blocks.sort_by_key(|block| block.seq);
+    blocks.dedup_by(|next, previous| {
+        next.headline == previous.headline && next.detail == previous.detail
+    });
+    if blocks.len() > MAX_INLINE_PROGRESS_BLOCKS {
+        blocks.drain(..blocks.len() - MAX_INLINE_PROGRESS_BLOCKS);
+    }
+    if blocks.is_empty() {
+        blocks.push(InlineProgressBlock {
+            seq: 0,
+            headline: match status {
+                TaskStatus::Queued => "Queued...".to_string(),
+                TaskStatus::Running => "Thinking...".to_string(),
                 _ => unreachable!("non-live task status was rejected above"),
-            }
-            .to_string(),
-            None,
-        ),
-    };
+            },
+            detail: None,
+        });
+    }
+    blocks
+}
 
-    Some(InlineTaskProgress {
-        narrative: compact_reasoning_preview(&narrative, INLINE_PROGRESS_NARRATIVE_CHARS),
-        operation: operation.map(|operation| {
-            compact_reasoning_preview(&operation, INLINE_PROGRESS_OPERATION_CHARS)
-        }),
+fn inline_progress_block(event: &PersistedTaskEvent) -> Option<InlineProgressBlock> {
+    let (headline, detail) = match event.kind {
+        TaskEventKind::Reasoning => (reasoning_event_summary(event)?, None),
+        TaskEventKind::ToolCall => tool_call_progress(event)?,
+        TaskEventKind::BrowserLive => (
+            normalize_inline_detail(&event.summary)?,
+            payload_str(event, "blocked_reason").and_then(normalize_inline_detail),
+        ),
+        TaskEventKind::Continuation => (
+            "Continuing the task".to_string(),
+            payload_str(event, "reason").and_then(normalize_inline_detail),
+        ),
+        TaskEventKind::RuntimeCompactionStarted | TaskEventKind::HistoryRepairApplied => {
+            (normalize_inline_detail(&event.summary)?, None)
+        }
+        _ => return None,
+    };
+    Some(InlineProgressBlock {
+        seq: event.seq,
+        headline: compact_reasoning_preview(&headline, 280),
+        detail,
     })
+}
+
+fn tool_call_progress(event: &PersistedTaskEvent) -> Option<(String, Option<String>)> {
+    let name = payload_str(event, "name")?;
+    if name == "write_todos" {
+        return None;
+    }
+    let headline = match name {
+        "web_search" => "Searching the web".to_string(),
+        "web_crawler" | "webfetch_md" => "Reading a web page".to_string(),
+        "read_file" => "Reading a file".to_string(),
+        "execute_command" => "Executing a command".to_string(),
+        "spawn_sub_agents" => "Delegating work".to_string(),
+        "wait_sub_agents" => "Waiting for delegated work".to_string(),
+        name if name.starts_with("browser_") => "Working in the browser".to_string(),
+        name => format!("Using {}", humanize_identifier(name)),
+    };
+    let detail = if event.redacted {
+        None
+    } else {
+        payload_str(event, "command_preview")
+            .and_then(normalize_inline_detail)
+            .or_else(|| tool_input_detail(event))
+    };
+    Some((headline, detail))
+}
+
+fn tool_input_detail(event: &PersistedTaskEvent) -> Option<String> {
+    let input = payload_str(event, "input_preview")?;
+    let value = serde_json::from_str::<Value>(input).ok()?;
+    ["query", "url", "path", "directory"]
+        .iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .and_then(normalize_inline_detail)
+}
+
+fn humanize_identifier(value: &str) -> String {
+    let mut value = value.replace(['_', '-'], " ");
+    if let Some(first) = value.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    value
+}
+
+fn normalize_inline_detail(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(compact_reasoning_preview(value, 180))
+    }
 }
 
 pub(crate) fn reasoning_event_summary(event: &PersistedTaskEvent) -> Option<String> {
@@ -203,16 +289,6 @@ pub(crate) fn compact_reasoning_preview(summary: &str, max_chars: usize) -> Stri
     } else {
         preview
     }
-}
-
-fn reasoning_texts_are_equivalent(left: &str, right: &str) -> bool {
-    left == right
-        || left
-            .strip_suffix("...")
-            .is_some_and(|prefix| right.starts_with(prefix))
-        || right
-            .strip_suffix("...")
-            .is_some_and(|prefix| left.starts_with(prefix))
 }
 
 fn payload_str<'a>(event: &'a PersistedTaskEvent, key: &str) -> Option<&'a str> {
@@ -817,7 +893,27 @@ mod tests {
     }
 
     #[test]
-    fn inline_progress_selects_latest_task_reasoning_and_normalizes_probe() {
+    fn beginning_resumed_run_clears_progress_and_records_floor() {
+        let mut state = TaskActivityState::live();
+        state.progress = Some(progress(3));
+        let mut states = HashMap::from([("task-a".to_string(), state)]);
+
+        begin_activity_run(&mut states, "task-a".to_string(), 17);
+
+        assert_eq!(states["task-a"].run_floor_seq, 17);
+        assert_eq!(states["task-a"].progress, None);
+    }
+
+    #[test]
+    fn stream_owner_requires_task_and_generation() {
+        let owner = ("task-a".to_string(), 4);
+        assert!(stream_owner_matches(Some(&owner), "task-a", 4));
+        assert!(!stream_owner_matches(Some(&owner), "task-a", 3));
+        assert!(!stream_owner_matches(Some(&owner), "task-b", 4));
+    }
+
+    #[test]
+    fn inline_progress_orders_task_events_and_adjacent_deduplicates() {
         let mut other_task = task_event(
             99,
             TaskEventKind::Reasoning,
@@ -826,66 +922,123 @@ mod tests {
         other_task.task_id = "task-2".to_string();
         let events = vec![
             task_event(
-                7,
+                5,
                 TaskEventKind::Reasoning,
-                serde_json::json!({ "summary": "Search Probe #2: latest public update" }),
+                serde_json::json!({ "summary": "First status" }),
+            ),
+            task_event(
+                2,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "First status" }),
+            ),
+            task_event(
+                4,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "Second status" }),
             ),
             task_event(
                 3,
                 TaskEventKind::Reasoning,
-                serde_json::json!({ "summary": "earlier update" }),
-            ),
-            task_event(
-                6,
-                TaskEventKind::Reasoning,
-                serde_json::json!({
-                    "summary": "Search Probe #2: Starting web research before the main answer."
-                }),
+                serde_json::json!({ "summary": "First status" }),
             ),
             other_task,
         ];
-        let mut activity = TaskActivityState::live();
-        let mut snapshot = progress(8);
-        snapshot.current_thought = Some("latest public update".to_string());
-        activity.progress = Some(snapshot);
+        let blocks = inline_progress_blocks("task-1", TaskStatus::Running, &events, None);
 
         assert_eq!(
-            inline_task_progress("task-1", TaskStatus::Running, &events, Some(&activity)),
-            Some(InlineTaskProgress {
-                narrative: "latest public update".to_string(),
-                operation: None,
-            })
+            blocks
+                .iter()
+                .map(|block| (block.seq, block.headline.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, "First status"),
+                (4, "Second status"),
+                (5, "First status")
+            ]
         );
     }
 
     #[test]
-    fn inline_progress_is_live_only_and_uses_deterministic_placeholders() {
+    fn inline_progress_maps_tool_calls_without_tool_results() {
+        let events = vec![
+            task_event(
+                2,
+                TaskEventKind::ToolCall,
+                serde_json::json!({
+                    "name": "web_search",
+                    "input_preview": "{\"query\":\"oxide agent\"}",
+                    "command_preview": null
+                }),
+            ),
+            task_event(
+                3,
+                TaskEventKind::ToolResult,
+                serde_json::json!({ "name": "web_search" }),
+            ),
+        ];
+
         assert_eq!(
-            inline_task_progress("task-1", TaskStatus::Queued, &[], None),
-            Some(InlineTaskProgress {
-                narrative: "Queued...".to_string(),
-                operation: None,
-            })
-        );
-        assert_eq!(
-            inline_task_progress("task-1", TaskStatus::Running, &[], None),
-            Some(InlineTaskProgress {
-                narrative: "Thinking...".to_string(),
-                operation: None,
-            })
-        );
-        assert_eq!(
-            inline_task_progress("task-1", TaskStatus::WaitingForUserInput, &[], None),
-            None
-        );
-        assert_eq!(
-            inline_task_progress("task-1", TaskStatus::Completed, &[], None),
-            None
+            inline_progress_blocks("task-1", TaskStatus::Running, &events, None),
+            vec![InlineProgressBlock {
+                seq: 2,
+                headline: "Searching the web".to_string(),
+                detail: Some("oxide agent".to_string()),
+            }]
         );
     }
 
     #[test]
-    fn inline_progress_does_not_reuse_reasoning_from_before_resume() {
+    fn inline_progress_normalizes_probe_and_caps_newest_eight() {
+        let mut events = vec![task_event(
+            1,
+            TaskEventKind::Reasoning,
+            serde_json::json!({
+                "summary": "Search Probe #2: Starting web research before the main answer."
+            }),
+        )];
+        events.extend((2..=11).map(|seq| {
+            task_event(
+                seq,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": format!("Search Probe #2: status {seq}") }),
+            )
+        }));
+
+        let blocks = inline_progress_blocks("task-1", TaskStatus::Running, &events, None);
+        assert_eq!(blocks.len(), 8);
+        assert_eq!(blocks.first().map(|block| block.seq), Some(4));
+        assert_eq!(
+            blocks.last().map(|block| block.headline.as_str()),
+            Some("status 11")
+        );
+    }
+
+    #[test]
+    fn inline_progress_is_live_only_and_uses_deterministic_placeholder() {
+        assert_eq!(
+            inline_progress_blocks("task-1", TaskStatus::Queued, &[], None),
+            vec![InlineProgressBlock {
+                seq: 0,
+                headline: "Queued...".to_string(),
+                detail: None,
+            }]
+        );
+        assert_eq!(
+            inline_progress_blocks("task-1", TaskStatus::Running, &[], None),
+            vec![InlineProgressBlock {
+                seq: 0,
+                headline: "Thinking...".to_string(),
+                detail: None,
+            }]
+        );
+        assert!(
+            inline_progress_blocks("task-1", TaskStatus::WaitingForUserInput, &[], None).is_empty()
+        );
+        assert!(inline_progress_blocks("task-1", TaskStatus::Completed, &[], None).is_empty());
+    }
+
+    #[test]
+    fn inline_progress_run_floor_prevents_pre_resume_flash() {
         let events = vec![
             task_event(
                 7,
@@ -893,18 +1046,21 @@ mod tests {
                 serde_json::json!({ "summary": "previous execution" }),
             ),
             task_event(
-                8,
-                TaskEventKind::UserMessage,
-                serde_json::json!({ "input_markdown": "continue" }),
+                9,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "resumed execution" }),
             ),
         ];
+        let mut activity = TaskActivityState::live();
+        activity.run_floor_seq = 8;
 
         assert_eq!(
-            inline_task_progress("task-1", TaskStatus::Running, &events, None),
-            Some(InlineTaskProgress {
-                narrative: "Thinking...".to_string(),
-                operation: None,
-            })
+            inline_progress_blocks("task-1", TaskStatus::Running, &events, Some(&activity)),
+            vec![InlineProgressBlock {
+                seq: 9,
+                headline: "resumed execution".to_string(),
+                detail: None,
+            }]
         );
     }
 

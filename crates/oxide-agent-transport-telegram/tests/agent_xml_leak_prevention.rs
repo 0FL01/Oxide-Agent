@@ -178,7 +178,7 @@ mod progress_integration_tests {
     }
 
     #[test]
-    fn test_progress_grouped_steps() {
+    fn test_progress_only_shows_current_step() {
         let mut state = ProgressState::new(100);
 
         // Add multiple completed steps
@@ -222,9 +222,8 @@ mod progress_integration_tests {
 
         let output = render_progress_html(&state);
 
-        // Should show grouped completed steps
-        assert!(output.contains("✅ web_search ×2"));
-        // Current step should be shown
+        // Completed tool history belongs in Activity, not the bounded live status.
+        assert!(!output.contains("web_search ×2"));
         assert!(output.contains("⏳ 🔧 ls -la"));
     }
 

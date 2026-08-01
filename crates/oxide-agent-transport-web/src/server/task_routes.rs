@@ -1452,6 +1452,7 @@ pub(crate) async fn api_resume_task(
     task.status = ApiTaskStatus::Running;
     task.error_message = None;
     task.pending_user_input = None;
+    task.last_progress = None;
     task.last_event_seq = resume_event.seq;
     task.updated_at = now;
     task.finished_at = None;

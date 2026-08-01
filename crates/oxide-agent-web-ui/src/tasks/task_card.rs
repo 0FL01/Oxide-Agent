@@ -15,7 +15,7 @@ use super::delivered_files::{
     DeliveredFilesMessage, delivered_files_for_task, linkify_delivered_files_in_markdown,
 };
 use super::state::{
-    InlineTaskProgress, TaskActivityState, activity_button_label, inline_task_progress,
+    InlineProgressBlock, TaskActivityState, activity_button_label, inline_progress_blocks,
     summary_to_detail, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
@@ -161,16 +161,16 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let task_events = events.get();
             let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
-            let inline_progress = inline_task_progress(
+            let inline_progress = inline_progress_blocks(
                 &task.task_id,
                 task.status,
                 &task_events,
                 activity_states.get().get(&task.task_id),
             );
             let assistant_output = match task.status {
-                TaskStatus::Queued | TaskStatus::Running => inline_progress
-                    .map(|progress| view! { <InlineAssistantProgress progress=progress /> }.into_any())
-                    .unwrap_or_else(|| ().into_any()),
+                TaskStatus::Queued | TaskStatus::Running => {
+                    view! { <InlineAssistantProgressLog blocks=inline_progress /> }.into_any()
+                }
                 TaskStatus::WaitingForUserInput => pending_user_input
                     .map(|pending| {
                         view! { <div class="message pending-message">{pending.prompt}</div> }
@@ -238,21 +238,30 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
 }
 
 #[component]
-fn InlineAssistantProgress(progress: InlineTaskProgress) -> impl IntoView {
+fn InlineAssistantProgressLog(blocks: Vec<InlineProgressBlock>) -> impl IntoView {
     view! {
         <div
-            class="message assistant-progress"
-            role="status"
+            class="assistant-progress-log"
+            role="log"
             aria-live="polite"
-            aria-atomic="true"
+            aria-relevant="additions"
+            aria-atomic="false"
             aria-label="Assistant progress"
         >
-            <div class="assistant-progress-narrative">
-                <MarkdownContent markdown=progress.narrative />
-            </div>
-            {progress.operation.map(|operation| view! {
-                <div class="assistant-progress-operation">{operation}</div>
-            })}
+            <For
+                each=move || blocks.clone()
+                key=|block| block.seq
+                children=move |block| view! {
+                    <div class="message assistant-progress-block">
+                        <div class="assistant-progress-headline">
+                            <MarkdownContent markdown=block.headline />
+                        </div>
+                        {block.detail.map(|detail| view! {
+                            <div class="assistant-progress-detail">{detail}</div>
+                        })}
+                    </div>
+                }
+            />
         </div>
     }
 }
@@ -680,8 +689,8 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                     Ok(response) => {
                         let task = response.task;
                         stream_signals
-                            .update_progress
-                            .run((task.task_id.clone(), None));
+                            .begin_activity_run
+                            .run((task.task_id.clone(), task.last_event_seq));
                         stream_signals
                             .set_active_task
                             .set(Some(summary_to_detail(&session_id, &task)));

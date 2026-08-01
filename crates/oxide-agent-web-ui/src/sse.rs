@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crate::tasks::state::task_summary_is_fresh;
+use crate::tasks::state::{stream_owner_matches, task_summary_is_fresh};
 use crate::utils::spawn_ui;
 use futures_util::{FutureExt, StreamExt};
 use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourceSubscription};
@@ -24,8 +24,9 @@ pub struct TaskStreamConfig {
     pub set_active_task: WriteSignal<Option<TaskDetail>>,
     pub set_tasks: WriteSignal<Vec<TaskSummary>>,
     pub set_error: WriteSignal<Option<String>>,
-    pub streaming_task_id: ReadSignal<Option<String>>,
-    pub set_streaming_task_id: WriteSignal<Option<String>>,
+    pub stream_owner: ReadSignal<Option<(String, u64)>>,
+    pub set_stream_owner: WriteSignal<Option<(String, u64)>>,
+    pub stream_generation: u64,
 }
 
 pub fn spawn_task_stream(config: TaskStreamConfig) {
@@ -549,11 +550,11 @@ async fn finish_terminal_stream(config: &TaskStreamConfig) {
 }
 
 fn stream_is_current(config: &TaskStreamConfig) -> bool {
-    config
-        .streaming_task_id
-        .get_untracked()
-        .as_deref()
-        .is_some_and(|task_id| task_id == config.task_id.as_str())
+    stream_owner_matches(
+        config.stream_owner.get_untracked().as_ref(),
+        &config.task_id,
+        config.stream_generation,
+    )
 }
 
 fn set_error_if_current(config: &TaskStreamConfig, error: String) {
@@ -563,8 +564,8 @@ fn set_error_if_current(config: &TaskStreamConfig, error: String) {
 }
 
 fn clear_streaming_task_if_current(config: &TaskStreamConfig) {
-    config.set_streaming_task_id.update(|current| {
-        if current.as_deref() == Some(config.task_id.as_str()) {
+    config.set_stream_owner.update(|current| {
+        if stream_owner_matches(current.as_ref(), &config.task_id, config.stream_generation) {
             *current = None;
         }
     });

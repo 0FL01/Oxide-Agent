@@ -1,16 +1,61 @@
 use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState, Step, StepStatus};
 use oxide_agent_core::agent::providers::TodoStatus;
+use std::collections::VecDeque;
 
-const THOUGHT_CHARS: usize = 240;
-const ITEM_CHARS: usize = 120;
-const STATUS_CHARS: usize = 120;
+const THOUGHT_CHARS: usize = 120;
+const ITEM_CHARS: usize = 80;
+const STATUS_CHARS: usize = 80;
+const MAX_PROGRESS_SECTIONS: usize = 8;
+const MAX_PROGRESS_HTML_CHARS: usize = 4_000;
+const PROGRESS_TITLE: &str = "🤖 <b>Oxide Agent</b>";
+
+#[derive(Default)]
+pub(crate) struct ProgressHistory {
+    sections: VecDeque<String>,
+    last_successful_text: Option<String>,
+}
+
+impl ProgressHistory {
+    pub(crate) fn prepare_update(&mut self, state: &ProgressState) -> Option<String> {
+        let section = render_progress_section(state)?;
+        if self.sections.back() != Some(&section) {
+            self.sections.push_back(section);
+        }
+        while self.sections.len() > MAX_PROGRESS_SECTIONS {
+            self.sections.pop_front();
+        }
+
+        let mut rendered = render_sections(&self.sections);
+        while rendered.chars().count() > MAX_PROGRESS_HTML_CHARS && self.sections.len() > 1 {
+            self.sections.pop_front();
+            rendered = render_sections(&self.sections);
+        }
+        debug_assert!(rendered.chars().count() <= MAX_PROGRESS_HTML_CHARS);
+
+        (self.last_successful_text.as_deref() != Some(rendered.as_str())).then_some(rendered)
+    }
+
+    pub(crate) fn mark_delivered(&mut self, text: String) {
+        self.last_successful_text = Some(text);
+    }
+}
 
 /// Render one compact, intrinsically bounded Telegram progress message.
 /// Terminal text is deliberately excluded: `AgentExecutionOutcome` owns the
 /// final replacement of the progress anchor.
 pub fn render_progress_html(state: &ProgressState) -> String {
+    render_progress_section(state).map_or_else(
+        || PROGRESS_TITLE.to_string(),
+        |section| render_sections(&VecDeque::from([section])),
+    )
+}
+
+fn render_progress_section(state: &ProgressState) -> Option<String> {
+    if state.is_finished || state.error.is_some() {
+        return None;
+    }
     let mut lines = vec![format!(
-        "🤖 <b>Oxide Agent</b> │ Iteration {}/{}",
+        "<b>Iteration {}/{}</b>",
         state.current_iteration, state.max_iterations
     )];
 
@@ -30,7 +75,20 @@ pub fn render_progress_html(state: &ProgressState) -> String {
         lines.push(format!("🗜 {}", escaped(status, STATUS_CHARS)));
     }
 
-    lines.join("\n")
+    Some(lines.join("\n"))
+}
+
+fn render_sections(sections: &VecDeque<String>) -> String {
+    if sections.is_empty() {
+        PROGRESS_TITLE.to_string()
+    } else {
+        let sections = sections
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!("{PROGRESS_TITLE}\n\n{sections}")
+    }
 }
 
 fn push_current_thought(lines: &mut Vec<String>, state: &ProgressState) {
@@ -235,7 +293,7 @@ mod tests {
     use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource, ProgressState};
     use oxide_agent_core::agent::providers::{TodoItem, TodoList, TodoStatus};
 
-    use super::render_progress_html;
+    use super::{ProgressHistory, render_progress_html};
 
     #[test]
     fn progress_is_live_only_even_after_terminal_events() {
@@ -245,7 +303,7 @@ mod tests {
 
         let output = render_progress_html(&state);
 
-        assert!(output.contains("Iteration 0/5"));
+        assert_eq!(output, "🤖 <b>Oxide Agent</b>");
         assert!(!output.contains("Task completed"));
         assert!(!output.contains("boom"));
     }
@@ -319,5 +377,76 @@ mod tests {
         assert!(output.contains("Recovery step 7: SafeStopped LowConfidence"));
         assert!(output.contains("bounded recovery could not continue safely"));
         assert!(!output.contains("💭"));
+    }
+
+    #[test]
+    fn progress_history_adjacent_deduplicates_but_retains_repeats() {
+        let mut state = ProgressState::new(10);
+        let mut history = ProgressHistory::default();
+
+        state.current_thought = Some("alpha".to_string());
+        let first = history.prepare_update(&state).expect("first update");
+        assert_eq!(history.prepare_update(&state), Some(first.clone()));
+        history.mark_delivered(first);
+        assert_eq!(history.prepare_update(&state), None);
+
+        state.current_thought = Some("beta".to_string());
+        let second = history.prepare_update(&state).expect("second update");
+        history.mark_delivered(second);
+        state.current_thought = Some("alpha".to_string());
+        let repeated = history.prepare_update(&state).expect("repeated update");
+
+        assert_eq!(repeated.matches("alpha").count(), 2);
+        assert_eq!(repeated.matches("beta").count(), 1);
+    }
+
+    #[test]
+    fn progress_history_keeps_newest_eight_within_message_budget() {
+        let mut state = ProgressState::new(10);
+        let mut history = ProgressHistory::default();
+        for index in 1..=9 {
+            state.current_thought = Some(format!("status-{index}"));
+            let text = history.prepare_update(&state).expect("distinct update");
+            history.mark_delivered(text);
+        }
+        let rendered = history.prepare_update(&state).unwrap_or_else(|| {
+            history
+                .last_successful_text
+                .clone()
+                .expect("last delivered text")
+        });
+
+        assert!(!rendered.contains("status-1\n"));
+        assert!(rendered.contains("status-2"));
+        assert!(rendered.contains("status-9"));
+        assert!(rendered.chars().count() <= 4_000);
+    }
+
+    #[test]
+    fn progress_history_evicts_complete_hostile_sections() {
+        let mut state = ProgressState::new(10);
+        let mut history = ProgressHistory::default();
+        let hostile = "<script>&".repeat(100);
+        let mut rendered = String::new();
+        for index in 1..=8 {
+            state.current_thought = Some(format!("{index}-{hostile}"));
+            rendered = history.prepare_update(&state).expect("distinct update");
+            history.mark_delivered(rendered.clone());
+        }
+
+        assert!(rendered.chars().count() <= 4_000);
+        assert!(!rendered.contains("<script>"));
+        assert!(rendered.contains("&lt;script&gt;&amp;"));
+    }
+
+    #[test]
+    fn terminal_state_is_not_added_to_progress_history() {
+        let mut state = ProgressState::new(10);
+        let mut history = ProgressHistory::default();
+        state.current_thought = Some("working".to_string());
+        assert!(history.prepare_update(&state).is_some());
+
+        state.update(AgentEvent::Finished);
+        assert_eq!(history.prepare_update(&state), None);
     }
 }

@@ -29,10 +29,10 @@ use super::profile::{
     profile_value_to_id,
 };
 use super::state::{
-    ActivityLoadPhase, TaskActivityState, begin_activity_load, browser_now_millis,
-    complete_activity_load, fail_activity_load, latest_editable_task_id, latest_task,
-    remove_session_summary, summary_to_detail, update_activity_progress, upsert_session_summary,
-    upsert_task_summary,
+    ActivityLoadPhase, TaskActivityState, begin_activity_load, begin_activity_run,
+    browser_now_millis, complete_activity_load, fail_activity_load, latest_editable_task_id,
+    latest_task, remove_session_summary, summary_to_detail, update_activity_progress,
+    upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -272,7 +272,8 @@ fn Workspace(
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
-    let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
+    let (stream_owner, set_stream_owner) = signal(None::<(String, u64)>);
+    let (stream_generation, set_stream_generation) = signal(0_u64);
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
@@ -297,6 +298,11 @@ fn Workspace(
             });
         },
     );
+    let begin_activity_run = Callback::new(move |(task_id, run_floor_seq): (String, u64)| {
+        set_activity_states.update(|states| {
+            begin_activity_run(states, task_id, run_floor_seq);
+        });
+    });
 
     // Lightbox overlay state — session-scoped, provided via context so any
     // child component (e.g. BrowserToolCard) can open a full-screen image.
@@ -368,7 +374,7 @@ fn Workspace(
         // data from a just-submitted first message should stay visible).
         set_events.set(Vec::new());
         set_active_task.set(None);
-        set_streaming_task_id.set(None);
+        set_stream_owner.set(None);
         set_selected_versions.set(HashMap::new());
         set_activity_states.set(HashMap::new());
         set_activity_task_id.set(None);
@@ -460,11 +466,14 @@ fn Workspace(
                                 StreamUiSignals {
                                     set_events,
                                     update_progress,
+                                    begin_activity_run,
                                     set_active_task,
                                     set_tasks,
                                     set_error,
-                                    streaming_task_id,
-                                    set_streaming_task_id,
+                                    stream_owner,
+                                    set_stream_owner,
+                                    stream_generation,
+                                    set_stream_generation,
                                     set_sessions,
                                 },
                             );
@@ -502,7 +511,7 @@ fn Workspace(
             set_tasks.set(Vec::new());
             set_events.set(Vec::new());
             set_active_task.set(None);
-            set_streaming_task_id.set(None);
+            set_stream_owner.set(None);
             set_selected_versions.set(HashMap::new());
             set_activity_states.set(HashMap::new());
             set_activity_task_id.set(None);
@@ -929,7 +938,7 @@ fn Workspace(
                             set_pending_files.set(Vec::new());
                             set_activity.run(None);
                             set_lightbox_image.set(None);
-                            update_progress.run((task.task_id.clone(), None));
+                            begin_activity_run.run((task.task_id.clone(), task.last_event_seq));
                             set_active_task.set(Some(summary_to_detail(&sid, &task)));
                             set_selected_versions.update(|items| {
                                 items.insert(
@@ -945,11 +954,14 @@ fn Workspace(
                                 StreamUiSignals {
                                     set_events,
                                     update_progress,
+                                    begin_activity_run,
                                     set_active_task,
                                     set_tasks,
                                     set_error,
-                                    streaming_task_id,
-                                    set_streaming_task_id,
+                                    stream_owner,
+                                    set_stream_owner,
+                                    stream_generation,
+                                    set_stream_generation,
                                     set_sessions,
                                 },
                             );
@@ -979,8 +991,12 @@ fn Workspace(
                 Ok(_) => {
                     let task_id = task.task_id.clone();
                     set_active_task.set(None);
-                    if streaming_task_id.get_untracked().as_deref() == Some(task_id.as_str()) {
-                        set_streaming_task_id.set(None);
+                    if stream_owner
+                        .get_untracked()
+                        .as_ref()
+                        .is_some_and(|(owner_task_id, _)| owner_task_id == &task_id)
+                    {
+                        set_stream_owner.set(None);
                     }
                     set_tasks.update(|items| {
                         for item in items {
@@ -1066,11 +1082,14 @@ fn Workspace(
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
                                                         update_progress,
+                                                        begin_activity_run,
                                                         set_active_task,
                                                         set_tasks,
                                                         set_error,
-                                                        streaming_task_id,
-                                                        set_streaming_task_id,
+                                                        stream_owner,
+                                                        set_stream_owner,
+                                                        stream_generation,
+                                                        set_stream_generation,
                                                         set_sessions,
                                                     },
                                                     set_error,

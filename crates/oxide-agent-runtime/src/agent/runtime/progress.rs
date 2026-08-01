@@ -81,10 +81,28 @@ pub async fn run_progress_loop<T: AgentTransport>(
     config: ProgressRuntimeConfig,
 ) -> ProgressState {
     let mut state = ProgressState::new(config.max_iterations);
-    let mut last_update = Instant::now();
+    let mut last_update = None::<Instant>;
     let mut needs_update = false;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let trailing_delay = last_update.map_or(Duration::ZERO, |last_update| {
+            config.throttle.saturating_sub(last_update.elapsed())
+        });
+        let event = tokio::select! {
+            event = rx.recv() => event,
+            () = tokio::time::sleep(trailing_delay), if needs_update && last_update.is_some() => {
+                if let Err(e) = transport.update_progress(&state).await {
+                    warn!(error = %e, "Trailing progress update failed");
+                }
+                last_update = Some(Instant::now());
+                needs_update = false;
+                continue;
+            }
+        };
+        let Some(event) = event else {
+            break;
+        };
+
         // File delivery is a side-effect and should not block state updates more than necessary.
         match &event {
             AgentEvent::FileToSend {
@@ -130,6 +148,16 @@ pub async fn run_progress_loop<T: AgentTransport>(
 
                     // Preserve existing semantics: do not update progress state for this variant.
                     needs_update = true;
+                    if last_update.is_none()
+                        || last_update
+                            .is_some_and(|last_update| last_update.elapsed() >= config.throttle)
+                    {
+                        if let Err(e) = transport.update_progress(&state).await {
+                            warn!(error = %e, "Progress update failed");
+                        }
+                        last_update = Some(Instant::now());
+                        needs_update = false;
+                    }
                     continue;
                 }
             }
@@ -158,7 +186,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 if let Err(e) = transport.update_progress(&state).await {
                     warn!(error = %e, "LLM retry progress update failed");
                 }
-                last_update = Instant::now();
+                last_update = Some(Instant::now());
                 needs_update = false;
                 continue;
             }
@@ -168,11 +196,13 @@ pub async fn run_progress_loop<T: AgentTransport>(
         state.update(event);
         needs_update = true;
 
-        if needs_update && last_update.elapsed() >= config.throttle {
+        if last_update.is_none()
+            || last_update.is_some_and(|last_update| last_update.elapsed() >= config.throttle)
+        {
             if let Err(e) = transport.update_progress(&state).await {
                 warn!(error = %e, "Progress update failed");
             }
-            last_update = Instant::now();
+            last_update = Some(Instant::now());
             needs_update = false;
         }
     }
@@ -286,6 +316,68 @@ mod tests {
 
         let updates = *transport.updates.lock().await;
         assert!(updates >= 1);
+    }
+
+    async fn wait_for_updates(transport: &DummyTransport, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if *transport.updates.lock().await >= expected {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("progress update deadline");
+    }
+
+    #[tokio::test]
+    async fn first_progress_update_is_immediate() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_secs(60));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::Thinking {
+            snapshot: sample_snapshot(),
+        })
+        .await
+        .expect("send first progress event");
+
+        wait_for_updates(&transport, 1).await;
+        drop(tx);
+        handle.await.expect("progress runtime join");
+    }
+
+    #[tokio::test]
+    async fn dirty_progress_gets_one_trailing_update_without_idle_heartbeats() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(200));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::Thinking {
+            snapshot: sample_snapshot(),
+        })
+        .await
+        .expect("send immediate event");
+        wait_for_updates(&transport, 1).await;
+
+        tx.send(AgentEvent::Reasoning {
+            source: Default::default(),
+            summary: "A distinct real status that needs trailing delivery".to_string(),
+        })
+        .await
+        .expect("send throttled event");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(*transport.updates.lock().await, 1);
+
+        wait_for_updates(&transport, 2).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(*transport.updates.lock().await, 2);
+
+        drop(tx);
+        handle.await.expect("progress runtime join");
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use crate::bot::progress_render::render_progress_html;
+use crate::bot::progress_render::ProgressHistory;
 use crate::bot::views::{
     empty_inline_keyboard, loop_action_keyboard, loop_type_label, progress_inline_keyboard,
 };
@@ -29,6 +29,7 @@ pub struct TelegramAgentTransport {
 struct ProgressTarget {
     message_id: MessageId,
     reply_markup: Option<InlineKeyboardMarkup>,
+    history: Mutex<ProgressHistory>,
 }
 
 impl TelegramAgentTransport {
@@ -48,6 +49,7 @@ impl TelegramAgentTransport {
             progress_target: Some(ProgressTarget {
                 message_id: progress_msg_id,
                 reply_markup: use_inline_progress_controls.then(progress_inline_keyboard),
+                history: Mutex::new(ProgressHistory::default()),
             }),
             loop_notification_delivered,
             delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
@@ -130,17 +132,29 @@ impl AgentTransport for TelegramAgentTransport {
         let Some(target) = &self.progress_target else {
             return Ok(());
         };
-        let text = render_progress_html(state);
+        let Some(text) = target
+            .history
+            .lock()
+            .map_err(|_| anyhow::anyhow!("progress history mutex poisoned"))?
+            .prepare_update(state)
+        else {
+            return Ok(());
+        };
         let reply_markup = progress_reply_markup_for_state(target.reply_markup.as_ref(), state);
         crate::bot::resilient::edit_message_resilient_with_markup(
             &self.bot,
             self.chat_id,
             target.message_id,
-            text,
+            text.clone(),
             Some(ParseMode::Html),
             reply_markup,
         )
         .await?;
+        target
+            .history
+            .lock()
+            .map_err(|_| anyhow::anyhow!("progress history mutex poisoned"))?
+            .mark_delivered(text);
         Ok(())
     }
 
