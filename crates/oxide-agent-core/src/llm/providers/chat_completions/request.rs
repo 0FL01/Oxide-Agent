@@ -571,7 +571,10 @@ fn image_data_url_with_optional_mime(image_bytes: &[u8], mime_type: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{Message, MessageContentPart, ToolCall, ToolCallFunction, ToolDefinition};
+    use crate::llm::{
+        Message, MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction,
+        ToolDefinition,
+    };
 
     fn sample_tool() -> ToolDefinition {
         ToolDefinition {
@@ -623,6 +626,10 @@ mod tests {
         assert_eq!(body["stream"], json!(false));
         assert_eq!(body["tool_choice"], json!("auto"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("get_weather"));
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"]["type"],
+            json!("object")
+        );
         assert_eq!(body["messages"][0]["role"], json!("system"));
         assert_eq!(
             body["messages"][2]["tool_calls"][0]["id"],
@@ -634,6 +641,32 @@ mod tests {
             json!("image_url")
         );
         assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn chat_completions_messages_use_provider_tool_call_ids() {
+        let call = sample_tool_call("invoke-1").with_correlation(
+            ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1"),
+        );
+        let history = vec![
+            Message::assistant_with_tools("Calling tool", vec![call]),
+            Message::tool_with_correlation(
+                "invoke-1",
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1"),
+                "get_weather",
+                "sunny",
+            ),
+        ];
+
+        let messages = prepare_messages(
+            "System",
+            &history,
+            ChatRequestOptions::new(ChatCompletionsProfile::openrouter())
+                .with_native_image_parts(false),
+        );
+
+        assert_eq!(messages[1]["tool_calls"][0]["id"], "provider-call-1");
+        assert_eq!(messages[2]["tool_call_id"], "provider-call-1");
     }
 
     #[test]

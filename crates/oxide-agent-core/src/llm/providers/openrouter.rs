@@ -1,5 +1,4 @@
 #[cfg(test)]
-mod helpers;
 pub(crate) mod module;
 
 pub(crate) use module::OpenRouterProviderModule;
