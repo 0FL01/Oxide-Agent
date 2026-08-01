@@ -2765,30 +2765,46 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .save_agent_memory_for_flow(
             user_one.user_id,
             original_context_key.clone(),
-            web_task_pre_run_memory_flow_id(&agent_flow_id, "task-completed"),
+            web_task_pre_run_memory_flow_id(&agent_flow_id, "task-interrupted"),
             &pre_run_memory,
         )
         .await
         .expect("save pre-run flow memory");
 
-    let completed = task_record(
+    let interrupted = task_record(
         user_one.user_id,
         &session_id,
-        "task-completed",
-        ApiTaskStatus::Completed,
+        "task-interrupted",
+        ApiTaskStatus::Interrupted,
         "Original prompt",
         now,
     );
     state
         .web_store
-        .save_task(completed)
+        .save_task(interrupted)
         .await
-        .expect("save completed task");
+        .expect("save interrupted task");
+
+    let missing_task = api_create_task_version(
+        axum::extract::State(state.clone()),
+        auth_headers(&token_one, Some(&session_one.csrf_token)),
+        axum::extract::Path((session_id.clone(), "missing-task".to_string())),
+        axum::Json(ApiCreateTaskVersionRequest {
+            input_markdown: "Should not find parent".to_string(),
+            attachments: Vec::new(),
+            effort: None,
+        }),
+    )
+    .await;
+    assert_eq!(
+        missing_task.expect_err("missing task should stay hidden").0,
+        axum::http::StatusCode::NOT_FOUND
+    );
 
     let axum::Json(versioned) = api_create_task_version(
         axum::extract::State(state.clone()),
         auth_headers(&token_one, Some(&session_one.csrf_token)),
-        axum::extract::Path((session_id.clone(), "task-completed".to_string())),
+        axum::extract::Path((session_id.clone(), "task-interrupted".to_string())),
         axum::Json(ApiCreateTaskVersionRequest {
             input_markdown: "Edited prompt".to_string(),
             attachments: Vec::new(),
@@ -2799,13 +2815,13 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
     .expect("create task version");
     assert_eq!(versioned.task.input_markdown, "Edited prompt");
     assert!(versioned.task.input_edited_at.is_some());
-    assert_eq!(versioned.task.version_group_id, "task-completed");
+    assert_eq!(versioned.task.version_group_id, "task-interrupted");
     assert_eq!(versioned.task.version_index, 2);
     assert_eq!(
         versioned.task.parent_task_id.as_deref(),
-        Some("task-completed")
+        Some("task-interrupted")
     );
-    assert_ne!(versioned.task.task_id, "task-completed");
+    assert_ne!(versioned.task.task_id, "task-interrupted");
     let edited_session = state
         .web_store
         .load_session(user_one.user_id, &session_id)
@@ -2868,7 +2884,7 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
 
     let original = state
         .web_store
-        .load_task(user_one.user_id, &session_id, "task-completed")
+        .load_task(user_one.user_id, &session_id, "task-interrupted")
         .await
         .expect("load original task")
         .expect("original task exists");
@@ -2920,7 +2936,7 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
     let edit_non_latest = api_create_task_version(
         axum::extract::State(state.clone()),
         auth_headers(&token_one, Some(&session_one.csrf_token)),
-        axum::extract::Path((session_id.clone(), "task-completed".to_string())),
+        axum::extract::Path((session_id.clone(), "task-interrupted".to_string())),
         axum::Json(ApiCreateTaskVersionRequest {
             input_markdown: "Should also fail".to_string(),
             attachments: Vec::new(),

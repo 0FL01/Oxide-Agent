@@ -193,7 +193,7 @@ fn session_record_task_existence(record: &WebSessionRecord) -> Option<bool> {
     (record.created_at == record.updated_at).then_some(false)
 }
 
-fn task_write_front_cache() -> Cache<TaskCacheKey, WebTaskRecord> {
+fn pending_initial_task_cache() -> Cache<TaskCacheKey, WebTaskRecord> {
     Cache::builder()
         .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
         .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
@@ -226,7 +226,7 @@ fn initial_task_flush_cache() -> Cache<TaskCacheKey, ()> {
 pub struct SqlxWebUiStore {
     storage: Arc<SqlxStorage>,
     max_task_file_bytes: u64,
-    task_cache: Cache<TaskCacheKey, WebTaskRecord>,
+    pending_initial_tasks: Cache<TaskCacheKey, WebTaskRecord>,
     task_session_cache: Cache<TaskSessionCacheKey, bool>,
     session_cache: Cache<SessionCacheKey, WebSessionRecord>,
     initial_task_flush_cache: Cache<TaskCacheKey, ()>,
@@ -253,7 +253,7 @@ impl SqlxWebUiStore {
         Self {
             storage,
             max_task_file_bytes,
-            task_cache: task_write_front_cache(),
+            pending_initial_tasks: pending_initial_task_cache(),
             task_session_cache: task_session_write_front_cache(),
             session_cache: session_write_front_cache(),
             initial_task_flush_cache: initial_task_flush_cache(),
@@ -566,13 +566,22 @@ impl SqlxWebUiStore {
         Ok(())
     }
 
-    async fn cache_task_record(&self, record: &WebTaskRecord) {
-        self.task_cache
-            .insert(TaskCacheKey::from_record(record), record.clone())
-            .await;
+    async fn mark_task_session_exists(&self, record: &WebTaskRecord) {
         self.task_session_cache
             .insert(TaskSessionCacheKey::from_record(record), true)
             .await;
+    }
+
+    async fn cache_pending_initial_task(&self, record: &WebTaskRecord) {
+        self.pending_initial_tasks
+            .insert(TaskCacheKey::from_record(record), record.clone())
+            .await;
+        self.mark_task_session_exists(record).await;
+    }
+
+    async fn clear_pending_initial_task(&self, key: &TaskCacheKey) {
+        self.pending_initial_tasks.invalidate(key).await;
+        self.initial_task_flush_cache.invalidate(key).await;
     }
 
     async fn cache_session_record(&self, record: &WebSessionRecord) {
@@ -593,7 +602,7 @@ impl SqlxWebUiStore {
         record.validate_web_record()?;
         let started_at = Instant::now();
         let key = TaskCacheKey::from_record(&record);
-        self.cache_task_record(&record).await;
+        self.cache_pending_initial_task(&record).await;
 
         if self.initial_task_flush_cache.get(&key).await.is_some() {
             log_task_write_front(
@@ -630,6 +639,7 @@ impl SqlxWebUiStore {
             let result = self.insert_initial_task_record(&record).await;
             match result {
                 Ok(()) => {
+                    self.clear_pending_initial_task(&key).await;
                     tracing::debug!(
                         target: WEB_LATENCY_TARGET,
                         operation = "save_task.write_behind_flushed",
@@ -730,7 +740,7 @@ impl SqlxWebUiStore {
             None,
         );
 
-        self.save_task_progress(record).await
+        Ok(())
     }
 
     async fn upsert_task_record(&self, record: &WebTaskRecord) -> WebUiStoreResult<()> {
@@ -803,8 +813,10 @@ impl SqlxWebUiStore {
             None,
         );
 
+        let key = TaskCacheKey::from_record(record);
+        self.clear_pending_initial_task(&key).await;
+        self.mark_task_session_exists(record).await;
         self.save_task_progress(record).await?;
-        self.cache_task_record(record).await;
         Ok(())
     }
 }
@@ -1305,30 +1317,13 @@ impl WebUiStore for SqlxWebUiStore {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskRecord>> {
-        let cache_started_at = Instant::now();
         if let Some(record) = self
-            .task_cache
+            .pending_initial_tasks
             .get(&TaskCacheKey::new(user_id, session_id, task_id))
             .await
         {
-            log_task_cache(
-                "load_task.cache",
-                cache_started_at,
-                user_id,
-                session_id,
-                Some(task_id),
-                true,
-            );
             return Ok(Some(record));
         }
-        log_task_cache(
-            "load_task.cache",
-            cache_started_at,
-            user_id,
-            session_id,
-            Some(task_id),
-            false,
-        );
 
         let sql = task_select_sql(
             "WHERE t.user_id = $1 AND t.session_id = $2 AND t.task_id = $3",
@@ -1355,7 +1350,7 @@ impl WebUiStore for SqlxWebUiStore {
 
         let record = row.as_ref().map(row_to_task).transpose()?;
         if let Some(record) = &record {
-            self.cache_task_record(record).await;
+            self.mark_task_session_exists(record).await;
         }
         Ok(record)
     }
@@ -1424,33 +1419,16 @@ impl WebUiStore for SqlxWebUiStore {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskEventState>> {
-        let cache_started_at = Instant::now();
         if let Some(record) = self
-            .task_cache
+            .pending_initial_tasks
             .get(&TaskCacheKey::new(user_id, session_id, task_id))
             .await
         {
-            log_task_cache(
-                "load_task_event_state.cache",
-                cache_started_at,
-                user_id,
-                session_id,
-                Some(task_id),
-                true,
-            );
             return Ok(Some(WebTaskEventState {
                 status: record.status,
                 last_event_seq: record.last_event_seq,
             }));
         }
-        log_task_cache(
-            "load_task_event_state.cache",
-            cache_started_at,
-            user_id,
-            session_id,
-            Some(task_id),
-            false,
-        );
 
         let started_at = Instant::now();
         let row = query::<Postgres>(
@@ -1806,7 +1784,9 @@ impl WebUiStore for SqlxWebUiStore {
             .map(row_to_task)
             .collect::<WebUiStoreResult<Vec<_>>>()?;
         for task in &interrupted {
-            self.cache_task_record(task).await;
+            self.clear_pending_initial_task(&TaskCacheKey::from_record(task))
+                .await;
+            self.mark_task_session_exists(task).await;
             self.clear_interrupted_session_task(task, now).await?;
         }
         Ok(interrupted)
@@ -2234,7 +2214,11 @@ mod tests {
     static SQL_USER_ID: AtomicI64 = AtomicI64::new(0);
 
     async fn test_store() -> Option<SqlxWebUiStore> {
-        let database_url = std::env::var("OXIDE_DATABASE_TEST_URL").ok()?;
+        let database_url = match std::env::var("OXIDE_DATABASE_TEST_URL") {
+            Ok(database_url) => database_url,
+            Err(std::env::VarError::NotPresent) => return None,
+            Err(error) => panic!("OXIDE_DATABASE_TEST_URL is invalid: {error}"),
+        };
         let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("migrations");
@@ -2246,7 +2230,7 @@ mod tests {
             migrations_dir,
         })
         .await
-        .ok()?;
+        .expect("connect SQLx web test store");
         Some(SqlxWebUiStore::with_max_task_file_bytes(
             Arc::new(storage),
             1024 * 1024,
@@ -2543,6 +2527,10 @@ mod tests {
             eprintln!("skipping SQLx web store test: OXIDE_DATABASE_TEST_URL is not set");
             return;
         };
+        let reconciler = SqlxWebUiStore::with_max_task_file_bytes(
+            Arc::clone(&store.storage),
+            store.max_task_file_bytes,
+        );
         let now = postgres_timestamp_now();
         let reconcile_at = now + Duration::seconds(5);
         let user_id = next_user_id();
@@ -2588,7 +2576,7 @@ mod tests {
             .await
             .expect("save completed task");
 
-        let interrupted = store
+        let interrupted = reconciler
             .mark_unfinished_tasks_interrupted("backend restarted", reconcile_at)
             .await
             .expect("reconcile tasks");
@@ -2605,6 +2593,14 @@ mod tests {
                 .await
                 .expect("load running")
                 .map(|task| task.status),
+            Some(TaskStatus::Interrupted)
+        );
+        assert_eq!(
+            store
+                .load_task_event_state(user_id, "session-1", "running")
+                .await
+                .expect("load running event state")
+                .map(|state| state.status),
             Some(TaskStatus::Interrupted)
         );
         assert_eq!(

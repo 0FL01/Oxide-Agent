@@ -1223,7 +1223,15 @@ pub(crate) async fn api_create_task_version(
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
     let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
-    let parent_task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+    let tasks = state
+        .web_store
+        .list_tasks(user.user_id, &session_id)
+        .await
+        .map_err(store_error_response)?;
+    let parent_task = tasks
+        .iter()
+        .find(|task| task.task_id == task_id)
+        .ok_or_else(not_found_response)?;
     if !parent_task.status.is_terminal() {
         return Err(api_error(
             StatusCode::CONFLICT,
@@ -1233,11 +1241,6 @@ pub(crate) async fn api_create_task_version(
         ));
     }
 
-    let tasks = state
-        .web_store
-        .list_tasks(user.user_id, &session_id)
-        .await
-        .map_err(store_error_response)?;
     let latest_task_id = tasks
         .iter()
         .max_by(|a, b| {
