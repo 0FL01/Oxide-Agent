@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use oxide_agent_core::agent::preprocessor::Preprocessor;
-use oxide_agent_core::sandbox::SandboxContainerRecord;
+use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 use oxide_agent_web_contracts::{
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateSessionResponse as ApiCreateSessionResponse, ErrorCode, ErrorEnvelope,
@@ -178,15 +178,13 @@ fn is_web_session_sandbox_scope(scope: &str) -> bool {
     scope == "web" || scope.starts_with("web-session-")
 }
 
-async fn stage_task_attachments(
+pub(super) async fn stage_task_attachments(
     state: &AppState,
-    user_id: i64,
-    session: &WebSessionRecord,
+    sandbox_scope: SandboxScope,
     mut multipart: Multipart,
 ) -> Result<Vec<TaskAttachment>, (StatusCode, Json<ErrorEnvelope>)> {
     let limit_mb = web_chat_upload_limit_mb();
     let max_bytes = limit_mb.saturating_mul(1024 * 1024);
-    let sandbox_scope = web_session_sandbox_scope(user_id, &session.context_key);
     let preprocessor = Preprocessor::from_settings(
         state.session_manager.llm_client(),
         state.session_manager.agent_settings().as_ref(),
@@ -415,7 +413,8 @@ pub(crate) async fn api_upload_task_attachments(
 ) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     let session = load_owned_session(&state, user.user_id, &session_id).await?;
-    let attachments = stage_task_attachments(&state, user.user_id, &session, multipart).await?;
+    let sandbox_scope = web_session_sandbox_scope(user.user_id, &session.context_key);
+    let attachments = stage_task_attachments(&state, sandbox_scope, multipart).await?;
     Ok(Json(UploadTaskAttachmentsResponse { attachments }))
 }
 

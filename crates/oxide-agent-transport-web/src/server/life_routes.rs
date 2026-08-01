@@ -35,7 +35,7 @@ use super::sse::sse_json_event;
 use super::{AppState, api_error, authenticated_user, authenticated_user_with_csrf};
 
 #[cfg(feature = "storage-sqlx")]
-use super::types::web_chat_upload_limit_mb;
+use super::session_routes::stage_task_attachments;
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_core::agent::preprocessor::Preprocessor;
 #[cfg(feature = "storage-sqlx")]
@@ -443,72 +443,10 @@ async fn submit_life_input_for_user(
 async fn life_upload_attachments_for_user(
     state: &AppState,
     user_id: i64,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    let limit_mb = web_chat_upload_limit_mb();
-    let max_bytes = limit_mb.saturating_mul(1024 * 1024);
     let sandbox_scope = SandboxScope::new(user_id, LIFE_CONTEXT_KEY.to_string());
-    let preprocessor = Preprocessor::from_settings(
-        state.session_manager.llm_client(),
-        state.session_manager.agent_settings().as_ref(),
-        sandbox_scope,
-    );
-    let mut total_bytes = 0_u64;
-    let mut attachments = Vec::new();
-
-    while let Some(field) = multipart.next_field().await.map_err(|error| {
-        api_error(
-            StatusCode::BAD_REQUEST,
-            ErrorCode::ValidationError,
-            format!("Invalid multipart upload payload: {error}"),
-            false,
-        )
-    })? {
-        let Some(file_name) = field.file_name().map(ToString::to_string) else {
-            continue;
-        };
-        let mime_type = field.content_type().map(ToString::to_string);
-        let bytes = field.bytes().await.map_err(|error| {
-            api_error(
-                StatusCode::BAD_REQUEST,
-                ErrorCode::ValidationError,
-                format!("Failed to read uploaded file bytes: {error}"),
-                false,
-            )
-        })?;
-        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
-        if total_bytes > max_bytes {
-            return Err(api_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                ErrorCode::ValidationError,
-                format!("Total attachment upload size must be at most {limit_mb} MB per request."),
-                false,
-            ));
-        }
-
-        let staged = preprocessor
-            .stage_document_upload(bytes.to_vec(), file_name.clone(), mime_type.clone(), None)
-            .await
-            .map_err(|error| {
-                backend_unavailable_response(format!("Failed to stage uploaded file: {error}"))
-            })?;
-        attachments.push(TaskAttachment {
-            file_name,
-            mime_type,
-            size_bytes: staged.size_bytes,
-            sandbox_path: staged.sandbox_path,
-        });
-    }
-
-    if attachments.is_empty() {
-        return Err(api_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            ErrorCode::ValidationError,
-            "At least one attachment file must be provided.",
-            false,
-        ));
-    }
-
+    let attachments = stage_task_attachments(state, sandbox_scope, multipart).await?;
     Ok(Json(UploadTaskAttachmentsResponse { attachments }))
 }
 

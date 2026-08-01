@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R7.
-- Smallest next action: Share multipart attachment staging while keeping Web session and Life sandbox scopes caller-owned.
+- Smallest next action: Replace `SessionRegistry`'s parallel executor, cancellation-token, and inbox maps with one `SessionEntry` map.
 - Expected evidence: Web contracts/transport/UI tests pass and each duplicated mechanism has one owner.
 - Stop or replan if: A supposedly duplicate Web/Life path has different observable scope or lifecycle semantics.
 
 ## Current State
 
 - Resolved: R1-R6.
-- Last relevant evidence: Web and Life execution now share one storage-backed flow checkpoint adapter; all 168 Web transport tests pass.
+- Last relevant evidence: Web session and Life multipart uploads share one staging mechanism while retaining caller-owned scopes; all 168 Web transport tests pass.
 - Blocker: None.
-- Next: R7 attachment staging.
+- Next: R7 `SessionRegistry` owner consolidation.
 
 ## Material Decisions
 
@@ -148,6 +148,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 checkpoint 1 made `SessionSummary` the sole session response DTO and deleted duplicate backend/UI conversions; contracts, Web transport, and wasm checks passed. Next: session-ID derivation.
 - 2026-08-01: R7 checkpoint 2 made `WebSessionManager::resolve_session_id` the task executor's session-ID owner and removed duplicate hashing; all 168 Web tests passed. Next: checkpoint adapter.
 - 2026-08-01: R7 checkpoint 3 reused `StorageFlowCheckpoint` for Life execution and removed its duplicate adapter; all 168 Web tests passed. Next: attachment staging.
+- 2026-08-01: R7 checkpoint 4 shared multipart attachment staging between Web sessions and Life while preserving distinct sandbox scopes; all 168 Web tests passed. Next: `SessionRegistry`.
 
 ## Completion
 
