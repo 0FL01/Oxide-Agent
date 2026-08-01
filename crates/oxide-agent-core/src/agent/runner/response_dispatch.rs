@@ -5,7 +5,6 @@ use super::tools::ToolTurnAssistantContent;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
-use crate::agent::compaction::CompactionTrigger;
 use crate::agent::loop_detection::LoopDetectionOutcome;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::structured_output::parse_structured_output;
@@ -261,7 +260,7 @@ impl AgentRunner {
 
         if let Some(u) = &response.usage {
             ctx.agent.memory_mut().sync_api_usage(u.clone());
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            let snapshot = Self::build_token_snapshot(ctx);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
         }
 

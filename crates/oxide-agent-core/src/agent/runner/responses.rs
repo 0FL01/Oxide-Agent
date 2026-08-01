@@ -5,7 +5,6 @@ use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, PendingFinalDraftDecision, RunState,
     StructuredOutputFailure,
 };
-use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMemory;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TodoList;
@@ -209,7 +208,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                 .add_message(crate::agent::memory::AgentMessage::system_context(
                     retry_message,
                 ));
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            let snapshot = Self::build_token_snapshot(ctx);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);
         }
@@ -231,14 +230,14 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                 &final_response,
                 "new user context arrived before delivery",
             );
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+            let snapshot = Self::build_token_snapshot(ctx);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);
         }
 
         self.save_final_response(ctx, &final_response, reasoning);
         state.pending_final_draft = None;
-        let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+        let snapshot = Self::build_token_snapshot(ctx);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         if let Some(tx) = ctx.progress_tx
@@ -265,7 +264,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &request.prompt, reasoning);
         let _ = state;
-        let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+        let snapshot = Self::build_token_snapshot(ctx);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         Ok(Some(AgentRunResult::WaitingForUserInput(request)))

@@ -3,7 +3,7 @@
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use crate::agent::compaction::{
-    AdmissionDecision, CompactionTrigger, ContextAdmission, PayloadDescriptor, PayloadKind,
+    AdmissionDecision, ContextAdmission, PayloadDescriptor, PayloadKind,
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
@@ -70,12 +70,7 @@ impl AgentRunner {
                 debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
             }
 
-            let snapshot_trigger = if iteration == 0 {
-                CompactionTrigger::PreRun
-            } else {
-                CompactionTrigger::PreIteration
-            };
-            let snapshot = Self::build_token_snapshot(ctx, snapshot_trigger);
+            let snapshot = Self::build_token_snapshot(ctx);
             Self::log_token_snapshot(ctx, iteration, "before_llm_call", &snapshot);
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx.send(AgentEvent::Thinking { snapshot }).await;

@@ -3,8 +3,8 @@
 use super::AgentRunner;
 use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
 use crate::agent::compaction::{
-    AdmissionBudget, AdmissionDecision, CompactionEngine, CompactionTrigger, ContextAdmission,
-    PayloadDescriptor, PayloadKind, count_tokens_cached,
+    AdmissionBudget, AdmissionDecision, CompactionEngine, ContextAdmission, PayloadDescriptor,
+    PayloadKind, count_tokens_cached,
 };
 use crate::agent::hooks::HookResult;
 use crate::agent::identity::SessionId;
@@ -266,11 +266,7 @@ impl AgentRunner {
             }
         }
 
-        Self::emit_token_snapshot_update(
-            ctx.progress_tx,
-            Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration),
-        )
-        .await;
+        Self::emit_token_snapshot_update(ctx.progress_tx, Self::build_token_snapshot(ctx)).await;
         Ok(None)
     }
 

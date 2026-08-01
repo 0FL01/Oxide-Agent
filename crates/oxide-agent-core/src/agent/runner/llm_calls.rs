@@ -2,9 +2,7 @@
 
 use super::AgentRunner;
 use super::types::{AgentRunnerContext, RunState};
-use crate::agent::compaction::{
-    CompactionPolicy, CompactionRequest, CompactionTrigger, estimate_request_budget,
-};
+use crate::agent::compaction::{CompactionPolicy, estimate_request_budget};
 use crate::agent::memory::{AgentMessage, AgentMessageAttachment, AgentMessageAttachmentKind};
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::SandboxRuntime;
@@ -544,11 +542,7 @@ impl AgentRunner {
             capabilities.tool_history_label(),
         )
         .await;
-        Self::emit_token_snapshot_update(
-            ctx.progress_tx,
-            Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration),
-        )
-        .await;
+        Self::emit_token_snapshot_update(ctx.progress_tx, Self::build_token_snapshot(ctx)).await;
         info!(
             provider = provider_name,
             attempt,
@@ -751,17 +745,13 @@ impl AgentRunner {
 
     fn effective_request_max_output_tokens(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> u32 {
         let policy = CompactionPolicy::default();
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreIteration,
-            ctx.task,
+        let budget = estimate_request_budget(
+            &policy,
             ctx.system_prompt,
             &ctx.tools,
-            &route.id,
-            route.max_output_tokens,
             route.context_window_tokens,
-            ctx.config.is_sub_agent,
+            ctx.agent,
         );
-        let budget = estimate_request_budget(&policy, &request, ctx.agent);
         let context_window_tokens = if route.context_window_tokens == 0 {
             budget.context_window_tokens
         } else {

@@ -2,29 +2,20 @@
 
 use super::AgentRunner;
 use super::types::AgentRunnerContext;
-use crate::agent::compaction::{
-    CompactionPolicy, CompactionRequest, CompactionTrigger, estimate_request_budget,
-};
+use crate::agent::compaction::{CompactionPolicy, estimate_request_budget};
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use tracing::info;
 
 impl AgentRunner {
-    pub(super) fn build_token_snapshot(
-        ctx: &AgentRunnerContext<'_>,
-        trigger: CompactionTrigger,
-    ) -> TokenSnapshot {
-        let request = CompactionRequest::new(
-            trigger,
-            ctx.task,
+    pub(super) fn build_token_snapshot(ctx: &AgentRunnerContext<'_>) -> TokenSnapshot {
+        let policy = CompactionPolicy::default();
+        let budget = estimate_request_budget(
+            &policy,
             ctx.system_prompt,
             &ctx.tools,
-            &ctx.config.model.id,
-            ctx.config.model.max_output_tokens,
             ctx.config.model.context_window_tokens,
-            ctx.config.is_sub_agent,
+            ctx.agent,
         );
-        let policy = CompactionPolicy::default();
-        let budget = estimate_request_budget(&policy, &request, ctx.agent);
 
         TokenSnapshot {
             hot_memory_tokens: budget.hot_memory.rendered_tokens,

@@ -9,8 +9,8 @@
 use super::AgentRunner;
 use super::types::{AgentRunnerContext, RunState};
 use crate::agent::compaction::{
-    BudgetState, CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest,
-    CompactionTrigger, EngineCompactionResult, estimate_request_budget,
+    BudgetState, CompactionPhase, CompactionPolicy, CompactionReason, EngineCompactionResult,
+    estimate_request_budget,
 };
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind};
 use crate::config::ModelInfo;
@@ -58,17 +58,13 @@ impl AgentRunner {
         ctx: &AgentRunnerContext<'_>,
         route: &ModelInfo,
     ) -> bool {
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreIteration,
-            ctx.task,
+        let budget = estimate_request_budget(
+            &CompactionPolicy::default(),
             ctx.system_prompt,
             &ctx.tools,
-            &route.id,
-            route.max_output_tokens,
             route.context_window_tokens,
-            ctx.config.is_sub_agent,
+            ctx.agent,
         );
-        let budget = estimate_request_budget(&CompactionPolicy::default(), &request, ctx.agent);
         matches!(
             budget.state,
             BudgetState::ShouldCompact | BudgetState::OverLimit
@@ -289,8 +285,8 @@ mod tests {
     use crate::agent::compaction::{
         BudgetState, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
         CompactSummaryResult, CompactionController, CompactionEngine, CompactionPolicy,
-        CompactionRequest, CompactionTrigger, CompressionSelection, MessageRef, SummaryPart,
-        count_tokens_cached, estimate_request_budget,
+        CompressionSelection, MessageRef, SummaryPart, count_tokens_cached,
+        estimate_request_budget,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -522,18 +518,16 @@ mod tests {
             context_window_tokens: 40_000,
         };
         let tools = Vec::new();
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreIteration,
-            "Test compaction",
-            "system prompt",
-            &tools,
-            &route.id,
-            route.max_output_tokens,
-            route.context_window_tokens,
-            false,
-        );
+        let task = "Test compaction";
+        let system_prompt = "system prompt";
         let policy = CompactionPolicy::default();
-        let budget_before = estimate_request_budget(&policy, &request, &session);
+        let budget_before = estimate_request_budget(
+            &policy,
+            system_prompt,
+            &tools,
+            route.context_window_tokens,
+            &session,
+        );
         assert!(matches!(
             budget_before.state,
             BudgetState::ShouldCompact | BudgetState::OverLimit
@@ -547,7 +541,7 @@ mod tests {
                     + message.reasoning.as_deref().map_or(0, count_tokens_cached)
             })
             .sum::<usize>()
-            + count_tokens_cached(request.system_prompt)
+            + count_tokens_cached(system_prompt)
             + policy.hard_reserve_tokens;
         assert!(content_only_projected < budget_before.compact_threshold_tokens);
 
@@ -555,8 +549,8 @@ mod tests {
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
         let mut ctx = AgentRunnerContext {
-            task: request.task,
-            system_prompt: request.system_prompt,
+            task,
+            system_prompt,
             date_suffix: "",
             tools: tools.clone(),
             tool_catalog: None,
@@ -584,7 +578,13 @@ mod tests {
         );
         assert!(ctx.agent.memory().compaction_state().has_active_blocks());
         assert_eq!(state.compaction_count, 1);
-        let budget_after = estimate_request_budget(&policy, &request, ctx.agent);
+        let budget_after = estimate_request_budget(
+            &policy,
+            system_prompt,
+            &tools,
+            route.context_window_tokens,
+            ctx.agent,
+        );
         assert!(
             budget_after.projected_total_tokens < budget_before.projected_total_tokens,
             "compaction should reduce the full model-facing request budget"

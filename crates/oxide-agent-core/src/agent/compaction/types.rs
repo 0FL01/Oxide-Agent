@@ -1,6 +1,5 @@
 //! Shared types for Agent Mode context compaction.
 
-use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
 const BROWSER_LIVE_TOOLS: &[&str] = &[
@@ -101,17 +100,6 @@ fn is_summary_preferred_tool(tool_name: Option<&str>) -> bool {
     matches!(tool_name, Some("wait_sub_agents"))
 }
 
-/// Trigger point for a compaction pipeline invocation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum CompactionTrigger {
-    /// Compaction check before the first model request of a run.
-    PreRun,
-    /// Compaction check before a later loop iteration.
-    PreIteration,
-    /// Explicit manual compaction requested by the operator or transport.
-    Manual,
-}
-
 /// Why runtime/session-level compaction is requested.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CompactionReason {
@@ -191,53 +179,6 @@ impl Default for CompactionScope {
         Self {
             context_key: "unknown-context".to_string(),
             flow_id: "hot-memory".to_string(),
-        }
-    }
-}
-
-/// Immutable request payload describing a compaction checkpoint.
-#[derive(Debug, Clone)]
-pub struct CompactionRequest<'a> {
-    /// Why the pipeline was invoked.
-    pub trigger: CompactionTrigger,
-    /// User-visible task text.
-    pub task: &'a str,
-    /// Current fully rendered system prompt.
-    pub system_prompt: &'a str,
-    /// Tool definitions exposed to the model.
-    pub tools: &'a [ToolDefinition],
-    /// Active model name for the main agent request.
-    pub model_name: &'a str,
-    /// Configured response token cap for the active model. This is not pre-reserved from input.
-    pub model_max_output_tokens: u32,
-    /// Context window of the active model. Zero falls back to the memory limit.
-    pub context_window_tokens: u32,
-    /// Whether the current execution is a sub-agent.
-    pub is_sub_agent: bool,
-}
-
-impl<'a> CompactionRequest<'a> {
-    /// Build a request for a compaction checkpoint.
-    #[must_use]
-    pub const fn new(
-        trigger: CompactionTrigger,
-        task: &'a str,
-        system_prompt: &'a str,
-        tools: &'a [ToolDefinition],
-        model_name: &'a str,
-        model_max_output_tokens: u32,
-        context_window_tokens: u32,
-        is_sub_agent: bool,
-    ) -> Self {
-        Self {
-            trigger,
-            task,
-            system_prompt,
-            tools,
-            model_name,
-            model_max_output_tokens,
-            context_window_tokens,
-            is_sub_agent,
         }
     }
 }

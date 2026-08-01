@@ -48,6 +48,5 @@ pub use task::{
 };
 pub use types::{
     AgentMessageKind, BudgetEstimate, BudgetState, CompactionBackend, CompactionPhase,
-    CompactionPolicy, CompactionReason, CompactionRequest, CompactionRetention, CompactionScope,
-    CompactionTrigger, HotMemoryBudget,
+    CompactionPolicy, CompactionReason, CompactionRetention, CompactionScope, HotMemoryBudget,
 };

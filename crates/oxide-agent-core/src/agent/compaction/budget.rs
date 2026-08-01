@@ -1,8 +1,8 @@
 //! Full request budget estimation for Agent Mode compaction checkpoints.
 
 use super::types::{
-    AgentMessageKind, BudgetEstimate, BudgetState, CompactionPolicy, CompactionRequest,
-    CompactionRetention, HotMemoryBudget,
+    AgentMessageKind, BudgetEstimate, BudgetState, CompactionPolicy, CompactionRetention,
+    HotMemoryBudget,
 };
 use crate::agent::context::AgentContext;
 use crate::agent::memory::AgentMessage;
@@ -29,16 +29,18 @@ pub fn count_tokens_cached(text: &str) -> usize {
 #[must_use]
 pub fn estimate_request_budget(
     policy: &CompactionPolicy,
-    request: &CompactionRequest<'_>,
+    system_prompt: &str,
+    tools: &[ToolDefinition],
+    context_window_tokens: u32,
     agent: &dyn AgentContext,
 ) -> BudgetEstimate {
-    let system_prompt_tokens = estimate_text_tokens(request.system_prompt);
-    let tool_schema_tokens = estimate_tool_tokens(request.tools);
+    let system_prompt_tokens = estimate_text_tokens(system_prompt);
+    let tool_schema_tokens = estimate_tool_tokens(tools);
     let hot_memory = estimate_hot_memory(agent);
-    let context_window_tokens = if request.context_window_tokens == 0 {
+    let context_window_tokens = if context_window_tokens == 0 {
         agent.memory().max_tokens()
     } else {
-        request.context_window_tokens as usize
+        context_window_tokens as usize
     };
     let reserved_output_tokens = 0;
     let hard_reserve_tokens = policy.hard_reserve_tokens;
@@ -197,8 +199,8 @@ const fn percent_of(value: usize, percent: u8) -> usize {
 mod tests {
     use super::estimate_request_budget;
     use crate::agent::compaction::{
-        BudgetState, CompactionEngine, CompactionPolicy, CompactionRequest, CompactionTrigger,
-        CompressionSelection, MessageRef, SummaryPart,
+        BudgetState, CompactionEngine, CompactionPolicy, CompressionSelection, MessageRef,
+        SummaryPart,
     };
     use crate::agent::memory::AgentMessage;
     use crate::agent::{AgentContext, EphemeralSession};
@@ -239,18 +241,13 @@ mod tests {
             description: "Run a shell command".to_string(),
             parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string"}}}),
         }];
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreRun,
-            "Deploy the hotfix",
+        let estimate = estimate_request_budget(
+            &CompactionPolicy::default(),
             "System prompt with operational instructions",
             &tools,
-            "demo-model",
-            512,
             0,
-            false,
+            &session,
         );
-
-        let estimate = estimate_request_budget(&CompactionPolicy::default(), &request, &session);
 
         assert!(estimate.system_prompt_tokens > 0);
         assert!(estimate.tool_schema_tokens > 0);
@@ -286,18 +283,13 @@ mod tests {
                 "b".repeat(2_000)
             )));
 
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreRun,
-            "huge task",
+        let estimate = estimate_request_budget(
+            &CompactionPolicy::default(),
             "system prompt",
             &[],
-            "demo-model",
-            512,
             0,
-            false,
+            &session,
         );
-
-        let estimate = estimate_request_budget(&CompactionPolicy::default(), &request, &session);
 
         assert_eq!(estimate.state, BudgetState::OverLimit);
         assert_eq!(estimate.headroom_tokens, 0);
@@ -335,18 +327,13 @@ mod tests {
         )
         .expect("test compaction block is valid");
 
-        let request = CompactionRequest::new(
-            CompactionTrigger::PreIteration,
-            "Investigate laptops",
+        let estimate = estimate_request_budget(
+            &CompactionPolicy::default(),
             "system prompt",
             &[],
-            "demo-model",
-            512,
             0,
-            false,
+            &session,
         );
-
-        let estimate = estimate_request_budget(&CompactionPolicy::default(), &request, &session);
         let raw_projected_total = estimate
             .system_prompt_tokens
             .saturating_add(estimate.tool_schema_tokens)

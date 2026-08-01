@@ -54,7 +54,7 @@ pub use compaction::{
     AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactSummaryBackend,
     CompactSummaryError, CompactSummaryRequest, CompactSummaryResult, CompactionBackend,
     CompactionController, CompactionControllerError, CompactionPhase, CompactionReason,
-    CompactionTrigger, HotMemoryBudget, LocalLlmSummary,
+    HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{
