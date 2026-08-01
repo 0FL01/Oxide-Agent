@@ -279,6 +279,10 @@ mod tests {
         assert!(p.capabilities.supports_tool_calling);
         assert!(p.capabilities.supports_structured_output);
         assert!(p.vision_capabilities.supports_image_understanding);
+        assert!(!p.vision_capabilities.supports_video_understanding);
+        assert_eq!(p.parallel_tool_calls, None);
+        assert_eq!(p.streaming, ChatStreamingPolicy::NonStreaming);
+        assert_eq!(p.structured_output, StructuredOutputPolicy::BaseCapability);
     }
 
     #[test]
@@ -286,6 +290,10 @@ mod tests {
         let p = ChatCompletionsProfile::zai();
 
         assert_eq!(p.label, "zai");
+        assert_eq!(p.default_endpoint, "https://api.z.ai/api/coding/paas/v4");
+        assert!((p.temperatures.chat - 0.95).abs() < f32::EPSILON);
+        assert!((p.temperatures.tools - 0.95).abs() < f32::EPSILON);
+        assert!((p.temperatures.reasoning - 0.95).abs() < f32::EPSILON);
         assert_eq!(p.thinking, ChatThinkingPolicy::ZaiEnabledUnlessJsonMode);
         assert_eq!(p.streaming, ChatStreamingPolicy::ZaiUnlessNativeJsonMode);
         assert_eq!(p.rate_limit, RateLimitPolicy::ZaiFlushTime);
@@ -295,6 +303,11 @@ mod tests {
         );
         assert!(p.vision_capabilities.supports_image_understanding);
         assert!(!p.capabilities.supports_structured_output);
+        assert!(
+            p.capabilities_for_model(" subagent ")
+                .supports_structured_output
+        );
+        assert!(!p.capabilities_for_model("glm-5").supports_structured_output);
     }
 
     #[test]

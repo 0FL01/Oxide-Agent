@@ -6,7 +6,7 @@ use crate::llm::LlmProvider;
 use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode, VisionCapabilities};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 
-use super::profile::OpenAICompatibleProfile;
+use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
 
 /// Capability module for generic OpenAI-compatible routes.
 pub(crate) struct OpenAIBaseProviderModule;
@@ -182,30 +182,30 @@ fn parse_bool_env(value: &str) -> Option<bool> {
 }
 
 /// Resolve a profile name string (from `OPENAI_BASE_PROVIDERS__N__PROFILE`)
-/// to the corresponding `OpenAICompatibleProfile`. Returns `generic()` for
+/// to the corresponding `ChatCompletionsProfile`. Returns `generic()` for
 /// `None`, empty, `"generic"`, or any unrecognized value.
-fn resolve_profile(profile: &Option<String>) -> OpenAICompatibleProfile {
+fn resolve_profile(profile: &Option<String>) -> ChatCompletionsProfile {
     match profile
         .as_deref()
         .map(str::trim)
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("zai") => OpenAICompatibleProfile::zai(),
-        _ => OpenAICompatibleProfile::generic(),
+        Some("zai") => ChatCompletionsProfile::zai(),
+        _ => ChatCompletionsProfile::generic(),
     }
 }
 
-fn profile_for_provider(provider_name: &str) -> OpenAICompatibleProfile {
+fn profile_for_provider(provider_name: &str) -> ChatCompletionsProfile {
     let Some(instance) = provider_instance_name(provider_name) else {
-        return OpenAICompatibleProfile::generic();
+        return ChatCompletionsProfile::generic();
     };
 
     configured_endpoints()
         .into_iter()
         .find(|endpoint| endpoint.name == instance)
         .map(|endpoint| resolve_profile(&endpoint.profile))
-        .unwrap_or_else(OpenAICompatibleProfile::generic)
+        .unwrap_or_else(ChatCompletionsProfile::generic)
 }
 
 /// Resolve image input support for a model route on an openai-base endpoint.
@@ -380,14 +380,14 @@ mod tests {
 
     #[test]
     fn resolve_profile_none_is_generic() {
-        assert_eq!(resolve_profile(&None), OpenAICompatibleProfile::generic());
+        assert_eq!(resolve_profile(&None), ChatCompletionsProfile::generic());
     }
 
     #[test]
     fn resolve_profile_generic_string_is_generic() {
         assert_eq!(
             resolve_profile(&Some("generic".to_string())),
-            OpenAICompatibleProfile::generic()
+            ChatCompletionsProfile::generic()
         );
     }
 
@@ -395,7 +395,7 @@ mod tests {
     fn resolve_profile_zai_string() {
         assert_eq!(
             resolve_profile(&Some(" zai ".to_string())),
-            OpenAICompatibleProfile::zai()
+            ChatCompletionsProfile::zai()
         );
     }
 
@@ -403,7 +403,7 @@ mod tests {
     fn resolve_profile_unknown_falls_back_to_generic() {
         assert_eq!(
             resolve_profile(&Some("deepseek".to_string())),
-            OpenAICompatibleProfile::generic()
+            ChatCompletionsProfile::generic()
         );
     }
 

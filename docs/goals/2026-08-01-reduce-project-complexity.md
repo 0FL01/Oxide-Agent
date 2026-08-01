@@ -39,7 +39,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: The unused Anthropic module re-export, OpenAI Base profile alias, unused `ModuleRegistry`, and proven duplicate OpenRouter helpers are absent; unique assertions live with canonical implementations and Anthropic Messages protocol identifiers remain.
   - Primary evidence: Focused provider tests and module-registry check.
   - Status: in_progress
-  - Evidence: Unused Anthropic compatibility module and capability `ModuleRegistry` removed; modular registry snapshot passes and live Anthropic protocol identifiers remain.
+  - Evidence: Unused Anthropic/module registry shells and OpenAI Base profile alias removed; canonical profile tests retain unique ZAI/generic assertions; registry, profile, and 41 OpenAI Base tests pass.
 - R5: Telegram mechanical paths have one session ID, cancellation result, view owner, and progress transport.
   - Source: Approved M1.5 plan.
   - Acceptance: `AgentModeSessionKeys`, impossible todo-clear outcome, sole-implementation `AgentView` trait, and duplicate progress transport implementation are absent; session derivation, silent file delivery, loop notifications, thread targeting, and keyboard cleanup remain.
@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R4.
-- Smallest next action: Move unique OpenAI Base profile assertions to the canonical Chat Completions profile tests, switch imports, and remove the alias module.
-- Expected evidence: Canonical profile and OpenAI Base tests pass with no `OpenAICompatibleProfile` alias module.
-- Stop or replan if: The alias owns behavior not exposed by `ChatCompletionsProfile`.
+- Smallest next action: Move the two unique OpenRouter request assertions to canonical Chat Completions tests and delete the test-helper wrapper.
+- Expected evidence: Canonical request/response and OpenRouter wrapper tests pass with `openrouter/helpers.rs` absent.
+- Stop or replan if: A helper owns provider behavior rather than forwarding canonical behavior.
 
 ## Current State
 
-- Resolved: R1-R3; R4 compatibility re-exports partly removed.
-- Last relevant evidence: Full-profile modular registry snapshot passed after Anthropic/module registry deletion.
+- Resolved: R1-R3; R4 compatibility modules partly removed.
+- Last relevant evidence: Four canonical profile and 41 OpenAI Base tests passed after alias deletion.
 - Blocker: None.
-- Next: R4 OpenAI Base profile alias deletion.
+- Next: R4 OpenRouter test-helper deletion.
 
 ## Material Decisions
 
@@ -139,6 +139,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R3 checkpoint 2 removed `CompactionRequest`, `CompactionTrigger`, and unread task/model/sub-agent plumbing (95 net LOC); focused budget and runner tests passed. Next: `CompactionScope` deletion.
 - 2026-08-01: R3 completed by deleting `CompactionScope` and all trait/session projections (55 net LOC); session tests passed and references are absent. Next: R4.
 - 2026-08-01: R4 checkpoint 1 removed the unused Anthropic compatibility module and `ModuleRegistry` (53 LOC); registry snapshot passed. Next: OpenAI Base alias.
+- 2026-08-01: R4 checkpoint 2 replaced the OpenAI Base profile alias with direct canonical imports and moved unique assertions; profile/OpenAI Base tests passed. Next: OpenRouter helper.
 
 ## Completion
 

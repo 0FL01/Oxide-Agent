@@ -1,13 +1,12 @@
 pub(crate) mod module;
-pub(crate) mod profile;
 
 pub(crate) use module::OpenAIBaseProviderModule;
-pub(crate) use profile::OpenAICompatibleProfile;
 
 use crate::config::OPENAI_BASE_CHAT_TEMPERATURE;
 #[cfg(test)]
 use crate::llm::ToolCall;
 use crate::llm::providers::chat_completions::client::ChatCompletionsClient;
+use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
 use crate::llm::providers::chat_completions::request as chat_completions_request;
 use crate::llm::providers::chat_completions::response as chat_completions_response;
 use crate::llm::providers::chat_completions::streaming as chat_completions_streaming;
@@ -33,7 +32,7 @@ impl OpenAIBaseProvider {
             api_key,
             api_base,
             crate::llm::support::http::create_http_client(),
-            OpenAICompatibleProfile::generic(),
+            ChatCompletionsProfile::generic(),
         )
     }
 
@@ -47,7 +46,7 @@ impl OpenAIBaseProvider {
             api_key,
             api_base,
             http_client,
-            OpenAICompatibleProfile::generic(),
+            ChatCompletionsProfile::generic(),
         )
     }
 
@@ -56,7 +55,7 @@ impl OpenAIBaseProvider {
         api_key: Option<String>,
         api_base: String,
         http_client: HttpClient,
-        profile: OpenAICompatibleProfile,
+        profile: ChatCompletionsProfile,
     ) -> Self {
         let endpoint = chat_completions_url(&api_base);
         Self {
@@ -72,7 +71,7 @@ impl OpenAIBaseProvider {
         self.client.auth_header()
     }
 
-    fn profile(&self) -> OpenAICompatibleProfile {
+    fn profile(&self) -> ChatCompletionsProfile {
         self.client.profile()
     }
 }
@@ -89,7 +88,7 @@ fn chat_completions_url(api_base: &str) -> String {
 #[cfg(test)]
 fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
     let options =
-        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::generic());
+        chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::generic());
     chat_completions_request::prepare_messages(system_prompt, history, options)
 }
 
@@ -129,7 +128,7 @@ fn build_image_analysis_body(
         model_id,
         4000,
         OPENAI_BASE_CHAT_TEMPERATURE,
-        chat_completions_request::ChatRequestOptions::new(OpenAICompatibleProfile::generic()),
+        chat_completions_request::ChatRequestOptions::new(ChatCompletionsProfile::generic()),
     )
 }
 
@@ -139,7 +138,7 @@ fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
 }
 
 fn chat_request_options<'a>(
-    profile: &OpenAICompatibleProfile,
+    profile: &ChatCompletionsProfile,
 ) -> chat_completions_request::ChatRequestOptions<'a> {
     chat_completions_request::ChatRequestOptions::new(*profile)
 }
@@ -151,7 +150,7 @@ fn normalize_tool_arguments_str(raw: &str) -> String {
 
 fn parse_chat_response(
     response: Value,
-    profile: &OpenAICompatibleProfile,
+    profile: &ChatCompletionsProfile,
 ) -> Result<ChatResponse, LlmError> {
     chat_completions_response::parse_chat_response(response, *profile)
 }
@@ -170,7 +169,7 @@ pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
     chat_completions_response::parse_zai_flush_time(message)
 }
 
-fn apply_profile_rate_limit_wait(error: LlmError, profile: &OpenAICompatibleProfile) -> LlmError {
+fn apply_profile_rate_limit_wait(error: LlmError, profile: &ChatCompletionsProfile) -> LlmError {
     match error {
         LlmError::RateLimit { wait_secs, message } if profile.label == "zai" => {
             LlmError::RateLimit {
@@ -183,7 +182,7 @@ fn apply_profile_rate_limit_wait(error: LlmError, profile: &OpenAICompatibleProf
 }
 
 fn profile_rate_limit_wait_secs(
-    profile: &OpenAICompatibleProfile,
+    profile: &ChatCompletionsProfile,
     message: &str,
     fallback: Option<u64>,
 ) -> Option<u64> {
@@ -200,7 +199,7 @@ async fn send_streaming_chat_request(
     url: &str,
     body: &Value,
     auth_header: Option<&str>,
-    profile: &OpenAICompatibleProfile,
+    profile: &ChatCompletionsProfile,
 ) -> Result<ChatResponse, LlmError> {
     let mut request = client
         .post(url)
@@ -374,13 +373,13 @@ impl LlmProvider for OpenAIBaseProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAIBaseProvider, OpenAICompatibleProfile, StreamingChatAccumulator,
-        build_image_analysis_body, build_tool_chat_body, chat_completions_url,
-        chat_request_options, decode_utf8_prefix, finalize_streaming_tool_calls,
-        finish_streaming_chat_response, infer_image_mime_type, normalize_newlines_in_place,
-        normalize_tool_arguments_str, parse_chat_response, parse_zai_flush_time,
-        process_chat_sse_event, send_streaming_chat_request,
+        OpenAIBaseProvider, StreamingChatAccumulator, build_image_analysis_body,
+        build_tool_chat_body, chat_completions_url, chat_request_options, decode_utf8_prefix,
+        finalize_streaming_tool_calls, finish_streaming_chat_response, infer_image_mime_type,
+        normalize_newlines_in_place, normalize_tool_arguments_str, parse_chat_response,
+        parse_zai_flush_time, process_chat_sse_event, send_streaming_chat_request,
     };
+    use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
     use crate::llm::{
         ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart, ToolDefinition,
     };
@@ -400,12 +399,12 @@ mod tests {
         }
     }
 
-    fn generic_profile() -> OpenAICompatibleProfile {
-        OpenAICompatibleProfile::generic()
+    fn generic_profile() -> ChatCompletionsProfile {
+        ChatCompletionsProfile::generic()
     }
 
-    fn zai_profile() -> OpenAICompatibleProfile {
-        OpenAICompatibleProfile::zai()
+    fn zai_profile() -> ChatCompletionsProfile {
+        ChatCompletionsProfile::zai()
     }
 
     async fn run_single_response_server(
@@ -476,10 +475,10 @@ mod tests {
             Some(" token ".to_string()),
             "https://api.z.ai/api/coding/paas/v4".to_string(),
             crate::llm::support::http::create_http_client(),
-            OpenAICompatibleProfile::zai(),
+            ChatCompletionsProfile::zai(),
         );
 
-        assert_eq!(provider.client.profile(), OpenAICompatibleProfile::zai());
+        assert_eq!(provider.client.profile(), ChatCompletionsProfile::zai());
         assert_eq!(provider.client.profile().label, "zai");
         assert_eq!(
             provider.client.endpoint(),
