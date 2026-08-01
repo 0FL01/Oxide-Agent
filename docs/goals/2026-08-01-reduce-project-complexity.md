@@ -32,8 +32,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.3 plan.
   - Acceptance: `CompactionScope` and unread request/trigger state are absent; selection/block resolution is owned by `CompactionEngine`; candidate apply, final apply, graph validation, tool-batch atomicity, and no-op comparison remain.
   - Primary evidence: Focused core compaction tests.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: Duplicate controller selection/block helpers removed in favor of `CompactionEngine`; 29 engine and 3 controller tests pass.
 - R4: Internal provider/capability compatibility shells are removed without changing live protocols.
   - Source: Approved M1.4 plan.
   - Acceptance: The unused Anthropic module re-export, OpenAI Base profile alias, unused `ModuleRegistry`, and proven duplicate OpenRouter helpers are absent; unique assertions live with canonical implementations and Anthropic Messages protocol identifiers remain.
@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R3.
-- Smallest next action: Consolidate compaction selection/block resolution into `CompactionEngine` without changing candidate/final apply behavior.
-- Expected evidence: Focused compaction controller/engine tests pass with duplicate helpers absent.
-- Stop or replan if: The controller helpers implement behavior not represented by the engine owner.
+- Smallest next action: Remove `CompactionRequest`/`CompactionTrigger` state not read by budget estimation while preserving estimator inputs and output-cap semantics.
+- Expected evidence: Focused budget, runtime-compaction, and token-snapshot tests pass with trigger/request plumbing absent.
+- Stop or replan if: Any removed field affects a current budget, snapshot, telemetry, or compaction decision.
 
 ## Current State
 
-- Resolved: R1-R2.
-- Last relevant evidence: 22 focused Web event tests and 5 SSE tests passed after R2; removed-symbol search was empty.
+- Resolved: R1-R2; R3 helper ownership consolidated.
+- Last relevant evidence: 29 compaction engine and 3 controller tests passed after helper consolidation.
 - Blocker: None.
-- Next: R3 compaction helper consolidation.
+- Next: R3 budget protocol deletion.
 
 ## Material Decisions
 
@@ -135,6 +135,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R1 checkpoint 1 removed the raw Life checkpoint contract and unused outcome memory payload (192 net LOC); focused Life and Web Life tests passed. Next: remove unpaged reads.
 - 2026-08-01: R1 completed by removing uncalled unpaged Life turn/event queries (48 LOC); all 30 Life tests passed and removed-symbol search was empty. Next: R2.
 - 2026-08-01: R2 removed the lightweight Web event plane and unused transport (251 net LOC) while retaining persisted replay/broadcast/caches/timeline; event and SSE tests passed. Next: R3.
+- 2026-08-01: R3 checkpoint 1 made `CompactionEngine` the selection/block-resolution owner and deleted 52 duplicate controller LOC; engine/controller tests passed. Next: budget protocol deletion.
 
 ## Completion
 

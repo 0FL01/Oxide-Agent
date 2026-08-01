@@ -125,7 +125,7 @@ impl CompactionEngine {
     // Step 1: Resolve selection
     // -----------------------------------------------------------------------
 
-    fn resolve_selection(
+    pub(super) fn resolve_selection(
         messages: &[AgentMessage],
         selection: &CompressionSelection,
     ) -> Result<BTreeSet<usize>, CompactionError> {
@@ -225,7 +225,7 @@ impl CompactionEngine {
     // -----------------------------------------------------------------------
 
     /// Find active blocks whose direct indices are fully within the new selection.
-    fn find_consumed_blocks(
+    pub(super) fn find_consumed_blocks(
         state: &CompactionState,
         new_indices: &BTreeSet<usize>,
     ) -> Vec<BlockRef> {

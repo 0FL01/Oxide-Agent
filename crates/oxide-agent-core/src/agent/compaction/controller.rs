@@ -148,9 +148,9 @@ impl CompactionController {
         // range; consumed active blocks are preserved structurally as BlockRef
         // parts instead of being flattened into a global previous summary.
         let source_messages = memory.get_messages().to_vec();
-        let selected_indices = resolve_selection_indices(&source_messages, &selection)?;
+        let selected_indices = CompactionEngine::resolve_selection(&source_messages, &selection)?;
         let consumed_block_refs =
-            consumed_block_refs_for_selection(memory.compaction_state(), &selected_indices);
+            CompactionEngine::find_consumed_blocks(memory.compaction_state(), &selected_indices);
         let selected_summary_source_messages = selected_summary_source_messages(
             &source_messages,
             memory.compaction_state(),
@@ -247,59 +247,6 @@ fn rendered_item_count_for_state(
     state: &super::CompactionState,
 ) -> usize {
     super::CompactionRenderer::render(messages, state, &super::RenderPolicy::default()).len()
-}
-
-fn resolve_selection_indices(
-    messages: &[AgentMessage],
-    selection: &super::CompressionSelection,
-) -> Result<BTreeSet<usize>, super::CompactionError> {
-    let message_count = messages.len();
-    match selection {
-        super::CompressionSelection::Range { start, end } => {
-            let start_idx = start
-                .resolve(message_count)
-                .ok_or(super::CompactionError::InvalidMessageRef(*start))?;
-            let end_idx = end
-                .resolve(message_count)
-                .ok_or(super::CompactionError::InvalidMessageRef(*end))?;
-            if start_idx > end_idx {
-                return Err(super::CompactionError::InvalidRange {
-                    start: *start,
-                    end: *end,
-                });
-            }
-            Ok((start_idx..=end_idx).collect())
-        }
-        super::CompressionSelection::Messages { refs } => {
-            if refs.is_empty() {
-                return Err(super::CompactionError::EmptySelection);
-            }
-            refs.iter()
-                .map(|reff| {
-                    reff.resolve(message_count)
-                        .ok_or(super::CompactionError::InvalidMessageRef(*reff))
-                })
-                .collect()
-        }
-    }
-}
-
-fn consumed_block_refs_for_selection(
-    state: &super::CompactionState,
-    selected_indices: &BTreeSet<usize>,
-) -> Vec<super::BlockRef> {
-    state
-        .blocks()
-        .values()
-        .filter(|block| block.is_active())
-        .filter(|block| {
-            block
-                .direct_message_indices()
-                .iter()
-                .all(|index| selected_indices.contains(index))
-        })
-        .map(super::CompressionBlock::block_ref)
-        .collect()
 }
 
 fn selected_summary_source_messages(
