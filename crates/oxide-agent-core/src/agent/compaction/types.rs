@@ -165,24 +165,6 @@ impl Default for CompactionPolicy {
     }
 }
 
-/// Agent/session scope metadata used for archive and payload keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactionScope {
-    /// Stable context key for topic/thread/session scope.
-    pub context_key: String,
-    /// Stable flow identifier within the context.
-    pub flow_id: String,
-}
-
-impl Default for CompactionScope {
-    fn default() -> Self {
-        Self {
-            context_key: "unknown-context".to_string(),
-            flow_id: "hot-memory".to_string(),
-        }
-    }
-}
-
 /// Health state derived from the estimated full request budget.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BudgetState {

@@ -3,7 +3,6 @@
 //! Provides a lightweight context trait for agent execution that
 //! decouples the runner from session-specific infrastructure.
 
-use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
 use super::session::{AgentSession, RuntimeContextInjection};
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
@@ -21,10 +20,6 @@ pub trait AgentContext: Send {
     fn memory_mut(&mut self) -> &mut AgentMemory;
     /// Access the cancellation token for this run.
     fn cancellation_token(&self) -> &CancellationToken;
-    /// Return scope metadata used by compaction persistence layers.
-    fn compaction_scope(&self) -> CompactionScope {
-        CompactionScope::default()
-    }
     /// Return sandbox scope when this context can resolve sandbox-local attachment refs.
     fn sandbox_scope(&self) -> Option<&SandboxScope> {
         None
@@ -111,10 +106,6 @@ impl AgentContext for AgentSession {
         self.elapsed_secs()
     }
 
-    fn compaction_scope(&self) -> CompactionScope {
-        AgentSession::compaction_scope(self)
-    }
-
     fn sandbox_scope(&self) -> Option<&SandboxScope> {
         Some(AgentSession::sandbox_scope(self))
     }
@@ -152,12 +143,5 @@ impl AgentContext for EphemeralSession {
 
     fn elapsed_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
-    }
-
-    fn compaction_scope(&self) -> CompactionScope {
-        CompactionScope {
-            context_key: "ephemeral-sub-agent".to_string(),
-            flow_id: "sub-agent".to_string(),
-        }
     }
 }

@@ -32,8 +32,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.3 plan.
   - Acceptance: `CompactionScope` and unread request/trigger state are absent; selection/block resolution is owned by `CompactionEngine`; candidate apply, final apply, graph validation, tool-batch atomicity, and no-op comparison remain.
   - Primary evidence: Focused core compaction tests.
-  - Status: in_progress
-  - Evidence: Duplicate controller helpers and unread request/trigger protocol removed; engine/controller, budget, runtime-compaction, token-snapshot, and output-cap tests pass.
+  - Status: verified
+  - Evidence: Duplicate controller helpers, unread request/trigger protocol, and `CompactionScope` forwarding removed; focused engine/controller/budget/runner/session tests pass and removed-symbol searches are empty.
 - R4: Internal provider/capability compatibility shells are removed without changing live protocols.
   - Source: Approved M1.4 plan.
   - Acceptance: The unused Anthropic module re-export, OpenAI Base profile alias, unused `ModuleRegistry`, and proven duplicate OpenRouter helpers are absent; unique assertions live with canonical implementations and Anthropic Messages protocol identifiers remain.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3.
-- Smallest next action: Remove unused `CompactionScope` and its forwarding methods while retaining `AgentMemoryScope` as the execution/persistence owner.
-- Expected evidence: Session/context/executor compilation and scope tests pass with `CompactionScope` references absent.
-- Stop or replan if: A production archive, payload, runner, or persistence path reads `compaction_scope()`.
+- Closes: R4.
+- Smallest next action: Remove the unused Anthropic compatibility module and capability `ModuleRegistry`, then validate canonical imports and registry behavior.
+- Expected evidence: Focused provider/module-registry tests pass and only live Anthropic protocol identifiers remain.
+- Stop or replan if: Either wrapper has a production consumer or removing it changes capability/provider output.
 
 ## Current State
 
-- Resolved: R1-R2; R3 helper and budget ownership consolidated.
-- Last relevant evidence: Budget (3), runtime-compaction (7), token-snapshot (1), and output-cap (1) focused tests passed after request/trigger deletion.
+- Resolved: R1-R3.
+- Last relevant evidence: Seven session tests passed after `CompactionScope` deletion; source search found no remaining scope symbol or method.
 - Blocker: None.
-- Next: R3 `CompactionScope` deletion.
+- Next: R4 provider/capability compatibility-shell deletion.
 
 ## Material Decisions
 
@@ -137,6 +137,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R2 removed the lightweight Web event plane and unused transport (251 net LOC) while retaining persisted replay/broadcast/caches/timeline; event and SSE tests passed. Next: R3.
 - 2026-08-01: R3 checkpoint 1 made `CompactionEngine` the selection/block-resolution owner and deleted 52 duplicate controller LOC; engine/controller tests passed. Next: budget protocol deletion.
 - 2026-08-01: R3 checkpoint 2 removed `CompactionRequest`, `CompactionTrigger`, and unread task/model/sub-agent plumbing (95 net LOC); focused budget and runner tests passed. Next: `CompactionScope` deletion.
+- 2026-08-01: R3 completed by deleting `CompactionScope` and all trait/session projections (55 net LOC); session tests passed and references are absent. Next: R4.
 
 ## Completion
 

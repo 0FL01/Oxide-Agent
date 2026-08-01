@@ -3,7 +3,6 @@
 //! Manages the lifecycle of an agent session, including
 //! timeout tracking, session state, and sandbox.
 
-use super::compaction::CompactionScope;
 use super::identity::SessionId;
 use super::memory::{AgentMemory, AgentMessageAttachment};
 // use super::providers::TodoList;
@@ -101,15 +100,6 @@ impl AgentMemoryScope {
             user_id: session_id.as_i64(),
             context_key: format!("session:{session_id}"),
             flow_id: "agent-mode".to_string(),
-        }
-    }
-
-    /// Convert the memory scope into the compaction/archive scope used today.
-    #[must_use]
-    pub fn compaction_scope(&self) -> CompactionScope {
-        CompactionScope {
-            context_key: self.context_key.clone(),
-            flow_id: self.flow_id.clone(),
         }
     }
 }
@@ -382,12 +372,6 @@ impl AgentSession {
     #[must_use]
     pub fn memory_scope(&self) -> &AgentMemoryScope {
         &self.memory_scope
-    }
-
-    /// Build the compaction/archive scope for this session.
-    #[must_use]
-    pub fn compaction_scope(&self) -> CompactionScope {
-        self.memory_scope.compaction_scope()
     }
 
     /// Install a transport-provided checkpoint sink for memory snapshots.
@@ -795,23 +779,15 @@ mod tests {
         assert_eq!(session.memory_scope().user_id, 42);
         assert_eq!(session.memory_scope().context_key, "session:42");
         assert_eq!(session.memory_scope().flow_id, "agent-mode");
-
-        let compaction_scope = session.compaction_scope();
-        assert_eq!(compaction_scope.context_key, "session:42");
-        assert_eq!(compaction_scope.flow_id, "agent-mode");
     }
 
     #[test]
-    fn explicit_memory_scope_overrides_compaction_scope() {
+    fn explicit_memory_scope_is_retained() {
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-b");
         let session =
             AgentSession::new_with_scopes(42_i64.into(), SandboxScope::from(42_i64), scope.clone());
 
         assert_eq!(session.memory_scope(), &scope);
-
-        let compaction_scope = session.compaction_scope();
-        assert_eq!(compaction_scope.context_key, "topic-a");
-        assert_eq!(compaction_scope.flow_id, "flow-b");
     }
 
     #[tokio::test]
