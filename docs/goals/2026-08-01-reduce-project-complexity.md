@@ -26,8 +26,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.2 plan.
   - Acceptance: The lightweight `TaskEventEntry` buffer and unused `WebAgentTransport` are absent; persisted replay, broadcast, historical event deserialization, status/progress caches, and task timeline remain.
   - Primary evidence: Web transport unit and SSE replay/live-delivery tests.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Lightweight buffer, collector writes/argument, and `WebAgentTransport` removed (251 net LOC); 22 focused Web event tests and 5 SSE tests pass; removed-symbol search is empty.
 - R3: Compaction has no dead scope/budget protocol or duplicate selection owner.
   - Source: Approved M1.3 plan.
   - Acceptance: `CompactionScope` and unread request/trigger state are absent; selection/block resolution is owned by `CompactionEngine`; candidate apply, final apply, graph validation, tool-batch atomicity, and no-op comparison remain.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R2.
-- Smallest next action: Remove the lightweight Web event buffer and unused `WebAgentTransport` while retaining persisted replay, broadcast, status/progress caches, and task timeline.
-- Expected evidence: Focused Web event/SSE tests pass and source search finds no lightweight event-plane consumer.
-- Stop or replan if: A production reader of the lightweight events or constructor of `WebAgentTransport` is found.
+- Closes: R3.
+- Smallest next action: Consolidate compaction selection/block resolution into `CompactionEngine` without changing candidate/final apply behavior.
+- Expected evidence: Focused compaction controller/engine tests pass with duplicate helpers absent.
+- Stop or replan if: The controller helpers implement behavior not represented by the engine owner.
 
 ## Current State
 
-- Resolved: R1.
-- Last relevant evidence: `cargo test -p oxide-agent-life --lib` passed 30 tests after unpaged read deletion; prior focused Web Life executor tests passed 7 tests.
+- Resolved: R1-R2.
+- Last relevant evidence: 22 focused Web event tests and 5 SSE tests passed after R2; removed-symbol search was empty.
 - Blocker: None.
-- Next: R2 lightweight Web event-plane deletion.
+- Next: R3 compaction helper consolidation.
 
 ## Material Decisions
 
@@ -134,6 +134,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: Frozen from the user-approved audited plan; implementation not yet started.
 - 2026-08-01: R1 checkpoint 1 removed the raw Life checkpoint contract and unused outcome memory payload (192 net LOC); focused Life and Web Life tests passed. Next: remove unpaged reads.
 - 2026-08-01: R1 completed by removing uncalled unpaged Life turn/event queries (48 LOC); all 30 Life tests passed and removed-symbol search was empty. Next: R2.
+- 2026-08-01: R2 removed the lightweight Web event plane and unused transport (251 net LOC) while retaining persisted replay/broadcast/caches/timeline; event and SSE tests passed. Next: R3.
 
 ## Completion
 

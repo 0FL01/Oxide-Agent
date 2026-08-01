@@ -263,20 +263,11 @@ async fn execute_agent_task(
     // Capture chrono timestamp for calculating offsets from named milestones.
     let agent_started_at_chrono = chrono::Utc::now().timestamp_millis();
 
-    // Get event log from global registry.
-    let event_log = {
-        let logs = EVENT_LOGS.lock().await;
-        logs.get(task_id)
-            .cloned()
-            .unwrap_or_else(crate::web_transport::TaskEventLog::new)
-    };
-
     let (tx, rx) = mpsc::channel::<oxide_agent_core::agent::AgentEvent>(100);
 
     let tid = task_id.to_string();
     let (event_collector_shutdown, event_collector_shutdown_rx) = oneshot::channel();
     let event_collector_handle = spawn_event_collector(
-        event_log,
         rx,
         event_collector_shutdown_rx,
         ctx.task_progress.clone(),
@@ -341,7 +332,6 @@ async fn execute_agent_task(
 }
 
 fn spawn_event_collector(
-    event_log: crate::web_transport::TaskEventLog,
     rx: mpsc::Receiver<oxide_agent_core::agent::AgentEvent>,
     shutdown_rx: oneshot::Receiver<()>,
     progress_map: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
@@ -369,7 +359,6 @@ fn spawn_event_collector(
                 (Some(tx), Some(spawn_live_progress_persister(web_task, rx)))
             });
         let collected = collect_events_until_shutdown(
-            event_log,
             rx,
             browser_event_scope,
             web_task.as_ref().map(|web_task| web_task.web_store.clone()),

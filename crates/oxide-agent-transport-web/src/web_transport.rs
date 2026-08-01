@@ -1,17 +1,14 @@
-//! `AgentTransport` implementation for the web transport.
+//! Agent event collection for the web transport.
 //!
-//! Collects `AgentEvent`s into an in-memory buffer and exposes progress
-//! via the HTTP API. Unlike Telegram transport, this does not send messages
-//! to any chat — it only records the event timeline for later inspection.
+//! Maps `AgentEvent`s into persisted task events, progress state, and the
+//! in-process broadcast stream consumed by the HTTP/SSE API.
 
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord, WebUiStore};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
-use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use oxide_agent_web_contracts::{
     BrowserLiveEventPayload, BrowserLiveEventType, PersistedTaskEvent, ProgressSnapshot,
     TaskEventKind, TaskStatus,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,38 +19,6 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use uuid::Uuid;
-
-/// Returns the snake_case variant name of an AgentEvent.
-fn event_variant_name(event: &AgentEvent) -> String {
-    match effective_agent_event(event) {
-        AgentEvent::Thinking { .. } => "thinking".to_string(),
-        AgentEvent::TokenSnapshotUpdated { .. } => "token_snapshot_updated".to_string(),
-        AgentEvent::ToolCall { name, .. } => format!("tool_call:{name}"),
-        AgentEvent::ToolResult { name, .. } => format!("tool_result:{name}"),
-        AgentEvent::Continuation { .. } => "continuation".to_string(),
-        AgentEvent::TodosUpdated { .. } => "todos_updated".to_string(),
-        AgentEvent::FileToSend { file_name, .. } => format!("file_to_send:{file_name}"),
-        AgentEvent::FileToSendWithConfirmation { .. } => {
-            "file_to_send_with_confirmation".to_string()
-        }
-        AgentEvent::Finished => "finished".to_string(),
-        AgentEvent::Cancelling { .. } => "cancelling".to_string(),
-        AgentEvent::Cancelled => "cancelled".to_string(),
-        AgentEvent::Error(_) => "error".to_string(),
-        AgentEvent::Reasoning { .. } => "reasoning".to_string(),
-        AgentEvent::LoopDetected { .. } => "loop_detected".to_string(),
-        AgentEvent::RuntimeCompactionStarted { .. } => "compaction_started".to_string(),
-        AgentEvent::RuntimeCompactionCompleted { .. } => "compaction_completed".to_string(),
-        AgentEvent::RuntimeCompactionFailed { .. } => "compaction_failed".to_string(),
-        AgentEvent::RuntimeCompactionSkipped { .. } => "compaction_skipped".to_string(),
-        AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
-        AgentEvent::HistoryRepairApplied { .. } => "history_repair_applied".to_string(),
-        AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
-        AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
-        AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
-        AgentEvent::SubAgent { .. } => "sub_agent".to_string(),
-    }
-}
 
 fn effective_agent_event(event: &AgentEvent) -> &AgentEvent {
     match event {
@@ -116,10 +81,6 @@ impl BrowserStoredFile {
 /// Events collected for a single task execution.
 #[derive(Debug, Clone)]
 pub struct TaskEventLog {
-    /// Lightweight event entries kept for backwards compatibility with existing
-    /// `drain`/`take`/`snapshot` callers. New SSE consumers should prefer
-    /// `persisted_snapshot` and the broadcast channel.
-    pub events: Arc<RwLock<Vec<TaskEventEntry>>>,
     /// Full `PersistedTaskEvent` rows in append order, deduped by `seq`.
     /// New consumers (SSE, late subscribers) read from this for the
     /// authoritative in-memory view of persisted events.
@@ -139,15 +100,6 @@ pub struct TaskEventLog {
     /// Used by the lifecycle cleanup task in `EVENT_LOGS` to evict the
     /// entry after a retention window. `None` while the log is still open.
     closed_at: Arc<RwLock<Option<Instant>>>,
-}
-
-/// A simplified event entry that stores only the event name.
-/// Full event data is available in `ProgressState` via the `/progress` endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TaskEventEntry {
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub event_name: String,
 }
 
 /// Messages broadcast to live SSE subscribers.
@@ -186,7 +138,6 @@ impl TaskEventLog {
     pub fn new() -> Self {
         let (broadcast_tx, _broadcast_rx) = broadcast::channel(TASK_EVENT_BROADCAST_CAPACITY);
         Self {
-            events: Arc::new(RwLock::new(Vec::new())),
             persisted: Arc::new(RwLock::new(Vec::new())),
             last_status: Arc::new(RwLock::new(None)),
             last_progress_snapshot: Arc::new(RwLock::new(None)),
@@ -194,18 +145,6 @@ impl TaskEventLog {
             done: Arc::new(RwLock::new(false)),
             closed_at: Arc::new(RwLock::new(None)),
         }
-    }
-
-    /// Record a lightweight event entry. The full `PersistedTaskEvent` row
-    /// (with `seq`, `kind`, `payload`, etc.) is recorded separately via
-    /// `push_persisted`; that path also broadcasts to SSE subscribers.
-    pub async fn push(&self, event: &AgentEvent) {
-        let event_name = event_variant_name(event);
-        let entry = TaskEventEntry {
-            timestamp: chrono::Utc::now(),
-            event_name,
-        };
-        self.events.write().await.push(entry);
     }
 
     /// Record a fully built `PersistedTaskEvent` and broadcast it to SSE
@@ -314,22 +253,6 @@ impl TaskEventLog {
     pub async fn closed_at(&self) -> Option<Instant> {
         *self.closed_at.read().await
     }
-
-    /// Drain all events and return them.
-    pub async fn drain(&self) -> Vec<TaskEventEntry> {
-        let mut events = self.events.write().await;
-        std::mem::take(&mut *events)
-    }
-
-    /// Take and return the current event log, replacing it with an empty one.
-    pub async fn take(&self) -> Vec<TaskEventEntry> {
-        self.drain().await
-    }
-
-    /// Returns a snapshot of the current event log without consuming it.
-    pub async fn snapshot(&self) -> Vec<TaskEventEntry> {
-        self.events.read().await.clone()
-    }
 }
 
 impl Default for TaskEventLog {
@@ -410,62 +333,6 @@ async fn persist_browser_file(
     })
 }
 
-/// Transport that records events in memory.
-///
-/// Implements `AgentTransport` from the runtime crate. Does not send
-/// messages anywhere — only stores events for later retrieval via HTTP.
-#[derive(Clone)]
-pub struct WebAgentTransport {
-    event_log: TaskEventLog,
-}
-
-impl WebAgentTransport {
-    /// Create a new web transport with a fresh event log.
-    #[must_use]
-    pub fn new(event_log: TaskEventLog) -> Self {
-        Self { event_log }
-    }
-}
-
-#[async_trait::async_trait]
-impl AgentTransport for WebAgentTransport {
-    async fn update_progress(&self, _state: &ProgressState) -> Result<(), anyhow::Error> {
-        // ProgressState is stored by the task runner separately;
-        // we only need to record agent events here.
-        Ok(())
-    }
-
-    async fn deliver_file(
-        &self,
-        _mode: DeliveryMode,
-        kind: FileDeliveryKind,
-        file_name: &str,
-        content: &[u8],
-    ) -> Result<oxide_agent_core::agent::progress::FileDeliveryReceipt, anyhow::Error> {
-        // Record file delivery as a synthetic event so tests can observe it.
-        let event = AgentEvent::FileToSend {
-            kind,
-            file_name: file_name.to_string(),
-            content: content.to_vec(),
-        };
-        self.event_log.push(&event).await;
-        Ok(Default::default())
-    }
-
-    async fn notify_loop_detected(
-        &self,
-        loop_type: oxide_agent_core::agent::loop_detection::LoopType,
-        iteration: usize,
-    ) -> Result<(), anyhow::Error> {
-        let event = AgentEvent::LoopDetected {
-            loop_type,
-            iteration,
-        };
-        self.event_log.push(&event).await;
-        Ok(())
-    }
-}
-
 /// Timestamps recorded during event collection for latency milestones.
 #[derive(Debug, Clone, Default)]
 pub struct MilestoneTimestamps {
@@ -497,13 +364,11 @@ pub struct EventCollectionResult {
     pub persisted_events: Vec<PersistedTaskEvent>,
 }
 
-/// Start collecting events from a `Receiver<AgentEvent>` and drive the
-/// event log.
+/// Start collecting events from a `Receiver<AgentEvent>`.
 ///
 /// Returns the final `ProgressState` along with milestone timestamps
 /// once the channel is closed.
 pub async fn collect_events(
-    event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
     browser_event_scope: Option<BrowserEventScope>,
     browser_file_store: Option<Arc<dyn WebUiStore>>,
@@ -511,7 +376,6 @@ pub async fn collect_events(
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
 ) -> EventCollectionResult {
     collect_events_inner(
-        event_log,
         &mut rx,
         browser_event_scope,
         browser_file_store,
@@ -523,7 +387,6 @@ pub async fn collect_events(
 }
 
 pub async fn collect_events_until_shutdown(
-    event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
     browser_event_scope: Option<BrowserEventScope>,
     browser_file_store: Option<Arc<dyn WebUiStore>>,
@@ -532,7 +395,6 @@ pub async fn collect_events_until_shutdown(
     shutdown_rx: oneshot::Receiver<()>,
 ) -> EventCollectionResult {
     collect_events_inner(
-        event_log,
         &mut rx,
         browser_event_scope,
         browser_file_store,
@@ -544,7 +406,6 @@ pub async fn collect_events_until_shutdown(
 }
 
 async fn collect_events_inner(
-    event_log: TaskEventLog,
     rx: &mut mpsc::Receiver<AgentEvent>,
     browser_event_scope: Option<BrowserEventScope>,
     browser_file_store: Option<Arc<dyn WebUiStore>>,
@@ -582,15 +443,10 @@ async fn collect_events_inner(
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
         let is_reasoning = matches!(effective_agent_event(&event), AgentEvent::Reasoning { .. });
-        let is_file_to_send = matches!(
-            &event,
-            AgentEvent::FileToSend { .. } | AgentEvent::FileToSendWithConfirmation { .. }
-        );
         let is_terminal = matches!(
             &event,
             AgentEvent::Finished | AgentEvent::Cancelled | AgentEvent::Error(_)
         );
-        let is_milestone = matches!(&event, AgentEvent::Milestone { .. });
         let mut file_storage_error = None::<String>;
         let stored_file = match (&browser_event_scope, browser_file_store.as_ref(), &event) {
             (
@@ -667,12 +523,6 @@ async fn collect_events_inner(
                 }
             }
             _ => {}
-        }
-
-        // Milestones are tracked separately and FileToSend is already recorded by the
-        // transport itself, but both still should update progress state for consistency.
-        if !is_milestone && !is_file_to_send {
-            event_log.push(&event).await;
         }
 
         if let Some(scope) = browser_event_scope.as_ref()
@@ -1670,7 +1520,7 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 mod tests {
     use super::{
         BrowserEventScope, TaskEventLog, TaskEventLogMessage, browser_display_payload,
-        collect_events, collect_events_until_shutdown, event_variant_name,
+        collect_events, collect_events_until_shutdown,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
@@ -1683,60 +1533,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{mpsc, oneshot};
 
-    #[test]
-    fn runtime_compaction_events_use_stable_web_event_names() {
-        assert_eq!(
-            event_variant_name(&AgentEvent::RuntimeCompactionStarted {
-                reason: CompactionReason::Manual,
-                phase: CompactionPhase::Manual,
-                backend: CompactionBackend::LocalLlmSummary,
-                provider: None,
-                route: None,
-                token_before: 1200,
-                history_items_before: 8,
-            }),
-            "compaction_started"
-        );
-        assert_eq!(
-            event_variant_name(&AgentEvent::RuntimeCompactionCompleted {
-                reason: CompactionReason::Manual,
-                phase: CompactionPhase::Manual,
-                backend: CompactionBackend::LocalLlmSummary,
-                provider: "mock".to_string(),
-                route: "compact".to_string(),
-                token_before: 1200,
-                token_after: 700,
-                history_items_before: 8,
-                history_items_after: 3,
-                generation: 1,
-                repair_applied: false,
-            }),
-            "compaction_completed"
-        );
-        assert_eq!(
-            event_variant_name(&AgentEvent::RuntimeCompactionFailed {
-                reason: CompactionReason::ContextLimit,
-                phase: CompactionPhase::MidTurn,
-                backend: CompactionBackend::LocalLlmSummary,
-                provider: Some("mock".to_string()),
-                route: Some("compact".to_string()),
-                error: "summary failed".to_string(),
-            }),
-            "compaction_failed"
-        );
-        assert_eq!(
-            event_variant_name(&AgentEvent::RuntimeCompactionSkipped {
-                reason: CompactionReason::PreTurn,
-                phase: CompactionPhase::PreSampling,
-                skipped_reason: "already within budget".to_string(),
-            }),
-            "compaction_skipped"
-        );
-    }
-
     #[tokio::test]
     async fn collect_events_records_runtime_compaction_without_pruning_event() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::RuntimeCompactionStarted {
@@ -1770,23 +1568,32 @@ mod tests {
             .expect("send finished event");
         drop(tx);
 
-        let result = collect_events(event_log.clone(), rx, None, None, None, None).await;
-        let event_names: Vec<String> = event_log
-            .drain()
-            .await
-            .into_iter()
-            .map(|entry| entry.event_name)
+        let result = collect_events(
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+        let event_kinds: Vec<TaskEventKind> = result
+            .persisted_events
+            .iter()
+            .map(|event| event.kind.clone())
             .collect();
 
         assert_eq!(
-            event_names,
+            event_kinds,
             vec![
-                "compaction_started".to_string(),
-                "compaction_completed".to_string(),
-                "finished".to_string(),
+                TaskEventKind::RuntimeCompactionStarted,
+                TaskEventKind::RuntimeCompactionCompleted,
+                TaskEventKind::Finished,
             ]
         );
-        assert!(!event_names.iter().any(|event| event == "pruning_applied"));
         assert!(
             result
                 .state
@@ -1797,23 +1604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_events_does_not_close_event_log() {
-        let event_log = TaskEventLog::new();
-        let (tx, rx) = mpsc::channel(2);
-
-        tx.send(AgentEvent::Finished)
-            .await
-            .expect("send finished event");
-        drop(tx);
-
-        let _ = collect_events(event_log.clone(), rx, None, None, None, None).await;
-
-        assert!(!event_log.is_closed().await);
-    }
-
-    #[tokio::test]
     async fn collect_events_until_shutdown_finishes_with_live_sender_and_drains_buffered_event() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let live_sender = tx.clone();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1823,7 +1614,6 @@ mod tests {
             .expect("send buffered finished event");
 
         let handle = tokio::spawn(collect_events_until_shutdown(
-            event_log.clone(),
             rx,
             None,
             None,
@@ -1839,21 +1629,11 @@ mod tests {
             .expect("collector task should not panic");
 
         assert!(result.state.is_finished);
-        assert!(!event_log.is_closed().await);
         assert!(live_sender.send(AgentEvent::Finished).await.is_err());
-
-        let event_names: Vec<String> = event_log
-            .drain()
-            .await
-            .into_iter()
-            .map(|entry| entry.event_name)
-            .collect();
-        assert_eq!(event_names, vec!["finished".to_string()]);
     }
 
     #[tokio::test]
     async fn collect_events_builds_persisted_browser_events_with_payload_previews() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let long_output = "x".repeat(super::EVENT_PREVIEW_MAX_CHARS + 10);
 
@@ -1870,7 +1650,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -1896,7 +1675,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_maps_browser_reasoning_to_typed_browser_live_events() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         tx.send(AgentEvent::Reasoning {
             source: AgentEventSource::Root,
@@ -1914,7 +1692,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -1949,7 +1726,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_persists_web_crawler_display_payload_for_truncated_output() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let markdown = format!("# Title\n\n{}", "body ".repeat(1_200));
         let output = serde_json::json!({
@@ -1993,7 +1769,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2077,7 +1852,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_persists_confirmed_file_delivery_and_returns_download_url_receipt() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
         let web_store: Arc<dyn WebUiStore> = Arc::new(InMemoryWebUiStore::new());
@@ -2096,7 +1870,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(scope.clone()),
             Some(Arc::clone(&web_store)),
@@ -2136,7 +1909,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_summarizes_web_markdown_failures() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
         let output = serde_json::json!({
             "tool_call_id": "call-web-markdown",
@@ -2174,7 +1946,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2198,7 +1969,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_omits_rate_limit_retrying_browser_events() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::RateLimitRetrying {
@@ -2214,7 +1984,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2234,7 +2003,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_omits_llm_retrying_browser_events() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::LlmRetrying {
@@ -2251,7 +2019,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2271,7 +2038,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_redacts_sensitive_tool_payload_previews() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::ToolCall {
@@ -2300,7 +2066,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2338,7 +2103,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_persists_named_sub_agent_metadata() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::SubAgent {
@@ -2357,7 +2121,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2379,7 +2142,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_pairs_concurrent_tool_timings_by_id() {
-        let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::ToolCall {
@@ -2421,7 +2183,6 @@ mod tests {
         drop(tx);
 
         let result = collect_events(
-            event_log,
             rx,
             Some(BrowserEventScope::new(
                 7,
@@ -2451,7 +2212,6 @@ mod tests {
 
     #[tokio::test]
     async fn collect_events_streams_live_progress_snapshots() {
-        let event_log = TaskEventLog::new();
         let (event_tx, event_rx) = mpsc::channel(8);
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
 
@@ -2468,7 +2228,7 @@ mod tests {
             .expect("send finished event");
         drop(event_tx);
 
-        let result = collect_events(event_log, event_rx, None, None, None, Some(progress_tx)).await;
+        let result = collect_events(event_rx, None, None, None, Some(progress_tx)).await;
         let mut snapshots = Vec::new();
         while let Some(snapshot) = progress_rx.recv().await {
             snapshots.push(snapshot);

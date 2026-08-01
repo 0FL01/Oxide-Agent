@@ -3,7 +3,7 @@
 //! Provides a high-level session service that:
 //! - creates / retrieves / removes sessions via `SessionRegistry`
 //! - tracks `TaskTimeline` for latency measurements
-//! - owns `InMemoryStorage` and `WebAgentTransport` instances
+//! - owns session metadata and task event logs
 //!
 //! ## Durable memory persistence
 //!

@@ -22,7 +22,7 @@
 //! [AgentExecutor] -- core agent loop (from oxide-agent-core)
 //!     |
 //!     +-- [InMemoryStorage] -- StorageProvider impl for hermetic tests
-//!     +-- [WebAgentTransport] -- AgentTransport impl, collects events in memory
+//!     +-- [TaskEventLog] -- persisted replay and live SSE broadcast
 //!     +-- [ScriptedLlmProvider] -- deterministic LLM for tests
 //! ```
 //!
