@@ -441,7 +441,6 @@
 }
 
 .assistant-progress-block:last-child {
-  border-color: rgba(96, 165, 250, 0.35);
   background: rgba(96, 165, 250, 0.07);
 }
 
