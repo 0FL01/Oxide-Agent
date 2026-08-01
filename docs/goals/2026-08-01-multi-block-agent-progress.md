@@ -1,6 +1,6 @@
 # Goal: Multi-block agent progress in Web and Telegram
 
-Status: active
+Status: complete
 Source: User-approved audited Web and Telegram progress plan, 2026-08-01
 Last updated: 2026-08-01
 
@@ -50,8 +50,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Explicit user instruction.
   - Acceptance: One coherent implementation commit is synchronized to `origin/main`; release images build; `oxide_agent` and `oxide_web` run successfully on the current host with Web health and transport startup logs clean.
   - Primary evidence: Git synchronization, Docker Compose build/rollout, Web health, service status, and startup logs.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Implementation commit `19dd2101` is on `origin/main`; Compose built release images `oxide-agent@sha256:4403207b74c...` and `oxide-agent-web@sha256:f575adc58102...`, recreated both transports, Web health returns `{"status":"ok"}`, and startup logs show Telegram long polling plus Web workers/listener running without errors.
 
 ### Constraints
 
@@ -80,17 +80,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6.
-- Smallest next action: Commit and push the verified implementation, build and redeploy `oxide_agent` and `oxide_web`, then verify health/status/startup logs.
-- Expected evidence: Clean synchronized Git state, successful Compose build/rollout, Web health, running service status, and clean startup logs.
-- Stop or replan if: Push is rejected, image build fails from this diff, or either transport fails its rollout health/startup checks.
+- Closes: None; the goal is complete.
+- Smallest next action: Stop.
+- Expected evidence: R1-R6 are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
 
-- Resolved: R1-R5.
-- Last relevant evidence: Full workspace Clippy, fmt, runtime tests, Web native/wasm/Trunk/resume gates, full profile Telegram package tests, and bot profile-full check pass.
+- Resolved: R1-R6.
+- Last relevant evidence: Commit `19dd2101` is pushed; release images built and both transport containers run; Web health is OK and startup logs are clean.
 - Blocker: None.
-- Next: Commit, push, build, and redeploy both transports.
+- Next: Stop.
 
 ## Material Decisions
 
@@ -106,10 +106,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R1 verified and R2 implementation validated locally; deployed terminal smoke remains. Next checkpoint is R3/R5 Telegram history.
 - 2026-08-01: R3 and R5 verified by the complete `profile-full` Telegram package suite; next checkpoint is final diff and affected gates.
 - 2026-08-01: R2 and the final constraint review verified; full workspace Clippy passes, with known wasm-only `voice.rs` warnings outside this diff recorded separately. Next checkpoint is R6 delivery.
+- 2026-08-01: R6 verified; implementation committed/pushed, release images built, both transports redeployed, Web health OK, and startup logs clean. Goal complete.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status: active
+- Resolved outcomes: R1-R6.
+- Commands and artifacts: Focused runtime tests; 44 Web UI tests; wasm check; release Trunk build; profile-full Web resume integration; full profile Telegram package tests; profile-full bot check; full workspace Clippy; fmt/diff checks; Compose release build and rollout; Web health, container, image, and startup-log checks.
+- Constraint and diff-scope check: No dependency, API, config, schema, migration, persisted transient history, fake heartbeat, live Telegram overflow, shared presentation model, or unrelated runtime path was added. Full Activity and existing terminal/file/thread/reminder owners remain.
+- Final status: complete
