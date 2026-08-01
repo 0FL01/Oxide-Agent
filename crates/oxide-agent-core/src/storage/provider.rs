@@ -4,7 +4,7 @@ use super::{
     StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
     TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-    UserConfig,
+    UserConfig, UserContextConfig,
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
@@ -21,6 +21,75 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         config: UserConfig,
     ) -> Result<(), StorageError>;
+    /// Get one transport-scoped user context.
+    async fn get_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<Option<UserContextConfig>, StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        Ok(None)
+    }
+    /// Set one context's dialogue state and transport metadata.
+    ///
+    /// When `mirror_global_state` is true, the legacy DM state is updated in
+    /// the same storage operation.
+    async fn set_context_state(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        state: Option<String>,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        mirror_global_state: bool,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = state;
+        let _ = chat_id;
+        let _ = thread_id;
+        let _ = mirror_global_state;
+        Err(StorageError::Config(
+            "context state updates are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Atomically get or initialize one context's active Agent flow.
+    async fn ensure_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        new_flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(String, bool), StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = new_flow_id;
+        let _ = chat_id;
+        let _ = thread_id;
+        Err(StorageError::Config(
+            "context flow initialization is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Set one context's active Agent flow and transport metadata.
+    async fn set_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = flow_id;
+        let _ = chat_id;
+        let _ = thread_id;
+        Err(StorageError::Config(
+            "context flow updates are not implemented for this storage provider".to_string(),
+        ))
+    }
     /// Get the selected Agent model for one transport context.
     async fn get_context_agent_model_selection(
         &self,

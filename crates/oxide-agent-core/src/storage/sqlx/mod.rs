@@ -342,6 +342,229 @@ impl StorageProvider for SqlxStorage {
         tx.commit().await.map_err(db_error)
     }
 
+    async fn get_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<Option<UserContextConfig>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT state, current_agent_flow_id, chat_id, thread_id,
+                   forum_topic_name, forum_topic_icon_color,
+                   forum_topic_icon_custom_emoji_id, forum_topic_closed
+            FROM user_contexts
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_user_context(&row)).transpose()
+    }
+
+    async fn set_context_state(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        state: Option<String>,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        mirror_global_state: bool,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_contexts (
+                user_id, context_key, state, chat_id, thread_id,
+                schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, 1, $6, $6)
+            ON CONFLICT (user_id, context_key) DO UPDATE
+            SET state = EXCLUDED.state,
+                chat_id = EXCLUDED.chat_id,
+                thread_id = EXCLUDED.thread_id,
+                schema_version = EXCLUDED.schema_version,
+                version = user_contexts.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_contexts.state IS DISTINCT FROM EXCLUDED.state
+               OR user_contexts.chat_id IS DISTINCT FROM EXCLUDED.chat_id
+               OR user_contexts.thread_id IS DISTINCT FROM EXCLUDED.thread_id
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(&state)
+        .bind(chat_id)
+        .bind(thread_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        if mirror_global_state {
+            query::<Postgres>(
+                r#"
+                INSERT INTO user_configs (user_id, state, schema_version, created_at, updated_at)
+                VALUES ($1, $2, 1, $3, $3)
+                ON CONFLICT (user_id) DO UPDATE
+                SET state = EXCLUDED.state,
+                    schema_version = EXCLUDED.schema_version,
+                    version = user_configs.version + 1,
+                    updated_at = EXCLUDED.updated_at
+                WHERE user_configs.state IS DISTINCT FROM EXCLUDED.state
+                "#,
+            )
+            .bind(user_id)
+            .bind(state)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        }
+
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn ensure_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        new_flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(String, bool), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        let inserted = query::<Postgres>(
+            r#"
+            INSERT INTO user_contexts (
+                user_id, context_key, current_agent_flow_id, chat_id, thread_id,
+                schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, 1, $6, $6)
+            ON CONFLICT (user_id, context_key) DO NOTHING
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(&new_flow_id)
+        .bind(chat_id)
+        .bind(thread_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?
+        .rows_affected()
+            == 1;
+
+        if inserted {
+            tx.commit().await.map_err(db_error)?;
+            return Ok((new_flow_id, true));
+        }
+
+        let initialized = query::<Postgres>(
+            r#"
+            UPDATE user_contexts
+            SET current_agent_flow_id = $3,
+                chat_id = $4,
+                thread_id = $5,
+                version = version + 1,
+                updated_at = $6
+            WHERE user_id = $1 AND context_key = $2
+              AND current_agent_flow_id IS NULL
+            RETURNING current_agent_flow_id
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(&new_flow_id)
+        .bind(chat_id)
+        .bind(thread_id)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        if initialized.is_some() {
+            tx.commit().await.map_err(db_error)?;
+            return Ok((new_flow_id, true));
+        }
+
+        let row = query::<Postgres>(
+            r#"
+            SELECT current_agent_flow_id
+            FROM user_contexts
+            WHERE user_id = $1 AND context_key = $2
+            FOR UPDATE
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let flow_id =
+            row_value::<Option<String>>(&row, "current_agent_flow_id")?.ok_or_else(|| {
+                StorageError::Database(
+                    "context flow initialization returned no flow id".to_string(),
+                )
+            })?;
+        tx.commit().await.map_err(db_error)?;
+        Ok((flow_id, false))
+    }
+
+    async fn set_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_contexts (
+                user_id, context_key, current_agent_flow_id, chat_id, thread_id,
+                schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, 1, $6, $6)
+            ON CONFLICT (user_id, context_key) DO UPDATE
+            SET current_agent_flow_id = EXCLUDED.current_agent_flow_id,
+                chat_id = EXCLUDED.chat_id,
+                thread_id = EXCLUDED.thread_id,
+                schema_version = EXCLUDED.schema_version,
+                version = user_contexts.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_contexts.current_agent_flow_id IS DISTINCT FROM EXCLUDED.current_agent_flow_id
+               OR user_contexts.chat_id IS DISTINCT FROM EXCLUDED.chat_id
+               OR user_contexts.thread_id IS DISTINCT FROM EXCLUDED.thread_id
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .bind(chat_id)
+        .bind(thread_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
+    }
+
     async fn get_context_agent_model_selection(
         &self,
         user_id: i64,

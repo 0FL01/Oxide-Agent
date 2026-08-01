@@ -17,6 +17,7 @@ use oxide_agent_core::storage::{
     BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
     StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
+    UserContextConfig,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,6 +83,84 @@ impl crate::api::StorageProvider for InMemoryStorage {
     ) -> Result<(), StorageError> {
         let mut configs = self.user_configs.write().await;
         configs.insert(user_id, config);
+        Ok(())
+    }
+
+    async fn get_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<Option<UserContextConfig>, StorageError> {
+        let configs = self.user_configs.read().await;
+        Ok(configs
+            .get(&user_id)
+            .and_then(|config| config.contexts.get(context_key))
+            .cloned())
+    }
+
+    async fn set_context_state(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        state: Option<String>,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        mirror_global_state: bool,
+    ) -> Result<(), StorageError> {
+        let mut configs = self.user_configs.write().await;
+        let config = configs.entry(user_id).or_default();
+        let context = config.contexts.entry(context_key.to_string()).or_default();
+        context.state = state.clone();
+        context.chat_id = Some(chat_id);
+        context.thread_id = thread_id;
+        if mirror_global_state {
+            config.state = state;
+        }
+        Ok(())
+    }
+
+    async fn ensure_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        new_flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(String, bool), StorageError> {
+        let mut configs = self.user_configs.write().await;
+        let context = configs
+            .entry(user_id)
+            .or_default()
+            .contexts
+            .entry(context_key.to_string())
+            .or_default();
+        if let Some(flow_id) = context.current_agent_flow_id.clone() {
+            return Ok((flow_id, false));
+        }
+        context.current_agent_flow_id = Some(new_flow_id.clone());
+        context.chat_id = Some(chat_id);
+        context.thread_id = thread_id;
+        Ok((new_flow_id, true))
+    }
+
+    async fn set_context_agent_flow(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: String,
+        chat_id: i64,
+        thread_id: Option<i64>,
+    ) -> Result<(), StorageError> {
+        let mut configs = self.user_configs.write().await;
+        let context = configs
+            .entry(user_id)
+            .or_default()
+            .contexts
+            .entry(context_key.to_string())
+            .or_default();
+        context.current_agent_flow_id = Some(flow_id);
+        context.chat_id = Some(chat_id);
+        context.thread_id = thread_id;
         Ok(())
     }
 

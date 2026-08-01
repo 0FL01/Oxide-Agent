@@ -1,26 +1,12 @@
 use crate::bot::{TelegramThreadKind, TelegramThreadSpec, thread_peer_key_from_spec};
 use anyhow::Result;
 use oxide_agent_core::sandbox::SandboxScope;
-use oxide_agent_core::storage::{StorageProvider, UserConfig, UserContextConfig, generate_flow_id};
+use oxide_agent_core::storage::{StorageProvider, UserContextConfig, generate_flow_id};
 use std::sync::Arc;
 use teloxide::types::ChatId;
 
 fn should_mirror_dm_global_state(thread_spec: TelegramThreadSpec) -> bool {
     matches!(thread_spec.kind, TelegramThreadKind::Dm)
-}
-
-fn context_entry_mut<'a>(
-    config: &'a mut UserConfig,
-    context_key: &str,
-    chat_id: ChatId,
-    thread_spec: TelegramThreadSpec,
-) -> &'a mut UserContextConfig {
-    let entry = config.contexts.entry(context_key.to_string()).or_default();
-    entry.chat_id = Some(chat_id.0);
-    entry.thread_id = thread_spec
-        .thread_id
-        .map(|thread_id| i64::from(thread_id.0.0));
-    entry
 }
 
 #[must_use]
@@ -43,18 +29,16 @@ pub(crate) fn sandbox_scope(
 }
 
 #[must_use]
-pub(crate) fn current_context_state_from_config(
-    config: &UserConfig,
-    context_key: &str,
+pub(crate) fn resolved_context_state(
+    context: Option<&UserContextConfig>,
+    global_state: Option<String>,
     thread_spec: TelegramThreadSpec,
 ) -> Option<String> {
-    config
-        .contexts
-        .get(context_key)
+    context
         .and_then(|context| context.state.clone())
         .or_else(|| {
             should_mirror_dm_global_state(thread_spec)
-                .then(|| config.state.clone())
+                .then_some(global_state)
                 .flatten()
         })
 }
@@ -65,10 +49,16 @@ pub(crate) async fn current_context_state(
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
 ) -> Result<Option<String>> {
-    let config = storage.get_user_config(user_id).await?;
-    Ok(current_context_state_from_config(
-        &config,
-        &storage_context_key(chat_id, thread_spec),
+    let context_key = storage_context_key(chat_id, thread_spec);
+    let context = storage.get_user_context(user_id, &context_key).await?;
+    let global_state = if should_mirror_dm_global_state(thread_spec) {
+        storage.get_user_state(user_id).await?
+    } else {
+        None
+    };
+    Ok(resolved_context_state(
+        context.as_ref(),
+        global_state,
         thread_spec,
     ))
 }
@@ -80,16 +70,19 @@ pub(crate) async fn set_current_context_state(
     thread_spec: TelegramThreadSpec,
     state: Option<&str>,
 ) -> Result<()> {
-    let mut config = storage.get_user_config(user_id).await?;
     let context_key = storage_context_key(chat_id, thread_spec);
-    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-    context.state = state.map(str::to_string);
-
-    if should_mirror_dm_global_state(thread_spec) {
-        config.state = context.state.clone();
-    }
-
-    storage.update_user_config(user_id, config).await?;
+    storage
+        .set_context_state(
+            user_id,
+            &context_key,
+            state.map(str::to_string),
+            chat_id.0,
+            thread_spec
+                .thread_id
+                .map(|thread_id| i64::from(thread_id.0.0)),
+            should_mirror_dm_global_state(thread_spec),
+        )
+        .await?;
     Ok(())
 }
 
@@ -99,22 +92,19 @@ pub(crate) async fn ensure_current_agent_flow_id(
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
 ) -> Result<(String, bool)> {
-    let mut config = storage.get_user_config(user_id).await?;
     let context_key = storage_context_key(chat_id, thread_spec);
-
-    if let Some(flow_id) = config
-        .contexts
-        .get(&context_key)
-        .and_then(|context| context.current_agent_flow_id.clone())
-    {
-        return Ok((flow_id, false));
-    }
-
-    let flow_id = generate_flow_id();
-    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-    context.current_agent_flow_id = Some(flow_id.clone());
-    storage.update_user_config(user_id, config).await?;
-    Ok((flow_id, true))
+    storage
+        .ensure_context_agent_flow(
+            user_id,
+            &context_key,
+            generate_flow_id(),
+            chat_id.0,
+            thread_spec
+                .thread_id
+                .map(|thread_id| i64::from(thread_id.0.0)),
+        )
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) async fn set_current_agent_flow_id(
@@ -124,11 +114,18 @@ pub(crate) async fn set_current_agent_flow_id(
     thread_spec: TelegramThreadSpec,
     flow_id: String,
 ) -> Result<()> {
-    let mut config = storage.get_user_config(user_id).await?;
     let context_key = storage_context_key(chat_id, thread_spec);
-    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-    context.current_agent_flow_id = Some(flow_id.clone());
-    storage.update_user_config(user_id, config).await?;
+    storage
+        .set_context_agent_flow(
+            user_id,
+            &context_key,
+            flow_id,
+            chat_id.0,
+            thread_spec
+                .thread_id
+                .map(|thread_id| i64::from(thread_id.0.0)),
+        )
+        .await?;
     Ok(())
 }
 
@@ -146,8 +143,8 @@ pub(crate) async fn reset_current_agent_flow_id(
 #[cfg(test)]
 mod tests {
     use super::{
-        current_context_state_from_config, ensure_current_agent_flow_id,
-        reset_current_agent_flow_id, sandbox_scope, storage_context_key,
+        ensure_current_agent_flow_id, reset_current_agent_flow_id, resolved_context_state,
+        sandbox_scope, storage_context_key,
     };
     use crate::bot::resolve_thread_spec_from_context;
     use async_trait::async_trait;
@@ -188,6 +185,81 @@ mod tests {
             Ok(())
         }
 
+        async fn get_user_context(
+            &self,
+            _user_id: i64,
+            context_key: &str,
+        ) -> Result<Option<UserContextConfig>, StorageError> {
+            self.config
+                .lock()
+                .map(|config| config.contexts.get(context_key).cloned())
+                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))
+        }
+
+        async fn set_context_state(
+            &self,
+            _user_id: i64,
+            context_key: &str,
+            state: Option<String>,
+            chat_id: i64,
+            thread_id: Option<i64>,
+            mirror_global_state: bool,
+        ) -> Result<(), StorageError> {
+            let mut config = self
+                .config
+                .lock()
+                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))?;
+            let context = config.contexts.entry(context_key.to_string()).or_default();
+            context.state = state.clone();
+            context.chat_id = Some(chat_id);
+            context.thread_id = thread_id;
+            if mirror_global_state {
+                config.state = state;
+            }
+            Ok(())
+        }
+
+        async fn ensure_context_agent_flow(
+            &self,
+            _user_id: i64,
+            context_key: &str,
+            new_flow_id: String,
+            chat_id: i64,
+            thread_id: Option<i64>,
+        ) -> Result<(String, bool), StorageError> {
+            let mut config = self
+                .config
+                .lock()
+                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))?;
+            let context = config.contexts.entry(context_key.to_string()).or_default();
+            if let Some(flow_id) = context.current_agent_flow_id.clone() {
+                return Ok((flow_id, false));
+            }
+            context.current_agent_flow_id = Some(new_flow_id.clone());
+            context.chat_id = Some(chat_id);
+            context.thread_id = thread_id;
+            Ok((new_flow_id, true))
+        }
+
+        async fn set_context_agent_flow(
+            &self,
+            _user_id: i64,
+            context_key: &str,
+            flow_id: String,
+            chat_id: i64,
+            thread_id: Option<i64>,
+        ) -> Result<(), StorageError> {
+            let mut config = self
+                .config
+                .lock()
+                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))?;
+            let context = config.contexts.entry(context_key.to_string()).or_default();
+            context.current_agent_flow_id = Some(flow_id);
+            context.chat_id = Some(chat_id);
+            context.thread_id = thread_id;
+            Ok(())
+        }
+
         async fn update_user_state(
             &self,
             _user_id: i64,
@@ -197,7 +269,10 @@ mod tests {
         }
 
         async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
+            self.config
+                .lock()
+                .map(|config| config.state.clone())
+                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))
         }
 
         async fn save_agent_memory(
@@ -330,28 +405,10 @@ mod tests {
 
     #[test]
     fn forum_context_state_does_not_read_dm_global_state() {
-        let mut contexts = HashMap::new();
-        contexts.insert(
-            "-1001:42".to_string(),
-            UserContextConfig {
-                state: Some("agent_mode".to_string()),
-                current_agent_flow_id: None,
-                chat_id: Some(-1001),
-                thread_id: Some(42),
-                forum_topic_name: None,
-                forum_topic_icon_color: None,
-                forum_topic_icon_custom_emoji_id: None,
-                forum_topic_closed: false,
-            },
-        );
-        let config = UserConfig {
-            state: Some("dm_state".to_string()),
-            contexts,
-        };
         let spec = resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(99))));
 
         assert_eq!(
-            current_context_state_from_config(&config, "-1001:99", spec),
+            resolved_context_state(None, Some("dm_state".to_string()), spec),
             None
         );
     }

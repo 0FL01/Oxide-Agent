@@ -111,14 +111,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R8.
-- Smallest next action: Define the narrow row/field-scoped storage operations required by current Telegram context and manager consumers, preserving atomic flow ensure and DM mirror semantics.
-- Expected evidence: Production callers stop performing whole-user replacement; real PostgreSQL tests preserve independent fields, contexts, model selection, and DM mirroring without schema changes.
+- Smallest next action: Move manager forum-topic catalog writes/deletes and context readers to row-scoped storage operations, preserving context state, flow, model selection, and cleanup audit results.
+- Expected evidence: Manager production paths stop performing whole-user replacement; focused manager and real PostgreSQL tests preserve unrelated context fields and exact-row deletion semantics.
 - Stop or replan if: Existing row ownership requires a schema change, compatibility path, or cannot preserve an observable aggregate read contract.
 
 ## Current State
 
 - Resolved: R1-R7.
-- Last relevant evidence: `ToolCatalog` is the sole executor/spec owner; 80 tool-runtime, 40 catalog registration, 12 runner tool, 5 lazy-surface, 23 delegation, and 12 static-guard tests pass.
+- Last relevant evidence: Telegram context state/flow writes use field-scoped operations; real PostgreSQL tests prove atomic flow initialization, DM mirroring, and model/field independence; all Telegram and Web library tests pass.
 - Blocker: None.
 - Next: R8 row-scoped context storage.
 
@@ -151,6 +151,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 checkpoint 4 shared multipart attachment staging between Web sessions and Life while preserving distinct sandbox scopes; all 168 Web tests passed. Next: `SessionRegistry`.
 - 2026-08-01: R7 checkpoint 5 replaced three session maps with one `SessionEntry` map, deleted unused `get_or_create`, and paired task execution handles; runtime, Telegram, and Web tests passed. Next: `ToolCatalog`.
 - 2026-08-01: R7 completed by deleting `ToolRegistry`, duplicate executor registration/conversion/state, and sub-agent executor vectors; `ToolCatalog` now owns execution and specs, with focused runtime/runner/delegation/static tests passing. Next: R8.
+- 2026-08-01: R8 checkpoint 1 moved Telegram context state and flow persistence to field-scoped operations with atomic flow initialization and transactional DM mirroring; real PostgreSQL plus full Telegram/Web library tests pass. Next: manager context catalog operations.
 
 ## Completion
 

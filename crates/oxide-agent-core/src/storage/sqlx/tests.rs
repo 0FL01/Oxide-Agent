@@ -188,6 +188,127 @@ async fn sqlx_context_model_selection_is_atomic_and_context_scoped() {
 }
 
 #[tokio::test]
+async fn sqlx_context_fields_are_updated_independently() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let user_id = unique_user_id();
+    let context_key = "telegram:-100:200";
+
+    storage
+        .set_context_agent_model_selection(
+            user_id,
+            context_key,
+            Some("provider/model-a".to_string()),
+        )
+        .await
+        .expect("model selection should be stored");
+    storage
+        .set_context_state(
+            user_id,
+            context_key,
+            Some("agent".to_string()),
+            -100,
+            Some(200),
+            false,
+        )
+        .await
+        .expect("context state should be stored");
+    storage
+        .set_context_agent_flow(user_id, context_key, "flow-a".to_string(), -100, Some(200))
+        .await
+        .expect("context flow should be stored");
+
+    let context = storage
+        .get_user_context(user_id, context_key)
+        .await
+        .expect("context should load")
+        .expect("context should exist");
+    assert_eq!(context.state.as_deref(), Some("agent"));
+    assert_eq!(context.current_agent_flow_id.as_deref(), Some("flow-a"));
+    assert_eq!(context.chat_id, Some(-100));
+    assert_eq!(context.thread_id, Some(200));
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, context_key)
+            .await
+            .expect("model selection should load")
+            .as_deref(),
+        Some("provider/model-a")
+    );
+}
+
+#[tokio::test]
+async fn sqlx_context_flow_initialization_is_atomic() {
+    let Some(storage) = sqlx_test_storage_with_connections(4).await else {
+        return;
+    };
+    let user_id = unique_user_id();
+    let context_key = "telegram:-100:201";
+
+    let first = storage.ensure_context_agent_flow(
+        user_id,
+        context_key,
+        "flow-a".to_string(),
+        -100,
+        Some(201),
+    );
+    let second = storage.ensure_context_agent_flow(
+        user_id,
+        context_key,
+        "flow-b".to_string(),
+        -100,
+        Some(201),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let first = first.expect("first flow initialization should succeed");
+    let second = second.expect("second flow initialization should succeed");
+
+    assert_eq!(first.0, second.0);
+    assert_ne!(first.1, second.1);
+    assert!(first.1 || second.1);
+}
+
+#[tokio::test]
+async fn sqlx_context_state_mirrors_dm_global_state_atomically() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let user_id = unique_user_id();
+    let context_key = "telegram:42:0";
+
+    storage
+        .set_context_state(
+            user_id,
+            context_key,
+            Some("agent".to_string()),
+            42,
+            None,
+            true,
+        )
+        .await
+        .expect("DM state should be stored");
+
+    assert_eq!(
+        storage
+            .get_user_context(user_id, context_key)
+            .await
+            .expect("DM context should load")
+            .and_then(|context| context.state)
+            .as_deref(),
+        Some("agent")
+    );
+    assert_eq!(
+        storage
+            .get_user_state(user_id)
+            .await
+            .expect("global DM state should load")
+            .as_deref(),
+        Some("agent")
+    );
+}
+
+#[tokio::test]
 async fn sqlx_model_selection_migration_canonicalizes_legacy_values() {
     let Some(storage) = sqlx_test_storage().await else {
         return;
