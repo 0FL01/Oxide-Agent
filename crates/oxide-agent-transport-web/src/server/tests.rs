@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use axum::http::HeaderMap;
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use std::time::Duration;
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
 }
 use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
 use oxide_agent_core::llm::{LlmClient, LlmProvider};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
@@ -37,13 +37,13 @@ use oxide_agent_web_contracts::{
     TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionModelRequest,
     UpdateSessionProfileRequest, UpdateUserSettingsRequest, WebSessionRecord, WebTaskRecord,
 };
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use oxide_agent_web_contracts::{
     CreateTaskRequest as ApiCreateTaskRequest, PendingUserInputView,
     ResumeTaskRequest as ApiResumeTaskRequest, UpdateSessionRequest,
     UserInputKind as ApiUserInputKind, UserMessageEventPayload,
 };
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use tokio::sync::Notify;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -51,7 +51,7 @@ use crate::in_memory_storage::InMemoryStorage;
 use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord};
 
 use super::EVENT_LOGS;
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use super::task_routes::TaskListQuery;
 use crate::web_transport::TaskEventLog;
 
@@ -66,7 +66,7 @@ use super::{
     api_update_session_model, api_update_session_profile, api_update_settings, auth_cookie_value,
     csrf_header_value, parse_web_bool,
 };
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task, api_update_session};
 use crate::auth::{login_user, register_user};
 use crate::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
@@ -200,7 +200,7 @@ impl WebSandboxControl for FakeSandboxControl {
     }
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 struct AutoTitleTestLlmProvider {
     title_responses: Mutex<VecDeque<ChatResponse>>,
     agent_response: String,
@@ -210,7 +210,7 @@ struct AutoTitleTestLlmProvider {
     title_returned: Arc<Notify>,
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 impl AutoTitleTestLlmProvider {
     fn new(title_response: impl Into<String>, agent_response: impl Into<String>) -> Arc<Self> {
         Self::with_title_blocking(title_response, agent_response, false)
@@ -327,7 +327,7 @@ impl AutoTitleTestLlmProvider {
     }
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[async_trait]
 impl LlmProvider for AutoTitleTestLlmProvider {
     async fn complete_internal_text(
@@ -3677,7 +3677,7 @@ async fn api_sse_stream_delivers_live_events_via_in_process_broadcast() {
     }
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     let state = test_app_state();
@@ -3895,7 +3895,7 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
     );
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_create_task_starts_runtime_without_waiting_for_auto_title() {
     let llm = AutoTitleTestLlmProvider::blocking_title("Авторизация для сервисов", "ok");
@@ -3983,7 +3983,7 @@ async fn api_create_task_starts_runtime_without_waiting_for_auto_title() {
     .await;
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empty() {
     let llm = AutoTitleTestLlmProvider::new("   ", "ok");
@@ -4061,7 +4061,7 @@ async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empt
     assert_eq!(completed.final_response_markdown.as_deref(), Some("ok"));
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
     let llm = AutoTitleTestLlmProvider::sequence(
@@ -4148,7 +4148,7 @@ async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
     assert_eq!(saved_session.auto_title_attempts, 0);
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_auto_title_retries_reasoning_only_length_response_immediately() {
     let llm = AutoTitleTestLlmProvider::reasoning_length_then_title(
@@ -4213,7 +4213,7 @@ async fn api_auto_title_retries_reasoning_only_length_response_immediately() {
     assert_eq!(saved_session.auto_title_attempts, 0);
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_manual_rename_clears_pending_auto_title_retry() {
     let llm = AutoTitleTestLlmProvider::new("   ", "ok");
@@ -4295,7 +4295,7 @@ async fn api_manual_rename_clears_pending_auto_title_retry() {
     assert_eq!(processed, 0);
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 #[tokio::test]
 async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
     let state = test_app_state_with_responses(vec![
@@ -4774,7 +4774,7 @@ fn persisted_event(
     }
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 async fn wait_for_task_status(
     state: &AppState,
     user_id: i64,
@@ -4799,7 +4799,7 @@ async fn wait_for_task_status(
     panic!("task {task_id} did not reach {status:?}; last state: {last_task:?}");
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str, expected: &str) {
     let mut last_title = None;
     for _ in 0..100 {
@@ -4818,7 +4818,7 @@ async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str
     panic!("session {session_id} did not reach title {expected:?}; last title: {last_title:?}");
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 async fn wait_for_auto_title_attempts(
     state: &AppState,
     user_id: i64,
@@ -4865,7 +4865,7 @@ async fn wait_for_persisted_progress(
     panic!("task {task_id} did not receive persisted progress");
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 async fn save_active_task(
     state: &AppState,
     base_task: &WebTaskRecord,
@@ -4904,7 +4904,7 @@ async fn save_active_task(
         .expect("save active session");
 }
 
-#[cfg(feature = "profile-web-embedded-opencode-local")]
+#[cfg(feature = "profile-full")]
 fn status_string(status: ApiTaskStatus) -> &'static str {
     match status {
         ApiTaskStatus::Queued => "queued",

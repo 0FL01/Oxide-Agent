@@ -253,21 +253,7 @@ pub fn compiled_capability_manifest() -> Result<CompiledCapabilityManifest, Mani
 /// Returns the selected named profile when exactly one profile feature is active.
 #[must_use]
 pub fn compiled_profile_name() -> Option<&'static str> {
-    let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-web-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-full") as usize;
-
-    if active_profile_count != 1 {
-        return None;
-    }
-
-    if cfg!(feature = "profile-embedded-opencode-local") {
-        Some("embedded-opencode-local")
-    } else if cfg!(feature = "profile-web-embedded-opencode-local") {
-        Some("web-embedded-opencode-local")
-    } else {
-        Some("full")
-    }
+    cfg!(feature = "profile-full").then_some("full")
 }
 
 fn push_declared_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {

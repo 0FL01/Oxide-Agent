@@ -111,14 +111,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R10.
-- Smallest next action: Inventory direct consumers of the split Compose files, slim profile features, and reference profile TOMLs, then move those consumers to root `docker-compose.yml` and `profile-full` before deleting the obsolete variants.
+- Smallest next action: Move release/current documentation to root `docker-compose.yml`, then delete the four transport-specific Compose files and their now-orphaned local-service variants.
 - Expected evidence: Module-registry check, full-profile workspace gates, root Compose validation, and workflow/docs source inspection all reference one supported deployment profile.
 - Stop or replan if: Removing a variant would require changing `.env*`, environment storage/generation, persistent data, or a separately supported local-service runtime contract.
 
 ## Current State
 
 - Resolved: R1-R9.
-- Last relevant evidence: Telegram has one default non-command ingress, one topic-route resolution, and no handlers cycle; full Telegram package tests and full-profile bot check pass.
+- Last relevant evidence: The module registry and Cargo manifests expose only `profile-full`; reference profile TOMLs and obsolete snapshots are absent; registry check, workspace check, Web tests, and full-profile registry snapshot pass.
 - Blocker: None.
 - Next: R10 single deployment profile and Compose entrypoint.
 
@@ -155,6 +155,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R8 checkpoint 2 moved manager forum catalog writes/deletes and sandbox/catalog reads to row-scoped operations; 54 manager tests, Telegram cleanup integration, and five real PostgreSQL context tests pass. Next: remove aggregate config API.
 - 2026-08-01: R8 completed by deleting `UserConfig`, aggregate get/update storage APIs, and the unused standalone global-state writer (430 net LOC); concurrent PostgreSQL and full affected transport tests pass. Next: R9.
 - 2026-08-01: R9 replaced the `Start` modality fan-out and handlers cycle with one default Agent Mode ingress, one topic-route resolution, and private-chat-only dialogue confirmations (749 net LOC); full Telegram package tests and bot composition check pass. Next: R10.
+- 2026-08-01: R10 checkpoint 1 removed both slim Cargo profiles, per-module profile membership, generated profile TOMLs, obsolete snapshots, and profile-specific CI/test branches; registry check, full workspace check, registry snapshot, and 168 Web tests pass. Next: root Compose contraction.
 
 ## Completion
 

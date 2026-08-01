@@ -28,8 +28,8 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  check-profiles:
-    name: Check profiles
+  check-profile:
+    name: Check profile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,11 +42,7 @@ jobs:
         with:
           path: target
           key: ${{ runner.os }}-cargo-check-target-${{ hashFiles('Cargo.lock') }}
-      - run: |
-          set -euo pipefail
-          for features in profile-full profile-embedded-opencode-local profile-web-embedded-opencode-local; do
-            cargo check --workspace --no-default-features --features "${features}"
-          done
+      - run: cargo check --workspace --no-default-features --features profile-full
 
   clippy-test:
     name: Clippy + tests
@@ -122,15 +118,15 @@ jobs:
           set -euo pipefail
           docker build --check \
             -f docker/Dockerfile.app \
-            --build-arg CARGO_FEATURES="oxide-agent-telegram-bot/profile-embedded-opencode-local" \
-            --build-arg PACKAGES="oxide-agent-telegram-bot" \
-            --build-arg BINARIES="oxide-agent-telegram-bot" \
-            --build-arg MCP_BINARIES="" \
-            .
-          docker build --check \
-            -f docker/Dockerfile.app \
             --build-arg CARGO_FEATURES="oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full" \
             --build-arg PACKAGES="oxide-agent-telegram-bot oxide-agent-sandboxd" \
             --build-arg BINARIES="oxide-agent-telegram-bot oxide-agent-sandboxd" \
             --build-arg MCP_BINARIES="ssh-mcp jira-mcp mattermost-mcp" \
+            .
+          docker build --check \
+            -f docker/Dockerfile.app \
+            --build-arg CARGO_FEATURES="oxide-agent-transport-web/profile-full,oxide-agent-sandboxd/profile-full" \
+            --build-arg PACKAGES="oxide-agent-transport-web oxide-agent-sandboxd" \
+            --build-arg BINARIES="oxide-agent-web-console oxide-agent-sandboxd" \
+            --build-arg BUILD_WEB_UI="true" \
             .

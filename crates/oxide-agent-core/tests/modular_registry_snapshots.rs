@@ -1,12 +1,8 @@
-#![cfg(any(
-    feature = "profile-embedded-opencode-local",
-    feature = "profile-web-embedded-opencode-local",
-    feature = "profile-full",
-))]
+#![cfg(feature = "profile-full")]
 
 use oxide_agent_core::agent::{AgentExecutor, AgentSession};
 use oxide_agent_core::capabilities::{
-    CapabilityId, CapabilityKind, ModuleId, ModuleManifestEntry, compiled_capability_manifest,
+    CapabilityKind, ModuleId, ModuleManifestEntry, compiled_capability_manifest,
 };
 use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;
@@ -68,10 +64,8 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
         .collect();
 
     assert_tool_availability_contract(
-        profile,
         compiled_manifest.modules(),
         enabled_manifest.modules(),
-        enabled_manifest.capabilities(),
         &registered_tool_names_default_config,
     );
     let registered_provider_names = provider_client.configured_provider_names();
@@ -217,10 +211,8 @@ fn external_service_requirements(
 }
 
 fn assert_tool_availability_contract(
-    profile: &str,
     compiled_modules: &[ModuleManifestEntry],
     enabled_modules: &[ModuleId],
-    enabled_capabilities: &[CapabilityId],
     registered_tool_names: &[String],
 ) {
     let compiled_module_ids: BTreeSet<_> = compiled_modules
@@ -230,10 +222,6 @@ fn assert_tool_availability_contract(
     let enabled_module_ids: BTreeSet<_> = enabled_modules
         .iter()
         .map(|module_id| module_id.as_str())
-        .collect();
-    let enabled_capability_ids: BTreeSet<_> = enabled_capabilities
-        .iter()
-        .map(|capability_id| capability_id.as_str())
         .collect();
     let tool_names: BTreeSet<_> = registered_tool_names.iter().map(String::as_str).collect();
 
@@ -313,85 +301,6 @@ fn assert_tool_availability_contract(
             "ssh_send_file_to_user",
         ],
     );
-
-    match profile {
-        "profile-embedded-opencode-local" | "profile-web-embedded-opencode-local" => {
-            if profile == "profile-web-embedded-opencode-local" {
-                assert!(
-                    enabled_module_ids.contains("transport/web"),
-                    "web embedded profile must enable the web transport"
-                );
-                assert!(
-                    !enabled_module_ids.contains("transport/telegram"),
-                    "web embedded profile must not enable the Telegram transport"
-                );
-                assert!(
-                    enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
-                    "web embedded profile must enable the sandboxd client backend"
-                );
-            } else {
-                assert!(
-                    enabled_module_ids.contains("transport/telegram"),
-                    "embedded-opencode-local profile must enable the Telegram transport"
-                );
-            }
-            assert!(
-                enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
-                "{profile} must enable the sandboxd client backend"
-            );
-            assert_present_capabilities(
-                &enabled_capability_ids,
-                &[
-                    "tool/compression",
-                    "tool/delegation",
-                    "tool/file-delivery",
-                    "tool/audio-stt-transcription",
-                    "tool/vision-image-description",
-                    "tool/vision-video-description",
-                    "tool/sandbox-exec",
-                    "tool/sandbox-fileops",
-                    "tool/sandbox-list-files",
-                    "tool/sandbox-recreate",
-                    "tool/web-search",
-                ],
-                profile,
-            );
-            assert_present_capabilities(
-                &enabled_capability_ids,
-                &[
-                    "sandbox-backend/sandboxd-client/exec",
-                    "sandbox-backend/sandboxd-client/fileops",
-                    "sandbox-backend/sandboxd-client/lifecycle",
-                ],
-                profile,
-            );
-            assert_present_tools(
-                &tool_names,
-                &[
-                    "apply_file_edit",
-                    "execute_command",
-                    "cancel_sub_agents",
-                    "compress",
-                    "describe_image_file",
-                    "describe_video_file",
-                    "list_files",
-                    "read_file",
-                    "recreate_sandbox",
-                    "send_file_to_user",
-                    "spawn_sub_agents",
-                    "transcribe_audio_file",
-                    "upload_file",
-                    "wait_sub_agents",
-                    "write_file",
-                ],
-                profile,
-            );
-            assert_absent_tool_prefix(&tool_names, "jira_", profile);
-            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
-            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
-        }
-        _ => {}
-    }
 }
 
 fn assert_provider_alias_contract(
@@ -484,28 +393,6 @@ fn assert_tools_absent_when_module_unavailable(
     assert_absent_tools(tool_names, unavailable_tools, module_id);
 }
 
-fn assert_present_capabilities(
-    enabled_capability_ids: &BTreeSet<&str>,
-    capabilities: &[&str],
-    profile: &str,
-) {
-    for capability in capabilities {
-        assert!(
-            enabled_capability_ids.contains(capability),
-            "expected capability {capability} to be enabled for {profile}"
-        );
-    }
-}
-
-fn assert_present_tools(tool_names: &BTreeSet<&str>, expected_tools: &[&str], context: &str) {
-    for tool_name in expected_tools {
-        assert!(
-            tool_names.contains(tool_name),
-            "expected tool {tool_name} to be registered for {context}; registered={tool_names:?}"
-        );
-    }
-}
-
 fn assert_absent_tools(tool_names: &BTreeSet<&str>, forbidden_tools: &[&str], context: &str) {
     for tool_name in forbidden_tools {
         assert!(
@@ -515,29 +402,6 @@ fn assert_absent_tools(tool_names: &BTreeSet<&str>, forbidden_tools: &[&str], co
     }
 }
 
-fn assert_absent_tool_prefix(tool_names: &BTreeSet<&str>, prefix: &str, context: &str) {
-    assert!(
-        tool_names
-            .iter()
-            .all(|tool_name| !tool_name.starts_with(prefix)),
-        "tool prefix {prefix} must be absent for {context}; registered={tool_names:?}"
-    );
-}
-
 fn compiled_profile_label() -> &'static str {
-    let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-web-embedded-opencode-local") as usize
-        + cfg!(feature = "profile-full") as usize;
-
-    if active_profile_count != 1 {
-        return "all-features";
-    }
-
-    if cfg!(feature = "profile-embedded-opencode-local") {
-        "profile-embedded-opencode-local"
-    } else if cfg!(feature = "profile-web-embedded-opencode-local") {
-        "profile-web-embedded-opencode-local"
-    } else {
-        "profile-full"
-    }
+    "profile-full"
 }

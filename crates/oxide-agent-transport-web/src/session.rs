@@ -1561,10 +1561,7 @@ mod tests {
 
         assert!(probe.current_tool_catalog().is_empty());
 
-        #[cfg(any(
-            feature = "profile-full",
-            feature = "profile-web-embedded-opencode-local"
-        ))]
+        #[cfg(feature = "profile-full")]
         {
             let probe = manager
                 .create_search_probe_executor(

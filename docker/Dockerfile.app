@@ -21,7 +21,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 WORKDIR /app
 
-ARG CARGO_FEATURES="oxide-agent-telegram-bot/profile-embedded-opencode-local"
+ARG CARGO_FEATURES="oxide-agent-telegram-bot/profile-full"
 ARG PACKAGES="oxide-agent-telegram-bot"
 ARG BINARIES="oxide-agent-telegram-bot"
 ARG BUILD_WEB_UI="false"

@@ -655,13 +655,11 @@ config/                         # Configuration files (optional YAML)
 
 ### Profile Features
 
-Each profile is a composition of atomic capability features. Build with `--no-default-features --features <PROFILE>`.
+The supported production profile composes all atomic capability features. Build with `--no-default-features --features profile-full`.
 
 | Profile | Description | Key Components |
 |---------|-------------|----------------|
 | `profile-full` | Full production deployment | All features |
-| `profile-embedded-opencode-local` | Telegram + local OpenCode | transport-telegram, storage-sqlx, llm-opencode-go, docker + sandboxd |
-| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, sandboxd, Browser Live tools |
 
 ### Atomic Features (selection)
 

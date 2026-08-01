@@ -40,8 +40,8 @@ Default branch: `main`.
 
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
-- Build and runtime composition are capability-module based. The declarative module registry at `crates/oxide-agent-core/module_registry.toml` is the single source of truth for module IDs, Cargo features, profiles, provided/required capabilities, and profile membership. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
-- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-full`.
+- Build and runtime composition are capability-module based. The declarative module registry at `crates/oxide-agent-core/module_registry.toml` is the single source of truth for module IDs, Cargo features, and provided/required capabilities. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
+- Cargo `default` features are intentionally empty. Use the production profile feature: `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
 - Topic-aware and thread-aware by default for agent mode and manager functions.
@@ -73,7 +73,7 @@ Default branch: `main`.
 - Static prefix + dynamic suffix; provider-specific details and smoke test in `docs/tips/cache-hit.md`.
 
 ### Topic- and flow-scoped state
-- Contexts in `UserConfig.contexts` via `UserContextConfig`. Memory uses context-scoped APIs.
+- Context metadata uses row- and field-scoped storage APIs. Memory uses context-scoped APIs.
 - Chat history isolated via `scoped_chat_storage_id`.
 - Flows support attach/detach UX; `forum_topic_list` available for topic discovery (blocked for sub-agents).
 
@@ -133,9 +133,8 @@ Default branch: `main`.
 
 ### Build
 - `cargo check` for quick verification; `cargo build` only for final binary.
-- Embedded: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
-- Full: `cargo build --release --no-default-features --features profile-full`.
-- Other profiles: `profile-web-embedded-opencode-local`.
+- Full: `cargo check --workspace --no-default-features --features profile-full`.
+- Release: `cargo build --release --no-default-features --features profile-full`.
 - Capability output (swap `<PROFILE>` and `<profile-name>`):
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --compiled --json`
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --enabled --json`
@@ -145,9 +144,9 @@ Default branch: `main`.
 
 ### Module registry
 
-- `crates/oxide-agent-core/module_registry.toml` is the single source of truth for module IDs, Cargo features, profiles, and capability provides/requires.
-- `cargo run -p xtask -- module-registry check` — verifies Cargo profile feature lists, transport forwarding, `profiles/*.toml`, and `compiled.rs` declarations match the registry. Run before committing profile or module changes.
-- `cargo run -p xtask -- module-registry generate` — regenerates the marked Cargo profile section and `profiles/*.toml` from the registry. Generated artifacts are checked in; `check` fails if they are stale.
+- `crates/oxide-agent-core/module_registry.toml` is the single source of truth for module IDs, Cargo features, and capability provides/requires. Every registered module belongs to `profile-full`.
+- `cargo run -p xtask -- module-registry check` — verifies the Cargo profile feature list, transport forwarding, and `compiled.rs` declarations match the registry. Run before committing profile or module changes.
+- `cargo run -p xtask -- module-registry generate` — regenerates the marked `profile-full` Cargo section from the registry.
 - `crates/oxide-agent-core/build.rs` emits `oxide_module_<id>` cfg aliases (e.g. `oxide_module_tool_todos`) from the registry. Tests should gate on `#[cfg(oxide_module_<id>)]` instead of raw `#[cfg(feature = "<feature>")]`. Profile features (`profile-full` etc.) remain raw Cargo feature gates.
 - One Cargo feature can map to multiple module IDs (e.g. `llm-opencode-go` → `llm-provider/opencode-go` and `llm-provider/opencode-zen`). The registry models this as separate module records sharing one `cargo_feature`.
 
@@ -159,7 +158,7 @@ Default branch: `main`.
 - Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`, `test_set_env()`, `test_remove_env()`).
 - Categories: hermetic, integration, snapshot (`insta`), property/fuzz (`proptest`).
 - E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
-- Transport-specific profiles (e.g. `profile-web-embedded-opencode-local`) do not activate features in unrelated crates. `cargo test --workspace` will fail on crates whose modules are behind different feature gates. Use scoped `-p` for such profiles: `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`. Full and lite profiles work with `--workspace`.
+- Use `cargo test --workspace --no-default-features --features profile-full` for the supported workspace profile; use scoped `-p` tests for faster subsystem validation.
 - The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
 - Gate tests on module availability using `#[cfg(oxide_module_<id>)]` aliases emitted by `build.rs`, not raw `#[cfg(feature = "...")]`. Profile-level test gating (`#![cfg(any(feature = "profile-..."))]`) remains raw Cargo features.
 

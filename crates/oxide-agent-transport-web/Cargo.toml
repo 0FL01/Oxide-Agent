@@ -46,10 +46,6 @@ reqwest = { version = "0.13.4", features = ["json", "stream"] }
 [features]
 default = []
 profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
-profile-web-embedded-opencode-local = [
-    "oxide-agent-core/profile-web-embedded-opencode-local",
-    "storage-sqlx",
-]
 storage-sqlx = [
     "oxide-agent-core/storage-sqlx",
     "dep:oxide-agent-life",

@@ -63,7 +63,7 @@ Non-goals: external MCP proxy, `defer_loading` as primary mechanism, stub descri
 - `ToolCatalog { entries: BTreeMap<ToolName, ToolCatalogEntry> }` with `specs_for(names)`, `executor(name)`, `entries()`.
 - `ToolSurface { active: BTreeSet<ToolName> }` with `visible_specs(&catalog)`, `activate(group, &catalog)`, `contains(name)`.
 - **No behavior change yet** — types only, no wiring.
-- Gate: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+- Gate: `cargo check --workspace --no-default-features --features profile-full`.
 - Acceptance: types compile, unit tests for `activate` idempotency, `visible_specs` ordering (deterministic by name), `specs_for` returns only active + always-visible.
 
 **CP-A2: Map existing tools to capability groups**
@@ -192,11 +192,9 @@ Non-goals: external MCP proxy, `defer_loading` as primary mechanism, stub descri
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo check --workspace --no-default-features --features profile-embedded-opencode-local
-cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local
+cargo check --workspace --no-default-features --features profile-full
 cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown
 cargo test --workspace --no-default-features --features profile-full
-cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local
 cargo run -p xtask -- module-registry check
 ```
 

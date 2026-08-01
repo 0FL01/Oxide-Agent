@@ -17,10 +17,6 @@ use crate::setup::execute_task;
 /// The scripted provider is registered on the v1 opencode-go route so the
 /// active path uses the typed tool runtime.
 #[tokio::test]
-#[cfg_attr(
-    not(feature = "profile-web-embedded-opencode-local"),
-    ignore = "requires profile-web-embedded-opencode-local OpenCode route capabilities"
-)]
 async fn e2e_parallel_tool_execution_latency() {
     let test_start = std::time::Instant::now();
 

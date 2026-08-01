@@ -473,19 +473,13 @@ mod tests {
 
     #[test]
     fn startup_command_parses_profile_config_example_json() {
-        let command = parse_startup_command([
-            "config",
-            "example",
-            "--profile",
-            "embedded-opencode-local",
-            "--json",
-        ])
-        .expect("profile config example command should parse");
+        let command = parse_startup_command(["config", "example", "--profile", "full", "--json"])
+            .expect("profile config example command should parse");
 
         assert_eq!(
             command,
             StartupCommand::PrintConfigExample {
-                profile: "embedded-opencode-local".to_string(),
+                profile: "full".to_string(),
                 json: true
             }
         );

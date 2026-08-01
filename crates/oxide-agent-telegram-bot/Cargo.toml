@@ -37,11 +37,6 @@ profile-full = [
     "llm-chatgpt",
     "storage-sqlx",
 ]
-profile-embedded-opencode-local = [
-    "transport-telegram",
-    "oxide-agent-core/profile-embedded-opencode-local",
-    "storage-sqlx",
-]
 [[bin]]
 name = "oxide-agent-telegram-bot"
 path = "src/main.rs"

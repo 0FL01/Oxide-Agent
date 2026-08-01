@@ -1511,20 +1511,20 @@ fn default_tool_allowlist() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::in_memory_storage::InMemoryStorage;
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMessageAttachment;
     use oxide_agent_core::agent::memory::AgentMessage;
     use oxide_agent_core::config::AgentSettings;
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     use oxide_agent_core::config::ModelInfo;
     use oxide_agent_core::llm::LlmClient;
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     use oxide_agent_core::llm::{
         ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage,
     };
     use oxide_agent_runtime::SessionRegistry;
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::{Mutex, MutexGuard};
@@ -1552,12 +1552,12 @@ mod tests {
 
     struct EnvGuard(MutexGuard<'static, ()>);
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     struct SequencedTestProvider {
         responses: tokio::sync::Mutex<VecDeque<ChatResponse>>,
     }
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     impl SequencedTestProvider {
         fn new(responses: Vec<ChatResponse>) -> Self {
             Self {
@@ -1566,7 +1566,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     #[async_trait]
     impl LlmProvider for SequencedTestProvider {
         async fn complete_internal_text(
@@ -1656,7 +1656,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     fn test_session_manager_with_responses(responses: Vec<ChatResponse>) -> WebSessionManager {
         let model_id = "opencode-go/deepseek-v4-flash".to_string();
         let settings = Arc::new(AgentSettings {
@@ -1685,7 +1685,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     fn structured_final_answer_response(final_answer: &str) -> ChatResponse {
         ChatResponse {
             content: Some(
@@ -2082,7 +2082,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     async fn enabled_probe_runs_generations_emits_events_and_injects_dossier() {
         let session_manager = test_session_manager_with_responses(vec![
             structured_final_answer_response(
@@ -2163,7 +2163,7 @@ stop
     }
 
     #[tokio::test]
-    #[cfg(feature = "profile-web-embedded-opencode-local")]
+    #[cfg(feature = "profile-full")]
     async fn timeout_report_runs_forced_finalize_without_tools() {
         let timeout_report = serde_json::json!({
             "status": "timeout",

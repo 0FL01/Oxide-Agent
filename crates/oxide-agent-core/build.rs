@@ -44,7 +44,7 @@ fn main() {
 /// Extract `(id, cargo_feature)` pairs from `[[modules]]` entries.
 ///
 /// Only parses simple `key = "value"` string fields. Multi-line arrays
-/// (`provides`, `requires`, `profiles`) are skipped — they are not needed
+/// (`provides`, `requires`) are skipped — they are not needed
 /// for cfg emission and are validated by `xtask module-registry check`.
 fn parse_module_entries(content: &str) -> Vec<(String, String)> {
     let mut entries = Vec::new();

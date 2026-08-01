@@ -32,10 +32,6 @@ sha2 = "0.10.9"
 [features]
 default = []
 profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
-profile-embedded-opencode-local = [
-    "oxide-agent-core/profile-embedded-opencode-local",
-    "storage-sqlx",
-]
 storage-sqlx = ["oxide-agent-core/storage-sqlx", "dep:oxide-agent-life"]
 
 [dev-dependencies]

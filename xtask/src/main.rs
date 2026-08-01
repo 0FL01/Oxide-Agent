@@ -8,11 +8,7 @@ const REGISTRY_PATH: &str = "crates/oxide-agent-core/module_registry.toml";
 const CORE_CARGO_PATH: &str = "crates/oxide-agent-core/Cargo.toml";
 const COMPILED_RS_PATH: &str = "crates/oxide-agent-core/src/capabilities/compiled.rs";
 
-const PROFILE_ORDER: &[&str] = &[
-    "full",
-    "embedded-opencode-local",
-    "web-embedded-opencode-local",
-];
+const PROFILE_NAME: &str = "full";
 
 const FORWARDING_CRATES: &[(&str, &str)] = &[
     (
@@ -60,10 +56,8 @@ fn module_registry_check() -> Result<(), String> {
     check_duplicate_registry_ids(&registry, &mut errors);
     check_registry_features_exist(&registry, &cargo_features, &mut errors);
     check_compiled_modules(&registry, &compiled_modules, &mut errors);
-    check_profile_coverage(&registry, &mut errors);
     check_core_profile_section(&root, &registry, &mut errors)?;
     check_forwarding(&root, &registry, &mut errors)?;
-    check_profile_tomls(&root, &registry, &mut errors)?;
 
     if errors.is_empty() {
         println!(
@@ -98,14 +92,7 @@ fn module_registry_generate() -> Result<(), String> {
     fs::write(root.join(CORE_CARGO_PATH), updated)
         .map_err(|err| format!("write {}: {err}", CORE_CARGO_PATH))?;
 
-    generate_profile_tomls(&root, &registry)?;
-
-    println!(
-        "generated profile section for {} profiles in {} and {} profile TOMLs in profiles/",
-        compositions.len(),
-        CORE_CARGO_PATH,
-        PROFILE_ORDER.len()
-    );
+    println!("generated `{PROFILE_NAME}` profile section in {CORE_CARGO_PATH}");
     Ok(())
 }
 
@@ -136,8 +123,6 @@ struct ModuleKey {
 #[derive(Debug, Default)]
 struct RegistryModule {
     key: ModuleKey,
-    profile_id: String,
-    profiles: BTreeSet<String>,
     provides: Vec<String>,
     requires: Vec<String>,
 }
@@ -152,16 +137,6 @@ struct CompiledModule {
 #[derive(Debug, Default)]
 struct Registry {
     modules: Vec<RegistryModule>,
-}
-
-impl RegistryModule {
-    fn profile_module_id(&self) -> &str {
-        if self.profile_id.is_empty() {
-            &self.key.id
-        } else {
-            &self.profile_id
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,10 +181,8 @@ fn parse_registry(input: &str) -> Result<Registry, String> {
 
         match name {
             "id" => module.key.id = parse_string(&full_value)?,
-            "profile_id" => module.profile_id = parse_string(&full_value)?,
             "cargo_feature" => module.key.cargo_feature = parse_string(&full_value)?,
             "kind" => module.key.kind = parse_string(&full_value)?,
-            "profiles" => module.profiles = parse_string_array(&full_value)?.into_iter().collect(),
             "provides" => module.provides = parse_string_array(&full_value)?,
             "requires" => module.requires = parse_string_array(&full_value)?,
             _ => {}
@@ -455,20 +428,14 @@ fn parse_kind_arg(args: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn compute_profile_compositions(registry: &Registry) -> Vec<(String, Vec<String>)> {
-    let mut result = Vec::new();
-    for profile_name in PROFILE_ORDER {
-        let mut features: Vec<String> = Vec::new();
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        for module in &registry.modules {
-            if module.profiles.contains(*profile_name)
-                && seen.insert(module.key.cargo_feature.clone())
-            {
-                features.push(module.key.cargo_feature.clone());
-            }
+    let mut features: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for module in &registry.modules {
+        if seen.insert(module.key.cargo_feature.clone()) {
+            features.push(module.key.cargo_feature.clone());
         }
-        result.push((profile_name.to_string(), features));
     }
-    result
+    vec![(PROFILE_NAME.to_string(), features)]
 }
 
 fn render_profile_section(compositions: &[(String, Vec<String>)]) -> String {
@@ -603,20 +570,6 @@ fn check_compiled_modules(
     }
 }
 
-fn check_profile_coverage(registry: &Registry, errors: &mut Vec<String>) {
-    let known: BTreeSet<String> = PROFILE_ORDER.iter().map(|s| s.to_string()).collect();
-    let registry_profiles: BTreeSet<String> = registry
-        .modules
-        .iter()
-        .flat_map(|m| m.profiles.iter().cloned())
-        .collect();
-    for missing in registry_profiles.difference(&known) {
-        errors.push(format!(
-            "registry profile `{missing}` not in xtask PROFILE_ORDER"
-        ));
-    }
-}
-
 fn check_core_profile_section(
     root: &Path,
     registry: &Registry,
@@ -641,102 +594,43 @@ fn check_forwarding(
     registry: &Registry,
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
-    let mut profiles_by_transport: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for module in &registry.modules {
-        if module.key.id.starts_with("transport/") {
-            for profile in &module.profiles {
-                profiles_by_transport
-                    .entry(module.key.id.clone())
-                    .or_default()
-                    .insert(profile.clone());
-            }
-        }
-    }
-
     for (cargo_path, transport_id) in FORWARDING_CRATES {
+        if !registry
+            .modules
+            .iter()
+            .any(|module| module.key.id == *transport_id)
+        {
+            errors.push(format!(
+                "{cargo_path} references unknown transport `{transport_id}`"
+            ));
+            continue;
+        }
+
         let content = read_to_string(root, cargo_path)?;
         let features = parse_cargo_features_with_deps(&content)?;
-
-        let expected_profiles = profiles_by_transport
-            .get(*transport_id)
-            .cloned()
-            .unwrap_or_default();
-
         let actual_profiles: BTreeSet<String> = features
             .keys()
             .filter(|name| name.starts_with("profile-"))
             .map(|name| name.trim_start_matches("profile-").to_string())
             .collect();
 
-        for missing in expected_profiles.difference(&actual_profiles) {
+        let expected_profiles = BTreeSet::from([PROFILE_NAME.to_string()]);
+        for extra in actual_profiles.symmetric_difference(&expected_profiles) {
             errors.push(format!(
-                "{cargo_path} is missing profile feature `profile-{missing}` for transport `{transport_id}`"
+                "{cargo_path} profile feature mismatch for transport `{transport_id}`: unexpected or missing `profile-{extra}`"
             ));
         }
 
-        for extra in actual_profiles.difference(&expected_profiles) {
-            errors.push(format!(
-                "{cargo_path} has profile feature `profile-{extra}` not expected for transport `{transport_id}`"
-            ));
-        }
-
-        for profile in &expected_profiles {
-            let feature_name = format!("profile-{profile}");
-            if let Some(deps) = features.get(&feature_name) {
-                let core_forward = format!("oxide-agent-core/profile-{profile}");
-                if !deps.contains(&core_forward) {
-                    errors.push(format!(
-                        "{cargo_path} feature `{feature_name}` does not forward to `{core_forward}`"
-                    ));
-                }
+        let feature_name = format!("profile-{PROFILE_NAME}");
+        if let Some(deps) = features.get(&feature_name) {
+            let core_forward = format!("oxide-agent-core/profile-{PROFILE_NAME}");
+            if !deps.contains(&core_forward) {
+                errors.push(format!(
+                    "{cargo_path} feature `{feature_name}` does not forward to `{core_forward}`"
+                ));
             }
         }
     }
 
     Ok(())
-}
-fn check_profile_tomls(
-    root: &Path,
-    registry: &Registry,
-    errors: &mut Vec<String>,
-) -> Result<(), String> {
-    for profile_name in PROFILE_ORDER {
-        let path = root.join("profiles").join(format!("{profile_name}.toml"));
-        let current =
-            fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
-        let expected = render_profile_toml(profile_name, registry);
-        if current != expected {
-            errors.push(format!(
-                "profiles/{profile_name}.toml is stale; run `cargo run -p xtask -- module-registry generate`"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn generate_profile_tomls(root: &Path, registry: &Registry) -> Result<(), String> {
-    for profile_name in PROFILE_ORDER {
-        let content = render_profile_toml(profile_name, registry);
-        let path = root.join("profiles").join(format!("{profile_name}.toml"));
-        fs::write(&path, content).map_err(|err| format!("write {}: {err}", path.display()))?;
-    }
-    Ok(())
-}
-
-fn render_profile_toml(profile_name: &str, registry: &Registry) -> String {
-    let mut module_ids: BTreeSet<String> = BTreeSet::new();
-    for module in &registry.modules {
-        if module.profiles.contains(profile_name) {
-            module_ids.insert(module.profile_module_id().to_string());
-        }
-    }
-
-    let mut output = format!("profile = \"{profile_name}\"\n");
-    output.push_str(&format!("cargo_features = [\"profile-{profile_name}\"]\n"));
-    output.push('\n');
-    output.push_str("[modules]\n");
-    for module_id in &module_ids {
-        output.push_str(&format!("\"{module_id}\" = {{ enabled = true }}\n"));
-    }
-    output
 }
