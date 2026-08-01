@@ -106,55 +106,6 @@ impl SqlxLifeStorage {
         TimestampMillis::new(now.get() + LIFE_RUN_LEASE_MILLIS)
     }
 
-    /// Lists recent canonical transcript turns for a principal.
-    pub async fn list_turns(
-        &self,
-        principal_user_id: PrincipalUserId,
-        limit: i64,
-    ) -> LifeStorageResult<Vec<LifeTurn>> {
-        let rows = query::<Postgres>(
-            r#"
-            SELECT *
-            FROM life_turns
-            WHERE principal_user_id = $1
-            ORDER BY created_at DESC, turn_id ASC
-            LIMIT $2
-            "#,
-        )
-        .bind(principal_user_id.get())
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        rows.into_iter().map(turn_from_row).collect()
-    }
-
-    /// Lists recent run events for a principal.
-    pub async fn list_events(
-        &self,
-        principal_user_id: PrincipalUserId,
-        limit: i64,
-    ) -> LifeStorageResult<Vec<LifeEvent>> {
-        let rows = query::<Postgres>(
-            r#"
-            SELECT events.*
-            FROM life_events events
-            INNER JOIN life_runs runs ON runs.run_id = events.run_id
-            WHERE runs.principal_user_id = $1
-            ORDER BY events.created_at DESC, events.run_id ASC, events.seq DESC
-            LIMIT $2
-            "#,
-        )
-        .bind(principal_user_id.get())
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        rows.into_iter().map(event_from_row).collect()
-    }
-
     /// Lists a cursor-paged window of canonical transcript turns for a principal.
     ///
     /// The cursor is an opaque string produced by a prior call to this method.

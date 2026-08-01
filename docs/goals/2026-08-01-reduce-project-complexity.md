@@ -20,8 +20,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.1 plan.
   - Acceptance: The raw Life checkpoint contract, unused outcome memory payload, `StableLifeMemoryScope`, and unpaged `list_turns`/`list_events` are absent; typed flow checkpointing, checkpoint timestamps, and privacy wipe remain.
   - Primary evidence: Focused `oxide-agent-life` and Web Life tests.
-  - Status: in_progress
-  - Evidence: Raw checkpoint contract and outcome payload removed; 30 Life tests and 7 focused Web Life executor tests pass.
+  - Status: verified
+  - Evidence: Raw checkpoint contract/outcome payload and unpaged reads removed; 30 Life tests and 7 focused Web Life executor tests pass; source search finds none of the removed symbols.
 - R2: Web task delivery has one active event representation.
   - Source: Approved M1.2 plan.
   - Acceptance: The lightweight `TaskEventEntry` buffer and unused `WebAgentTransport` are absent; persisted replay, broadcast, historical event deserialization, status/progress caches, and task timeline remain.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R1.
-- Smallest next action: Delete the uncalled unpaged Life `list_turns` and `list_events` methods, then close R1 with focused Life validation.
-- Expected evidence: Focused Life tests pass and source search finds only bounded paged/ascending read APIs.
-- Stop or replan if: A production consumer of the raw checkpoint path or unpaged reads is found.
+- Closes: R2.
+- Smallest next action: Remove the lightweight Web event buffer and unused `WebAgentTransport` while retaining persisted replay, broadcast, status/progress caches, and task timeline.
+- Expected evidence: Focused Web event/SSE tests pass and source search finds no lightweight event-plane consumer.
+- Stop or replan if: A production reader of the lightweight events or constructor of `WebAgentTransport` is found.
 
 ## Current State
 
-- Resolved: R1 raw checkpoint owner removed; typed flow checkpoint remains.
-- Last relevant evidence: `cargo test -p oxide-agent-life --lib` passed 30 tests; focused Web Life executor tests passed 7 tests.
+- Resolved: R1.
+- Last relevant evidence: `cargo test -p oxide-agent-life --lib` passed 30 tests after unpaged read deletion; prior focused Web Life executor tests passed 7 tests.
 - Blocker: None.
-- Next: R1 unpaged read deletion.
+- Next: R2 lightweight Web event-plane deletion.
 
 ## Material Decisions
 
@@ -133,6 +133,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 - 2026-08-01: Frozen from the user-approved audited plan; implementation not yet started.
 - 2026-08-01: R1 checkpoint 1 removed the raw Life checkpoint contract and unused outcome memory payload (192 net LOC); focused Life and Web Life tests passed. Next: remove unpaged reads.
+- 2026-08-01: R1 completed by removing uncalled unpaged Life turn/event queries (48 LOC); all 30 Life tests passed and removed-symbol search was empty. Next: R2.
 
 ## Completion
 
