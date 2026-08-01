@@ -114,9 +114,6 @@ pub(crate) async fn ensure_current_agent_flow_id(
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_agent_flow_id = Some(flow_id.clone());
     storage.update_user_config(user_id, config).await?;
-    let _ = storage
-        .upsert_agent_flow_record(user_id, context_key, flow_id.clone())
-        .await;
     Ok((flow_id, true))
 }
 
@@ -132,9 +129,6 @@ pub(crate) async fn set_current_agent_flow_id(
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_agent_flow_id = Some(flow_id.clone());
     storage.update_user_config(user_id, config).await?;
-    let _ = storage
-        .upsert_agent_flow_record(user_id, context_key, flow_id)
-        .await;
     Ok(())
 }
 
@@ -159,9 +153,9 @@ mod tests {
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::storage::{
-        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-        StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
-        UpsertTopicBindingOptions, UserConfig, UserContextConfig,
+        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
+        StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+        UserConfig, UserContextConfig,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -223,31 +217,6 @@ mod tests {
 
         async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
             Ok(())
-        }
-
-        async fn get_agent_flow_record(
-            &self,
-            _user_id: i64,
-            _context_key: String,
-            _flow_id: String,
-        ) -> Result<Option<AgentFlowRecord>, StorageError> {
-            Ok(None)
-        }
-
-        async fn upsert_agent_flow_record(
-            &self,
-            user_id: i64,
-            context_key: String,
-            flow_id: String,
-        ) -> Result<AgentFlowRecord, StorageError> {
-            Ok(AgentFlowRecord {
-                schema_version: 1,
-                user_id,
-                context_key,
-                flow_id,
-                created_at: 0,
-                updated_at: 0,
-            })
         }
 
         async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {

@@ -1,7 +1,7 @@
 use super::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
-    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
+    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
+    StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
     TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
     UserConfig,
@@ -121,20 +121,6 @@ pub trait StorageProvider: Send + Sync {
         self.clear_agent_memory_for_context(user_id, context_key)
             .await
     }
-    /// Get metadata for a persisted topic-scoped agent flow.
-    async fn get_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<Option<AgentFlowRecord>, StorageError>;
-    /// Upsert metadata for a persisted topic-scoped agent flow.
-    async fn upsert_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<AgentFlowRecord, StorageError>;
     /// Load archived or artifact text payload by storage key.
     async fn load_text_artifact(
         &self,

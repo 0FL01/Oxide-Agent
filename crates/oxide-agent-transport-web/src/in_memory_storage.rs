@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::storage::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
-    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
+    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
+    StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use std::collections::HashMap;
@@ -31,7 +31,6 @@ pub struct InMemoryStorage {
     agent_memories: RwLock<HashMap<i64, AgentMemory>>,
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
-    flow_records: RwLock<HashMap<(i64, String, String), AgentFlowRecord>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
     agent_profiles: RwLock<HashMap<(i64, String), AgentProfileRecord>>,
@@ -47,7 +46,6 @@ impl InMemoryStorage {
             agent_memories: RwLock::new(HashMap::new()),
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
-            flow_records: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
             agent_profiles: RwLock::new(HashMap::new()),
@@ -185,38 +183,6 @@ impl crate::api::StorageProvider for InMemoryStorage {
         let mut memories = self.agent_memories_flow.write().await;
         memories.remove(&(user_id, context_key, flow_id));
         Ok(())
-    }
-
-    // --- Flow records ---
-
-    async fn get_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<Option<AgentFlowRecord>, StorageError> {
-        let records = self.flow_records.read().await;
-        Ok(records.get(&(user_id, context_key, flow_id)).cloned())
-    }
-
-    async fn upsert_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<AgentFlowRecord, StorageError> {
-        let now = chrono::Utc::now().timestamp();
-        let record = AgentFlowRecord {
-            schema_version: 1,
-            user_id,
-            context_key: context_key.clone(),
-            flow_id: flow_id.clone(),
-            created_at: now,
-            updated_at: now,
-        };
-        let mut records = self.flow_records.write().await;
-        records.insert((user_id, context_key, flow_id), record.clone());
-        Ok(record)
     }
 
     async fn load_text_artifact(

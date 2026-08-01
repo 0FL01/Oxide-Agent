@@ -50,13 +50,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.6 plan.
   - Acceptance: Flow record APIs, reads, writes, mocks, and duplicate state are absent; active flow pointers and memory snapshots remain; the existing table and cleanup-only deletes remain for data retention and rollback.
   - Primary evidence: Core storage and Telegram flow lifecycle tests plus source search.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: `AgentFlowRecord`, trait APIs, SQL read/upsert, builders/mappers, Telegram writes, in-memory state, mocks, and tests removed; only cleanup-only `DELETE FROM agent_flows` remains; core storage, Web, and full Telegram package tests pass.
 - R7: Web, session runtime, and tool execution each have one internal owner for duplicated state.
   - Source: Approved M2 plan.
   - Acceptance: Web session DTO/hash/checkpoint/upload mechanics have one owner each; `SessionRegistry` uses one `SessionEntry` map; `ToolCatalog` is the sole executor/spec registry and preserves lazy/sub-agent behavior.
   - Primary evidence: Focused Web, runtime, tool runtime, delegation, and history-correlation tests.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 - R8: Context persistence uses row- and field-scoped operations instead of whole-user replacement.
   - Source: Approved M3 plan.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R6.
-- Smallest next action: Remove unread `agent_flows` record APIs, writers, implementations, mocks, and tests while retaining the table and cleanup-only SQL deletes.
-- Expected evidence: Core storage and Telegram flow tests pass; production source has no `AgentFlowRecord` read/write API or calls.
-- Stop or replan if: A production reader or non-shadow flow invariant is found.
+- Closes: R7.
+- Smallest next action: Consolidate Web's duplicate session DTO, session-ID derivation, flow checkpoint adapter, and attachment staging in separate focused checkpoints.
+- Expected evidence: Web contracts/transport/UI tests pass and each duplicated mechanism has one owner.
+- Stop or replan if: A supposedly duplicate Web/Life path has different observable scope or lifecycle semantics.
 
 ## Current State
 
-- Resolved: R1-R5.
-- Last relevant evidence: 144 Telegram tests passed with one `AgentTransport` implementation and silent target test.
+- Resolved: R1-R6.
+- Last relevant evidence: 35 core storage, 168 Web, 144 Telegram library plus integration tests, and the focused SQLx memory-scope test passed after flow registry deletion.
 - Blocker: None.
-- Next: R6 unread flow registry deletion.
+- Next: R7 Web single-owner checkpoints.
 
 ## Material Decisions
 
@@ -144,6 +144,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R5 checkpoint 1 removed singleton `AgentModeSessionKeys` and no-choice lookup helpers; 143 Telegram tests passed. Next: cancellation/view shells.
 - 2026-08-01: R5 checkpoint 2 removed the impossible todo-clear result, sole view trait, and dead view entries; 143 Telegram tests passed. Next: progress transport.
 - 2026-08-01: R5 completed by merging visible/silent progress adapters behind an optional progress target; 144 Telegram tests passed. Next: R6.
+- 2026-08-01: R6 removed the unread application `agent_flows` registry while retaining table cleanup for rollback; core/Web/Telegram tests passed and only cleanup SQL remains. Next: R7.
 
 ## Completion
 

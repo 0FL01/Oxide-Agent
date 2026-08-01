@@ -11,17 +11,17 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    BrowserArtifactData, BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord,
-    ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
-    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
-    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
+    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
+    ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider, TopicAgentsMdRecord,
+    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
+    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
     UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
     builders::{
-        build_agent_flow_record, build_agent_profile_record, build_audit_event_record,
-        build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
-        build_topic_context_record, build_topic_infra_config_record, with_next_reminder_version,
+        build_agent_profile_record, build_audit_event_record, build_reminder_job_record,
+        build_topic_agents_md_record, build_topic_binding_record, build_topic_context_record,
+        build_topic_infra_config_record, with_next_reminder_version,
     },
     utils::current_timestamp_unix_secs,
     validate_topic_agents_md_content, validate_topic_context_content,
@@ -566,75 +566,6 @@ impl StorageProvider for SqlxStorage {
         .map_err(db_error)?;
 
         tx.commit().await.map_err(db_error)
-    }
-
-    async fn get_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<Option<AgentFlowRecord>, StorageError> {
-        let row = query::<Postgres>(
-            r#"
-            SELECT user_id, context_key, flow_id, schema_version, created_at, updated_at
-            FROM agent_flows
-            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
-            "#,
-        )
-        .bind(user_id)
-        .bind(context_key)
-        .bind(flow_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        row.map(|row| row_to_agent_flow(&row)).transpose()
-    }
-
-    async fn upsert_agent_flow_record(
-        &self,
-        user_id: i64,
-        context_key: String,
-        flow_id: String,
-    ) -> Result<AgentFlowRecord, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        ensure_user_row_in_tx(&mut tx, user_id).await?;
-        advisory_xact_lock(
-            &mut tx,
-            &format!("agent_flow:{user_id}:{context_key}:{flow_id}"),
-        )
-        .await?;
-        let existing =
-            get_agent_flow_record_for_update(&mut tx, user_id, &context_key, &flow_id).await?;
-        let now = current_timestamp_unix_secs();
-        let record = build_agent_flow_record(user_id, context_key, flow_id, existing, now);
-
-        query::<Postgres>(
-            r#"
-            INSERT INTO agent_flows (
-                user_id, context_key, flow_id, schema_version, created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (user_id, context_key, flow_id) DO UPDATE
-            SET schema_version = EXCLUDED.schema_version,
-                updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(record.user_id)
-        .bind(&record.context_key)
-        .bind(&record.flow_id)
-        .bind(u32_to_i32(
-            record.schema_version,
-            "agent flow schema_version",
-        )?)
-        .bind(record.created_at)
-        .bind(record.updated_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-
-        tx.commit().await.map_err(db_error)?;
-        Ok(record)
     }
 
     async fn save_browser_artifact(
@@ -1851,18 +1782,17 @@ use helpers::{
 mod rows;
 
 use rows::{
-    row_to_agent_flow, row_to_agent_profile, row_to_audit_event, row_to_reminder_job,
-    row_to_topic_agents_md, row_to_topic_binding, row_to_topic_context, row_to_topic_infra_config,
-    row_to_user_context,
+    row_to_agent_profile, row_to_audit_event, row_to_reminder_job, row_to_topic_agents_md,
+    row_to_topic_binding, row_to_topic_context, row_to_topic_infra_config, row_to_user_context,
 };
 mod reminder_tx;
 use reminder_tx::{insert_reminder_job_in_tx, mutate_reminder_job};
 
 mod topic_tx;
 use topic_tx::{
-    TopicPromptStoreKind, ensure_topic_prompt_not_duplicated_in_tx,
-    get_agent_flow_record_for_update, get_agent_profile_for_update, get_topic_agents_md_for_update,
-    get_topic_binding_for_update, get_topic_context_for_update, get_topic_infra_config_for_update,
+    TopicPromptStoreKind, ensure_topic_prompt_not_duplicated_in_tx, get_agent_profile_for_update,
+    get_topic_agents_md_for_update, get_topic_binding_for_update, get_topic_context_for_update,
+    get_topic_infra_config_for_update,
 };
 
 #[cfg(test)]

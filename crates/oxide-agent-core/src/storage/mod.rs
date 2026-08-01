@@ -7,7 +7,6 @@ mod browser_artifacts;
 mod builders;
 mod control_plane;
 mod error;
-mod flows;
 mod keys;
 #[cfg(oxide_module_storage_sqlx)]
 mod modules;
@@ -38,7 +37,6 @@ pub(crate) use control_plane::{
     validate_topic_context_content,
 };
 pub use error::StorageError;
-pub use flows::AgentFlowRecord;
 pub use keys::generate_flow_id;
 #[cfg(oxide_module_storage_sqlx)]
 pub use modules::{BuiltStorageBackend, StorageBackendModule, build_primary_storage};

@@ -6,7 +6,7 @@ use super::helpers::{
     enum_from_sql, enum_vec_from_sql, i32_to_u16, i32_to_u32, i64_to_u32, i64_to_u64, row_value,
 };
 use super::{
-    AgentFlowRecord, AgentProfileRecord, AuditEventRecord, ReminderJobRecord, ReminderJobStatus,
+    AgentProfileRecord, AuditEventRecord, ReminderJobRecord, ReminderJobStatus,
     ReminderScheduleKind, ReminderThreadKind, StorageError, TopicAgentsMdRecord, TopicBindingKind,
     TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
     TopicInfraToolMode, UserContextConfig,
@@ -26,20 +26,6 @@ pub(super) fn row_to_user_context(row: &PgRow) -> Result<UserContextConfig, Stor
         forum_topic_icon_color,
         forum_topic_icon_custom_emoji_id: row_value(row, "forum_topic_icon_custom_emoji_id")?,
         forum_topic_closed: row_value(row, "forum_topic_closed")?,
-    })
-}
-
-pub(super) fn row_to_agent_flow(row: &PgRow) -> Result<AgentFlowRecord, StorageError> {
-    Ok(AgentFlowRecord {
-        schema_version: i32_to_u32(
-            row_value(row, "schema_version")?,
-            "agent flow schema_version",
-        )?,
-        user_id: row_value(row, "user_id")?,
-        context_key: row_value(row, "context_key")?,
-        flow_id: row_value(row, "flow_id")?,
-        created_at: row_value(row, "created_at")?,
-        updated_at: row_value(row, "updated_at")?,
     })
 }
 

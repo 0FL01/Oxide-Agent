@@ -1,13 +1,13 @@
 use super::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, TopicAgentsMdRecord,
-    TopicBindingRecord, TopicContextRecord, TopicInfraConfigRecord, UpsertAgentProfileOptions,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, CreateReminderJobOptions,
+    ReminderJobRecord, ReminderJobStatus, TopicAgentsMdRecord, TopicBindingRecord,
+    TopicContextRecord, TopicInfraConfigRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
     UpsertTopicInfraConfigOptions,
     schema::{
-        AGENT_FLOW_SCHEMA_VERSION, AGENT_PROFILE_SCHEMA_VERSION, AUDIT_EVENT_SCHEMA_VERSION,
-        REMINDER_JOB_SCHEMA_VERSION, TOPIC_AGENTS_MD_SCHEMA_VERSION, TOPIC_BINDING_SCHEMA_VERSION,
-        TOPIC_CONTEXT_SCHEMA_VERSION, TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
+        AGENT_PROFILE_SCHEMA_VERSION, AUDIT_EVENT_SCHEMA_VERSION, REMINDER_JOB_SCHEMA_VERSION,
+        TOPIC_AGENTS_MD_SCHEMA_VERSION, TOPIC_BINDING_SCHEMA_VERSION, TOPIC_CONTEXT_SCHEMA_VERSION,
+        TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
     },
 };
 
@@ -181,34 +181,6 @@ pub(crate) fn build_topic_binding_record(
             thread_id: options.thread_id.for_new_record(),
             expires_at: options.expires_at.for_new_record(),
             last_activity_at: Some(options.last_activity_at.unwrap_or(now)),
-            created_at: now,
-            updated_at: now,
-        },
-    }
-}
-
-#[must_use]
-pub(crate) fn build_agent_flow_record(
-    user_id: i64,
-    context_key: String,
-    flow_id: String,
-    existing: Option<AgentFlowRecord>,
-    now: i64,
-) -> AgentFlowRecord {
-    match existing {
-        Some(existing_record) => AgentFlowRecord {
-            schema_version: AGENT_FLOW_SCHEMA_VERSION,
-            user_id,
-            context_key,
-            flow_id,
-            created_at: existing_record.created_at,
-            updated_at: now,
-        },
-        None => AgentFlowRecord {
-            schema_version: AGENT_FLOW_SCHEMA_VERSION,
-            user_id,
-            context_key,
-            flow_id,
             created_at: now,
             updated_at: now,
         },

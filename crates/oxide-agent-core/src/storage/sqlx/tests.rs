@@ -290,7 +290,7 @@ async fn sqlx_model_selection_migration_canonicalizes_legacy_values() {
 }
 
 #[tokio::test]
-async fn sqlx_agent_memory_and_flow_records_are_scoped() {
+async fn sqlx_agent_memory_scopes_are_independent() {
     let Some(storage) = sqlx_test_storage().await else {
         return;
     };
@@ -342,22 +342,10 @@ async fn sqlx_agent_memory_and_flow_records_are_scoped() {
             .expect("flow memory should exist"),
     );
 
-    let first_flow = storage
-        .upsert_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
-        .await
-        .expect("flow metadata should upsert");
-    let second_flow = storage
-        .upsert_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
-        .await
-        .expect("flow metadata should update");
-    assert_eq!(first_flow.created_at, second_flow.created_at);
-    assert_eq!(second_flow.context_key, "ctx-a");
-    assert_eq!(second_flow.flow_id, "flow-a");
-
     storage
         .clear_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
         .await
-        .expect("flow clear should delete memory and metadata");
+        .expect("flow clear should delete memory");
     assert!(
         storage
             .load_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
@@ -365,14 +353,6 @@ async fn sqlx_agent_memory_and_flow_records_are_scoped() {
             .expect("flow memory lookup should succeed")
             .is_none()
     );
-    assert!(
-        storage
-            .get_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
-            .await
-            .expect("flow record lookup should succeed")
-            .is_none()
-    );
-
     storage
         .clear_agent_memory_for_context(user_id, "ctx-a".to_string())
         .await

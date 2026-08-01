@@ -5,38 +5,14 @@ use sqlx_postgres::Postgres;
 
 use super::helpers::{db_error, row_value};
 use super::rows::{
-    row_to_agent_flow, row_to_agent_profile, row_to_topic_agents_md, row_to_topic_binding,
-    row_to_topic_context, row_to_topic_infra_config,
+    row_to_agent_profile, row_to_topic_agents_md, row_to_topic_binding, row_to_topic_context,
+    row_to_topic_infra_config,
 };
 use super::{
-    AgentFlowRecord, AgentProfileRecord, StorageError, TopicAgentsMdRecord, TopicBindingRecord,
-    TopicContextRecord, TopicInfraConfigRecord,
+    AgentProfileRecord, StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
+    TopicInfraConfigRecord,
 };
 use crate::storage::control_plane::normalize_topic_prompt_payload;
-
-pub(super) async fn get_agent_flow_record_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    context_key: &str,
-    flow_id: &str,
-) -> Result<Option<AgentFlowRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, context_key, flow_id, schema_version, created_at, updated_at
-        FROM agent_flows
-        WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(context_key)
-    .bind(flow_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_agent_flow(&row)).transpose()
-}
 
 pub(super) async fn get_agent_profile_for_update(
     tx: &mut Transaction<'_, Postgres>,

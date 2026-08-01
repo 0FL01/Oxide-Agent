@@ -1,30 +1,6 @@
 use super::*;
 
 #[test]
-fn build_agent_flow_record_preserves_created_at() {
-    let existing = AgentFlowRecord {
-        schema_version: 1,
-        user_id: 7,
-        context_key: "topic-a".to_string(),
-        flow_id: "flow-a".to_string(),
-        created_at: 123,
-        updated_at: 124,
-    };
-
-    let updated = build_agent_flow_record(
-        7,
-        "topic-a".to_string(),
-        "flow-a".to_string(),
-        Some(existing),
-        999,
-    );
-
-    assert_eq!(updated.schema_version, 1);
-    assert_eq!(updated.created_at, 123);
-    assert_eq!(updated.updated_at, 999);
-}
-
-#[test]
 fn next_record_version_starts_at_one() {
     assert_eq!(next_record_version(None), 1);
 }

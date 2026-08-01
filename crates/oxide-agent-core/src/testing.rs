@@ -33,9 +33,9 @@ pub fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
 
 use crate::llm::LlmError;
 use crate::storage::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, TopicBindingKind,
-    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, CreateReminderJobOptions,
+    ReminderJobRecord, ReminderJobStatus, TopicBindingKind, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use mockall::predicate::*;
 
@@ -131,19 +131,6 @@ fn configure_agent_expectations(mock: &mut crate::storage::MockStorageProvider) 
         .returning(|_, _, _| Ok(None));
     mock.expect_clear_agent_memory_for_flow()
         .returning(|_, _, _| Ok(()));
-    mock.expect_get_agent_flow_record()
-        .returning(|_, _, _| Ok(None));
-    mock.expect_upsert_agent_flow_record()
-        .returning(|user_id, context_key, flow_id| {
-            Ok(AgentFlowRecord {
-                schema_version: 1,
-                user_id,
-                context_key,
-                flow_id,
-                created_at: 0,
-                updated_at: 0,
-            })
-        });
 }
 
 fn configure_control_plane_expectations(mock: &mut crate::storage::MockStorageProvider) {
