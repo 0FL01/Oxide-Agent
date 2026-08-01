@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_calls_without_typed_runtime_fail_without_history_mutation() {
+    async fn tool_calls_without_catalog_fail_without_history_mutation() {
         let llm_client = build_llm_client(single_final_response_provider());
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(2048);
@@ -404,7 +404,7 @@ mod tests {
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "tool runtime missing",
+            task: "tool catalog missing",
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
@@ -412,7 +412,7 @@ mod tests {
             tool_surface_handle: None,
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "tool-runtime-missing",
+            task_id: "tool-catalog-missing",
             messages: &mut messages,
             agent: &mut session,
             compaction_controller: None,
@@ -442,18 +442,18 @@ mod tests {
             .handle_llm_response(response, &mut ctx, &mut state)
             .await
         {
-            Ok(_) => panic!("tool calls without typed runtime must fail"),
+            Ok(_) => panic!("tool calls without a catalog must fail"),
             Err(error) => error,
         };
 
         assert!(
             error
                 .to_string()
-                .contains("tool runtime registry is required for active tool calls")
+                .contains("tool catalog is required for active tool calls")
         );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
-            "missing tool runtime must not write partial assistant/tool history"
+            "missing tool catalog must not write partial assistant/tool history"
         );
         assert!(ctx.messages.is_empty());
     }
