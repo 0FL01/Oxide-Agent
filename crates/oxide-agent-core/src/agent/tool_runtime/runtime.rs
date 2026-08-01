@@ -8,7 +8,7 @@ use super::invocation::{
 use super::normalizer::OutputNormalizer;
 use super::output::{CancellationReason, CleanupStatus, ToolOutput};
 use super::provider_opencode_go::{OpenCodeGoParsedToolCall, OpenCodeGoToolCallBatch};
-use super::registry::ToolRegistry;
+use super::surface::ToolCatalog;
 use super::types::ToolBatchId;
 use crate::agent::identity::SessionId;
 use chrono::Utc;
@@ -75,7 +75,7 @@ impl ToolTurnContext {
 
 /// Async parallel tool-call runtime.
 pub struct ToolCallRuntime {
-    registry: Arc<ToolRegistry>,
+    catalog: Arc<ToolCatalog>,
     history: Arc<dyn ToolHistoryWriter>,
     normalizer: OutputNormalizer,
 }
@@ -84,12 +84,12 @@ impl ToolCallRuntime {
     /// Create a runtime with deterministic registry and history writer.
     #[must_use]
     pub fn new(
-        registry: Arc<ToolRegistry>,
+        catalog: Arc<ToolCatalog>,
         history: Arc<dyn ToolHistoryWriter>,
         config: ToolRuntimeConfig,
     ) -> Self {
         Self {
-            registry,
+            catalog,
             history,
             normalizer: OutputNormalizer::new(config),
         }
@@ -144,7 +144,7 @@ impl ToolCallRuntime {
             handles.push(ToolTaskHandle {
                 invocation: invocation.clone(),
                 handle: tokio::spawn(run_one_tool(
-                    Arc::clone(&self.registry),
+                    Arc::clone(&self.catalog),
                     self.normalizer.clone(),
                     invocation,
                     call,
@@ -180,7 +180,7 @@ struct ToolTaskHandle {
 }
 
 async fn run_one_tool(
-    registry: Arc<ToolRegistry>,
+    catalog: Arc<ToolCatalog>,
     normalizer: OutputNormalizer,
     mut invocation: ToolInvocation,
     call: OpenCodeGoParsedToolCall,
@@ -207,7 +207,7 @@ async fn run_one_tool(
                 CleanupStatus::NotStarted,
             )
         }
-        result = tokio::time::timeout(timeout, registry.execute_or_normalize(
+        result = tokio::time::timeout(timeout, catalog.execute_or_normalize(
             invocation.clone(),
             &normalizer,
         )) => {
@@ -308,8 +308,9 @@ mod tests {
     use crate::agent::tool_runtime::normalizer::ToolRuntimeError;
     use crate::agent::tool_runtime::output::ToolOutputStatus;
     use crate::agent::tool_runtime::provider_opencode_go::OpenCodeGoToolCallParser;
-    use crate::agent::tool_runtime::registry::ToolRegistry;
+    use crate::agent::tool_runtime::surface::{ToolCatalogEntry, ToolVisibility};
     use crate::agent::tool_runtime::types::{ToolName, TurnId};
+    use crate::capabilities::ModuleId;
     use crate::llm::ToolDefinition;
     use async_trait::async_trait;
     use serde_json::json;
@@ -484,6 +485,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_tool_preserves_call_identity() {
+        let runtime = runtime_with_executor("known", Duration::from_millis(1), false);
+        let batch = parse_batch(json!([call("call_unknown", "missing")]));
+
+        let output = runtime
+            .execute_batch(batch, turn_context(Duration::from_secs(5)))
+            .await
+            .expect("batch completes")
+            .remove(0);
+
+        assert_eq!(output.status, ToolOutputStatus::UnknownTool);
+        assert_eq!(output.tool_call_id.as_str(), "call_unknown");
+    }
+
+    #[tokio::test]
     async fn executor_panic_is_join_error_output() {
         let runtime = runtime_with_executor("panic_tool", Duration::from_millis(1), true);
         let batch = parse_batch(json!([call("call_panic", "panic_tool")]));
@@ -528,15 +544,20 @@ mod tests {
         delay: Duration,
         panic: bool,
     ) -> ToolCallRuntime {
-        let mut registry = ToolRegistry::new();
-        registry
-            .register(Arc::new(DelayedExecutor {
-                name: ToolName::from(name),
-                delay,
-                panic,
-            }))
+        let mut catalog = ToolCatalog::new();
+        catalog
+            .register(ToolCatalogEntry::new(
+                Arc::new(DelayedExecutor {
+                    name: ToolName::from(name),
+                    delay,
+                    panic,
+                }),
+                ModuleId::new("test/runtime"),
+                None,
+                ToolVisibility::AlwaysVisible,
+            ))
             .expect("executor registers");
-        ToolCallRuntime::new(Arc::new(registry), history, ToolRuntimeConfig::default())
+        ToolCallRuntime::new(Arc::new(catalog), history, ToolRuntimeConfig::default())
     }
 
     fn turn_context(timeout: Duration) -> ToolTurnContext {

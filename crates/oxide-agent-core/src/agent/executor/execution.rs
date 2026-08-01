@@ -394,16 +394,14 @@ impl AgentExecutor {
         );
         phase_started_at = Instant::now();
 
-        let tool_build =
-            self.build_tool_runtime_registry_with_cleanup(Arc::clone(&todos_arc), progress_tx);
-        let tool_runtime_registry = Arc::new(tool_build.registry);
+        let tool_build = self.build_tool_runtime(Arc::clone(&todos_arc), progress_tx);
         let tool_surface_handle = tool_build.surface_handle;
         let tool_catalog = tool_build.catalog;
         let browser_cleanup = tool_build.browser_cleanup;
         debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
-            phase = "tool_runtime_registry_built",
+            phase = "tool_runtime_catalog_built",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = prepare_started_at.elapsed().as_millis(),
             "Agent prepare execution latency"
@@ -554,7 +552,6 @@ impl AgentExecutor {
 
         PreparedExecution {
             todos_arc,
-            tool_runtime_registry,
             tools,
             tool_catalog,
             tool_surface_handle,

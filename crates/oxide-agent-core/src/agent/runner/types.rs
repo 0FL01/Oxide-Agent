@@ -5,9 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
-use crate::agent::tool_runtime::{
-    ToolCatalog, ToolRegistry as RuntimeToolRegistry, ToolSurfaceHandle,
-};
+use crate::agent::tool_runtime::{ToolCatalog, ToolSurfaceHandle};
 use crate::config::{
     ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_model,
     get_agent_search_limit,
@@ -141,8 +139,6 @@ pub struct AgentRunnerContext<'a> {
     /// Shared mutable tool surface handle.  When `Some`, the runner reads
     /// visible specs from the surface each iteration.
     pub tool_surface_handle: Option<Arc<ToolSurfaceHandle>>,
-    /// Optional typed runtime registry for v1 async tool execution.
-    pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
     pub progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     /// Shared todo list state.
@@ -195,7 +191,6 @@ impl<'a> AgentRunnerContext<'a> {
             tools: base.tools,
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,
             task_id: base.task_id,

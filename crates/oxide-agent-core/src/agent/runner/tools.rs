@@ -162,11 +162,11 @@ impl AgentRunner {
         reasoning_content: Option<String>,
         tool_calls: Vec<ToolCall>,
     ) -> anyhow::Result<Option<AgentRunResult>> {
-        let registry = ctx
-            .tool_runtime_registry
+        let catalog = ctx
+            .tool_catalog
             .as_ref()
             .map(Arc::clone)
-            .ok_or_else(|| anyhow::anyhow!("typed tool runtime registry is not configured"))?;
+            .ok_or_else(|| anyhow::anyhow!("typed tool catalog is not configured"))?;
         let route = current_execution_model_route(ctx)
             .ok_or_else(|| anyhow::anyhow!("typed tool runtime requires an active model route"))?;
         if !v1_tool_runtime_enabled_for_model(&route) {
@@ -219,7 +219,7 @@ impl AgentRunner {
         }
         let history_writer: Arc<dyn ToolHistoryWriter> =
             Arc::<BufferedRuntimeHistory>::clone(&history);
-        let runtime = ToolCallRuntime::new(registry, history_writer, runtime_config.clone());
+        let runtime = ToolCallRuntime::new(catalog, history_writer, runtime_config.clone());
         let mut turn_context = ToolTurnContext::new(
             runtime_session_id(ctx),
             batch_id,
@@ -553,9 +553,10 @@ mod tests {
     use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
-        OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
-        ToolRegistry as RuntimeToolRegistry, ToolRuntimeError,
+        OutputNormalizer, ToolCatalog, ToolCatalogEntry, ToolExecutor, ToolInvocation, ToolName,
+        ToolRuntimeError, ToolVisibility,
     };
+    use crate::capabilities::ModuleId;
     use crate::config::AgentSettings;
     use crate::llm::{LlmClient, ToolDefinition};
     use async_trait::async_trait;
@@ -741,6 +742,19 @@ mod tests {
         }
     }
 
+    fn runtime_catalog(executor: Arc<dyn ToolExecutor>) -> Arc<ToolCatalog> {
+        let mut catalog = ToolCatalog::new();
+        catalog
+            .register(ToolCatalogEntry::new(
+                executor,
+                ModuleId::new("test/runtime"),
+                None,
+                ToolVisibility::AlwaysVisible,
+            ))
+            .expect("runtime executor registers");
+        Arc::new(catalog)
+    }
+
     #[tokio::test]
     async fn typed_runtime_path_records_paired_assistant_and_tool_history() {
         let settings = AgentSettings {
@@ -750,12 +764,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(StaticRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(StaticRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -765,9 +775,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-test",
@@ -851,14 +860,10 @@ mod tests {
         let mut runner = AgentRunner::new(llm_client);
         runner.register_hook(Box::new(SearchBudgetHook::new(10)));
         let executions = Arc::new(AtomicUsize::new(0));
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(CountingSearchRuntimeExecutor {
-                executions: Arc::clone(&executions),
-            }))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(CountingSearchRuntimeExecutor {
+            executions: Arc::clone(&executions),
+        }));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -868,9 +873,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-search-budget-test",
@@ -954,12 +958,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(StaticRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(StaticRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -969,9 +969,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-test",
@@ -1036,14 +1035,10 @@ mod tests {
             status: TodoStatus::InProgress,
         });
         let todos_arc = Arc::new(tokio::sync::Mutex::new(initial_todos.clone()));
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(CompleteTodosRuntimeExecutor {
-                todos: Arc::clone(&todos_arc),
-            }))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(CompleteTodosRuntimeExecutor {
+            todos: Arc::clone(&todos_arc),
+        }));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(4096);
         session.memory_mut().todos = initial_todos;
@@ -1053,9 +1048,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-final-todo-test",
@@ -1130,14 +1124,10 @@ mod tests {
             status: TodoStatus::InProgress,
         });
         let todos_arc = Arc::new(tokio::sync::Mutex::new(initial_todos.clone()));
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(CompleteTodosRuntimeExecutor {
-                todos: Arc::clone(&todos_arc),
-            }))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(CompleteTodosRuntimeExecutor {
+            todos: Arc::clone(&todos_arc),
+        }));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(4096);
         session.memory_mut().todos = initial_todos;
@@ -1147,9 +1137,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-final-todo-draft-test",
@@ -1225,12 +1214,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(DeadEndFailureRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(DeadEndFailureRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -1240,9 +1225,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-dead-end-test",
@@ -1323,17 +1307,13 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
         let compress_executor = Arc::new(CompressionProvider::new())
             .tool_runtime_executors()
             .into_iter()
             .next()
             .expect("compress executor registered");
-        runtime_registry
-            .register(compress_executor)
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(compress_executor);
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(10000);
         // Add 3 messages that the compress tool will cover.
@@ -1353,9 +1333,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-compress-test",
@@ -1440,17 +1419,13 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
         let compress_executor = Arc::new(CompressionProvider::new())
             .tool_runtime_executors()
             .into_iter()
             .next()
             .expect("compress executor registered");
-        runtime_registry
-            .register(compress_executor)
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(compress_executor);
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(10000);
         session
@@ -1463,9 +1438,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "compress-invalid-refs-test",
@@ -1553,15 +1527,11 @@ mod tests {
         let mut runner = AgentRunner::new(llm_client);
         let active = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(ParallelRuntimeExecutor {
-                active: Arc::clone(&active),
-                max_seen: Arc::clone(&max_seen),
-            }))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(ParallelRuntimeExecutor {
+            active: Arc::clone(&active),
+            max_seen: Arc::clone(&max_seen),
+        }));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(4096);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -1571,9 +1541,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-parallel-test",
@@ -1659,12 +1628,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(StaticRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(StaticRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -1674,9 +1639,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-unsupported-route-test",
@@ -1739,12 +1703,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(StaticRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(StaticRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(2048);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -1754,9 +1714,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-openai-base-route-test",
@@ -1860,12 +1819,8 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let mut runtime_registry = RuntimeToolRegistry::new();
-        runtime_registry
-            .register(Arc::new(ScreenshotRuntimeExecutor))
-            .expect("runtime executor registers");
-        let tools = runtime_registry.specs();
-        let runtime_registry = Arc::new(runtime_registry);
+        let tool_catalog = runtime_catalog(Arc::new(ScreenshotRuntimeExecutor));
+        let tools = tool_catalog.specs();
 
         let mut session = EphemeralSession::new(4096);
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
@@ -1875,9 +1830,8 @@ mod tests {
             system_prompt: "system prompt",
             date_suffix: "",
             tools: tools.clone(),
-            tool_catalog: None,
+            tool_catalog: Some(tool_catalog),
             tool_surface_handle: None,
-            tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-screenshot-attachment-test",

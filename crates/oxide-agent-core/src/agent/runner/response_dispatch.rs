@@ -95,8 +95,8 @@ impl AgentRunner {
             return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
-        if ctx.tool_runtime_registry.is_none() {
-            return Err(Self::missing_tool_runtime_registry_error(ctx));
+        if ctx.tool_catalog.is_none() {
+            return Err(Self::missing_tool_catalog_error(ctx));
         }
         self.execute_tools_with_runtime(
             ctx,
@@ -122,7 +122,7 @@ impl AgentRunner {
             return self.handle_loop_outcome(ctx, state, tool_outcome).await;
         }
 
-        if ctx.tool_runtime_registry.is_some() {
+        if ctx.tool_catalog.is_some() {
             return self
                 .execute_tools_with_runtime(
                     ctx,
@@ -134,12 +134,12 @@ impl AgentRunner {
                 .await;
         }
 
-        Err(Self::missing_tool_runtime_registry_error(ctx))
+        Err(Self::missing_tool_catalog_error(ctx))
     }
 
-    fn missing_tool_runtime_registry_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
+    fn missing_tool_catalog_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
         anyhow!(
-            "tool runtime registry is required for active tool calls; current provider={}, model={}",
+            "tool catalog is required for active tool calls; current provider={}, model={}",
             ctx.config.model.provider,
             ctx.config.model.id,
         )
@@ -355,7 +355,6 @@ mod tests {
             tools: tools.clone(),
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-unstructured-structured-fallback",
@@ -411,7 +410,6 @@ mod tests {
             tools: tools.clone(),
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "tool-runtime-missing",
@@ -483,7 +481,6 @@ mod tests {
             tools: tools.clone(),
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-token-metrics",
@@ -531,7 +528,6 @@ mod tests {
             tools: tools.clone(),
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "reasoning-promotion",
@@ -580,7 +576,6 @@ mod tests {
             tools: tools.clone(),
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "reasoning-as-answer",

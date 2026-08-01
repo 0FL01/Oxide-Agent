@@ -140,10 +140,9 @@ fn v1_tool_runtime_model_detection_rejects_unsupported_routes() {
     oxide_module_tool_file_delivery
 ))]
 #[test]
-fn typed_runtime_registry_exposes_sandbox_tools() {
+fn typed_tool_catalog_exposes_sandbox_tools() {
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -173,10 +172,9 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
 
 #[cfg(oxide_module_tool_delegation)]
 #[test]
-fn typed_runtime_registry_exposes_delegation_tools() {
+fn typed_tool_catalog_exposes_delegation_tools() {
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry.tool_names();
 
     for tool_name in ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents"] {
@@ -194,11 +192,10 @@ fn typed_runtime_registry_exposes_delegation_tools() {
 
 #[cfg(oxide_module_manager_control_plane)]
 #[test]
-fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
+fn typed_tool_catalog_exposes_manager_tools_when_manager_enabled() {
     let executor =
         build_executor().with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -221,13 +218,12 @@ fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
 
 #[cfg(oxide_module_manager_control_plane)]
 #[test]
-fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_attached() {
+fn typed_tool_catalog_exposes_manager_lifecycle_tools_when_lifecycle_is_attached() {
     let lifecycle = Arc::new(RecordingTopicLifecycle::new());
     let executor = build_executor()
         .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77)
         .with_manager_topic_lifecycle(lifecycle);
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -243,7 +239,7 @@ fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_atta
 
 #[cfg(oxide_module_integration_ssh_mcp)]
 #[test]
-fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
+fn typed_tool_catalog_exposes_ssh_mcp_tools_when_topic_infra_configured() {
     let mut executor = build_executor();
     executor.set_topic_infra(
         Arc::new(MockStorageProvider::new()),
@@ -251,8 +247,7 @@ fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
         "topic-a".to_string(),
         Some(registry_topic_infra_config()),
     );
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -275,15 +270,14 @@ fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[test]
-fn typed_runtime_registry_exposes_webfetch_tool() {
+fn typed_tool_catalog_exposes_webfetch_tool() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -294,10 +288,9 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
 
 #[cfg(oxide_module_tool_ytdlp)]
 #[test]
-fn typed_runtime_registry_exposes_ytdlp_tools() {
+fn typed_tool_catalog_exposes_ytdlp_tools() {
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -319,15 +312,14 @@ fn typed_runtime_registry_exposes_ytdlp_tools() {
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[test]
-fn typed_runtime_registry_merges_web_tools_when_enabled() {
+fn typed_tool_catalog_merges_web_tools_when_enabled() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_set_env("OXIDE_WEB_CRAWLER_MERGE", "true");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -341,15 +333,14 @@ fn typed_runtime_registry_merges_web_tools_when_enabled() {
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[test]
-fn typed_runtime_registry_keeps_webfetch_when_merge_disabled() {
+fn typed_tool_catalog_keeps_webfetch_when_merge_disabled() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     test_remove_env("OXIDE_WEB_CRAWLER_MERGE");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -363,7 +354,7 @@ fn typed_runtime_registry_keeps_webfetch_when_merge_disabled() {
 
 #[cfg(all(oxide_module_tool_tts_kokoro, oxide_module_tool_tts_silero))]
 #[test]
-fn typed_runtime_registry_exposes_tts_tools() {
+fn typed_tool_catalog_exposes_tts_tools() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -371,8 +362,7 @@ fn typed_runtime_registry_exposes_tts_tools() {
     test_set_env("SILERO_TTS_URL", "http://silero-tts:8000");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -400,10 +390,9 @@ fn typed_runtime_registry_exposes_tts_tools() {
     oxide_module_tool_vision_video
 ))]
 #[test]
-fn typed_runtime_registry_exposes_audio_stt_and_vision_tools() {
+fn typed_tool_catalog_exposes_audio_stt_and_vision_tools() {
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry.tool_names();
 
     for tool_name in [
@@ -425,7 +414,7 @@ fn typed_runtime_registry_exposes_audio_stt_and_vision_tools() {
 
 #[cfg(oxide_module_tool_sandbox_exec)]
 #[test]
-fn typed_runtime_registry_applies_execution_profile_tool_policy() {
+fn typed_tool_catalog_applies_execution_profile_tool_policy() {
     let mut executor =
         build_executor().with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
     executor.set_execution_profile(AgentExecutionProfile::new(
@@ -436,8 +425,7 @@ fn typed_runtime_registry_applies_execution_profile_tool_policy() {
             HashSet::default(),
         ),
     ));
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -449,7 +437,7 @@ fn typed_runtime_registry_applies_execution_profile_tool_policy() {
 }
 
 #[test]
-fn typed_runtime_registry_skips_disabled_todos_module() {
+fn typed_tool_catalog_skips_disabled_todos_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/todos".to_string(),
@@ -461,8 +449,7 @@ fn typed_runtime_registry_skips_disabled_todos_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -473,7 +460,7 @@ fn typed_runtime_registry_skips_disabled_todos_module() {
 
 #[cfg(oxide_module_tool_webfetch_md)]
 #[test]
-fn typed_runtime_registry_skips_disabled_webfetch_module() {
+fn typed_tool_catalog_skips_disabled_webfetch_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/webfetch-md".to_string(),
@@ -485,8 +472,7 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -498,7 +484,7 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
 
 #[cfg(oxide_module_tool_compression)]
 #[test]
-fn typed_runtime_registry_skips_disabled_compression_module() {
+fn typed_tool_catalog_skips_disabled_compression_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/compression".to_string(),
@@ -510,8 +496,7 @@ fn typed_runtime_registry_skips_disabled_compression_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -523,7 +508,7 @@ fn typed_runtime_registry_skips_disabled_compression_module() {
 
 #[cfg(oxide_module_tool_tts_kokoro)]
 #[test]
-fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
+fn typed_tool_catalog_skips_disabled_kokoro_tts_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -540,8 +525,7 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -556,7 +540,7 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
 
 #[cfg(oxide_module_tool_audio_stt)]
 #[test]
-fn typed_runtime_registry_skips_disabled_audio_stt_module() {
+fn typed_tool_catalog_skips_disabled_audio_stt_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/audio-stt".to_string(),
@@ -568,8 +552,7 @@ fn typed_runtime_registry_skips_disabled_audio_stt_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -581,7 +564,7 @@ fn typed_runtime_registry_skips_disabled_audio_stt_module() {
 
 #[cfg(oxide_module_tool_vision_image)]
 #[test]
-fn typed_runtime_registry_skips_disabled_vision_image_module() {
+fn typed_tool_catalog_skips_disabled_vision_image_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/vision-image".to_string(),
@@ -593,8 +576,7 @@ fn typed_runtime_registry_skips_disabled_vision_image_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -606,7 +588,7 @@ fn typed_runtime_registry_skips_disabled_vision_image_module() {
 
 #[cfg(oxide_module_tool_vision_video)]
 #[test]
-fn typed_runtime_registry_skips_disabled_vision_video_module() {
+fn typed_tool_catalog_skips_disabled_vision_video_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/vision-video".to_string(),
@@ -618,8 +600,7 @@ fn typed_runtime_registry_skips_disabled_vision_video_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -631,7 +612,7 @@ fn typed_runtime_registry_skips_disabled_vision_video_module() {
 
 #[cfg(oxide_module_tool_tts_silero)]
 #[test]
-fn typed_runtime_registry_skips_disabled_silero_tts_module() {
+fn typed_tool_catalog_skips_disabled_silero_tts_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -648,8 +629,7 @@ fn typed_runtime_registry_skips_disabled_silero_tts_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -664,7 +644,7 @@ fn typed_runtime_registry_skips_disabled_silero_tts_module() {
 
 #[cfg(oxide_module_tool_ytdlp)]
 #[test]
-fn typed_runtime_registry_skips_disabled_ytdlp_module() {
+fn typed_tool_catalog_skips_disabled_ytdlp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/ytdlp".to_string(),
@@ -676,8 +656,7 @@ fn typed_runtime_registry_skips_disabled_ytdlp_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -690,7 +669,7 @@ fn typed_runtime_registry_skips_disabled_ytdlp_module() {
 
 #[cfg(oxide_module_tool_delegation)]
 #[test]
-fn typed_runtime_registry_skips_disabled_delegation_module() {
+fn typed_tool_catalog_skips_disabled_delegation_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/delegation".to_string(),
@@ -702,8 +681,7 @@ fn typed_runtime_registry_skips_disabled_delegation_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -729,7 +707,7 @@ fn clear_web_search_registry_env() {
 
 #[cfg(oxide_module_tool_web_search)]
 #[test]
-fn typed_runtime_registry_skips_disabled_web_search_module() {
+fn typed_tool_catalog_skips_disabled_web_search_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -747,8 +725,7 @@ fn typed_runtime_registry_skips_disabled_web_search_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -801,7 +778,7 @@ fn current_tool_catalog_include_web_search_when_key_is_configured() {
 
 #[cfg(oxide_module_tool_web_search)]
 #[test]
-fn typed_runtime_registry_registers_unified_web_search_once_for_all_backends() {
+fn typed_tool_catalog_registers_unified_web_search_once_for_all_backends() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -812,8 +789,7 @@ fn typed_runtime_registry_registers_unified_web_search_once_for_all_backends() {
     test_set_env("OXIDE_CRW_API_TOKEN", "crw-token");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry.tool_names();
 
     assert_eq!(
@@ -829,7 +805,7 @@ fn typed_runtime_registry_registers_unified_web_search_once_for_all_backends() {
 
 #[cfg(oxide_module_manager_control_plane)]
 #[test]
-fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
+fn typed_tool_catalog_skips_disabled_manager_control_plane_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "manager/control-plane".to_string(),
@@ -842,8 +818,7 @@ fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
     let executor = AgentExecutor::new(llm, session, settings)
         .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -856,7 +831,7 @@ fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
 
 #[cfg(oxide_module_integration_ssh_mcp)]
 #[test]
-fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
+fn typed_tool_catalog_skips_disabled_ssh_mcp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "integration/ssh-mcp".to_string(),
@@ -874,8 +849,7 @@ fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
         Some(registry_topic_infra_config()),
     );
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -892,7 +866,7 @@ fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
     oxide_module_tool_sandbox_recreate
 ))]
 #[test]
-fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
+fn typed_tool_catalog_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-exec".to_string(),
@@ -904,8 +878,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -923,7 +896,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     oxide_module_tool_file_delivery
 ))]
 #[test]
-fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
+fn typed_tool_catalog_skips_disabled_sandbox_fileops_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-fileops".to_string(),
@@ -935,8 +908,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -953,7 +925,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
 
 #[cfg(oxide_module_tool_sandbox_fileops)]
 #[test]
-fn typed_runtime_registry_skips_disabled_file_delivery_module() {
+fn typed_tool_catalog_skips_disabled_file_delivery_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/file-delivery".to_string(),
@@ -965,8 +937,7 @@ fn typed_runtime_registry_skips_disabled_file_delivery_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -982,7 +953,7 @@ fn typed_runtime_registry_skips_disabled_file_delivery_module() {
 
 #[cfg(oxide_module_integration_mcp_jira)]
 #[test]
-fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
+fn typed_tool_catalog_exposes_jira_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -992,8 +963,7 @@ fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
     test_set_env("JIRA_MCP_BINARY_PATH", "jira-mcp");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -1014,7 +984,7 @@ fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
 
 #[cfg(oxide_module_integration_mcp_mattermost)]
 #[test]
-fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
+fn typed_tool_catalog_exposes_mattermost_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1023,8 +993,7 @@ fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
     test_set_env("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -1048,7 +1017,7 @@ fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
 
 #[cfg(oxide_module_integration_mcp_jira)]
 #[test]
-fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
+fn typed_tool_catalog_skips_disabled_jira_mcp_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1068,8 +1037,7 @@ fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -1088,7 +1056,7 @@ fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
 
 #[cfg(oxide_module_integration_mcp_mattermost)]
 #[test]
-fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
+fn typed_tool_catalog_skips_disabled_mattermost_mcp_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1107,8 +1075,7 @@ fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
     let session = AgentSession::new(9_i64.into());
     let executor = AgentExecutor::new(llm, session, settings);
 
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -1128,7 +1095,7 @@ fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
     oxide_module_integration_mcp_mattermost
 ))]
 #[test]
-fn typed_runtime_registry_registers_mcp_modules_once() {
+fn typed_tool_catalog_registers_mcp_modules_once() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1141,8 +1108,7 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
     test_set_env("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
 
     let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let registry = executor.build_tool_catalog(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry.tool_names();
 
     for tool_name in [

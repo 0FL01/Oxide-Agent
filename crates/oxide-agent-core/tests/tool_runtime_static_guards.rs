@@ -81,14 +81,14 @@ fn tool_call_correlation_api_uses_wire_and_invocation_terms() {
 }
 
 #[test]
-fn typed_tool_registry_has_single_production_definition() {
+fn tool_catalog_has_single_production_definition() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let mut files = Vec::new();
     collect_rust_files(&manifest_dir.join("src"), &mut files);
 
-    let mut registry_definitions = Vec::new();
-    let mut registry_aliases = Vec::new();
+    let mut catalog_definitions = Vec::new();
+    let mut legacy_registries = Vec::new();
     for path in files {
         let source = fs::read_to_string(&path).expect("read source file");
         let relative = path
@@ -97,22 +97,22 @@ fn typed_tool_registry_has_single_production_definition() {
             .display()
             .to_string();
 
-        if source.contains("pub struct ToolRegistry") {
-            registry_definitions.push(relative.clone());
+        if source.contains("pub struct ToolCatalog") {
+            catalog_definitions.push(relative.clone());
         }
-        if source.contains("type ToolRegistry") {
-            registry_aliases.push(relative);
+        if source.contains("struct ToolRegistry") || source.contains("type ToolRegistry") {
+            legacy_registries.push(relative);
         }
     }
 
     assert_eq!(
-        registry_definitions,
-        vec!["src/agent/tool_runtime/registry.rs"],
-        "typed runtime must keep exactly one production ToolRegistry definition"
+        catalog_definitions,
+        vec!["src/agent/tool_runtime/surface.rs"],
+        "typed runtime must keep exactly one production ToolCatalog definition"
     );
     assert!(
-        registry_aliases.is_empty(),
-        "typed runtime must not add ToolRegistry type aliases or shadow registries; offenders: {registry_aliases:?}"
+        legacy_registries.is_empty(),
+        "typed runtime must not reintroduce ToolRegistry definitions or aliases; offenders: {legacy_registries:?}"
     );
 }
 

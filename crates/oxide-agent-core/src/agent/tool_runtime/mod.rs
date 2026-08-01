@@ -1,7 +1,7 @@
 //! Async parallel tool runtime.
 //!
 //! Tool capability modules own typed executor construction; callers register
-//! executors through the runtime registry rather than provider-specific paths.
+//! executors in the catalog rather than provider-specific paths.
 
 pub(crate) mod arguments;
 pub mod artifacts;
@@ -14,7 +14,6 @@ pub mod normalizer;
 pub mod output;
 pub mod process;
 pub mod provider_opencode_go;
-pub mod registry;
 #[cfg(oxide_module_tool_retrieve_tools)]
 pub mod retrieve_tools;
 pub mod runtime;
@@ -95,12 +94,11 @@ pub use provider_opencode_go::{
     OpenCodeGoParsedToolCall, OpenCodeGoProtocolIssue, OpenCodeGoToolCallBatch,
     OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,
 };
-pub use registry::{RegistryError, ToolRegistry};
 #[cfg(oxide_module_tool_retrieve_tools)]
 pub use retrieve_tools::RetrieveToolsToolModule;
 pub use runtime::{ToolCallRuntime, ToolRuntimeFatal, ToolTurnContext};
 pub use surface::{
-    ActivationResult, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolSurface,
+    ActivationResult, CapabilityGroup, CatalogError, ToolCatalog, ToolCatalogEntry, ToolSurface,
     ToolSurfaceHandle, ToolVisibility,
 };
 pub use types::{ToolBatchId, ToolCallId, ToolName, TurnId};

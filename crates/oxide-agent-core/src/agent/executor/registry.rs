@@ -85,8 +85,7 @@ use crate::agent::tool_runtime::YtdlpToolModule;
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::agent::tool_runtime::{
     BrowserSessionCleanup, CapabilityGroup, ToolCatalog, ToolCatalogEntry, ToolExecutor,
-    ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
-    ToolSurfaceHandle, ToolVisibility,
+    ToolModuleContext, ToolModuleContextParts, ToolSurfaceHandle, ToolVisibility,
 };
 #[cfg(any(
     oxide_module_tool_sandbox_exec,
@@ -123,10 +122,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-/// Output of building the tool runtime: registry, catalog, surface handle,
-/// and optional browser cleanup.
+/// Output of building the tool runtime catalog, surface, and browser cleanup.
 pub(super) struct ToolRuntimeBuild {
-    pub registry: RuntimeToolRegistry,
     pub browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>>,
     pub surface_handle: Arc<ToolSurfaceHandle>,
     pub catalog: Arc<ToolCatalog>,
@@ -142,38 +139,32 @@ impl AgentExecutor {
     #[must_use]
     pub fn current_tool_catalog(&self) -> Vec<crate::llm::ToolDefinition> {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        self.build_tool_runtime_registry(todos_arc, None).specs()
+        self.build_tool_runtime(todos_arc, None).catalog.specs()
     }
 
-    #[must_use]
-    pub(super) fn build_tool_runtime_registry(
+    #[cfg(test)]
+    pub(super) fn build_tool_catalog(
         &self,
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> RuntimeToolRegistry {
-        self.build_tool_runtime_registry_with_cleanup(todos_arc, progress_tx)
-            .registry
+    ) -> Arc<ToolCatalog> {
+        self.build_tool_runtime(todos_arc, progress_tx).catalog
     }
 
-    /// Build the tool runtime registry together with a browser session cleanup
-    /// handle, the tool catalog (metadata), and the tool surface handle
-    /// (lazy activation state).
+    /// Build the executable catalog, lazy surface, and browser cleanup handle.
     #[must_use]
-    pub(super) fn build_tool_runtime_registry_with_cleanup(
+    pub(super) fn build_tool_runtime(
         &self,
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolRuntimeBuild {
-        let mut registry = RuntimeToolRegistry::new();
         let mut catalog = ToolCatalog::new();
 
         let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
-        let browser_cleanup =
-            self.register_tool_runtime_modules(&mut registry, &mut catalog, &module_ctx);
+        let browser_cleanup = self.register_tool_runtime_modules(&mut catalog, &module_ctx);
 
         let surface_handle = module_ctx.tool_surface_handle();
         ToolRuntimeBuild {
-            registry,
             browser_cleanup,
             surface_handle,
             catalog: Arc::new(catalog),
@@ -182,7 +173,6 @@ impl AgentExecutor {
 
     fn register_tool_runtime_modules(
         &self,
-        registry: &mut RuntimeToolRegistry,
         catalog: &mut ToolCatalog,
         ctx: &ToolModuleContext,
     ) -> Option<Arc<dyn BrowserSessionCleanup>> {
@@ -212,62 +202,62 @@ impl AgentExecutor {
             oxide_module_tool_webfetch_md,
             oxide_module_tool_ytdlp
         )))]
-        let _ = (registry, catalog, ctx);
+        let _ = (catalog, ctx);
 
         #[cfg(oxide_module_tool_agents_md)]
-        self.register_tool_runtime_module(registry, catalog, &AgentsMdToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &AgentsMdToolModule, ctx);
         #[cfg(oxide_module_integration_mcp_jira)]
-        self.register_tool_runtime_module(registry, catalog, &JiraMcpToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &JiraMcpToolModule, ctx);
         #[cfg(oxide_module_manager_control_plane)]
-        self.register_tool_runtime_module(registry, catalog, &ManagerControlPlaneToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &ManagerControlPlaneToolModule, ctx);
         #[cfg(oxide_module_integration_mcp_mattermost)]
-        self.register_tool_runtime_module(registry, catalog, &MattermostMcpToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &MattermostMcpToolModule, ctx);
         #[cfg(oxide_module_tool_compression)]
-        self.register_tool_runtime_module(registry, catalog, &CompressionToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &CompressionToolModule, ctx);
         #[cfg(oxide_module_tool_retrieve_tools)]
-        self.register_tool_runtime_module(registry, catalog, &RetrieveToolsToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &RetrieveToolsToolModule, ctx);
         #[cfg(oxide_module_tool_delegation)]
-        self.register_tool_runtime_module(registry, catalog, &DelegationToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &DelegationToolModule, ctx);
         #[cfg(oxide_module_tool_file_delivery)]
-        self.register_tool_runtime_module(registry, catalog, &FileDeliveryToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &FileDeliveryToolModule, ctx);
         #[cfg(oxide_module_tool_audio_stt)]
-        self.register_tool_runtime_module(registry, catalog, &AudioSttToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &AudioSttToolModule, ctx);
         #[cfg(oxide_module_tool_vision_image)]
-        self.register_tool_runtime_module(registry, catalog, &VisionImageToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &VisionImageToolModule, ctx);
         #[cfg(oxide_module_tool_vision_video)]
-        self.register_tool_runtime_module(registry, catalog, &VisionVideoToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &VisionVideoToolModule, ctx);
         #[cfg(oxide_module_tool_reminder)]
-        self.register_tool_runtime_module(registry, catalog, &ReminderToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &ReminderToolModule, ctx);
         #[cfg(oxide_module_tool_browser_live)]
-        let browser_cleanup = self.register_browser_live_module(registry, catalog, ctx);
+        let browser_cleanup = self.register_browser_live_module(catalog, ctx);
 
         #[cfg(not(oxide_module_tool_browser_live))]
         let browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>> = None;
 
         #[cfg(oxide_module_integration_ssh_mcp)]
-        self.register_tool_runtime_module(registry, catalog, &SshMcpToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &SshMcpToolModule, ctx);
         #[cfg(oxide_module_tool_stack_logs)]
-        self.register_tool_runtime_module(registry, catalog, &StackLogsToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &StackLogsToolModule, ctx);
         #[cfg(oxide_module_tool_todos)]
-        self.register_tool_runtime_module(registry, catalog, &TodosToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &TodosToolModule, ctx);
         #[cfg(oxide_module_tool_tts_kokoro)]
-        self.register_tool_runtime_module(registry, catalog, &KokoroTtsToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &KokoroTtsToolModule, ctx);
         #[cfg(oxide_module_tool_tts_silero)]
-        self.register_tool_runtime_module(registry, catalog, &SileroTtsToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &SileroTtsToolModule, ctx);
         #[cfg(oxide_module_tool_webfetch_md)]
-        self.register_tool_runtime_module(registry, catalog, &WebCrawlerToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &WebCrawlerToolModule, ctx);
         #[cfg(oxide_module_tool_web_search)]
-        self.register_tool_runtime_module(registry, catalog, &WebSearchToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &WebSearchToolModule, ctx);
         #[cfg(oxide_module_tool_webfetch_md)]
-        self.register_tool_runtime_module(registry, catalog, &WebFetchMdToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &WebFetchMdToolModule, ctx);
         #[cfg(oxide_module_tool_ytdlp)]
-        self.register_tool_runtime_module(registry, catalog, &YtdlpToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &YtdlpToolModule, ctx);
         #[cfg(oxide_module_tool_sandbox_exec)]
-        self.register_tool_runtime_module(registry, catalog, &SandboxExecToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &SandboxExecToolModule, ctx);
         #[cfg(oxide_module_tool_sandbox_fileops)]
-        self.register_tool_runtime_module(registry, catalog, &SandboxFileOpsToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &SandboxFileOpsToolModule, ctx);
         #[cfg(oxide_module_tool_sandbox_recreate)]
-        self.register_tool_runtime_module(registry, catalog, &SandboxRecreateToolModule, ctx);
+        self.register_tool_runtime_module(catalog, &SandboxRecreateToolModule, ctx);
 
         browser_cleanup
     }
@@ -277,7 +267,6 @@ impl AgentExecutor {
     #[cfg(oxide_module_tool_browser_live)]
     fn register_browser_live_module(
         &self,
-        registry: &mut RuntimeToolRegistry,
         catalog: &mut ToolCatalog,
         ctx: &ToolModuleContext,
     ) -> Option<Arc<dyn BrowserSessionCleanup>> {
@@ -296,7 +285,6 @@ impl AgentExecutor {
         }
 
         self.register_tool_runtime_executors(
-            registry,
             catalog,
             browser_executors,
             module_id,
@@ -334,7 +322,6 @@ impl AgentExecutor {
     ))]
     fn register_tool_runtime_module<M>(
         &self,
-        registry: &mut RuntimeToolRegistry,
         catalog: &mut ToolCatalog,
         module: &M,
         ctx: &ToolModuleContext,
@@ -358,7 +345,6 @@ impl AgentExecutor {
         }
 
         self.register_tool_runtime_executors(
-            registry,
             catalog,
             executors,
             module_id,
@@ -397,7 +383,6 @@ impl AgentExecutor {
     )]
     fn register_tool_runtime_executors(
         &self,
-        registry: &mut RuntimeToolRegistry,
         catalog: &mut ToolCatalog,
         executors: Vec<Arc<dyn ToolExecutor>>,
         module_id: ModuleId,
@@ -413,7 +398,6 @@ impl AgentExecutor {
             {
                 continue;
             }
-            // Add to catalog (metadata: spec, group, visibility).
             let entry = ToolCatalogEntry::new(
                 Arc::clone(&executor),
                 module_id,
@@ -427,14 +411,6 @@ impl AgentExecutor {
                     "Skipping duplicate typed tool catalog entry"
                 );
                 continue;
-            }
-            // Add to registry (execution handle).
-            if let Err(error) = registry.register(executor) {
-                warn!(
-                    tool_name = %tool_name,
-                    error = %error,
-                    "Skipping duplicate typed tool runtime executor"
-                );
             }
         }
     }

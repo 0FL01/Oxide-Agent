@@ -56,13 +56,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M2 plan.
   - Acceptance: Web session DTO/hash/checkpoint/upload mechanics have one owner each; `SessionRegistry` uses one `SessionEntry` map; `ToolCatalog` is the sole executor/spec registry and preserves lazy/sub-agent behavior.
   - Primary evidence: Focused Web, runtime, tool runtime, delegation, and history-correlation tests.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: Web DTO/hash/checkpoint/upload duplicates removed; `SessionRegistry` uses one entry map; `ToolRegistry` and duplicate executor registration are absent, with `ToolCatalog` executing full filtered catalogs. Focused Web, runtime, tool-runtime, runner, delegation, and static-guard tests pass.
 - R8: Context persistence uses row- and field-scoped operations instead of whole-user replacement.
   - Source: Approved M3 plan.
   - Acceptance: Telegram and manager production paths no longer call aggregate `update_user_config`; atomic flow ensure, DM mirror, context lifecycle, and model selection preserve existing rows without a schema change.
   - Primary evidence: Real-Postgres concurrent context, flow, DM mirror, manager lifecycle, and model-selection tests.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 - R9: Telegram has one non-command ingress owner.
   - Source: Approved M4 plan.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R7.
-- Smallest next action: Make `ToolCatalog` the sole tool executor/spec owner and remove `ToolRegistry` plus duplicate registration/conversion plumbing.
-- Expected evidence: Web contracts/transport/UI tests pass and each duplicated mechanism has one owner.
-- Stop or replan if: A supposedly duplicate Web/Life path has different observable scope or lifecycle semantics.
+- Closes: R8.
+- Smallest next action: Define the narrow row/field-scoped storage operations required by current Telegram context and manager consumers, preserving atomic flow ensure and DM mirror semantics.
+- Expected evidence: Production callers stop performing whole-user replacement; real PostgreSQL tests preserve independent fields, contexts, model selection, and DM mirroring without schema changes.
+- Stop or replan if: Existing row ownership requires a schema change, compatibility path, or cannot preserve an observable aggregate read contract.
 
 ## Current State
 
-- Resolved: R1-R6.
-- Last relevant evidence: `SessionRegistry` now has one `SessionEntry` map and task-start paths obtain paired executor/token handles; 12 runtime, 144 Telegram, and 168 Web tests pass.
+- Resolved: R1-R7.
+- Last relevant evidence: `ToolCatalog` is the sole executor/spec owner; 80 tool-runtime, 40 catalog registration, 12 runner tool, 5 lazy-surface, 23 delegation, and 12 static-guard tests pass.
 - Blocker: None.
-- Next: R7 `ToolCatalog` owner consolidation.
+- Next: R8 row-scoped context storage.
 
 ## Material Decisions
 
@@ -150,6 +150,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 checkpoint 3 reused `StorageFlowCheckpoint` for Life execution and removed its duplicate adapter; all 168 Web tests passed. Next: attachment staging.
 - 2026-08-01: R7 checkpoint 4 shared multipart attachment staging between Web sessions and Life while preserving distinct sandbox scopes; all 168 Web tests passed. Next: `SessionRegistry`.
 - 2026-08-01: R7 checkpoint 5 replaced three session maps with one `SessionEntry` map, deleted unused `get_or_create`, and paired task execution handles; runtime, Telegram, and Web tests passed. Next: `ToolCatalog`.
+- 2026-08-01: R7 completed by deleting `ToolRegistry`, duplicate executor registration/conversion/state, and sub-agent executor vectors; `ToolCatalog` now owns execution and specs, with focused runtime/runner/delegation/static tests passing. Next: R8.
 
 ## Completion
 

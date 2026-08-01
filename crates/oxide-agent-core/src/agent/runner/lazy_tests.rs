@@ -4,9 +4,7 @@
 //! - **M1/M8**: Hidden (deferred) tools are absent from the turn-1 LLM payload;
 //!   after `retrieve_tools` activation, the turn-2 payload contains the
 //!   activated tool schemas.
-//! - **M2**: Execution resolves via the catalog-backed registry, not the
-//!   visible surface — the registry contains all catalog tools regardless of
-//!   surface state.
+//! - **M2**: Execution resolves from the full catalog, not the visible surface.
 //! - **M5**: `refresh_visible_tools` produces a snapshot containing only
 //!   always-visible + activated tools, not the full catalog.
 
@@ -19,8 +17,7 @@ use super::types::{AgentRunResult, AgentRunnerContext};
 use crate::agent::memory::AgentMessage;
 use crate::agent::tool_runtime::{
     CapabilityGroup, OutputNormalizer, ToolCatalog, ToolCatalogEntry, ToolExecutor, ToolInvocation,
-    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
-    ToolSurfaceHandle, ToolVisibility,
+    ToolName, ToolOutput, ToolRuntimeConfig, ToolRuntimeError, ToolSurfaceHandle, ToolVisibility,
 };
 use crate::agent::{AgentContext, AgentRunnerConfig as RunnerConfig, EphemeralSession, TodoList};
 use crate::capabilities::ModuleId;
@@ -38,7 +35,7 @@ use tokio::sync::Mutex;
 /// A minimal executor that returns a canned success output.
 ///
 /// Used for deferred tools in lazy-protocol tests.  The executors need to
-/// exist in the catalog/registry so that `retrieve_tools` can activate them
+/// exist in the catalog so that `retrieve_tools` can activate them
 /// and the runner can execute them if the model calls them, but in most tests
 /// the model only calls `retrieve_tools` and then returns a final answer.
 struct CannedExecutor {
@@ -81,7 +78,7 @@ impl ToolExecutor for CannedExecutor {
 /// Deferred file tools used in tests.
 const FILE_TOOLS: &[&str] = &["read_file", "write_file", "apply_file_edit", "list_files"];
 
-/// Build a lazy test setup: catalog, surface handle, and execution registry.
+/// Build a lazy test setup: catalog and surface handle.
 ///
 /// The catalog contains:
 /// - `retrieve_tools` (AlwaysVisible, no group) — bootstrap control tool.
@@ -90,12 +87,7 @@ const FILE_TOOLS: &[&str] = &["read_file", "write_file", "apply_file_edit", "lis
 /// - `execute_command` (Deferred, Shell).
 ///
 /// The surface handle's group map is populated from the catalog.
-/// The registry is built from the catalog via `to_registry()`.
-fn build_lazy_test_setup() -> (
-    Arc<ToolCatalog>,
-    Arc<ToolSurfaceHandle>,
-    Arc<RuntimeToolRegistry>,
-) {
+fn build_lazy_test_setup() -> (Arc<ToolCatalog>, Arc<ToolSurfaceHandle>) {
     use crate::agent::tool_runtime::retrieve_tools::RetrieveToolsExecutor;
 
     let handle = Arc::new(ToolSurfaceHandle::new());
@@ -157,9 +149,7 @@ fn build_lazy_test_setup() -> (
         handle.record_group_tools(*group, tool_names.iter().cloned().collect());
     }
 
-    let registry = catalog.to_registry();
-
-    (Arc::new(catalog), handle, Arc::new(registry))
+    (Arc::new(catalog), handle)
 }
 
 /// Build a runner context with lazy tool surface enabled.
@@ -171,7 +161,6 @@ fn build_lazy_runner_context<'a>(
     todos_arc: &'a Arc<Mutex<TodoList>>,
     catalog: Arc<ToolCatalog>,
     handle: Arc<ToolSurfaceHandle>,
-    registry: Arc<RuntimeToolRegistry>,
     tools: Vec<ToolDefinition>,
 ) -> AgentRunnerContext<'a> {
     let mut ctx = AgentRunnerContext {
@@ -179,9 +168,8 @@ fn build_lazy_runner_context<'a>(
         system_prompt: "system prompt",
         date_suffix: "",
         tools,
-        tool_catalog: None,
+        tool_catalog: Some(Arc::clone(&catalog)),
         tool_surface_handle: None,
-        tool_runtime_registry: Some(registry),
         progress_tx: None,
         todos_arc,
         task_id: "lazy-test",
@@ -218,7 +206,7 @@ fn tool_names_from_specs(specs: &[ToolDefinition]) -> Vec<String> {
 #[cfg(oxide_module_tool_retrieve_tools)]
 #[tokio::test]
 async fn hidden_deferred_tools_absent_from_turn_1_llm_payload() {
-    let (catalog, handle, registry) = build_lazy_test_setup();
+    let (catalog, handle) = build_lazy_test_setup();
 
     // Compute initial visible specs (what the runner would send on turn 1).
     let initial_tools = handle.visible_specs(&catalog);
@@ -282,7 +270,6 @@ async fn hidden_deferred_tools_absent_from_turn_1_llm_payload() {
         &todos_arc,
         catalog,
         handle,
-        registry,
         initial_tools,
     );
     let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -310,7 +297,7 @@ async fn hidden_deferred_tools_absent_from_turn_1_llm_payload() {
 #[cfg(oxide_module_tool_retrieve_tools)]
 #[tokio::test]
 async fn post_activation_turn_2_payload_contains_activated_schemas() {
-    let (catalog, handle, registry) = build_lazy_test_setup();
+    let (catalog, handle) = build_lazy_test_setup();
     let initial_tools = handle.visible_specs(&catalog);
 
     let turn1_tools = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -387,7 +374,6 @@ async fn post_activation_turn_2_payload_contains_activated_schemas() {
         &todos_arc,
         catalog,
         handle,
-        registry,
         initial_tools,
     );
 
@@ -426,34 +412,20 @@ async fn post_activation_turn_2_payload_contains_activated_schemas() {
     );
 }
 
-/// M2: Execution registry contains all catalog tools regardless of surface.
-///
-/// The `ToolRegistry` (execution handle) is built from the full catalog.
-/// Even though the visible surface only shows bootstrap tools, the registry
-/// can execute any catalog tool.  This is the "catalog = single execution
-/// source of truth" invariant.
+/// M2: The full catalog retains executors hidden from the model surface.
 #[cfg(oxide_module_tool_retrieve_tools)]
 #[test]
-fn execution_registry_contains_all_catalog_tools_regardless_of_surface() {
-    let (catalog, _handle, registry) = build_lazy_test_setup();
+fn catalog_contains_executors_regardless_of_surface() {
+    let (catalog, handle) = build_lazy_test_setup();
+    let visible_names = tool_names_from_specs(&handle.visible_specs(&catalog));
 
-    // Registry must have ALL catalog tools.
-    let catalog_names: Vec<String> = catalog
-        .tool_names()
-        .iter()
-        .map(|n| n.as_str().to_string())
-        .collect();
-    let registry_names: Vec<String> = registry.specs().iter().map(|s| s.name.clone()).collect();
-
-    assert_eq!(
-        catalog_names, registry_names,
-        "registry must contain exactly the catalog tools"
+    assert!(!visible_names.contains(&"read_file".to_string()));
+    assert!(catalog.get_executor(&ToolName::from("read_file")).is_some());
+    assert!(
+        catalog
+            .get_executor(&ToolName::from("execute_command"))
+            .is_some()
     );
-
-    // Surface has only bootstrap, but registry has everything.
-    assert!(registry_names.contains(&"read_file".to_string()));
-    assert!(registry_names.contains(&"execute_command".to_string()));
-    assert!(registry_names.contains(&"retrieve_tools".to_string()));
 }
 
 /// M5: `refresh_visible_tools` produces a snapshot with only visible tools.
@@ -463,7 +435,7 @@ fn execution_registry_contains_all_catalog_tools_regardless_of_surface() {
 #[cfg(oxide_module_tool_retrieve_tools)]
 #[test]
 fn refresh_visible_tools_produces_bootstrap_only_snapshot() {
-    let (catalog, handle, _registry) = build_lazy_test_setup();
+    let (catalog, handle) = build_lazy_test_setup();
 
     // Before activation: only bootstrap tools.
     let before = handle.visible_specs(&catalog);
@@ -513,7 +485,7 @@ fn refresh_visible_tools_produces_bootstrap_only_snapshot() {
 #[cfg(oxide_module_tool_retrieve_tools)]
 #[test]
 fn retrieve_tools_activation_is_idempotent_and_monotonic() {
-    let (_catalog, handle, _registry) = build_lazy_test_setup();
+    let (_catalog, handle) = build_lazy_test_setup();
 
     // First activation.
     let result1 = handle

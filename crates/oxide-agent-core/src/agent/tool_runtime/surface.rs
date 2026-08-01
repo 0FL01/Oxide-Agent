@@ -15,12 +15,26 @@
 //!   activatable via `retrieve_tools`.
 
 use super::executor::ToolExecutor;
-use super::registry::{RegistryError, ToolRegistry};
+use super::invocation::ToolInvocation;
+use super::normalizer::OutputNormalizer;
+use super::output::ToolOutput;
 use super::types::ToolName;
 use crate::capabilities::ModuleId;
 use crate::llm::ToolDefinition;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
+
+/// Catalog construction error.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum CatalogError {
+    /// Two executors attempted to register the same canonical name.
+    #[error("duplicate tool registration: {name}")]
+    DuplicateTool {
+        /// Duplicate tool name.
+        name: ToolName,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // CapabilityGroup
@@ -236,10 +250,10 @@ impl ToolCatalog {
     ///
     /// # Errors
     ///
-    /// Returns `RegistryError::DuplicateTool` if the tool name already exists.
-    pub fn register(&mut self, entry: ToolCatalogEntry) -> Result<(), RegistryError> {
+    /// Returns `CatalogError::DuplicateTool` if the tool name already exists.
+    pub fn register(&mut self, entry: ToolCatalogEntry) -> Result<(), CatalogError> {
         if self.entries.contains_key(&entry.name) {
-            return Err(RegistryError::DuplicateTool { name: entry.name });
+            return Err(CatalogError::DuplicateTool { name: entry.name });
         }
         self.entries.insert(entry.name.clone(), entry);
         Ok(())
@@ -249,6 +263,32 @@ impl ToolCatalog {
     #[must_use]
     pub fn get_executor(&self, name: &ToolName) -> Option<Arc<dyn ToolExecutor>> {
         self.entries.get(name).map(|e| Arc::clone(&e.executor))
+    }
+
+    /// Deterministic definitions for the full executable catalog.
+    #[must_use]
+    pub fn specs(&self) -> Vec<ToolDefinition> {
+        self.entries
+            .values()
+            .map(|entry| entry.spec.clone())
+            .collect()
+    }
+
+    /// Execute by exact name or normalize unknown/error outcomes into output.
+    #[must_use]
+    pub async fn execute_or_normalize(
+        &self,
+        invocation: ToolInvocation,
+        normalizer: &OutputNormalizer,
+    ) -> ToolOutput {
+        let Some(executor) = self.get_executor(&invocation.tool_name) else {
+            return normalizer.unknown_tool(&invocation, &self.tool_names());
+        };
+
+        match executor.execute(invocation.clone()).await {
+            Ok(output) => output,
+            Err(error) => normalizer.executor_error(&invocation, error),
+        }
     }
 
     /// Whether the catalog contains a tool with the given name.
@@ -348,26 +388,6 @@ impl ToolCatalog {
             }
         }
         map
-    }
-
-    /// Build a [`ToolRegistry`] from the catalog's executors for execution.
-    ///
-    /// The registry is the execution handle; the catalog is the metadata
-    /// source.  Both are built once per run.
-    ///
-    /// # Panics
-    ///
-    /// Cannot panic — catalog entries have unique names by construction
-    /// (enforced by [`register`](Self::register)).
-    #[must_use]
-    pub fn to_registry(&self) -> ToolRegistry {
-        let mut registry = ToolRegistry::new();
-        for entry in self.entries.values() {
-            registry
-                .register(Arc::clone(&entry.executor))
-                .expect("catalog entries have unique names by construction");
-        }
-        registry
     }
 
     /// Return a new catalog containing only entries whose tool name is in
@@ -814,7 +834,7 @@ mod tests {
 
         assert_eq!(
             err,
-            RegistryError::DuplicateTool {
+            CatalogError::DuplicateTool {
                 name: ToolName::from("read_file")
             }
         );
@@ -945,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_to_registry_preserves_executors() {
+    fn catalog_owns_executors_in_name_order() {
         let mut catalog = ToolCatalog::new();
         catalog
             .register(make_entry(
@@ -962,9 +982,9 @@ mod tests {
             ))
             .expect("register");
 
-        let registry = catalog.to_registry();
-        let names = registry.tool_names();
+        let names = catalog.tool_names();
         assert_eq!(names, vec!["read_file", "write_file"]);
+        assert!(catalog.get_executor(&ToolName::from("read_file")).is_some());
     }
 
     // -- ToolSurface -------------------------------------------------------

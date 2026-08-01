@@ -110,7 +110,6 @@ mod tests {
             tools,
             tool_catalog: None,
             tool_surface_handle: None,
-            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "refresh-transient-test",
