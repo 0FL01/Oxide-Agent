@@ -130,7 +130,7 @@ The Web Interface is a Leptos SPA with a dark theme, SSE streaming, and markdown
 
 Permanent Life Mode bridge setup is solo-owner and explicit: `LIFE_OWNER_WEB_LOGIN` names the Web owner account, while `LIFE_TELEGRAM_BOT_TOKEN` + `LIFE_TELEGRAM_CHAT_ID` configure a dedicated Telegram Life bot/chat. This is separate from the ordinary Agent Mode `TELEGRAM_TOKEN`; the bridge milestone is ordinary chat synchronization across interfaces, not a memory/curator UX.
 
-For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
+For Supabase Postgres or small deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. The app image ships `/app/migrations`, and the Web service enables startup migrations by default so fresh single-instance databases cannot race Web startup reconciliation.
 
 ### Supported LLM Providers for Agent Mode
 The bot supports these Agent Mode provider routes/profiles with tool calling:
@@ -223,7 +223,7 @@ OPENAI_BASE_PROVIDERS__1__PROFILE=zai
 
 ```
 
-Plain `docker-compose.web.yml` is remote-Postgres friendly and expects `OXIDE_DATABASE_URL` from `.env` or the shell. Add `docker-compose.web.local-services.yml` when you want the bundled local Postgres. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` unless a separate migration job is guaranteed to finish before web startup.
+Root `docker-compose.yml` expects `OXIDE_DATABASE_URL` from `.env` or the shell. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` unless a separate migration job is guaranteed to finish before Web startup.
 </details>
 
 ## Model Configuration
@@ -679,8 +679,8 @@ The supported production profile composes all atomic capability features. Build 
 
 The `browser-sidecar` service runs a Chromium-based headless browser
 controlled by a native Rust binary (`oxide-browser-sidecar`) that talks CDP
-directly. It is wired into the web/telegram Compose
-files but is not started until you enable it and set a token.
+directly. It is wired into root Compose but Browser Live remains disabled until
+you enable it and set a token.
 
 Enable for the Web UI:
 
@@ -693,8 +693,8 @@ BROWSER_AGENT_SIDECAR_WS_URL=ws://127.0.0.1:8787
 ```
 
 ```bash
-# Start the web console with the sidecar
-docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
+# Start the unified stack with the sidecar
+docker compose -f docker-compose.yml up --build -d
 
 # Verify the sidecar is healthy
 curl -fsS http://127.0.0.1:8787/healthz -H "Authorization: Bearer ${BROWSER_AGENT_SIDECAR_TOKEN}"

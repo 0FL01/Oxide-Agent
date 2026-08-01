@@ -67,6 +67,6 @@ jobs:
               cp "$SRCDIR/tmp/deploy.env" "$SRCDIR/build_context/.env"
               rm "$SRCDIR/tmp/app-source.tar.gz" "$SRCDIR/tmp/deploy.env"
               cd "$SRCDIR/build_context"
-              docker compose -f docker-compose.telegram.yml up -d --build --remove-orphans --force-recreate
-              docker compose -f docker-compose.telegram.yml ps
+              docker compose -f docker-compose.yml up -d --build --remove-orphans --force-recreate
+              docker compose -f docker-compose.yml ps
             '

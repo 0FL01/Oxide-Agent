@@ -131,7 +131,7 @@ Three-level resolution, in priority order:
 
 If none resolve, the call fails with an error (see Error handling).
 
-Docker Compose wiring sets `STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}` in `docker-compose.yml`, `docker-compose.telegram.yml`, and `docker-compose.web.yml`.
+Docker Compose wiring sets `STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}` in `docker-compose.yml`.
 
 Arbitrary label selectors are not supported.
 

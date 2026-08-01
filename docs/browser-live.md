@@ -282,16 +282,10 @@ Maximum concurrent sidecar sessions (default 8):
 
 ## Deployment
 
-Web UI with local Postgres:
+Unified stack:
 
 ```bash
-docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml up --build -d
-```
-
-Telegram bot with local services:
-
-```bash
-docker compose -f docker-compose.telegram.yml -f docker-compose.telegram.local-services.yml up --build -d
+docker compose -f docker-compose.yml up --build -d
 ```
 
 The sidecar REST port is bound to `127.0.0.1:8787` by default. The app service
@@ -485,7 +479,7 @@ advising it to close an existing session before retrying.
 Configuration:
 
 - `BROWSER_AGENT_SIDECAR_MAX_SESSIONS` — env var on the sidecar binary (default
-  `8`). Set in `docker-compose.web.yml` as `BROWSER_AGENT_SIDECAR_MAX_SESSIONS`.
+  `8`). Set in `docker-compose.yml` as `BROWSER_AGENT_SIDECAR_MAX_SESSIONS`.
 - `None` (unset via `SessionManager::default()`) means unlimited — backward
   compatible for tests.
 
@@ -502,7 +496,7 @@ Configuration:
 - **Browser tool calls fail with `Browser sidecar request was rejected`**
   Verify the sidecar is running, the token is correct, and the REST URL is
   reachable at the configured `BROWSER_AGENT_SIDECAR_BASE_URL`. Check the
-  sidecar logs with `docker compose -f docker-compose.web.yml logs -f browser-sidecar`.
+  sidecar logs with `docker compose -f docker-compose.yml logs -f browser-sidecar`.
 
 - **Browser starts but actions fail with timeout**
   Some sites require longer waits or use anti-bot measures. Increase
@@ -565,11 +559,11 @@ BROWSER_AGENT_ENABLED=false
 ```
 
 ```bash
-docker compose -f docker-compose.web.yml up -d --force-recreate
+docker compose -f docker-compose.yml up -d --force-recreate
 ```
 
 Or stop the sidecar service while leaving the web app running:
 
 ```bash
-docker compose -f docker-compose.web.yml stop browser-sidecar
+docker compose -f docker-compose.yml stop browser-sidecar
 ```

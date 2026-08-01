@@ -74,13 +74,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: User confirmation that deployment will use one profile.
   - Acceptance: Root `docker-compose.yml` and `profile-full` are the supported deployment path; obsolete production split Compose files, slim Cargo profiles, reference profile TOMLs, and their CI/xtask/docs branches are absent; module registry and atomic module features remain.
   - Primary evidence: Module-registry check, full-profile workspace gates, root Compose validation, and release workflow inspection.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: Only `profile-full` and root `docker-compose.yml` remain; slim profile declarations/artifacts/snapshots, four split/overlay Compose files, orphaned SearXNG config, and current CI/workflow/docs branches are absent. Module-registry check, full workspace check, registry snapshot, Web tests, and root Compose validation pass.
 - R11: The completed simplification is committed, pushed, built, and redeployed on the current host.
   - Source: Explicit user instruction.
   - Acceptance: Atomic implementation commits are on `origin/main`; release images build; the unified stack runs with migrations current and required services healthy.
   - Primary evidence: Clean synchronized Git state, successful Docker build/Compose rollout, migration query, Web health, container state, and startup logs.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 
 ### Constraints
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R10.
-- Smallest next action: Move release/current documentation to root `docker-compose.yml`, then delete the four transport-specific Compose files and their now-orphaned local-service variants.
-- Expected evidence: Module-registry check, full-profile workspace gates, root Compose validation, and workflow/docs source inspection all reference one supported deployment profile.
-- Stop or replan if: Removing a variant would require changing `.env*`, environment storage/generation, persistent data, or a separately supported local-service runtime contract.
+- Closes: R11.
+- Smallest next action: Run the final full-profile validation gates, commit the Compose contraction, push all atomic commits, then build and redeploy root Compose on the current host without changing environment or persistent data.
+- Expected evidence: Full tests/clippy/fmt/registry/Compose checks pass; Git is synchronized; release images build; migration 14 remains current; Web and required containers are healthy with clean startup logs.
+- Stop or replan if: A failing required gate is caused by the simplification, deployment would require an environment change, or current database state differs from the already migrated production contract.
 
 ## Current State
 
-- Resolved: R1-R9.
-- Last relevant evidence: The module registry and Cargo manifests expose only `profile-full`; reference profile TOMLs and obsolete snapshots are absent; registry check, workspace check, Web tests, and full-profile registry snapshot pass.
+- Resolved: R1-R10.
+- Last relevant evidence: Root Compose validates; only root `docker-compose.yml` and `profile-full` remain in current deployment/build/docs paths; the release workflow uses root Compose without changing environment generation.
 - Blocker: None.
-- Next: R10 single deployment profile and Compose entrypoint.
+- Next: R11 final validation, push, build, and current-host redeploy.
 
 ## Material Decisions
 
@@ -156,6 +156,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R8 completed by deleting `UserConfig`, aggregate get/update storage APIs, and the unused standalone global-state writer (430 net LOC); concurrent PostgreSQL and full affected transport tests pass. Next: R9.
 - 2026-08-01: R9 replaced the `Start` modality fan-out and handlers cycle with one default Agent Mode ingress, one topic-route resolution, and private-chat-only dialogue confirmations (749 net LOC); full Telegram package tests and bot composition check pass. Next: R10.
 - 2026-08-01: R10 checkpoint 1 removed both slim Cargo profiles, per-module profile membership, generated profile TOMLs, obsolete snapshots, and profile-specific CI/test branches; registry check, full workspace check, registry snapshot, and 168 Web tests pass. Next: root Compose contraction.
+- 2026-08-01: R10 completed by making root Compose the sole current deployment entrypoint and deleting four split/overlay files plus orphaned SearXNG config (616 net LOC); root Compose validation and current-reference inspection pass. Next: R11.
 
 ## Completion
 

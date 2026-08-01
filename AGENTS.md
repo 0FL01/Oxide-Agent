@@ -116,7 +116,7 @@ Default branch: `main`.
 - Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated via the module registry.
 - Sandbox: `sandbox-fileops` (`read_file`/`write_file`/`apply_file_edit`/`list_files`), `sandbox-exec` (`execute_command`), `sandbox-recreate` (`recreate_sandbox`).
 - Search: `web_search` (one tool, multiple backends: CRW, Tavily, Brave), `crw` (scrape), `retrieve-tools` (tool group activation).
-- Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with `render:"http"` (default), `render:"lightpanda"`, and `render:"playwright"`. HTTP mode falls back once to Lightpanda for anti-bot, 403, or 429 failures; explicit rendered modes do not cascade. `docker-compose.web.yml` defaults merge mode to true.
+- Fetch: `webfetch_md` (feature-controlled, registered by default). `OXIDE_WEB_CRAWLER_MERGE=true` hides the split tool and exposes `web_crawler` with `render:"http"` (default), `render:"lightpanda"`, and `render:"playwright"`. HTTP mode falls back once to Lightpanda for anti-bot, 403, or 429 failures; explicit rendered modes do not cascade. `docker-compose.yml` defaults merge mode to true for Web.
 - Browser: `browser_live` tools (see Browser Live above).
 - Media: `audio-stt` (transcription), `vision-image` (description), `vision-video` (description).
 - Integrations: `jira-mcp`, `mattermost-mcp` (runtime-disabled, enabled via `topic_agent_tools_enable`), `ssh-mcp`.
@@ -127,7 +127,7 @@ Default branch: `main`.
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
 - Key runtime: DuckDuckGo, model routes, temperature, compaction budget, Jira MCP.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local CRW/Postgres overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Build assets and service config in `docker/` (`Dockerfile.*`, `searxng/`, `consent-rules*`) are referenced by the root compose files.
+- Docker Compose entrypoint: root `docker-compose.yml`. Build assets and service config in `docker/` (`Dockerfile.*`, `consent-rules*`) are referenced by it.
 
 ## Development Practices
 
