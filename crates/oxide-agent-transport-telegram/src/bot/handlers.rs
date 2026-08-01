@@ -2,7 +2,7 @@ use crate::bot::UnauthorizedCache;
 use crate::bot::context::{current_context_state, set_current_context_state};
 use crate::bot::state::State;
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
-use crate::bot::views::{AgentView, DefaultAgentView, agent_control_markup};
+use crate::bot::views::{DefaultAgentView, agent_control_markup};
 use crate::bot::{
     OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
     resolve_thread_spec,

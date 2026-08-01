@@ -1,10 +1,10 @@
 use super::{
     AgentDialogue, ConfirmationSendCtx, EnsureSessionContext, ModelCallbackAction,
     ModelCallbackContext, ResetSessionOutcome, RunAgentTaskTextContext, SESSION_REGISTRY,
-    SessionTransportContext, automatic_agent_control_markup, cancel_and_clear_session,
-    cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
-    clear_cancel_confirmation_message, clear_pending_cancel_message, derive_agent_mode_session_id,
-    ensure_session_exists, handle_clear_memory_confirmation, handle_model_callback,
+    SessionTransportContext, automatic_agent_control_markup, cancel_status_inline_markup,
+    cancel_status_reply_markup, cleanup_abandoned_empty_flow, clear_cancel_confirmation_message,
+    clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
+    handle_clear_memory_confirmation, handle_model_callback,
     handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
     outbound_thread_from_callback, parse_model_callback_action, renew_cancellation_token,
     reset_session, run_agent_task_with_text, save_memory_after_task, send_agent_message,
@@ -22,7 +22,7 @@ use crate::bot::views::{
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
     AGENT_CALLBACK_CONFIRM_COMPACT_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
-    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AgentView, DefaultAgentView,
+    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, DefaultAgentView,
     LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
@@ -258,7 +258,7 @@ async fn handle_loop_retry(
 }
 
 async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
-    let _ = cancel_and_clear_session(ctx.session_id).await;
+    let _ = SESSION_REGISTRY.cancel(&ctx.session_id).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     match reset_session(ctx.session_id).await {
@@ -688,9 +688,9 @@ pub async fn cancel_agent_task(
         derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
-    let (cancelled, cleared_todos) = cancel_and_clear_session(session_id).await;
+    let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
 
-    if !cancelled && !cleared_todos {
+    if !cancelled {
         clear_pending_cancel_message(session_id).await;
         clear_cancel_confirmation_message(&bot, session_id, msg.chat.id).await;
         send_agent_message_with_optional_keyboard(
@@ -706,7 +706,7 @@ pub async fn cancel_agent_task(
             &bot,
             session_id,
             msg.chat.id,
-            DefaultAgentView::task_cancelling(cleared_todos),
+            DefaultAgentView::task_cancelling(),
             cancel_status_reply_markup(
                 thread_spec,
                 &agent_flow_id,
@@ -733,11 +733,11 @@ async fn cancel_agent_task_by_id(
     agent_flow_id: &str,
     attach_detach_enabled: bool,
 ) -> Result<()> {
-    let (cancelled, cleared_todos) = cancel_and_clear_session(session_id).await;
+    let cancelled = SESSION_REGISTRY.cancel(&session_id).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
-    if !cancelled && !cleared_todos {
+    if !cancelled {
         clear_pending_cancel_message(session_id).await;
         clear_cancel_confirmation_message(&bot, session_id, chat_id).await;
         send_agent_message_with_optional_keyboard(
@@ -753,7 +753,7 @@ async fn cancel_agent_task_by_id(
             &bot,
             session_id,
             chat_id,
-            DefaultAgentView::task_cancelling(cleared_todos),
+            DefaultAgentView::task_cancelling(),
             cancel_status_reply_markup(thread_spec, agent_flow_id, attach_detach_enabled),
             cancel_status_inline_markup(
                 use_inline_flow_controls(thread_spec),

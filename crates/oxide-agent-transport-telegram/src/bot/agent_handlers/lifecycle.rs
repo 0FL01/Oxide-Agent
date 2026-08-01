@@ -19,7 +19,7 @@ use crate::bot::thread::OutboundThreadParams;
 use crate::bot::topic_route::{
     TopicRouteDecision, resolve_topic_route, touch_dynamic_binding_activity_if_needed,
 };
-use crate::bot::views::{AgentView, DefaultAgentView};
+use crate::bot::views::DefaultAgentView;
 use crate::bot::{build_outbound_thread_params, resolve_thread_spec};
 use crate::config::BotSettings;
 use anyhow::Result;

@@ -43,109 +43,10 @@ pub const AGENT_CALLBACK_CONFIRM_CANCEL_NO: &str = "agent:confirm:cancel:no";
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_YES: &str = "agent:confirm:recreate:yes";
 /// Callback data for cancelling container recreation from topic controls
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL: &str = "agent:confirm:recreate:cancel";
-// ─────────────────────────────────────────────────────────────────────────────
-// Trait definition
-// ─────────────────────────────────────────────────────────────────────────────
+pub(crate) struct DefaultAgentView;
 
-/// Trait for agent UI view rendering
-///
-/// Provides all text messages and formatting for agent mode interactions.
-pub trait AgentView {
-    /// Welcome message when agent mode is activated
-    fn welcome_message(model_name: &str) -> String;
-
-    /// Message shown while task is processing
-    fn task_processing() -> &'static str;
-
-    /// Message while task cancellation is in progress
-    fn task_cancelling(cleared_todos: bool) -> &'static str;
-
-    /// Message when task cancellation is complete
-    fn task_cancelled() -> &'static str;
-
-    /// Message when memory is cleared
-    fn memory_cleared() -> &'static str;
-
-    /// Message when exiting agent mode
-    fn exiting_agent() -> &'static str;
-
-    /// Message when no active task to cancel
-    fn no_active_task() -> &'static str;
-
-    /// Message when task is already running
-    fn task_already_running() -> &'static str;
-
-    /// Message asking to confirm task cancellation
-    fn task_cancel_confirmation() -> &'static str;
-
-    /// Message when session not found
-    fn session_not_found() -> &'static str;
-
-    /// Message when clearing memory while task is running
-    fn clear_blocked_by_task() -> &'static str;
-    /// Cannot compact context while a task is running
-    fn compact_blocked_by_task() -> &'static str;
-    /// Cannot recreate container while a task is running
-    fn container_recreate_blocked_by_task() -> &'static str;
-
-    /// Message shown while manual compaction is running.
-    fn context_compacting() -> &'static str;
-
-    /// Message shown after manual compaction finishes.
-    fn context_compacted(applied: bool) -> &'static str;
-
-    /// Message for container recreated successfully
-    fn container_recreated() -> &'static str;
-
-    /// Message when operation is cancelled
-    fn operation_cancelled() -> &'static str;
-
-    /// Message asking to select keyboard option
-    fn select_keyboard_option() -> &'static str;
-
-    /// Message when ready to work
-    fn ready_to_work() -> &'static str;
-
-    /// No saved task for retry
-    fn no_saved_task() -> &'static str;
-
-    /// Task reset confirmation
-    fn task_reset() -> &'static str;
-
-    /// Cannot reset while running
-    fn reset_blocked_by_task() -> &'static str;
-
-    /// Format loop detected message
-    fn loop_detected_message(loop_type: LoopType, iteration: usize) -> String;
-
-    /// Format error message
-    fn error_message(error: &str) -> String;
-
-    /// Container wipe confirmation message
-    fn container_wipe_confirmation() -> &'static str;
-
-    /// Memory clear confirmation message
-    fn memory_clear_confirmation() -> &'static str;
-
-    /// Context compaction confirmation message
-    fn context_compaction_confirmation() -> &'static str;
-
-    /// Format container recreation error
-    fn container_error(error: &str) -> String;
-
-    /// Sandbox access error
-    fn sandbox_access_error() -> &'static str;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Default implementation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Default English-language implementation of `AgentView`
-pub struct DefaultAgentView;
-
-impl AgentView for DefaultAgentView {
-    fn welcome_message(model_name: &str) -> String {
+impl DefaultAgentView {
+    pub(crate) fn welcome_message(model_name: &str) -> String {
         let model_name = html_escape::encode_text(model_name);
         format!(
             r#"🤖 <b>Agent Mode Activated - {}</b>
@@ -160,63 +61,55 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         )
     }
 
-    fn task_processing() -> &'static str {
+    pub(crate) fn task_processing() -> &'static str {
         "⏳ Processing task..."
     }
 
-    fn task_cancelling(cleared_todos: bool) -> &'static str {
-        if cleared_todos {
-            "❌ Cancelling task...\n📋 Task list cleared."
-        } else {
-            "❌ Cancelling task..."
-        }
+    pub(crate) fn task_cancelling() -> &'static str {
+        "❌ Cancelling task..."
     }
 
-    fn task_cancelled() -> &'static str {
+    pub(crate) fn task_cancelled() -> &'static str {
         "❌ Task canceled"
     }
 
-    fn memory_cleared() -> &'static str {
+    pub(crate) fn memory_cleared() -> &'static str {
         "🗑 Started a fresh agent context. Previous flows are preserved for re-attach."
     }
 
-    fn exiting_agent() -> &'static str {
-        "👋 Exited agent mode"
-    }
-
-    fn no_active_task() -> &'static str {
+    pub(crate) fn no_active_task() -> &'static str {
         "⚠️ No active task to cancel"
     }
 
-    fn task_already_running() -> &'static str {
+    pub(crate) fn task_already_running() -> &'static str {
         "⏳ Task is already running. Press ❌ Cancel Task to stop it."
     }
 
-    fn task_cancel_confirmation() -> &'static str {
+    pub(crate) fn task_cancel_confirmation() -> &'static str {
         "⚠️ Cancel the current task?"
     }
 
-    fn session_not_found() -> &'static str {
+    pub(crate) fn session_not_found() -> &'static str {
         "⚠️ Agent session not found."
     }
 
-    fn clear_blocked_by_task() -> &'static str {
+    pub(crate) fn clear_blocked_by_task() -> &'static str {
         "⚠️ Cannot clear context while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
-    fn compact_blocked_by_task() -> &'static str {
+    pub(crate) fn compact_blocked_by_task() -> &'static str {
         "⚠️ Cannot compact context while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
-    fn container_recreate_blocked_by_task() -> &'static str {
+    pub(crate) fn container_recreate_blocked_by_task() -> &'static str {
         "⚠️ Cannot recreate container while a task is running.\nPress \"Cancel Task\", wait for cancellation, then try again."
     }
 
-    fn context_compacting() -> &'static str {
+    pub(crate) fn context_compacting() -> &'static str {
         "🗜 Compacting agent context..."
     }
 
-    fn context_compacted(applied: bool) -> &'static str {
+    pub(crate) fn context_compacted(applied: bool) -> &'static str {
         if applied {
             "🗜 Agent context compacted. You can continue the same flow."
         } else {
@@ -224,63 +117,55 @@ I work autonomously: I'll create a plan, execute code, and provide the result."#
         }
     }
 
-    fn container_recreated() -> &'static str {
+    pub(crate) fn container_recreated() -> &'static str {
         "✅ Container successfully recreated."
     }
 
-    fn operation_cancelled() -> &'static str {
+    pub(crate) fn operation_cancelled() -> &'static str {
         "Cancelled."
     }
 
-    fn select_keyboard_option() -> &'static str {
+    pub(crate) fn select_keyboard_option() -> &'static str {
         "Please select an option on the keyboard."
     }
 
-    fn ready_to_work() -> &'static str {
+    pub(crate) fn ready_to_work() -> &'static str {
         "Ready to work."
     }
 
-    fn no_saved_task() -> &'static str {
+    pub(crate) fn no_saved_task() -> &'static str {
         "⚠️ No saved task to retry."
     }
 
-    fn task_reset() -> &'static str {
+    pub(crate) fn task_reset() -> &'static str {
         "🔄 Task reset."
     }
 
-    fn reset_blocked_by_task() -> &'static str {
+    pub(crate) fn reset_blocked_by_task() -> &'static str {
         "⚠️ Cannot reset task while it is running."
     }
 
-    fn loop_detected_message(loop_type: LoopType, iteration: usize) -> String {
-        format!(
-            "🔁 <b>Loop detected in task execution</b>\nType: {}\nIteration: {}\n\nChoose an action:",
-            loop_type_label(loop_type),
-            iteration
-        )
-    }
-
-    fn error_message(error: &str) -> String {
+    pub(crate) fn error_message(error: &str) -> String {
         format!("❌ Error: {error}")
     }
 
-    fn container_wipe_confirmation() -> &'static str {
+    pub(crate) fn container_wipe_confirmation() -> &'static str {
         "⚠️ <b>Warning!</b>\n\nThis action will delete the current agent container and all files inside it. Chat history will be preserved.\n\nAre you sure?"
     }
 
-    fn memory_clear_confirmation() -> &'static str {
+    pub(crate) fn memory_clear_confirmation() -> &'static str {
         "⚠️ <b>Warning!</b>\n\nThis action will start a fresh agent flow for this topic. Previous flows will be preserved and can be attached later. The container and files will remain intact.\n\nAre you sure?"
     }
 
-    fn context_compaction_confirmation() -> &'static str {
+    pub(crate) fn context_compaction_confirmation() -> &'static str {
         "⚠️ <b>Warning!</b>\n\nThis action will compact the current agent context for this flow. The agent may summarize older working history, but the current flow will remain active.\n\nAre you sure?"
     }
 
-    fn container_error(error: &str) -> String {
+    pub(crate) fn container_error(error: &str) -> String {
         format!("Error during recreation: {error}")
     }
 
-    fn sandbox_access_error() -> &'static str {
+    pub(crate) fn sandbox_access_error() -> &'static str {
         "Sandbox manager access error."
     }
 }
@@ -362,12 +247,6 @@ pub fn agent_control_markup(use_inline: bool) -> ReplyMarkup {
     } else {
         get_agent_keyboard().into()
     }
-}
-
-/// Get inline flow controls for the final agent response in topics.
-#[must_use]
-pub fn agent_flow_inline_keyboard(agent_flow_id: &str) -> InlineKeyboardMarkup {
-    agent_flow_inline_keyboard_with_toggle(agent_flow_id, true)
 }
 
 /// Get inline flow controls for the final agent response in topics.
@@ -468,20 +347,13 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentView, DefaultAgentView, agent_flow_inline_keyboard_with_toggle,
-        get_agent_inline_keyboard, get_agent_keyboard,
+        DefaultAgentView, agent_flow_inline_keyboard_with_toggle, get_agent_inline_keyboard,
+        get_agent_keyboard,
     };
 
     #[test]
     fn cancellation_messages_use_distinct_in_progress_and_terminal_text() {
-        assert_eq!(
-            DefaultAgentView::task_cancelling(false),
-            "❌ Cancelling task..."
-        );
-        assert_eq!(
-            DefaultAgentView::task_cancelling(true),
-            "❌ Cancelling task...\n📋 Task list cleared."
-        );
+        assert_eq!(DefaultAgentView::task_cancelling(), "❌ Cancelling task...");
         assert_eq!(DefaultAgentView::task_cancelled(), "❌ Task canceled");
     }
 

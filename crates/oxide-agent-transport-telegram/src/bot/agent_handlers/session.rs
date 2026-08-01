@@ -135,11 +135,6 @@ pub(crate) async fn reset_session(session_id: SessionId) -> ResetSessionOutcome 
     ResetSessionOutcome::NotFound
 }
 
-pub(crate) async fn cancel_and_clear_session(session_id: SessionId) -> (bool, bool) {
-    let cancelled_primary = SESSION_REGISTRY.cancel(&session_id).await;
-    (cancelled_primary, false)
-}
-
 pub(crate) async fn remove_session(session_id: SessionId) {
     SESSION_REGISTRY.remove(&session_id).await;
     clear_pending_text_batch(session_id).await;

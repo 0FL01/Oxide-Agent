@@ -7,7 +7,7 @@ use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow
 use crate::bot::resilient;
 use crate::bot::state::ConfirmationType;
 use crate::bot::views::{
-    AgentView, DefaultAgentView, agent_control_markup, agent_flow_inline_keyboard_with_toggle,
+    DefaultAgentView, agent_control_markup, agent_flow_inline_keyboard_with_toggle,
     cancel_task_confirmation_inline_keyboard, empty_inline_keyboard, get_agent_inline_keyboard,
 };
 use crate::bot::{

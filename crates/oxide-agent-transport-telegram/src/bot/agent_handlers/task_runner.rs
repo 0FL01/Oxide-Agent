@@ -10,7 +10,7 @@ use crate::bot::agent_handlers::{
 use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTransport};
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
-use crate::bot::views::{AgentView, DefaultAgentView};
+use crate::bot::views::DefaultAgentView;
 use anyhow::{Result, anyhow};
 use oxide_agent_core::agent::{AgentExecutionOutcome, SessionId, progress::AgentEvent};
 use oxide_agent_core::config::{AgentSettings, ModelInfo, get_agent_max_iterations};
