@@ -381,6 +381,7 @@ pub async fn collect_events(
         browser_file_store,
         live_event_tx,
         live_progress_tx,
+        0,
         None,
     )
     .await
@@ -392,6 +393,7 @@ pub async fn collect_events_until_shutdown(
     browser_file_store: Option<Arc<dyn WebUiStore>>,
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    initial_last_seq: u64,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> EventCollectionResult {
     collect_events_inner(
@@ -400,6 +402,7 @@ pub async fn collect_events_until_shutdown(
         browser_file_store,
         live_event_tx,
         live_progress_tx,
+        initial_last_seq,
         Some(shutdown_rx),
     )
     .await
@@ -411,6 +414,7 @@ async fn collect_events_inner(
     browser_file_store: Option<Arc<dyn WebUiStore>>,
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
+    initial_last_seq: u64,
     mut shutdown_rx: Option<oneshot::Receiver<()>>,
 ) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
@@ -420,7 +424,7 @@ async fn collect_events_inner(
     let mut tool_calls = Vec::new();
     let mut active_tool_calls: HashMap<String, usize> = HashMap::new();
     let mut persisted_events = Vec::new();
-    let mut next_seq = 1;
+    let mut next_seq = initial_last_seq.saturating_add(1);
 
     loop {
         let event = if let Some(mut shutdown) = shutdown_rx.take() {
@@ -1619,6 +1623,7 @@ mod tests {
             None,
             None,
             None,
+            0,
             shutdown_rx,
         ));
         shutdown_tx.send(()).expect("send shutdown");
@@ -1630,6 +1635,34 @@ mod tests {
 
         assert!(result.state.is_finished);
         assert!(live_sender.send(AgentEvent::Finished).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resumed_collection_starts_after_persisted_high_water() {
+        let (tx, rx) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send finished event");
+        drop(tx);
+
+        let result = collect_events_until_shutdown(
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+            7,
+            shutdown_rx,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 1);
+        assert_eq!(result.persisted_events[0].seq, 8);
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 use crate::api::ApiClient;
+use crate::tasks::state::task_summary_is_fresh;
 use crate::utils::spawn_ui;
 use futures_util::{FutureExt, StreamExt};
 use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourceSubscription};
@@ -462,9 +463,32 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<(TaskStatus, u
         Ok(response) => {
             let detail = response.task;
             let summary = task_detail_to_summary(&detail);
-            let status = summary.status;
-            let last_event_seq = detail.last_event_seq;
+            let mut accepted = false;
+            let mut effective = (summary.status, summary.last_event_seq);
             if stream_is_current(config) {
+                config.set_tasks.update(|items| {
+                    if let Some(existing) = items
+                        .iter_mut()
+                        .find(|item| item.task_id == summary.task_id)
+                    {
+                        if task_summary_is_fresh(&summary, existing) {
+                            *existing = summary.clone();
+                            accepted = true;
+                        } else {
+                            effective = (existing.status, existing.last_event_seq);
+                        }
+                    } else {
+                        items.push(summary.clone());
+                        accepted = true;
+                    }
+                    items.sort_by(|a, b| {
+                        a.created_at
+                            .cmp(&b.created_at)
+                            .then_with(|| a.task_id.cmp(&b.task_id))
+                    });
+                });
+            }
+            if accepted {
                 config
                     .update_progress
                     .run((detail.task_id.clone(), detail.last_progress.clone()));
@@ -474,23 +498,8 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<(TaskStatus, u
                     config.set_active_task.set(Some(detail));
                 }
             }
-            config.set_tasks.update(|items| {
-                if let Some(existing) = items
-                    .iter_mut()
-                    .find(|item| item.task_id == summary.task_id)
-                {
-                    *existing = summary;
-                } else {
-                    items.push(summary);
-                }
-                items.sort_by(|a, b| {
-                    a.created_at
-                        .cmp(&b.created_at)
-                        .then_with(|| a.task_id.cmp(&b.task_id))
-                });
-            });
             refresh_session_summary(config).await;
-            Some((status, last_event_seq))
+            Some(effective)
         }
         Err(error) => {
             set_error_if_current(config, error.to_string());

@@ -427,21 +427,33 @@
   line-height: 1.7;
 }
 
-.search-probe-message-wrap {
-  margin-bottom: 16px;
-}
-
-.search-probe-message {
+.assistant-progress {
   border: 1px solid rgba(96, 165, 250, 0.28);
   border-radius: 12px;
   background: rgba(96, 165, 250, 0.06);
   padding: 12px 14px;
+  overflow-wrap: anywhere;
 }
 
-.search-probe-body {
+.assistant-progress-narrative {
   color: var(--fg);
   font-size: 13px;
   line-height: 1.7;
+}
+
+.assistant-progress-narrative > :first-child {
+  margin-top: 0;
+}
+
+.assistant-progress-narrative > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-progress-operation {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .pending-message {

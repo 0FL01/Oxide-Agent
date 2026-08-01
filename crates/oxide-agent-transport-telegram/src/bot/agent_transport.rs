@@ -8,7 +8,10 @@ use oxide_agent_core::agent::loop_detection::LoopType;
 use oxide_agent_core::agent::progress::{FileDeliveryKind, FileDeliveryReceipt, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardMarkup, InputFile, MessageId, ParseMode};
 use tracing::warn;
@@ -19,6 +22,7 @@ pub struct TelegramAgentTransport {
     chat_id: ChatId,
     message_thread_id: Option<teloxide::types::ThreadId>,
     progress_target: Option<ProgressTarget>,
+    loop_notification_delivered: Arc<AtomicBool>,
     delivered_browser_artifacts: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -35,6 +39,7 @@ impl TelegramAgentTransport {
         progress_msg_id: MessageId,
         message_thread_id: Option<teloxide::types::ThreadId>,
         use_inline_progress_controls: bool,
+        loop_notification_delivered: Arc<AtomicBool>,
     ) -> Self {
         Self {
             bot,
@@ -44,6 +49,7 @@ impl TelegramAgentTransport {
                 message_id: progress_msg_id,
                 reply_markup: use_inline_progress_controls.then(progress_inline_keyboard),
             }),
+            loop_notification_delivered,
             delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -53,12 +59,14 @@ impl TelegramAgentTransport {
         bot: Bot,
         chat_id: ChatId,
         message_thread_id: Option<teloxide::types::ThreadId>,
+        loop_notification_delivered: Arc<AtomicBool>,
     ) -> Self {
         Self {
             bot,
             chat_id,
             message_thread_id,
             progress_target: None,
+            loop_notification_delivered,
             delivered_browser_artifacts: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -116,20 +124,23 @@ fn progress_reply_markup_for_state(
 #[async_trait]
 impl AgentTransport for TelegramAgentTransport {
     async fn update_progress(&self, state: &ProgressState) -> Result<()> {
+        if self.loop_notification_delivered.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let Some(target) = &self.progress_target else {
             return Ok(());
         };
         let text = render_progress_html(state);
         let reply_markup = progress_reply_markup_for_state(target.reply_markup.as_ref(), state);
-        // Preserve existing behavior: resilient helper handles retries and logging internally.
-        let _ = crate::bot::resilient::edit_message_safe_resilient_with_markup(
+        crate::bot::resilient::edit_message_resilient_with_markup(
             &self.bot,
             self.chat_id,
             target.message_id,
-            &text,
+            text,
+            Some(ParseMode::Html),
             reply_markup,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -189,15 +200,28 @@ impl AgentTransport for TelegramAgentTransport {
             iteration
         );
 
-        let mut req = self
-            .bot
-            .send_message(self.chat_id, text)
-            .parse_mode(ParseMode::Html);
-        if let Some(thread_id) = self.message_thread_id {
-            req = req.message_thread_id(thread_id);
+        if let Some(target) = &self.progress_target {
+            crate::bot::resilient::edit_message_resilient_with_markup(
+                &self.bot,
+                self.chat_id,
+                target.message_id,
+                text,
+                Some(ParseMode::Html),
+                Some(loop_action_keyboard()),
+            )
+            .await?;
+        } else {
+            let mut req = self
+                .bot
+                .send_message(self.chat_id, text)
+                .parse_mode(ParseMode::Html);
+            if let Some(thread_id) = self.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+            req.reply_markup(loop_action_keyboard()).await?;
         }
-
-        req.reply_markup(loop_action_keyboard()).await?;
+        self.loop_notification_delivered
+            .store(true, Ordering::Release);
 
         Ok(())
     }
@@ -365,7 +389,7 @@ async fn send_file_smart(
 mod tests {
     use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
     use std::collections::HashSet;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
     use teloxide::prelude::*;
 
     use super::{
@@ -377,7 +401,12 @@ mod tests {
 
     #[test]
     fn silent_transport_omits_only_progress_target() {
-        let transport = TelegramAgentTransport::silent(Bot::new("token"), ChatId(1), None);
+        let transport = TelegramAgentTransport::silent(
+            Bot::new("token"),
+            ChatId(1),
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
 
         assert!(transport.progress_target.is_none());
         assert!(

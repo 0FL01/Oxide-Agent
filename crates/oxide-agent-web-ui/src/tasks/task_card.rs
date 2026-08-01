@@ -3,8 +3,8 @@ use crate::markdown::MarkdownContent;
 use crate::utils::spawn_ui;
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    CreateTaskVersionRequest, PersistedTaskEvent, TaskAttachment, TaskEventKind, TaskSummary,
-    UserMessageEventPayload,
+    CreateTaskVersionRequest, PersistedTaskEvent, TaskAttachment, TaskEventKind, TaskStatus,
+    TaskSummary, UserMessageEventPayload,
 };
 use std::collections::HashMap;
 
@@ -14,13 +14,12 @@ use super::composer::MessageAttachments;
 use super::delivered_files::{
     DeliveredFilesMessage, delivered_files_for_task, linkify_delivered_files_in_markdown,
 };
-use super::payload::payload_str_event;
-use super::state::{activity_button_label, summary_to_detail, upsert_task_summary};
+use super::state::{
+    InlineTaskProgress, TaskActivityState, activity_button_label, inline_task_progress,
+    summary_to_detail, upsert_task_summary,
+};
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::versions::{selected_version_index, versions_for_group};
-
-const SEARCH_PROBE_REASONING_PREFIX: &str = "Search Probe #";
-const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main answer.";
 
 // ── Task Card ────────────────────────────────────────────────────────────
 
@@ -48,6 +47,7 @@ struct SelectedTaskView {
 #[derive(Clone, Copy)]
 pub(super) struct TaskCardSignals {
     pub(super) events: ReadSignal<Vec<PersistedTaskEvent>>,
+    pub(super) activity_states: ReadSignal<HashMap<String, TaskActivityState>>,
     pub(super) selected_versions: ReadSignal<HashMap<String, String>>,
     pub(super) set_selected_versions: WriteSignal<HashMap<String, String>>,
     pub(super) set_activity: Callback<Option<String>>,
@@ -66,6 +66,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
     } = model;
     let TaskCardSignals {
         events,
+        activity_states,
         selected_versions,
         set_selected_versions,
         set_activity,
@@ -159,8 +160,39 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let pending_user_input = task.pending_user_input.clone();
             let task_events = events.get();
             let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
-            let search_probe_messages = search_probe_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
+            let inline_progress = inline_task_progress(
+                &task.task_id,
+                task.status,
+                &task_events,
+                activity_states.get().get(&task.task_id),
+            );
+            let assistant_output = match task.status {
+                TaskStatus::Queued | TaskStatus::Running => inline_progress
+                    .map(|progress| view! { <InlineAssistantProgress progress=progress /> }.into_any())
+                    .unwrap_or_else(|| ().into_any()),
+                TaskStatus::WaitingForUserInput => pending_user_input
+                    .map(|pending| {
+                        view! { <div class="message pending-message">{pending.prompt}</div> }
+                            .into_any()
+                    })
+                    .unwrap_or_else(|| ().into_any()),
+                TaskStatus::Completed => final_response_markdown
+                    .map(|answer| {
+                        view! { <AssistantMessage answer=answer files=delivered_files.clone() /> }
+                            .into_any()
+                    })
+                    .unwrap_or_else(|| ().into_any()),
+                TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => {
+                    let message = error_message.unwrap_or_else(|| match task.status {
+                        TaskStatus::Failed => "Task failed.".to_string(),
+                        TaskStatus::Cancelled => "Task cancelled.".to_string(),
+                        TaskStatus::Interrupted => "Task interrupted.".to_string(),
+                        _ => unreachable!("terminal error branch only"),
+                    });
+                    view! { <div class="message error-message">{message}</div> }.into_any()
+                }
+            };
             let task_id_for_activity = task.task_id.clone();
             let open_activity = Callback::new(move |_| {
                 set_activity.run(Some(task_id_for_activity.clone()));
@@ -191,22 +223,12 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
                         }
                     />
                     <ResumeUserMessages messages=resume_messages />
-                    <SearchProbeMessages messages=search_probe_messages />
+                    {assistant_output}
                     <div class="task-action-row">
                         <ThinkingButton label=activity_label on_click=open_activity />
                     </div>
-
-                    {final_response_markdown.map(|answer| view! {
-                        <AssistantMessage answer=answer files=delivered_files.clone() />
-                    })}
                     {(!delivered_files.is_empty()).then(|| view! {
                         <DeliveredFilesMessage files=delivered_files.clone() />
-                    })}
-                    {error_message.map(|error| view! {
-                        <div class="message error-message">{error}</div>
-                    })}
-                    {pending_user_input.map(|pending| view! {
-                        <div class="message pending-message">{pending.prompt}</div>
                     })}
                 </article>
             }
@@ -215,27 +237,24 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchProbeChatMessage {
-    body: String,
-}
-
 #[component]
-fn SearchProbeMessages(messages: Vec<SearchProbeChatMessage>) -> impl IntoView {
-    messages
-        .into_iter()
-        .map(|message| {
-            view! {
-                <div class="message assistant-message-wrap search-probe-message-wrap">
-                    <div class="search-probe-message">
-                        <div class="search-probe-body">
-                            <MarkdownContent markdown=message.body />
-                        </div>
-                    </div>
-                </div>
-            }
-        })
-        .collect_view()
+fn InlineAssistantProgress(progress: InlineTaskProgress) -> impl IntoView {
+    view! {
+        <div
+            class="message assistant-progress"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label="Assistant progress"
+        >
+            <div class="assistant-progress-narrative">
+                <MarkdownContent markdown=progress.narrative />
+            </div>
+            {progress.operation.map(|operation| view! {
+                <div class="assistant-progress-operation">{operation}</div>
+            })}
+        </div>
+    }
 }
 
 #[derive(Clone)]
@@ -591,43 +610,6 @@ fn resume_user_messages_for_task(
         .collect()
 }
 
-fn search_probe_messages_for_task(
-    events: &[PersistedTaskEvent],
-    task_id: &str,
-) -> Vec<SearchProbeChatMessage> {
-    events
-        .iter()
-        .filter(|event| event.task_id == task_id && event.kind == TaskEventKind::Reasoning)
-        .filter_map(search_probe_message_from_event)
-        .collect()
-}
-
-fn search_probe_message_from_event(event: &PersistedTaskEvent) -> Option<SearchProbeChatMessage> {
-    let summary = payload_str_event(event, "summary").unwrap_or_else(|| event.summary.clone());
-    parse_search_probe_reasoning_summary(&summary)
-}
-
-fn parse_search_probe_reasoning_summary(summary: &str) -> Option<SearchProbeChatMessage> {
-    let summary = summary.trim();
-    let rest = summary.strip_prefix(SEARCH_PROBE_REASONING_PREFIX)?;
-    let (generation, body) = rest.split_once(':')?;
-    let generation = generation.trim();
-    if generation.is_empty() || !generation.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    let body = body.trim();
-    if body.is_empty() {
-        return None;
-    }
-    if body == SEARCH_PROBE_START_UPDATE {
-        return None;
-    }
-
-    Some(SearchProbeChatMessage {
-        body: body.to_owned(),
-    })
-}
-
 // ── Task input edit form ─────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -742,111 +724,5 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                 <button class="secondary" type="button" on:click=cancel_edit>"Cancel"</button>
             </div>
         </form>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn event(task_id: &str, seq: u64, kind: TaskEventKind, summary: &str) -> PersistedTaskEvent {
-        serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "task_id": task_id,
-            "session_id": "session",
-            "user_id": 1,
-            "seq": seq,
-            "created_at": "2026-06-11T00:00:00Z",
-            "kind": kind,
-            "summary": summary,
-            "payload": { "summary": summary },
-            "redacted": false,
-            "truncated": false,
-        }))
-        .expect("event JSON is valid")
-    }
-
-    #[test]
-    fn parse_search_probe_reasoning_summary_extracts_body_without_label() {
-        let parsed = parse_search_probe_reasoning_summary(
-            "Search Probe #2: TL;DR: found enough source context.",
-        )
-        .expect("probe message");
-
-        assert_eq!(parsed.body, "TL;DR: found enough source context.");
-    }
-
-    #[test]
-    fn parse_search_probe_reasoning_summary_rejects_non_probe_noise() {
-        assert_eq!(parse_search_probe_reasoning_summary("Reasoning"), None);
-        assert_eq!(
-            parse_search_probe_reasoning_summary("Search Probe: old"),
-            None
-        );
-        assert_eq!(
-            parse_search_probe_reasoning_summary("Search Probe #x: bad"),
-            None
-        );
-        assert_eq!(
-            parse_search_probe_reasoning_summary("Search Probe #1:"),
-            None
-        );
-        assert_eq!(
-            parse_search_probe_reasoning_summary(
-                "Search Probe #1: Starting web research before the main answer."
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn search_probe_messages_for_task_filters_and_preserves_order() {
-        let events = vec![
-            event("task-a", 1, TaskEventKind::Reasoning, "ordinary reasoning"),
-            event(
-                "task-a",
-                2,
-                TaskEventKind::Reasoning,
-                "Search Probe #1: Starting web research before the main answer.",
-            ),
-            event(
-                "task-a",
-                3,
-                TaskEventKind::Reasoning,
-                "Search Probe #1: first",
-            ),
-            event(
-                "task-b",
-                4,
-                TaskEventKind::Reasoning,
-                "Search Probe #1: other task",
-            ),
-            event(
-                "task-a",
-                5,
-                TaskEventKind::ToolCall,
-                "Search Probe #2: tool",
-            ),
-            event(
-                "task-a",
-                6,
-                TaskEventKind::Reasoning,
-                "Search Probe #2: second",
-            ),
-        ];
-
-        let messages = search_probe_messages_for_task(&events, "task-a");
-
-        assert_eq!(
-            messages,
-            vec![
-                SearchProbeChatMessage {
-                    body: "first".to_owned(),
-                },
-                SearchProbeChatMessage {
-                    body: "second".to_owned(),
-                },
-            ]
-        );
     }
 }

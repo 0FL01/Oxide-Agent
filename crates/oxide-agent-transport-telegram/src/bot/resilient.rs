@@ -22,6 +22,17 @@ use teloxide::types::{
 };
 use tracing::{debug, warn};
 
+/// Result of editing a Telegram message when a missing anchor is recoverable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMessageOutcome {
+    /// Telegram applied the new content.
+    Edited,
+    /// The requested content was already present.
+    NotModified,
+    /// The target message no longer exists and canonical content must be sent.
+    AnchorMissing,
+}
+
 /// Send a message with automatic retry on network failures.
 ///
 /// Uses [`oxide_agent_core::utils::retry_transport_operation`] with exponential backoff
@@ -155,10 +166,31 @@ pub async fn edit_message_resilient_with_markup(
     .await
 }
 
+/// Edit a message and distinguish a deleted anchor from permanent edit failure.
+pub async fn edit_message_resilient_with_outcome(
+    bot: &Bot,
+    chat_id: ChatId,
+    msg_id: MessageId,
+    text: impl Into<String>,
+    parse_mode: Option<ParseMode>,
+    reply_markup: Option<InlineKeyboardMarkup>,
+) -> Result<EditMessageOutcome> {
+    match edit_message_resilient_with_markup(bot, chat_id, msg_id, text, parse_mode, reply_markup)
+        .await
+    {
+        Ok(Some(_)) => Ok(EditMessageOutcome::Edited),
+        Ok(None) => Ok(EditMessageOutcome::NotModified),
+        Err(error) if error.to_string().contains("message to edit not found") => {
+            Ok(EditMessageOutcome::AnchorMissing)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Edit message with graceful degradation and automatic retry.
 ///
 /// This function:
-/// 1. Truncates text to 4000 characters if needed
+/// 1. Rejects oversized text so serialized HTML is never truncated mid-tag
 /// 2. Retries on transient network errors
 /// 3. Gracefully handles expected errors ("message not modified", "not found")
 ///
@@ -194,19 +226,16 @@ pub async fn edit_message_safe_resilient_with_markup(
 ) -> bool {
     const ERROR_NOT_FOUND: &str = "message to edit not found";
 
-    // Truncate if too long (Telegram limit is 4096, we use 4000 for safety)
-    let truncated = if text.chars().count() > 4000 {
-        let truncated_text = oxide_agent_core::utils::truncate_str(text, 4000);
-        format!("{truncated_text}...\n\n<i>(message truncated)</i>")
-    } else {
-        text.to_string()
-    };
+    if text.chars().count() > 4000 {
+        warn!("Refusing to edit an oversized Telegram message");
+        return false;
+    }
 
     match edit_message_resilient_with_markup(
         bot,
         chat_id,
         msg_id,
-        truncated,
+        text,
         Some(ParseMode::Html),
         reply_markup,
     )

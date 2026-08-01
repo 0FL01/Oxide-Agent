@@ -554,6 +554,7 @@ async fn spawn_persisted_registered_task(
     user_id: i64,
     session_id: String,
     task_id: String,
+    initial_last_event_seq: u64,
     running_task: RunningTask,
     run_request: TaskRunRequest,
     model: Option<ModelInfo>,
@@ -563,6 +564,7 @@ async fn spawn_persisted_registered_task(
         user_id,
         session_id: session_id.clone(),
         task_id,
+        initial_last_event_seq,
         event_log: Some(running_task.event_log.clone()),
     };
     task_executor::spawn_registered_task(
@@ -801,6 +803,7 @@ pub(crate) async fn api_create_task(
         user.user_id,
         session_id.clone(),
         task_id.clone(),
+        task_record.last_event_seq,
         running_task,
         TaskRunRequest::Execute {
             input: execution_input,
@@ -1371,6 +1374,7 @@ pub(crate) async fn api_create_task_version(
         user.user_id,
         session_id,
         version_task_id,
+        task.last_event_seq,
         running_task,
         TaskRunRequest::Execute {
             input: execution_input,
@@ -1497,6 +1501,7 @@ pub(crate) async fn api_resume_task(
         user.user_id,
         session_id,
         task_id.clone(),
+        task.last_event_seq,
         running_task,
         TaskRunRequest::ResumeUserInput {
             input: execution_input,

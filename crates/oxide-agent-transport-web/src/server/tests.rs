@@ -3399,6 +3399,7 @@ async fn live_progress_persister_updates_running_task_record() {
         user_id,
         session_id: session_id.to_string(),
         task_id: task_id.to_string(),
+        initial_last_event_seq: 0,
         event_log: None,
     };
     let (tx, rx) = mpsc::unbounded_channel();
@@ -4417,6 +4418,22 @@ async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
     assert_eq!(
         completed.final_response_markdown.as_deref(),
         Some("resumed ok")
+    );
+    let completed_events = state
+        .web_store
+        .list_task_events(user.user_id, &session_id, &task_id, 0, 256)
+        .await
+        .expect("list completed task events")
+        .events;
+    assert!(
+        completed_events
+            .iter()
+            .any(|event| event.kind == TaskEventKind::Finished && event.seq > resume_event.seq)
+    );
+    assert!(
+        completed_events
+            .windows(2)
+            .all(|events| events[0].seq < events[1].seq)
     );
 
     let session = state

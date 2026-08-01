@@ -6,6 +6,17 @@ use oxide_agent_web_contracts::{
 use serde_json::Value;
 use std::collections::HashMap;
 
+const SEARCH_PROBE_REASONING_PREFIX: &str = "Search Probe #";
+const SEARCH_PROBE_START_UPDATE: &str = "Starting web research before the main answer.";
+const INLINE_PROGRESS_NARRATIVE_CHARS: usize = 600;
+const INLINE_PROGRESS_OPERATION_CHARS: usize = 240;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct InlineTaskProgress {
+    pub(super) narrative: String,
+    pub(super) operation: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ActivityLoadPhase {
     Loading,
@@ -97,6 +108,115 @@ pub(super) fn update_activity_progress(
         .entry(task_id)
         .or_insert_with(TaskActivityState::live)
         .progress = progress;
+}
+
+pub(super) fn inline_task_progress(
+    task_id: &str,
+    status: TaskStatus,
+    events: &[PersistedTaskEvent],
+    activity: Option<&TaskActivityState>,
+) -> Option<InlineTaskProgress> {
+    if !matches!(status, TaskStatus::Queued | TaskStatus::Running) {
+        return None;
+    }
+
+    let current_run_start = events
+        .iter()
+        .filter(|event| event.task_id == task_id && event.kind == TaskEventKind::UserMessage)
+        .map(|event| event.seq)
+        .max()
+        .unwrap_or(0);
+    let narrative = events
+        .iter()
+        .filter(|event| {
+            event.task_id == task_id
+                && event.kind == TaskEventKind::Reasoning
+                && event.seq > current_run_start
+        })
+        .filter_map(|event| reasoning_event_summary(event).map(|summary| (event.seq, summary)))
+        .max_by_key(|(seq, _)| *seq)
+        .map(|(_, summary)| summary);
+    let operation = activity
+        .and_then(|state| state.progress.as_ref())
+        .and_then(|progress| progress.current_thought.as_deref())
+        .and_then(normalize_reasoning_text);
+
+    let (narrative, operation) = match (narrative, operation) {
+        (Some(narrative), Some(operation))
+            if !reasoning_texts_are_equivalent(&narrative, &operation) =>
+        {
+            (narrative, Some(operation))
+        }
+        (Some(narrative), _) => (narrative, None),
+        (None, Some(operation)) => (operation, None),
+        (None, None) => (
+            match status {
+                TaskStatus::Queued => "Queued...",
+                TaskStatus::Running => "Thinking...",
+                _ => unreachable!("non-live task status was rejected above"),
+            }
+            .to_string(),
+            None,
+        ),
+    };
+
+    Some(InlineTaskProgress {
+        narrative: compact_reasoning_preview(&narrative, INLINE_PROGRESS_NARRATIVE_CHARS),
+        operation: operation.map(|operation| {
+            compact_reasoning_preview(&operation, INLINE_PROGRESS_OPERATION_CHARS)
+        }),
+    })
+}
+
+pub(crate) fn reasoning_event_summary(event: &PersistedTaskEvent) -> Option<String> {
+    payload_str(event, "summary")
+        .and_then(normalize_reasoning_text)
+        .or_else(|| normalize_reasoning_text(&event.summary))
+}
+
+pub(crate) fn normalize_reasoning_text(summary: &str) -> Option<String> {
+    let summary = summary.trim();
+    if summary.is_empty() || summary == "Reasoning" {
+        return None;
+    }
+    let Some(rest) = summary.strip_prefix(SEARCH_PROBE_REASONING_PREFIX) else {
+        return Some(summary.to_string());
+    };
+    let (generation, body) = rest.split_once(':')?;
+    if generation.trim().is_empty() || !generation.trim().chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(summary.to_string());
+    }
+    let body = body.trim();
+    if body.is_empty() || body == SEARCH_PROBE_START_UPDATE {
+        return None;
+    }
+    Some(body.to_string())
+}
+
+pub(crate) fn compact_reasoning_preview(summary: &str, max_chars: usize) -> String {
+    let compact = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn reasoning_texts_are_equivalent(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_suffix("...")
+            .is_some_and(|prefix| right.starts_with(prefix))
+        || right
+            .strip_suffix("...")
+            .is_some_and(|prefix| left.starts_with(prefix))
+}
+
+fn payload_str<'a>(event: &'a PersistedTaskEvent, key: &str) -> Option<&'a str> {
+    event.payload.get(key).and_then(Value::as_str)
 }
 
 pub(super) fn artifact_image_url(
@@ -308,6 +428,26 @@ pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummar
             .cmp(&b.created_at)
             .then_with(|| a.task_id.cmp(&b.task_id))
     });
+}
+
+pub(crate) fn task_summary_is_fresh(incoming: &TaskSummary, existing: &TaskSummary) -> bool {
+    match incoming.updated_at.cmp(&existing.updated_at) {
+        std::cmp::Ordering::Greater => return true,
+        std::cmp::Ordering::Less => return false,
+        std::cmp::Ordering::Equal => {}
+    }
+    match incoming.last_event_seq.cmp(&existing.last_event_seq) {
+        std::cmp::Ordering::Greater => return true,
+        std::cmp::Ordering::Less => return false,
+        std::cmp::Ordering::Equal => {}
+    }
+
+    incoming.status == existing.status
+        || (task_status_is_closed(incoming.status) && !task_status_is_closed(existing.status))
+}
+
+const fn task_status_is_closed(status: TaskStatus) -> bool {
+    matches!(status, TaskStatus::WaitingForUserInput) || status.is_terminal()
 }
 
 /// Derive the pinned Activity todos snapshot from per-task persisted events.
@@ -674,5 +814,120 @@ mod tests {
 
         assert_eq!(states["task-a"].progress, None);
         assert_eq!(states["task-b"].progress, Some(progress(7)));
+    }
+
+    #[test]
+    fn inline_progress_selects_latest_task_reasoning_and_normalizes_probe() {
+        let mut other_task = task_event(
+            99,
+            TaskEventKind::Reasoning,
+            serde_json::json!({ "summary": "other task" }),
+        );
+        other_task.task_id = "task-2".to_string();
+        let events = vec![
+            task_event(
+                7,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "Search Probe #2: latest public update" }),
+            ),
+            task_event(
+                3,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "earlier update" }),
+            ),
+            task_event(
+                6,
+                TaskEventKind::Reasoning,
+                serde_json::json!({
+                    "summary": "Search Probe #2: Starting web research before the main answer."
+                }),
+            ),
+            other_task,
+        ];
+        let mut activity = TaskActivityState::live();
+        let mut snapshot = progress(8);
+        snapshot.current_thought = Some("latest public update".to_string());
+        activity.progress = Some(snapshot);
+
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::Running, &events, Some(&activity)),
+            Some(InlineTaskProgress {
+                narrative: "latest public update".to_string(),
+                operation: None,
+            })
+        );
+    }
+
+    #[test]
+    fn inline_progress_is_live_only_and_uses_deterministic_placeholders() {
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::Queued, &[], None),
+            Some(InlineTaskProgress {
+                narrative: "Queued...".to_string(),
+                operation: None,
+            })
+        );
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::Running, &[], None),
+            Some(InlineTaskProgress {
+                narrative: "Thinking...".to_string(),
+                operation: None,
+            })
+        );
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::WaitingForUserInput, &[], None),
+            None
+        );
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::Completed, &[], None),
+            None
+        );
+    }
+
+    #[test]
+    fn inline_progress_does_not_reuse_reasoning_from_before_resume() {
+        let events = vec![
+            task_event(
+                7,
+                TaskEventKind::Reasoning,
+                serde_json::json!({ "summary": "previous execution" }),
+            ),
+            task_event(
+                8,
+                TaskEventKind::UserMessage,
+                serde_json::json!({ "input_markdown": "continue" }),
+            ),
+        ];
+
+        assert_eq!(
+            inline_task_progress("task-1", TaskStatus::Running, &events, None),
+            Some(InlineTaskProgress {
+                narrative: "Thinking...".to_string(),
+                operation: None,
+            })
+        );
+    }
+
+    #[test]
+    fn task_summary_freshness_prevents_terminal_resurrection() {
+        let mut terminal = task(TaskStatus::Completed, Some("2026-06-11T00:00:05Z"));
+        terminal.last_event_seq = 10;
+        let mut stale_running = terminal.clone();
+        stale_running.status = TaskStatus::Running;
+        stale_running.last_event_seq = 9;
+
+        assert!(!task_summary_is_fresh(&stale_running, &terminal));
+
+        stale_running.last_event_seq = 10;
+        assert!(!task_summary_is_fresh(&stale_running, &terminal));
+
+        stale_running.updated_at = chrono::DateTime::parse_from_rfc3339("2026-06-11T00:00:06Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc);
+        assert!(task_summary_is_fresh(&stale_running, &terminal));
+
+        let mut waiting = terminal.clone();
+        waiting.status = TaskStatus::WaitingForUserInput;
+        assert!(!task_summary_is_fresh(&waiting, &terminal));
     }
 }

@@ -9,7 +9,8 @@ use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
 use super::state::{
     ActivityLoadPhase, ActivityTiming, TaskActivityState, activity_elapsed_seconds,
-    format_duration, latest_pinned_todos, should_render_global_activity_chip,
+    compact_reasoning_preview, format_duration, latest_pinned_todos, reasoning_event_summary,
+    should_render_global_activity_chip,
 };
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
@@ -535,28 +536,6 @@ pub(crate) fn is_useful_event(event: &PersistedTaskEvent) -> bool {
         return reasoning_event_summary(event).is_some();
     }
     true
-}
-
-fn reasoning_event_summary(event: &PersistedTaskEvent) -> Option<String> {
-    payload_str_event(event, "summary")
-        .map(|summary| summary.trim().to_string())
-        .filter(|summary| !summary.is_empty() && summary != "Reasoning")
-        .or_else(|| {
-            let summary = event.summary.trim();
-            (!summary.is_empty() && summary != "Reasoning").then(|| summary.to_string())
-        })
-}
-
-fn compact_reasoning_preview(summary: &str, max_chars: usize) -> String {
-    let compact = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = compact.chars();
-    let preview = chars.by_ref().take(max_chars).collect::<String>();
-
-    if chars.next().is_some() {
-        format!("{preview}...")
-    } else {
-        preview
-    }
 }
 
 fn event_kind_label(kind: &TaskEventKind) -> &'static str {

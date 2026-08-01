@@ -43,6 +43,7 @@ pub(crate) struct WebTaskPersistence {
     pub(crate) user_id: i64,
     pub(crate) session_id: String,
     pub(crate) task_id: String,
+    pub(crate) initial_last_event_seq: u64,
     /// In-process event log for live SSE subscribers. `None` for tasks that
     /// run without a browser-visible session (tests, internal jobs).
     pub(crate) event_log: Option<TaskEventLog>,
@@ -345,6 +346,9 @@ fn spawn_event_collector(
             web_task.as_ref().map(|web_task| web_task.web_store.clone()),
             live_event_tx,
             live_progress_tx,
+            web_task
+                .as_ref()
+                .map_or(0, |web_task| web_task.initial_last_event_seq),
             shutdown_rx,
         )
         .await;

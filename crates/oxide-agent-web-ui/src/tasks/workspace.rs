@@ -1059,6 +1059,7 @@ fn Workspace(
                                                 }
                                                 signals=TaskCardSignals {
                                                     events,
+                                                    activity_states,
                                                     selected_versions,
                                                     set_selected_versions,
                                                     set_activity,
