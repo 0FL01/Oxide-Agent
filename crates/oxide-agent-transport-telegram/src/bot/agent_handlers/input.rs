@@ -145,17 +145,21 @@ pub(crate) async fn is_agent_mode_context(
     )
 }
 
-pub(crate) async fn ensure_agent_flow_session_keys(
+pub(crate) async fn ensure_agent_flow_session(
     storage: &Arc<dyn StorageProvider>,
     user_id: i64,
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
-) -> Result<(String, bool, super::AgentModeSessionKeys)> {
+) -> Result<(String, bool, SessionId)> {
     let (agent_flow_id, agent_flow_created) =
         ensure_current_agent_flow_id(storage, user_id, chat_id, thread_spec).await?;
-    let session_keys =
-        super::agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id, &agent_flow_id);
-    Ok((agent_flow_id, agent_flow_created, session_keys))
+    let session_id = super::derive_agent_mode_session_id(
+        user_id,
+        chat_id,
+        thread_spec.thread_id,
+        &agent_flow_id,
+    );
+    Ok((agent_flow_id, agent_flow_created, session_id))
 }
 
 pub(crate) async fn handle_batched_text_input_if_needed(

@@ -1,6 +1,6 @@
 use super::{
-    AgentDialogue, AgentModeSessionKeys, EnsureSessionContext, RunManualCompactionContext,
-    SESSION_REGISTRY, SessionTransportContext, ensure_session_exists, remove_session,
+    AgentDialogue, EnsureSessionContext, RunManualCompactionContext, SESSION_REGISTRY,
+    SessionTransportContext, derive_agent_mode_session_id, ensure_session_exists, remove_session,
     save_memory_after_task, spawn_manual_compaction_task,
 };
 use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow_id};
@@ -176,10 +176,10 @@ pub(crate) async fn start_manual_compaction(
     let reply_markup = automatic_agent_control_markup(thread_spec);
     let (agent_flow_id, agent_flow_created) =
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        super::agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
+    let session_id =
+        derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys,
+        session_id,
         context_key: context_key.clone(),
         agent_flow_id: agent_flow_id.clone(),
         agent_flow_created,
@@ -491,13 +491,13 @@ pub(crate) async fn show_agent_controls(
 
 pub(crate) async fn handle_clear_memory_confirmation(
     user_id: i64,
-    session_keys: AgentModeSessionKeys,
+    session_id: SessionId,
     storage: &Arc<dyn StorageProvider>,
     thread_spec: TelegramThreadSpec,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed memory clear");
-    if super::is_agent_task_running(session_keys.primary).await {
+    if super::is_agent_task_running(session_id).await {
         send_agent_message_with_optional_keyboard(
             send_ctx.bot,
             send_ctx.chat_id,
@@ -510,14 +510,14 @@ pub(crate) async fn handle_clear_memory_confirmation(
     }
 
     save_memory_after_task(
-        session_keys.primary,
+        session_id,
         user_id,
         send_ctx.context_key,
         send_ctx.agent_flow_id,
         storage,
     )
     .await;
-    let _ = SESSION_REGISTRY.remove_if_idle(&session_keys.primary).await;
+    let _ = SESSION_REGISTRY.remove_if_idle(&session_id).await;
     let _ = reset_current_agent_flow_id(storage, user_id, send_ctx.chat_id, thread_spec).await?;
     send_agent_message_with_optional_keyboard(
         send_ctx.bot,
@@ -533,7 +533,7 @@ pub(crate) async fn handle_clear_memory_confirmation(
 
 pub(crate) async fn handle_recreate_container_confirmation(
     user_id: i64,
-    session_keys: AgentModeSessionKeys,
+    session_id: SessionId,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
     settings: &Arc<BotSettings>,
@@ -541,7 +541,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
 ) -> Result<()> {
     info!(user_id = user_id, "User confirmed container recreation");
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys,
+        session_id,
         context_key: send_ctx.context_key.to_string(),
         agent_flow_id: send_ctx.agent_flow_id.to_string(),
         agent_flow_created: false,
@@ -641,14 +641,10 @@ pub(crate) async fn exit_agent_mode(
     let context_key = crate::bot::context::storage_context_key(msg.chat.id, thread_spec);
     let (agent_flow_id, _) =
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        super::agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
-
-    let session_id = super::resolve_existing_session_id(session_keys)
-        .await
-        .unwrap_or(session_keys.primary);
+    let session_id =
+        derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     save_memory_after_task(session_id, user_id, &context_key, &agent_flow_id, &storage).await;
-    remove_session(session_keys).await;
+    remove_session(session_id).await;
 
     let _ = crate::bot::context::set_current_context_state(
         &storage,
@@ -737,8 +733,8 @@ pub(crate) async fn handle_agent_confirmation(
     let thread_spec = resolve_thread_spec(&msg);
     let (agent_flow_id, _) =
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        super::agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
+    let session_id =
+        derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let text = msg.text().unwrap_or("");
     let chat_id = msg.chat.id;
     let outbound_thread = build_outbound_thread_params(thread_spec);
@@ -772,7 +768,7 @@ pub(crate) async fn handle_agent_confirmation(
             ConfirmationType::ClearMemory => {
                 handle_clear_memory_confirmation(
                     user_id,
-                    session_keys,
+                    session_id,
                     &storage,
                     thread_spec,
                     &send_ctx,
@@ -784,12 +780,7 @@ pub(crate) async fn handle_agent_confirmation(
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
-                    user_id,
-                    session_keys,
-                    &storage,
-                    &llm,
-                    &settings,
-                    &send_ctx,
+                    user_id, session_id, &storage, &llm, &settings, &send_ctx,
                 )
                 .await?;
             }

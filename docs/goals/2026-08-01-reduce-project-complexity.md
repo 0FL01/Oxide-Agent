@@ -45,7 +45,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Acceptance: `AgentModeSessionKeys`, impossible todo-clear outcome, sole-implementation `AgentView` trait, and duplicate progress transport implementation are absent; session derivation, silent file delivery, loop notifications, thread targeting, and keyboard cleanup remain.
   - Primary evidence: Telegram library and topic/thread tests.
   - Status: in_progress
-  - Evidence:
+  - Evidence: Singleton session-key wrapper and fallback-shaped selection helpers removed; all direct consumers use the stable derived `SessionId`; 143 Telegram library tests pass.
 - R6: Application code no longer maintains the unread `agent_flows` registry.
   - Source: Approved M1.6 plan.
   - Acceptance: Flow record APIs, reads, writes, mocks, and duplicate state are absent; active flow pointers and memory snapshots remain; the existing table and cleanup-only deletes remain for data retention and rollback.
@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R5.
-- Smallest next action: Replace singleton `AgentModeSessionKeys` plumbing with its existing `SessionId` value and delete fallback-shaped helpers.
-- Expected evidence: Telegram session derivation/isolation and affected handler tests pass with no wrapper references.
-- Stop or replan if: A direct consumer proves a second session key or persisted compatibility lookup is still reachable.
+- Smallest next action: Collapse cancellation to its actual boolean result, convert the sole `AgentView` implementation to inherent methods, and delete dead view entries.
+- Expected evidence: Cancellation/view tests and Telegram library tests pass with no impossible todo-clear branch or view trait.
+- Stop or replan if: Another view implementation or a reachable todo-clearing cancellation path exists.
 
 ## Current State
 
-- Resolved: R1-R4.
-- Last relevant evidence: 15 canonical request, 5 response, and 7 OpenRouter tests passed after helper deletion.
+- Resolved: R1-R4; R5 session identity checkpoint.
+- Last relevant evidence: 143 Telegram library tests passed after direct session-ID conversion; wrapper references are absent.
 - Blocker: None.
-- Next: R5 direct session ID plumbing.
+- Next: R5 cancellation and view shell deletion.
 
 ## Material Decisions
 
@@ -141,6 +141,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R4 checkpoint 1 removed the unused Anthropic compatibility module and `ModuleRegistry` (53 LOC); registry snapshot passed. Next: OpenAI Base alias.
 - 2026-08-01: R4 checkpoint 2 replaced the OpenAI Base profile alias with direct canonical imports and moved unique assertions; profile/OpenAI Base tests passed. Next: OpenRouter helper.
 - 2026-08-01: R4 completed by moving unique OpenRouter request assertions to the canonical owner and deleting the test helper (104 net LOC); request/response/OpenRouter tests passed. Next: R5.
+- 2026-08-01: R5 checkpoint 1 removed singleton `AgentModeSessionKeys` and no-choice lookup helpers; 143 Telegram tests passed. Next: cancellation/view shells.
 
 ## Completion
 

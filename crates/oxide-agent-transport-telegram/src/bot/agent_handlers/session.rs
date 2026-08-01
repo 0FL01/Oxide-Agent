@@ -24,11 +24,6 @@ pub(crate) static SESSION_REGISTRY: LazyLock<SessionRegistry> = LazyLock::new(Se
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AgentModeSessionKeys {
-    pub(crate) primary: SessionId,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct SessionTransportContext {
     pub(crate) chat_id: ChatId,
@@ -37,7 +32,7 @@ pub(crate) struct SessionTransportContext {
 }
 
 pub(crate) struct EnsureSessionContext<'a> {
-    pub(crate) session_keys: AgentModeSessionKeys,
+    pub(crate) session_id: SessionId,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,
     pub(crate) agent_flow_created: bool,
@@ -117,45 +112,18 @@ pub(crate) fn derive_agent_mode_session_id(
     SessionId::from(derived)
 }
 
-pub(crate) fn agent_mode_session_keys(
-    user_id: i64,
-    chat_id: ChatId,
-    thread_id: Option<teloxide::types::ThreadId>,
-    agent_flow_id: &str,
-) -> AgentModeSessionKeys {
-    AgentModeSessionKeys {
-        primary: derive_agent_mode_session_id(user_id, chat_id, thread_id, agent_flow_id),
-    }
-}
-
-pub(crate) fn select_existing_session_id(
-    keys: AgentModeSessionKeys,
-    primary_exists: bool,
-) -> Option<SessionId> {
-    if primary_exists {
-        Some(keys.primary)
-    } else {
-        None
-    }
-}
-
-pub(crate) async fn resolve_existing_session_id(keys: AgentModeSessionKeys) -> Option<SessionId> {
-    let primary_exists = SESSION_REGISTRY.contains(&keys.primary).await;
-    select_existing_session_id(keys, primary_exists)
-}
-
 pub(crate) async fn session_manager_control_plane_enabled(session_id: SessionId) -> Option<bool> {
     let executor_arc = SESSION_REGISTRY.get(&session_id).await?;
     let executor = executor_arc.read().await;
     Some(executor.manager_control_plane_enabled())
 }
 
-pub(crate) async fn reset_session(keys: AgentModeSessionKeys) -> ResetSessionOutcome {
-    let primary_result = SESSION_REGISTRY.reset(&keys.primary).await;
+pub(crate) async fn reset_session(session_id: SessionId) -> ResetSessionOutcome {
+    let primary_result = SESSION_REGISTRY.reset(&session_id).await;
 
     let primary_reset = matches!(primary_result, Ok(()));
     if primary_reset {
-        clear_pending_text_batch(keys.primary).await;
+        clear_pending_text_batch(session_id).await;
         return ResetSessionOutcome::Reset;
     }
 
@@ -167,16 +135,16 @@ pub(crate) async fn reset_session(keys: AgentModeSessionKeys) -> ResetSessionOut
     ResetSessionOutcome::NotFound
 }
 
-pub(crate) async fn cancel_and_clear_session(keys: AgentModeSessionKeys) -> (bool, bool) {
-    let cancelled_primary = SESSION_REGISTRY.cancel(&keys.primary).await;
+pub(crate) async fn cancel_and_clear_session(session_id: SessionId) -> (bool, bool) {
+    let cancelled_primary = SESSION_REGISTRY.cancel(&session_id).await;
     (cancelled_primary, false)
 }
 
-pub(crate) async fn remove_session(keys: AgentModeSessionKeys) {
-    SESSION_REGISTRY.remove(&keys.primary).await;
-    clear_pending_text_batch(keys.primary).await;
-    clear_pending_cancel_message(keys.primary).await;
-    clear_pending_cancel_confirmation(keys.primary).await;
+pub(crate) async fn remove_session(session_id: SessionId) {
+    SESSION_REGISTRY.remove(&session_id).await;
+    clear_pending_text_batch(session_id).await;
+    clear_pending_cancel_message(session_id).await;
+    clear_pending_cancel_confirmation(session_id).await;
 }
 
 pub(crate) async fn clear_pending_text_batch(session_id: SessionId) {
@@ -191,7 +159,8 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         ctx.transport_ctx.chat_id,
         ctx.transport_ctx.thread_spec,
     );
-    if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {
+    if SESSION_REGISTRY.contains(&ctx.session_id).await {
+        let existing_session_id = ctx.session_id;
         if let Some(existing_manager_enabled) =
             session_manager_control_plane_enabled(existing_session_id).await
         {
@@ -234,7 +203,7 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         }
     }
 
-    let session_id = ctx.session_keys.primary;
+    let session_id = ctx.session_id;
     if SESSION_REGISTRY.contains(&session_id).await {
         debug!(session_id = %session_id, "Session already exists in cache");
         return session_id;

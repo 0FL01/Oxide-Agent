@@ -2,19 +2,19 @@ use super::{
     AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, AgentCallbackAction, AgentControlCommand,
     BatchedTextTaskContext, CompletedResponseDeliveryAction, EnsureSessionContext,
     NO_USER_VISIBLE_CHANGE_SENTINEL, PendingTextInputBatch, PendingTextInputPart, SESSION_REGISTRY,
-    SessionTransportContext, agent_mode_session_keys, assemble_text_batch,
-    begin_completed_response_finalization, cancel_status_reply_markup,
-    cleanup_abandoned_empty_flow, clear_completed_response_delivery_state,
-    clear_pending_cancel_confirmation, clear_pending_cancel_message, derive_agent_mode_session_id,
-    ensure_session_exists, is_no_user_visible_change_response, manager_control_plane_enabled,
-    manager_default_chat_id, mark_completed_response_execution_started, merge_prompt_instructions,
+    SessionTransportContext, assemble_text_batch, begin_completed_response_finalization,
+    cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+    clear_completed_response_delivery_state, clear_pending_cancel_confirmation,
+    clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
+    is_no_user_visible_change_response, manager_control_plane_enabled, manager_default_chat_id,
+    mark_completed_response_execution_started, merge_prompt_instructions,
     parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
     pending_cancel_message, prepare_completed_response_delivery,
     queue_followup_during_completed_response_delivery, remember_pending_cancel_confirmation,
     remember_pending_cancel_message, remove_session, resolve_execution_profile,
-    select_existing_session_id, session_manager_control_plane_enabled,
-    should_create_fresh_flow_on_detach, should_merge_text_batch, take_pending_cancel_confirmation,
-    take_pending_cancel_message, use_inline_flow_controls,
+    session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
+    should_merge_text_batch, take_pending_cancel_confirmation, take_pending_cancel_message,
+    use_inline_flow_controls,
 };
 use crate::bot::views::{
     AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -575,19 +575,6 @@ fn session_id_derivation_differs_for_different_flows() {
 }
 
 #[test]
-fn existing_session_selection_prefers_primary_key() {
-    let keys = agent_mode_session_keys(
-        12345,
-        ChatId(-1001),
-        Some(ThreadId(MessageId(42))),
-        "flow-a",
-    );
-    let selected = select_existing_session_id(keys, true);
-
-    assert_eq!(selected, Some(keys.primary));
-}
-
-#[test]
 fn cancel_status_reply_markup_uses_flow_controls_in_topics() {
     let thread_id = ThreadId(MessageId(42));
     let markup = cancel_status_reply_markup(
@@ -948,14 +935,16 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
 
     let general_thread = general_forum_topic_id();
     let blocked_thread = ThreadId(MessageId(43));
-    let allowed_keys = agent_mode_session_keys(88, chat_id, Some(general_thread), "flow-a");
-    let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread), "flow-a");
+    let allowed_session_id =
+        derive_agent_mode_session_id(88, chat_id, Some(general_thread), "flow-a");
+    let blocked_session_id =
+        derive_agent_mode_session_id(77, chat_id, Some(blocked_thread), "flow-a");
 
-    remove_session(allowed_keys).await;
-    remove_session(blocked_keys).await;
+    remove_session(allowed_session_id).await;
+    remove_session(blocked_session_id).await;
 
     let allowed_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: allowed_keys,
+        session_id: allowed_session_id,
         context_key: "allowed".to_string(),
         agent_flow_id: "flow-a".to_string(),
         agent_flow_created: false,
@@ -973,7 +962,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
     })
     .await;
     let blocked_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: blocked_keys,
+        session_id: blocked_session_id,
         context_key: "blocked".to_string(),
         agent_flow_id: "flow-a".to_string(),
         agent_flow_created: false,
@@ -991,8 +980,8 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
     })
     .await;
 
-    assert_eq!(allowed_session, allowed_keys.primary);
-    assert_eq!(blocked_session, blocked_keys.primary);
+    assert_eq!(allowed_session, allowed_session_id);
+    assert_eq!(blocked_session, blocked_session_id);
     assert_eq!(
         session_manager_control_plane_enabled(allowed_session).await,
         Some(true)
@@ -1002,8 +991,8 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         Some(false)
     );
 
-    remove_session(allowed_keys).await;
-    remove_session(blocked_keys).await;
+    remove_session(allowed_session_id).await;
+    remove_session(blocked_session_id).await;
 }
 
 #[tokio::test]
@@ -1014,12 +1003,12 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let manager_settings = test_settings(Some("88"));
     let llm = test_llm(&manager_settings);
-    let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
+    let session_id = derive_agent_mode_session_id(88, chat_id, Some(thread_id), "flow-a");
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: "flow-a".to_string(),
         agent_flow_created: false,
@@ -1042,7 +1031,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
         Some(false)
     );
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 }
 
 #[tokio::test]
@@ -1055,12 +1044,12 @@ async fn new_flow_injects_topic_agents_md_once() {
     ));
     let settings = test_settings(None);
     let llm = test_llm(&settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-agents");
+    let session_id = derive_agent_mode_session_id(77, chat_id, Some(thread_id), "flow-agents");
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: "flow-agents".to_string(),
         agent_flow_created: true,
@@ -1093,7 +1082,7 @@ async fn new_flow_injects_topic_agents_md_once() {
     assert!(memory.has_topic_agents_md());
     assert_eq!(pinned_count, 1);
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 }
 
 #[tokio::test]
@@ -1117,12 +1106,12 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
     });
     let settings = test_settings(None);
     let llm = test_llm(&settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-existing");
+    let session_id = derive_agent_mode_session_id(77, chat_id, Some(thread_id), "flow-existing");
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: "flow-existing".to_string(),
         agent_flow_created: false,
@@ -1155,7 +1144,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
 
     assert_eq!(pinned_count, 1);
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 }
 
 #[tokio::test]
@@ -1168,12 +1157,12 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
+    let session_id = derive_agent_mode_session_id(77, chat_id, Some(thread_id), flow_id);
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 
     let first_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: flow_id.to_string(),
         agent_flow_created: false,
@@ -1190,14 +1179,14 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         settings: &allowed_settings,
     })
     .await;
-    assert_eq!(first_session, keys.primary);
+    assert_eq!(first_session, session_id);
     assert_eq!(
         session_manager_control_plane_enabled(first_session).await,
         Some(true)
     );
 
     let second_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: flow_id.to_string(),
         agent_flow_created: false,
@@ -1214,13 +1203,13 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         settings: &restricted_settings,
     })
     .await;
-    assert_eq!(second_session, keys.primary);
+    assert_eq!(second_session, session_id);
     assert_eq!(
         session_manager_control_plane_enabled(second_session).await,
         Some(false)
     );
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 }
 
 #[tokio::test]
@@ -1234,12 +1223,12 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
+    let session_id = derive_agent_mode_session_id(77, chat_id, Some(thread_id), flow_id);
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 
     let first_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: flow_id.to_string(),
         agent_flow_created: false,
@@ -1256,7 +1245,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         settings: &allowed_settings,
     })
     .await;
-    assert_eq!(first_session, keys.primary);
+    assert_eq!(first_session, session_id);
     assert_eq!(
         session_manager_control_plane_enabled(first_session).await,
         Some(true)
@@ -1272,7 +1261,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     assert!(marked_running.is_ok());
 
     let second_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: flow_id.to_string(),
         agent_flow_created: false,
@@ -1305,7 +1294,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     assert!(marked_completed.is_ok());
 
     let third_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
+        session_id,
         context_key: "topic-a".to_string(),
         agent_flow_id: flow_id.to_string(),
         agent_flow_created: false,
@@ -1328,7 +1317,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         Some(false)
     );
 
-    remove_session(keys).await;
+    remove_session(session_id).await;
 }
 
 #[tokio::test]

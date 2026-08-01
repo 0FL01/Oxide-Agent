@@ -1,7 +1,7 @@
 use super::{
     EnsureSessionContext, RunAgentTaskTextContext, SessionTransportContext,
-    agent_mode_session_keys, apply_execution_profile, apply_reminder_context,
-    apply_topic_infra_config, ensure_session_exists, install_reminder_scheduler,
+    apply_execution_profile, apply_reminder_context, apply_topic_infra_config,
+    derive_agent_mode_session_id, ensure_session_exists, install_reminder_scheduler,
     is_agent_task_running, manager_control_plane_enabled, manager_default_chat_id,
     renew_cancellation_token, resolve_execution_profile, resolve_topic_infra_config,
     run_agent_task_with_text, use_inline_flow_controls, use_inline_topic_controls,
@@ -252,7 +252,7 @@ async fn prepare_due_reminder_execution(
 
     let chat_id = ChatId(reminder.chat_id);
     let thread_spec = thread_spec_from_reminder(&reminder);
-    let session_keys = agent_mode_session_keys(
+    let session_id = derive_agent_mode_session_id(
         reminder.user_id,
         chat_id,
         thread_spec.thread_id,
@@ -261,7 +261,7 @@ async fn prepare_due_reminder_execution(
     let manager_enabled =
         manager_control_plane_enabled(settings, reminder.user_id, chat_id, thread_spec);
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys,
+        session_id,
         context_key: reminder.context_key.clone(),
         agent_flow_id: reminder.flow_id.clone(),
         agent_flow_created: false,

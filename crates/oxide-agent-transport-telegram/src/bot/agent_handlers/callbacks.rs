@@ -1,17 +1,16 @@
 use super::{
-    AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext,
-    ModelCallbackAction, ModelCallbackContext, ResetSessionOutcome, RunAgentTaskTextContext,
-    SESSION_REGISTRY, SessionTransportContext, agent_mode_session_keys,
-    automatic_agent_control_markup, cancel_and_clear_session, cancel_status_inline_markup,
-    cancel_status_reply_markup, cleanup_abandoned_empty_flow, clear_cancel_confirmation_message,
-    clear_pending_cancel_message, ensure_session_exists, handle_clear_memory_confirmation,
-    handle_model_callback, handle_recreate_container_confirmation, is_agent_task_running,
-    manager_default_chat_id, outbound_thread_from_callback, parse_model_callback_action,
-    renew_cancellation_token, reset_session, resolve_existing_session_id, run_agent_task_with_text,
-    save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
-    send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
-    should_create_fresh_flow_on_detach, start_manual_compaction, use_inline_flow_controls,
-    use_inline_topic_controls,
+    AgentDialogue, ConfirmationSendCtx, EnsureSessionContext, ModelCallbackAction,
+    ModelCallbackContext, ResetSessionOutcome, RunAgentTaskTextContext, SESSION_REGISTRY,
+    SessionTransportContext, automatic_agent_control_markup, cancel_and_clear_session,
+    cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+    clear_cancel_confirmation_message, clear_pending_cancel_message, derive_agent_mode_session_id,
+    ensure_session_exists, handle_clear_memory_confirmation, handle_model_callback,
+    handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
+    outbound_thread_from_callback, parse_model_callback_action, renew_cancellation_token,
+    reset_session, run_agent_task_with_text, save_memory_after_task, send_agent_message,
+    send_agent_message_with_optional_keyboard, send_or_update_cancel_confirmation,
+    send_or_update_pending_cancel_message, should_create_fresh_flow_on_detach,
+    start_manual_compaction, use_inline_flow_controls, use_inline_topic_controls,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
@@ -31,6 +30,7 @@ use crate::bot::{
 };
 use crate::config::BotSettings;
 use anyhow::Result;
+use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -46,7 +46,7 @@ struct LoopCallbackContext {
     context_key: String,
     agent_flow_id: String,
     user_id: i64,
-    session_keys: AgentModeSessionKeys,
+    session_id: SessionId,
     manager_default_chat_id: Option<ChatId>,
     thread_spec: TelegramThreadSpec,
     outbound_thread: OutboundThreadParams,
@@ -158,7 +158,7 @@ async fn handle_loop_retry(
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys: ctx.session_keys,
+        session_id: ctx.session_id,
         context_key: ctx.context_key.clone(),
         agent_flow_id: ctx.agent_flow_id.clone(),
         agent_flow_created: false,
@@ -258,10 +258,10 @@ async fn handle_loop_retry(
 }
 
 async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
-    let _ = cancel_and_clear_session(ctx.session_keys).await;
+    let _ = cancel_and_clear_session(ctx.session_id).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    match reset_session(ctx.session_keys).await {
+    match reset_session(ctx.session_id).await {
         ResetSessionOutcome::Reset => {
             let reply_markup = automatic_agent_control_markup(ctx.thread_spec);
             send_agent_message_with_optional_keyboard(
@@ -322,7 +322,7 @@ async fn handle_agent_confirmation_callback(
             ConfirmationType::ClearMemory => {
                 handle_clear_memory_confirmation(
                     loop_ctx.user_id,
-                    loop_ctx.session_keys,
+                    loop_ctx.session_id,
                     &ctx.storage,
                     loop_ctx.thread_spec,
                     &send_ctx,
@@ -342,7 +342,7 @@ async fn handle_agent_confirmation_callback(
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
                     loop_ctx.user_id,
-                    loop_ctx.session_keys,
+                    loop_ctx.session_id,
                     &ctx.storage,
                     &ctx.llm,
                     &ctx.settings,
@@ -367,25 +367,21 @@ async fn handle_agent_confirmation_callback(
 }
 
 async fn send_cancel_task_confirmation(ctx: &LoopCallbackContext) -> Result<()> {
-    let session_id = resolve_existing_session_id(ctx.session_keys)
+    send_or_update_cancel_confirmation(&ctx.bot, ctx.session_id, ctx.chat_id, ctx.outbound_thread)
         .await
-        .unwrap_or(ctx.session_keys.primary);
-    send_or_update_cancel_confirmation(&ctx.bot, session_id, ctx.chat_id, ctx.outbound_thread).await
 }
 
 async fn handle_cancel_task_confirmation_callback(
     ctx: &AgentCallbackContext,
     confirmed: bool,
 ) -> Result<()> {
-    let session_id = resolve_existing_session_id(ctx.loop_ctx.session_keys)
-        .await
-        .unwrap_or(ctx.loop_ctx.session_keys.primary);
+    let session_id = ctx.loop_ctx.session_id;
     clear_cancel_confirmation_message(&ctx.loop_ctx.bot, session_id, ctx.loop_ctx.chat_id).await;
 
     if confirmed {
         cancel_agent_task_by_id(
             ctx.loop_ctx.bot.clone(),
-            ctx.loop_ctx.session_keys,
+            ctx.loop_ctx.session_id,
             ctx.loop_ctx.chat_id,
             ctx.loop_ctx.thread_spec,
             ctx.loop_ctx.outbound_thread.message_thread_id,
@@ -405,7 +401,7 @@ async fn handle_cancel_task_confirmation_callback(
 }
 
 async fn handle_detach_flow_callback(ctx: &AgentCallbackContext) -> Result<()> {
-    if is_agent_task_running(ctx.loop_ctx.session_keys.primary).await {
+    if is_agent_task_running(ctx.loop_ctx.session_id).await {
         ctx.loop_ctx
             .bot
             .answer_callback_query(ctx.callback_id.clone())
@@ -431,7 +427,7 @@ async fn handle_detach_flow_callback(ctx: &AgentCallbackContext) -> Result<()> {
     }
 
     save_memory_after_task(
-        ctx.loop_ctx.session_keys.primary,
+        ctx.loop_ctx.session_id,
         ctx.loop_ctx.user_id,
         &ctx.loop_ctx.context_key,
         &ctx.loop_ctx.agent_flow_id,
@@ -439,7 +435,7 @@ async fn handle_detach_flow_callback(ctx: &AgentCallbackContext) -> Result<()> {
     )
     .await;
     let _ = SESSION_REGISTRY
-        .remove_if_idle(&ctx.loop_ctx.session_keys.primary)
+        .remove_if_idle(&ctx.loop_ctx.session_id)
         .await;
     let new_flow_id = reset_current_agent_flow_id(
         &ctx.storage,
@@ -479,7 +475,7 @@ async fn handle_attach_flow_callback(
         return Ok(());
     }
 
-    if is_agent_task_running(ctx.loop_ctx.session_keys.primary).await {
+    if is_agent_task_running(ctx.loop_ctx.session_id).await {
         ctx.loop_ctx
             .bot
             .answer_callback_query(ctx.callback_id.clone())
@@ -489,7 +485,7 @@ async fn handle_attach_flow_callback(
     }
 
     save_memory_after_task(
-        ctx.loop_ctx.session_keys.primary,
+        ctx.loop_ctx.session_id,
         ctx.loop_ctx.user_id,
         &ctx.loop_ctx.context_key,
         &ctx.loop_ctx.agent_flow_id,
@@ -497,7 +493,7 @@ async fn handle_attach_flow_callback(
     )
     .await;
     let _ = SESSION_REGISTRY
-        .remove_if_idle(&ctx.loop_ctx.session_keys.primary)
+        .remove_if_idle(&ctx.loop_ctx.session_id)
         .await;
     cleanup_abandoned_empty_flow(
         &ctx.storage,
@@ -563,7 +559,7 @@ async fn dispatch_agent_callback(
             answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             cancel_agent_task_by_id(
                 ctx.loop_ctx.bot.clone(),
-                ctx.loop_ctx.session_keys,
+                ctx.loop_ctx.session_id,
                 ctx.loop_ctx.chat_id,
                 ctx.loop_ctx.thread_spec,
                 ctx.loop_ctx.outbound_thread.message_thread_id,
@@ -650,8 +646,8 @@ pub async fn handle_agent_callback(
     }
     let (agent_flow_id, _) =
         ensure_current_agent_flow_id(&storage, user_id, chat_id, thread_spec).await?;
-    let session_keys =
-        agent_mode_session_keys(user_id, chat_id, thread_spec.thread_id, &agent_flow_id);
+    let session_id =
+        derive_agent_mode_session_id(user_id, chat_id, thread_spec.thread_id, &agent_flow_id);
     let ctx = AgentCallbackContext {
         callback_id: q.id.clone(),
         loop_ctx: LoopCallbackContext {
@@ -660,7 +656,7 @@ pub async fn handle_agent_callback(
             context_key: storage_context_key(chat_id, thread_spec),
             agent_flow_id,
             user_id,
-            session_keys,
+            session_id,
             manager_default_chat_id: manager_default_chat_id(&settings, chat_id, thread_spec),
             thread_spec,
             outbound_thread: outbound_thread_from_callback(&q),
@@ -688,14 +684,11 @@ pub async fn cancel_agent_task(
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let (agent_flow_id, _) =
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-    let session_keys =
-        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
-    let session_id = resolve_existing_session_id(session_keys)
-        .await
-        .unwrap_or(session_keys.primary);
+    let session_id =
+        derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
-    let (cancelled, cleared_todos) = cancel_and_clear_session(session_keys).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_session(session_id).await;
 
     if !cancelled && !cleared_todos {
         clear_pending_cancel_message(session_id).await;
@@ -733,17 +726,14 @@ pub async fn cancel_agent_task(
 
 async fn cancel_agent_task_by_id(
     bot: Bot,
-    session_keys: AgentModeSessionKeys,
+    session_id: SessionId,
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
     message_thread_id: Option<ThreadId>,
     agent_flow_id: &str,
     attach_detach_enabled: bool,
 ) -> Result<()> {
-    let session_id = resolve_existing_session_id(session_keys)
-        .await
-        .unwrap_or(session_keys.primary);
-    let (cancelled, cleared_todos) = cancel_and_clear_session(session_keys).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_session(session_id).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
     let reply_markup = automatic_agent_control_markup(thread_spec);
 

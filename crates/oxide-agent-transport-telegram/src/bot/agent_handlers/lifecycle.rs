@@ -1,10 +1,10 @@
 use super::{
     ActiveSessionConfig, AgentControlCommand, AgentDialogue, AgentTaskContext,
     BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
-    SessionTransportContext, ShowModelSelectorContext, agent_mode_session_keys,
-    automatic_agent_control_markup, build_batched_text_task_context, cancel_agent_task,
-    configure_active_session, confirm_destructive_action, current_model_label,
-    ensure_agent_flow_session_keys, ensure_session_exists, exit_agent_mode,
+    SessionTransportContext, ShowModelSelectorContext, automatic_agent_control_markup,
+    build_batched_text_task_context, cancel_agent_task, configure_active_session,
+    confirm_destructive_action, current_model_label, derive_agent_mode_session_id,
+    ensure_agent_flow_session, ensure_session_exists, exit_agent_mode,
     handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
     is_agent_mode_context, manager_control_plane_enabled, manager_default_chat_id,
     parse_agent_control_command, resolve_execution_profile, resolve_topic_infra_config,
@@ -63,13 +63,13 @@ pub async fn activate_agent_mode(
     let (agent_flow_id, agent_flow_created) =
         ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
     let sandbox_scope = sandbox_scope(user_id, msg.chat.id, thread_spec);
-    let session_keys =
-        agent_mode_session_keys(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
+    let session_id =
+        derive_agent_mode_session_id(user_id, msg.chat.id, thread_spec.thread_id, &agent_flow_id);
 
     info!("Activating agent mode for user {user_id}");
 
     ensure_session_exists(EnsureSessionContext {
-        session_keys,
+        session_id,
         context_key: context_key.clone(),
         agent_flow_id,
         agent_flow_created,
@@ -170,8 +170,8 @@ pub async fn handle_agent_message(
             .await;
     }
 
-    let (agent_flow_id, agent_flow_created, session_keys) =
-        ensure_agent_flow_session_keys(&storage, user_id, chat_id, thread_spec).await?;
+    let (agent_flow_id, agent_flow_created, session_id) =
+        ensure_agent_flow_session(&storage, user_id, chat_id, thread_spec).await?;
 
     if let Some(command) = parse_agent_control_command(msg.text()) {
         return handle_agent_control_command(command, bot, msg, dialogue, storage, llm, settings)
@@ -185,7 +185,7 @@ pub async fn handle_agent_message(
 
     let manager_enabled = manager_control_plane_enabled(&settings, user_id, chat_id, thread_spec);
     let session_id = ensure_session_exists(EnsureSessionContext {
-        session_keys,
+        session_id,
         context_key: context_key.clone(),
         agent_flow_id: agent_flow_id.clone(),
         agent_flow_created,
