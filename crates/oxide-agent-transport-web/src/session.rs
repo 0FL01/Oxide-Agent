@@ -557,12 +557,12 @@ impl WebSessionManager {
         //    survives across tasks and follows the configured durable backend.
         //    Must be installed AFTER hydration so the first checkpoint write
         //    reflects the full hydrated state, not an empty snapshot.
-        session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint {
-            storage: self.storage(),
+        session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint::new(
+            self.storage(),
             user_id,
-            context_key: context_key.clone(),
-            agent_flow_id: agent_flow_id.clone(),
-        }));
+            context_key.clone(),
+            agent_flow_id.clone(),
+        )));
         log_session_create_phase(
             user_id,
             &session_id,
@@ -1033,11 +1033,27 @@ fn is_fresh_web_session_context(context_key: &str) -> bool {
 }
 
 /// Agent memory checkpoint that delegates to the configured storage provider.
-struct StorageFlowCheckpoint {
+pub(crate) struct StorageFlowCheckpoint {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: String,
-    agent_flow_id: String,
+    flow_id: String,
+}
+
+impl StorageFlowCheckpoint {
+    pub(crate) fn new(
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        context_key: impl Into<String>,
+        flow_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            storage,
+            user_id,
+            context_key: context_key.into(),
+            flow_id: flow_id.into(),
+        }
+    }
 }
 
 async fn inject_topic_agents_md_for_session(
@@ -1074,7 +1090,7 @@ impl oxide_agent_core::agent::AgentMemoryCheckpoint for StorageFlowCheckpoint {
             .save_agent_memory_for_flow(
                 self.user_id,
                 self.context_key.clone(),
-                self.agent_flow_id.clone(),
+                self.flow_id.clone(),
                 memory,
             )
             .await?;

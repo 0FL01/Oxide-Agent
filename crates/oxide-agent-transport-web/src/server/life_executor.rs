@@ -8,14 +8,14 @@
 //! `SessionRegistry` entry (life runs are ephemeral executions, not
 //! long-lived sessions).
 
-use crate::session::WebSessionManager;
+use crate::session::{StorageFlowCheckpoint, WebSessionManager};
 use crate::web_transport::map_agent_event_without_file_storage;
 use async_trait::async_trait;
 use oxide_agent_core::agent::progress::AgentEvent;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
-    AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor, AgentMemory,
-    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentUserInput, SessionId,
+    AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor, AgentMemoryScope, AgentSession,
+    AgentUserInput, SessionId,
 };
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::ReminderThreadKind;
@@ -37,35 +37,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const LIFE_RUN_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Durable memory checkpoint that delegates to the configured storage provider.
-///
-/// Identical in behavior to `StorageFlowCheckpoint` in `session.rs` — both
-/// write to `agent_memory_snapshots(user_id, context_key, flow_id)` via
-/// `StorageProvider::save_agent_memory_for_flow`. Duplicated here because
-/// `StorageFlowCheckpoint` is private to `session.rs` and the life executor
-/// does not go through `WebSessionManager::create_session_with_model_selection`.
-struct LifeMemoryCheckpoint {
-    storage: Arc<dyn StorageProvider>,
-    user_id: i64,
-    context_key: String,
-    flow_id: String,
-}
-
-#[async_trait]
-impl AgentMemoryCheckpoint for LifeMemoryCheckpoint {
-    async fn persist(&self, memory: &AgentMemory) -> Result<(), anyhow::Error> {
-        self.storage
-            .save_agent_memory_for_flow(
-                self.user_id,
-                self.context_key.clone(),
-                self.flow_id.clone(),
-                memory,
-            )
-            .await?;
-        Ok(())
-    }
-}
 
 /// Map an `AgentEvent` to a `(kind, payload)` pair for a `life_events` row.
 ///
@@ -314,12 +285,12 @@ impl LifeRunExecutor for LifeAgentExecutor {
         // 3. Install durable memory checkpoint — same mechanism as ordinary
         //    web sessions. This ensures memory survives across runs and
         //    backend restarts.
-        session.set_memory_checkpoint(Arc::new(LifeMemoryCheckpoint {
-            storage: Arc::clone(&self.storage),
+        session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint::new(
+            Arc::clone(&self.storage),
             user_id,
-            context_key: LIFE_CONTEXT_KEY.to_string(),
-            flow_id: LIFE_FLOW_ID.to_string(),
-        }));
+            LIFE_CONTEXT_KEY,
+            LIFE_FLOW_ID,
+        )));
 
         // 4. Build the executor with the same tool registration as ordinary
         //    sessions (AGENTS.md, reminders, storage).
