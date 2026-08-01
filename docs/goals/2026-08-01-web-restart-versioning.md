@@ -1,6 +1,6 @@
 # Goal: Restore Web task versioning after backend restart
 
-Status: active
+Status: complete
 Source: User-approved audited restart/versioning fix plan, 2026-08-01
 Last updated: 2026-08-01
 
@@ -32,8 +32,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Explicit user instruction.
   - Acceptance: One coherent commit is synchronized to `origin/main`; the Web release image builds; `oxide_web` is recreated and healthy with clean startup logs.
   - Primary evidence: Git synchronization, Docker Compose build/rollout, Web health, container state, and startup logs.
-  - Status: pending
-  - Evidence:
+  - Status: verified
+  - Evidence: Implementation commit `2093ca88` is on `origin/main`; Web image `sha256:edec48ce163842e06372e7bab8420ba3cbf731fd921b0d944783ccae5823aa93` built successfully and runs in `oxide_agent_web`; health is OK and startup logs are clean.
 
 ### Constraints
 
@@ -59,17 +59,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R3.
-- Smallest next action: Commit the validated diff, build the Web release image, push the commit, and recreate `oxide_web`.
-- Expected evidence: Git is synchronized, the release image builds, Web health is OK, and startup logs are clean.
-- Stop or replan if: Build, push, rollout, health, or startup logs fail because of the current diff.
+- Closes: None; the goal is complete.
+- Smallest next action: Stop.
+- Expected evidence: R1-R3 are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
 
-- Resolved: R1-R2.
-- Last relevant evidence: Eight real-PostgreSQL SQLx tests, 169 Web library tests, 7 runnable Web E2E tests, workspace profile-full check, all-feature Clippy, formatting, and diff checks pass.
+- Resolved: R1-R3.
+- Last relevant evidence: Commit `2093ca88` is pushed; its release image runs in `oxide_agent_web`, health is OK, and startup logs are clean.
 - Blocker: None.
-- Next: Commit, build, push, deploy, and verify `oxide_web`.
+- Next: Stop.
 
 ## Material Decisions
 
@@ -84,10 +84,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R1 verified: durable cache fills were removed, pending initial records clear after main-row persistence, and the two-store reconciliation test now observes `Interrupted` through all task reads. Next: R2 route ownership.
 - 2026-08-01: R2 local behavior verified: version validation now uses one task-list snapshot; focused tests cover interrupted success plus active, non-latest, and missing-task responses. Next: affected and mandatory gates.
 - 2026-08-01: R1-R2 closure validation passed: eight real-PostgreSQL SQLx tests, the complete Web package suite, workspace check, all-feature Clippy, fmt, and diff checks are green. Next: R3 delivery.
+- 2026-08-01: R3 verified: implementation commit `2093ca88` was built, pushed, and deployed; the running container uses the built image, Web health is OK, and startup logs are clean. Goal complete.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R3 verified.
+- Commands and artifacts: Baseline-red then green real-PostgreSQL reconciliation regression; eight SQLx tests; 169 Web library tests and 7 runnable E2E tests; workspace profile-full check; all-target/all-feature Clippy; fmt and diff checks; Compose release build/rollout; Git, image, container, health, and startup-log checks.
+- Constraint and diff-scope check: No schema, migration, config, dependency, API, service, queue, cache, compatibility path, or unrelated flow changed. Initial write-front/coalescing remains, durable task cache ownership and redundant version read are gone, and production Rust decreased by 17 net LOC.
+- Final status: Complete on the current host.
