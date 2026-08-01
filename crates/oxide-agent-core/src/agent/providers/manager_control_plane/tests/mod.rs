@@ -4,7 +4,7 @@
 pub(super) use super::*;
 pub(super) use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, TopicAgentsMdRecord, TopicBindingRecord,
-    TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UserConfig,
+    TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
     UserContextConfig,
 };
 pub(super) use mockall::{Sequence, predicate::eq};

@@ -188,29 +188,6 @@ impl ManagerControlPlaneProvider {
         })
     }
 
-    pub(super) fn upsert_forum_topic_catalog_entry(
-        config: &mut UserConfig,
-        entry: &ForumTopicCatalogEntry,
-    ) {
-        let context = config.contexts.entry(entry.topic_id.clone()).or_default();
-        context.chat_id = Some(entry.chat_id);
-        context.thread_id = Some(entry.thread_id);
-        context.forum_topic_name = entry.name.clone();
-        context.forum_topic_icon_color = entry.icon_color;
-        context.forum_topic_icon_custom_emoji_id = entry.icon_custom_emoji_id.clone();
-        context.forum_topic_closed = entry.closed;
-    }
-
-    pub(super) fn existing_forum_topic_catalog_entry(
-        config: &UserConfig,
-        topic_id: &str,
-    ) -> Option<ForumTopicCatalogEntry> {
-        config
-            .contexts
-            .get(topic_id)
-            .and_then(|context| Self::forum_topic_catalog_entry_from_context(topic_id, context))
-    }
-
     pub(super) fn topic_lifecycle(&self) -> Result<&Arc<dyn ManagerTopicLifecycle>> {
         self.topic_lifecycle
             .as_ref()
@@ -296,16 +273,35 @@ impl ManagerControlPlaneProvider {
         &self,
         entry: &ForumTopicCatalogEntry,
     ) -> Result<()> {
-        let mut config = self
-            .storage
-            .get_user_config(self.user_id)
-            .await
-            .map_err(|err| anyhow!("failed to load user config for {}: {err}", entry.topic_id))?;
-        Self::upsert_forum_topic_catalog_entry(&mut config, entry);
         self.storage
-            .update_user_config(self.user_id, config)
+            .upsert_forum_topic_context(
+                self.user_id,
+                &entry.topic_id,
+                ForumTopicContext {
+                    chat_id: entry.chat_id,
+                    thread_id: entry.thread_id,
+                    name: entry.name.clone(),
+                    icon_color: entry.icon_color,
+                    icon_custom_emoji_id: entry.icon_custom_emoji_id.clone(),
+                    closed: entry.closed,
+                },
+            )
             .await
             .map_err(|err| anyhow!("failed to update user config for {}: {err}", entry.topic_id))
+    }
+
+    async fn load_forum_topic_catalog_entry(
+        &self,
+        topic_id: &str,
+    ) -> Result<Option<ForumTopicCatalogEntry>> {
+        let context = self
+            .storage
+            .get_user_context(self.user_id, topic_id)
+            .await
+            .map_err(|err| anyhow!("failed to load user config for {topic_id}: {err}"))?;
+        Ok(context
+            .as_ref()
+            .and_then(|context| Self::forum_topic_catalog_entry_from_context(topic_id, context)))
     }
 
     pub(super) async fn list_forum_topic_catalog_entries(
@@ -313,14 +309,13 @@ impl ManagerControlPlaneProvider {
         requested_chat_id: Option<i64>,
         include_closed: bool,
     ) -> Result<Vec<ForumTopicCatalogEntry>> {
-        let config = self
+        let contexts = self
             .storage
-            .get_user_config(self.user_id)
+            .list_user_contexts(self.user_id)
             .await
             .map_err(|err| anyhow!("failed to load user config for forum topic listing: {err}"))?;
         let effective_chat_id = requested_chat_id.or_else(|| self.resolve_default_forum_chat_id());
-        let mut topics = config
-            .contexts
+        let mut topics = contexts
             .iter()
             .filter_map(|(context_key, context)| {
                 Self::forum_topic_catalog_entry_from_context(context_key, context)
@@ -486,19 +481,15 @@ impl ManagerControlPlaneProvider {
         context_key: &str,
         errors: &mut Vec<String>,
     ) -> bool {
-        match self.storage.get_user_config(self.user_id).await {
-            Ok(mut config) => {
-                let removed_context_config = config.contexts.remove(context_key).is_some();
-                if let Err(err) = self.storage.update_user_config(self.user_id, config).await {
-                    errors.push(format!(
-                        "failed to update user config for {context_key}: {err}"
-                    ));
-                }
-                removed_context_config
-            }
+        match self
+            .storage
+            .delete_user_context(self.user_id, context_key)
+            .await
+        {
+            Ok(removed) => removed,
             Err(err) => {
                 errors.push(format!(
-                    "failed to load user config for {context_key}: {err}"
+                    "failed to delete user context for {context_key}: {err}"
                 ));
                 false
             }
@@ -1085,13 +1076,10 @@ impl ManagerControlPlaneProvider {
             .forum_topic_edit(request.clone())
             .await?;
         let topic_id = Self::forum_topic_context_key(result.chat_id, result.thread_id);
-        let mut config = self
-            .storage
-            .get_user_config(self.user_id)
-            .await
-            .map_err(|err| anyhow!("failed to load user config for {topic_id}: {err}"))?;
-        let mut entry = Self::existing_forum_topic_catalog_entry(&config, &topic_id).unwrap_or(
-            ForumTopicCatalogEntry {
+        let mut entry = self
+            .load_forum_topic_catalog_entry(&topic_id)
+            .await?
+            .unwrap_or(ForumTopicCatalogEntry {
                 topic_id: topic_id.clone(),
                 chat_id: result.chat_id,
                 thread_id: result.thread_id,
@@ -1099,19 +1087,14 @@ impl ManagerControlPlaneProvider {
                 icon_color: None,
                 icon_custom_emoji_id: None,
                 closed: false,
-            },
-        );
+            });
         if let Some(name) = result.name.clone() {
             entry.name = Some(name);
         }
         if result.icon_custom_emoji_id.is_some() {
             entry.icon_custom_emoji_id = result.icon_custom_emoji_id.clone();
         }
-        Self::upsert_forum_topic_catalog_entry(&mut config, &entry);
-        self.storage
-            .update_user_config(self.user_id, config)
-            .await
-            .map_err(|err| anyhow!("failed to update user config for {topic_id}: {err}"))?;
+        self.persist_forum_topic_catalog_entry(&entry).await?;
         let audit_status = self
             .append_audit_with_status(AppendAuditEventOptions {
                 user_id: self.user_id,
@@ -1180,14 +1163,9 @@ impl ManagerControlPlaneProvider {
         };
         let derived_topic_id = Self::forum_topic_context_key(result.chat_id, result.thread_id);
         if tool_name != TOOL_FORUM_TOPIC_DELETE {
-            let mut config = self
-                .storage
-                .get_user_config(self.user_id)
-                .await
-                .map_err(|err| {
-                    anyhow!("failed to load user config for {derived_topic_id}: {err}")
-                })?;
-            let mut entry = Self::existing_forum_topic_catalog_entry(&config, &derived_topic_id)
+            let mut entry = self
+                .load_forum_topic_catalog_entry(&derived_topic_id)
+                .await?
                 .unwrap_or(ForumTopicCatalogEntry {
                     topic_id: derived_topic_id.clone(),
                     chat_id: result.chat_id,
@@ -1198,13 +1176,7 @@ impl ManagerControlPlaneProvider {
                     closed: tool_name == TOOL_FORUM_TOPIC_CLOSE,
                 });
             entry.closed = tool_name == TOOL_FORUM_TOPIC_CLOSE;
-            Self::upsert_forum_topic_catalog_entry(&mut config, &entry);
-            self.storage
-                .update_user_config(self.user_id, config)
-                .await
-                .map_err(|err| {
-                    anyhow!("failed to update user config for {derived_topic_id}: {err}")
-                })?;
+            self.persist_forum_topic_catalog_entry(&entry).await?;
         }
         let (cleanup, cleanup_error) = if tool_name == TOOL_FORUM_TOPIC_DELETE {
             self.cleanup_forum_topic_artifacts(&result).await

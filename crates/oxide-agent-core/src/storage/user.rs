@@ -38,3 +38,20 @@ pub struct UserContextConfig {
     #[serde(default)]
     pub forum_topic_closed: bool,
 }
+
+/// Telegram forum-topic metadata owned by one persisted user context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForumTopicContext {
+    /// Telegram chat containing the forum topic.
+    pub chat_id: i64,
+    /// Telegram message-thread identifier.
+    pub thread_id: i64,
+    /// Last persisted topic name.
+    pub name: Option<String>,
+    /// Last persisted Telegram icon color.
+    pub icon_color: Option<u32>,
+    /// Last persisted Telegram custom icon emoji identifier.
+    pub icon_custom_emoji_id: Option<String>,
+    /// Whether Telegram reports the topic as closed.
+    pub closed: bool,
+}

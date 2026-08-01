@@ -73,22 +73,18 @@ async fn forum_topic_dry_run_mutations_do_not_call_lifecycle_service() {
 #[tokio::test]
 async fn forum_topic_create_invokes_lifecycle_and_audits_success() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config()
-        .times(1)
-        .returning(|_| Ok(UserConfig::default()));
-    mock.expect_update_user_config()
-        .withf(|user_id, config| {
+    mock.expect_upsert_forum_topic_context()
+        .withf(|user_id, context_key, topic| {
             *user_id == 77
-                && config.contexts.get("-100999:313").is_some_and(|context| {
-                    context.chat_id == Some(-100999)
-                        && context.thread_id == Some(313)
-                        && context.forum_topic_name.as_deref() == Some("topic-a")
-                        && context.forum_topic_icon_color == Some(9_367_192)
-                        && !context.forum_topic_closed
-                })
+                && context_key == "-100999:313"
+                && topic.chat_id == -100999
+                && topic.thread_id == 313
+                && topic.name.as_deref() == Some("topic-a")
+                && topic.icon_color == Some(9_367_192)
+                && !topic.closed
         })
         .times(1)
-        .returning(|_, _| Ok(()));
+        .returning(|_, _, _| Ok(()));
     mock.expect_append_audit_event()
         .withf(|options: &AppendAuditEventOptions| {
             options.user_id == 77
@@ -139,8 +135,8 @@ async fn forum_topic_create_invokes_lifecycle_and_audits_success() {
 #[tokio::test]
 async fn forum_topic_list_returns_persisted_topics_for_current_chat() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([
             (
                 "-100777:12".to_string(),
                 forum_topic_context(
@@ -208,13 +204,10 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
         .with(eq(77_i64), eq("42".to_string()))
         .times(1)
         .returning(|_, _| Ok(()));
-    mock.expect_get_user_config()
+    mock.expect_delete_user_context()
+        .with(eq(77_i64), eq("-100999:42"))
         .times(1)
-        .returning(|_| Ok(topic_delete_user_config()));
-    mock.expect_update_user_config()
-        .withf(|user_id, config| *user_id == 77 && !config.contexts.contains_key("-100999:42"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+        .returning(|_, _| Ok(true));
     mock.expect_append_audit_event()
         .withf(|options: &AppendAuditEventOptions| {
             options.user_id == 77

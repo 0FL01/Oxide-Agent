@@ -7,15 +7,14 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sqlx_core::{migrate::Migrator, query::query};
 use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
-    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
-    ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider, TopicAgentsMdRecord,
-    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
-    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    BrowserArtifactRecord, CreateReminderJobOptions, ForumTopicContext, ReminderJobRecord,
+    ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
+    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
     UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
     builders::{
@@ -219,26 +218,11 @@ impl StorageProvider for SqlxStorage {
             .transpose()?
             .flatten();
 
-        let rows = query::<Postgres>(
-            r#"
-            SELECT context_key, state, current_agent_flow_id, chat_id, thread_id,
-                   forum_topic_name, forum_topic_icon_color,
-                   forum_topic_icon_custom_emoji_id, forum_topic_closed
-            FROM user_contexts
-            WHERE user_id = $1
-            ORDER BY context_key ASC
-            "#,
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        let mut contexts = HashMap::with_capacity(rows.len());
-        for row in rows {
-            let context_key = row_value(&row, "context_key")?;
-            contexts.insert(context_key, row_to_user_context(&row)?);
-        }
+        let contexts = self
+            .list_user_contexts(user_id)
+            .await?
+            .into_iter()
+            .collect();
 
         Ok(UserConfig { state, contexts })
     }
@@ -363,6 +347,33 @@ impl StorageProvider for SqlxStorage {
         .map_err(db_error)?;
 
         row.map(|row| row_to_user_context(&row)).transpose()
+    }
+
+    async fn list_user_contexts(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<(String, UserContextConfig)>, StorageError> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT context_key, state, current_agent_flow_id, chat_id, thread_id,
+                   forum_topic_name, forum_topic_icon_color,
+                   forum_topic_icon_custom_emoji_id, forum_topic_closed
+            FROM user_contexts
+            WHERE user_id = $1
+            ORDER BY context_key ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let context_key = row_value(&row, "context_key")?;
+                Ok((context_key, row_to_user_context(&row)?))
+            })
+            .collect()
     }
 
     async fn set_context_state(
@@ -563,6 +574,77 @@ impl StorageProvider for SqlxStorage {
         .map_err(db_error)?;
 
         tx.commit().await.map_err(db_error)
+    }
+
+    async fn upsert_forum_topic_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        topic: ForumTopicContext,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_contexts (
+                user_id, context_key, chat_id, thread_id, forum_topic_name,
+                forum_topic_icon_color, forum_topic_icon_custom_emoji_id,
+                forum_topic_closed, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $9)
+            ON CONFLICT (user_id, context_key) DO UPDATE
+            SET chat_id = EXCLUDED.chat_id,
+                thread_id = EXCLUDED.thread_id,
+                forum_topic_name = EXCLUDED.forum_topic_name,
+                forum_topic_icon_color = EXCLUDED.forum_topic_icon_color,
+                forum_topic_icon_custom_emoji_id = EXCLUDED.forum_topic_icon_custom_emoji_id,
+                forum_topic_closed = EXCLUDED.forum_topic_closed,
+                schema_version = EXCLUDED.schema_version,
+                version = user_contexts.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_contexts.chat_id IS DISTINCT FROM EXCLUDED.chat_id
+               OR user_contexts.thread_id IS DISTINCT FROM EXCLUDED.thread_id
+               OR user_contexts.forum_topic_name IS DISTINCT FROM EXCLUDED.forum_topic_name
+               OR user_contexts.forum_topic_icon_color IS DISTINCT FROM EXCLUDED.forum_topic_icon_color
+               OR user_contexts.forum_topic_icon_custom_emoji_id IS DISTINCT FROM EXCLUDED.forum_topic_icon_custom_emoji_id
+               OR user_contexts.forum_topic_closed IS DISTINCT FROM EXCLUDED.forum_topic_closed
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(topic.chat_id)
+        .bind(topic.thread_id)
+        .bind(topic.name)
+        .bind(topic.icon_color.map(i64::from))
+        .bind(topic.icon_custom_emoji_id)
+        .bind(topic.closed)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn delete_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<bool, StorageError> {
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM user_contexts
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn get_context_agent_model_selection(

@@ -111,8 +111,8 @@ async fn topic_agent_tools_get_keeps_reminders_enabled_for_allowlisted_profiles(
 #[tokio::test]
 async fn topic_agent_tools_disable_expands_provider_alias_and_persists_profile() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, Some("n-ru1"), Some(9_367_192), None, false),
         )]))
@@ -193,8 +193,8 @@ async fn topic_agent_tools_disable_expands_provider_alias_and_persists_profile()
 #[tokio::test]
 async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config()
-        .returning(|_| Ok(UserConfig::default()));
+    mock.expect_list_user_contexts()
+        .returning(|_| Ok(Vec::new()));
     mock.expect_get_topic_binding()
         .with(eq(77_i64), eq("topic-a".to_string()))
         .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
@@ -256,8 +256,8 @@ async fn topic_agent_tools_enable_accepts_reminder_provider_alias() {
 #[tokio::test]
 async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config()
-        .returning(|_| Ok(UserConfig::default()));
+    mock.expect_list_user_contexts()
+        .returning(|_| Ok(Vec::new()));
     mock.expect_get_topic_binding()
         .with(eq(77_i64), eq("topic-a".to_string()))
         .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));
@@ -339,8 +339,8 @@ async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
 #[tokio::test]
 async fn topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config()
-        .returning(|_| Ok(UserConfig::default()));
+    mock.expect_list_user_contexts()
+        .returning(|_| Ok(Vec::new()));
     mock.expect_get_topic_binding()
         .with(eq(77_i64), eq("topic-a".to_string()))
         .returning(|_, _| Ok(Some(binding(77, "topic-a", "agent-a", 1))));

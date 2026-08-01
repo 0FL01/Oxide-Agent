@@ -3,8 +3,8 @@ use super::*;
 #[tokio::test]
 async fn topic_infra_upsert_resolves_unique_forum_topic_name_alias() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, Some("n-ru1"), Some(9_367_192), None, false),
         )]))

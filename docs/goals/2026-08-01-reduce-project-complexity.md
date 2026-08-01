@@ -111,14 +111,14 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R8.
-- Smallest next action: Move manager forum-topic catalog writes/deletes and context readers to row-scoped storage operations, preserving context state, flow, model selection, and cleanup audit results.
-- Expected evidence: Manager production paths stop performing whole-user replacement; focused manager and real PostgreSQL tests preserve unrelated context fields and exact-row deletion semantics.
+- Smallest next action: Remove the now-unconsumed aggregate `UserConfig` storage API and representation, then verify every storage implementation and transport test uses explicit global-state or context operations.
+- Expected evidence: Source search finds no aggregate config API/type; full storage, manager, Telegram, and Web tests pass with real PostgreSQL context coverage.
 - Stop or replan if: Existing row ownership requires a schema change, compatibility path, or cannot preserve an observable aggregate read contract.
 
 ## Current State
 
 - Resolved: R1-R7.
-- Last relevant evidence: Telegram context state/flow writes use field-scoped operations; real PostgreSQL tests prove atomic flow initialization, DM mirroring, and model/field independence; all Telegram and Web library tests pass.
+- Last relevant evidence: Telegram and manager context writes/deletes are row- or field-scoped; manager tests and real PostgreSQL tests prove unrelated fields survive and exact-row deletion preserves neighboring contexts.
 - Blocker: None.
 - Next: R8 row-scoped context storage.
 
@@ -152,6 +152,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 checkpoint 5 replaced three session maps with one `SessionEntry` map, deleted unused `get_or_create`, and paired task execution handles; runtime, Telegram, and Web tests passed. Next: `ToolCatalog`.
 - 2026-08-01: R7 completed by deleting `ToolRegistry`, duplicate executor registration/conversion/state, and sub-agent executor vectors; `ToolCatalog` now owns execution and specs, with focused runtime/runner/delegation/static tests passing. Next: R8.
 - 2026-08-01: R8 checkpoint 1 moved Telegram context state and flow persistence to field-scoped operations with atomic flow initialization and transactional DM mirroring; real PostgreSQL plus full Telegram/Web library tests pass. Next: manager context catalog operations.
+- 2026-08-01: R8 checkpoint 2 moved manager forum catalog writes/deletes and sandbox/catalog reads to row-scoped operations; 54 manager tests, Telegram cleanup integration, and five real PostgreSQL context tests pass. Next: remove aggregate config API.
 
 ## Completion
 

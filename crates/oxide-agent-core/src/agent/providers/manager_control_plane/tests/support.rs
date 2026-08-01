@@ -45,13 +45,10 @@ pub(super) fn topic_infra(user_id: i64, topic_id: &str, version: u64) -> TopicIn
     }
 }
 
-pub(super) fn user_config_with_contexts(
+pub(super) fn user_contexts(
     contexts: impl IntoIterator<Item = (String, UserContextConfig)>,
-) -> UserConfig {
-    UserConfig {
-        contexts: contexts.into_iter().collect(),
-        ..UserConfig::default()
-    }
+) -> Vec<(String, UserContextConfig)> {
+    contexts.into_iter().collect()
 }
 
 pub(super) fn forum_topic_context(
@@ -251,13 +248,15 @@ pub(super) fn expect_forum_topic_provision_infra_calls(
 #[cfg(oxide_module_integration_ssh_mcp)]
 pub(super) fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config()
+    mock.expect_upsert_forum_topic_context()
         .times(1)
-        .returning(|_| Ok(UserConfig::default()));
-    mock.expect_update_user_config()
-        .times(1)
-        .withf(|user_id, config| *user_id == 77 && config.contexts.contains_key("-100777:313"))
-        .returning(|_, _| Ok(()));
+        .withf(|user_id, context_key, topic| {
+            *user_id == 77
+                && context_key == "-100777:313"
+                && topic.chat_id == -100777
+                && topic.thread_id == 313
+        })
+        .returning(|_, _, _| Ok(()));
     expect_forum_topic_provision_profile_calls(&mut mock);
     expect_forum_topic_provision_binding_calls(&mut mock);
     expect_forum_topic_provision_infra_calls(&mut mock);
@@ -292,25 +291,6 @@ pub(super) fn audit_event(
         action: action.to_string(),
         payload,
         created_at: 100,
-    }
-}
-
-pub(super) fn topic_delete_user_config() -> UserConfig {
-    UserConfig {
-        contexts: std::collections::HashMap::from([(
-            "-100999:42".to_string(),
-            UserContextConfig {
-                state: Some("agent_mode".to_string()),
-                current_agent_flow_id: Some("flow-1".to_string()),
-                chat_id: Some(-100999),
-                thread_id: Some(42),
-                forum_topic_name: Some("topic-42".to_string()),
-                forum_topic_icon_color: Some(7_322_096),
-                forum_topic_icon_custom_emoji_id: None,
-                forum_topic_closed: false,
-            },
-        )]),
-        ..UserConfig::default()
     }
 }
 

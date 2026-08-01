@@ -13,7 +13,7 @@ use super::row_value;
 use super::{SqlxStorage, SqlxStorageConfig};
 use crate::agent::memory::AgentMemory;
 use crate::storage::{
-    AppendAuditEventOptions, BrowserArtifactRecord, CreateReminderJobOptions,
+    AppendAuditEventOptions, BrowserArtifactRecord, CreateReminderJobOptions, ForumTopicContext,
     OptionalMetadataPatch, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
     StorageError, StorageProvider, TopicBindingKind, TopicInfraAuthMode, TopicInfraToolMode,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
@@ -218,6 +218,21 @@ async fn sqlx_context_fields_are_updated_independently() {
         .set_context_agent_flow(user_id, context_key, "flow-a".to_string(), -100, Some(200))
         .await
         .expect("context flow should be stored");
+    storage
+        .upsert_forum_topic_context(
+            user_id,
+            context_key,
+            ForumTopicContext {
+                chat_id: -100,
+                thread_id: 200,
+                name: Some("Ops".to_string()),
+                icon_color: Some(0x6FB9F0),
+                icon_custom_emoji_id: Some("emoji".to_string()),
+                closed: true,
+            },
+        )
+        .await
+        .expect("forum topic metadata should be stored");
 
     let context = storage
         .get_user_context(user_id, context_key)
@@ -228,6 +243,13 @@ async fn sqlx_context_fields_are_updated_independently() {
     assert_eq!(context.current_agent_flow_id.as_deref(), Some("flow-a"));
     assert_eq!(context.chat_id, Some(-100));
     assert_eq!(context.thread_id, Some(200));
+    assert_eq!(context.forum_topic_name.as_deref(), Some("Ops"));
+    assert_eq!(context.forum_topic_icon_color, Some(0x6FB9F0));
+    assert_eq!(
+        context.forum_topic_icon_custom_emoji_id.as_deref(),
+        Some("emoji")
+    );
+    assert!(context.forum_topic_closed);
     assert_eq!(
         storage
             .get_context_agent_model_selection(user_id, context_key)
@@ -235,6 +257,59 @@ async fn sqlx_context_fields_are_updated_independently() {
             .expect("model selection should load")
             .as_deref(),
         Some("provider/model-a")
+    );
+}
+
+#[tokio::test]
+async fn sqlx_context_delete_removes_only_the_requested_row() {
+    let Some(storage) = sqlx_test_storage().await else {
+        return;
+    };
+    let user_id = unique_user_id();
+
+    for context_key in ["telegram:-100:200", "telegram:-100:201"] {
+        storage
+            .set_context_agent_model_selection(
+                user_id,
+                context_key,
+                Some(format!("provider/{context_key}")),
+            )
+            .await
+            .expect("model selection should create a context row");
+    }
+
+    assert!(
+        storage
+            .delete_user_context(user_id, "telegram:-100:200")
+            .await
+            .expect("context delete should succeed")
+    );
+    assert!(
+        storage
+            .get_user_context(user_id, "telegram:-100:200")
+            .await
+            .expect("deleted context should load")
+            .is_none()
+    );
+    assert_eq!(
+        storage
+            .get_context_agent_model_selection(user_id, "telegram:-100:200")
+            .await
+            .expect("deleted model selection should load"),
+        None
+    );
+    assert!(
+        storage
+            .get_user_context(user_id, "telegram:-100:201")
+            .await
+            .expect("other context should load")
+            .is_some()
+    );
+    assert!(
+        !storage
+            .delete_user_context(user_id, "telegram:-100:200")
+            .await
+            .expect("repeated context delete should succeed")
     );
 }
 

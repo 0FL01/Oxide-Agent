@@ -110,12 +110,18 @@ fn configure_basic_expectations(mock: &mut crate::storage::MockStorageProvider) 
 
     mock.expect_update_user_config().returning(|_, _| Ok(()));
     mock.expect_get_user_context().returning(|_, _| Ok(None));
+    mock.expect_list_user_contexts()
+        .returning(|_| Ok(Vec::new()));
     mock.expect_set_context_state()
         .returning(|_, _, _, _, _, _| Ok(()));
     mock.expect_ensure_context_agent_flow()
         .returning(|_, _, flow_id, _, _| Ok((flow_id, true)));
     mock.expect_set_context_agent_flow()
         .returning(|_, _, _, _, _| Ok(()));
+    mock.expect_upsert_forum_topic_context()
+        .returning(|_, _, _| Ok(()));
+    mock.expect_delete_user_context()
+        .returning(|_, _| Ok(false));
     mock.expect_update_user_state().returning(|_, _| Ok(()));
     mock.expect_get_user_state().returning(|_| Ok(None));
     mock.expect_check_connection().returning(|| Ok(()));

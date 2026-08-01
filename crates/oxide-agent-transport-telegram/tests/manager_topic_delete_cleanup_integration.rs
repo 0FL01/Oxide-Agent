@@ -80,6 +80,20 @@ impl StorageProvider for IntegrationStorage {
         Ok(())
     }
 
+    async fn delete_user_context(
+        &self,
+        _user_id: i64,
+        context_key: &str,
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .user_config
+            .lock()
+            .map_err(|_| Self::lock_error())?
+            .contexts
+            .remove(context_key)
+            .is_some())
+    }
+
     async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
         Ok(())
     }

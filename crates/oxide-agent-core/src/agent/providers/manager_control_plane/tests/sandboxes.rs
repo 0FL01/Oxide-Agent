@@ -3,8 +3,8 @@ use super::*;
 #[tokio::test]
 async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))
@@ -66,12 +66,20 @@ async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
 #[tokio::test]
 async fn topic_sandbox_create_ensures_container_for_tracked_topic() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(2).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))
     });
+    mock.expect_get_user_context()
+        .with(eq(77_i64), eq("-100777:240"))
+        .times(1)
+        .returning(|_, _| {
+            Ok(Some(forum_topic_context(
+                -100777, 240, None, None, None, false,
+            )))
+        });
     mock.expect_get_topic_binding()
         .with(eq(77_i64), eq("-100777:240".to_string()))
         .times(1)
@@ -116,8 +124,8 @@ async fn topic_sandbox_get_supports_instance_name_lookup() {
     let instance_name = sandbox_record.container_name.clone();
 
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))
@@ -153,8 +161,8 @@ async fn topic_sandbox_delete_supports_container_name_lookup() {
     let container_name = sandbox_record.container_name.clone();
 
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))
@@ -196,8 +204,8 @@ async fn topic_sandbox_delete_supports_container_name_lookup() {
 #[tokio::test]
 async fn topic_sandbox_recreate_calls_control_plane() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))
@@ -239,8 +247,8 @@ async fn topic_sandbox_recreate_calls_control_plane() {
 #[tokio::test]
 async fn topic_sandbox_prune_dry_run_reports_binding_missing_candidates() {
     let mut mock = crate::storage::MockStorageProvider::new();
-    mock.expect_get_user_config().times(1).returning(|_| {
-        Ok(user_config_with_contexts([(
+    mock.expect_list_user_contexts().times(1).returning(|_| {
+        Ok(user_contexts([(
             "-100777:240".to_string(),
             forum_topic_context(-100777, 240, None, None, None, false),
         )]))

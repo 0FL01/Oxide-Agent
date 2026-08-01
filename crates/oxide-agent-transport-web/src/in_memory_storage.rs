@@ -14,8 +14,8 @@ use chrono::Utc;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
-    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
-    StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
+    BrowserArtifactRecord, CreateReminderJobOptions, ForumTopicContext, ReminderJobRecord,
+    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
     UserContextConfig,
 };
@@ -98,6 +98,25 @@ impl crate::api::StorageProvider for InMemoryStorage {
             .cloned())
     }
 
+    async fn list_user_contexts(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<(String, UserContextConfig)>, StorageError> {
+        let configs = self.user_configs.read().await;
+        let mut contexts = configs
+            .get(&user_id)
+            .map(|config| {
+                config
+                    .contexts
+                    .iter()
+                    .map(|(key, context)| (key.clone(), context.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        contexts.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(contexts)
+    }
+
     async fn set_context_state(
         &self,
         user_id: i64,
@@ -162,6 +181,40 @@ impl crate::api::StorageProvider for InMemoryStorage {
         context.chat_id = Some(chat_id);
         context.thread_id = thread_id;
         Ok(())
+    }
+
+    async fn upsert_forum_topic_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        topic: ForumTopicContext,
+    ) -> Result<(), StorageError> {
+        let mut configs = self.user_configs.write().await;
+        let context = configs
+            .entry(user_id)
+            .or_default()
+            .contexts
+            .entry(context_key.to_string())
+            .or_default();
+        context.chat_id = Some(topic.chat_id);
+        context.thread_id = Some(topic.thread_id);
+        context.forum_topic_name = topic.name;
+        context.forum_topic_icon_color = topic.icon_color;
+        context.forum_topic_icon_custom_emoji_id = topic.icon_custom_emoji_id;
+        context.forum_topic_closed = topic.closed;
+        Ok(())
+    }
+
+    async fn delete_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<bool, StorageError> {
+        let mut configs = self.user_configs.write().await;
+        Ok(configs
+            .get_mut(&user_id)
+            .and_then(|config| config.contexts.remove(context_key))
+            .is_some())
     }
 
     // User state is intentionally noop — not needed for E2E.

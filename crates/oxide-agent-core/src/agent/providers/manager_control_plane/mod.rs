@@ -16,12 +16,13 @@ use crate::sandbox::{
     SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxInstanceRecord, SandboxScope,
 };
 use crate::storage::{
-    AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
-    TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES, TopicAgentsMdRecord, TopicBindingKind,
-    TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
-    TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
-    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-    UserConfig, validate_topic_agents_md_content, validate_topic_context_content,
+    AgentProfileRecord, AppendAuditEventOptions, ForumTopicContext, OptionalMetadataPatch,
+    StorageProvider, TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES, TopicAgentsMdRecord,
+    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
+    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+    UpsertTopicInfraConfigOptions, validate_topic_agents_md_content,
+    validate_topic_context_content,
 };
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;

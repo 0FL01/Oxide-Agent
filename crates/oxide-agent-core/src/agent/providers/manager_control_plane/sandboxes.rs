@@ -219,12 +219,12 @@ impl ManagerControlPlaneProvider {
     }
 
     async fn ensure_tracked_forum_topic(&self, topic_id: &str) -> Result<()> {
-        let config = self
+        let context = self
             .storage
-            .get_user_config(self.user_id)
+            .get_user_context(self.user_id, topic_id)
             .await
             .map_err(|err| anyhow!("failed to load user config for topic sandbox: {err}"))?;
-        if config.contexts.contains_key(topic_id) {
+        if context.is_some() {
             return Ok(());
         }
 
@@ -235,9 +235,9 @@ impl ManagerControlPlaneProvider {
         &self,
         containers: Vec<SandboxContainerRecord>,
     ) -> Result<Vec<TopicSandboxInventoryRecord>> {
-        let config = self
+        let contexts = self
             .storage
-            .get_user_config(self.user_id)
+            .list_user_contexts(self.user_id)
             .await
             .map_err(|err| {
                 anyhow!("failed to load user config for topic sandbox inventory: {err}")
@@ -253,7 +253,7 @@ impl ManagerControlPlaneProvider {
                 .map(str::to_string);
             let bound_topic_exists = canonical_topic_id
                 .as_ref()
-                .is_some_and(|topic_id| config.contexts.contains_key(topic_id));
+                .is_some_and(|topic_id| contexts.iter().any(|(key, _)| key == topic_id));
 
             let (binding_found, sandbox_tools_enabled) =
                 if let Some(topic_id) = canonical_topic_id.as_ref() {

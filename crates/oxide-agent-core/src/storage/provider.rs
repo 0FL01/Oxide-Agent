@@ -1,7 +1,7 @@
 use super::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
-    BrowserArtifactRecord, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
-    StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
+    BrowserArtifactRecord, CreateReminderJobOptions, ForumTopicContext, ReminderJobRecord,
+    ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
     TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
     UserConfig, UserContextConfig,
@@ -30,6 +30,14 @@ pub trait StorageProvider: Send + Sync {
         let _ = user_id;
         let _ = context_key;
         Ok(None)
+    }
+    /// List transport-scoped user contexts in stable context-key order.
+    async fn list_user_contexts(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<(String, UserContextConfig)>, StorageError> {
+        let _ = user_id;
+        Ok(Vec::new())
     }
     /// Set one context's dialogue state and transport metadata.
     ///
@@ -88,6 +96,32 @@ pub trait StorageProvider: Send + Sync {
         let _ = thread_id;
         Err(StorageError::Config(
             "context flow updates are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Upsert forum-topic metadata without changing context runtime fields.
+    async fn upsert_forum_topic_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        topic: ForumTopicContext,
+    ) -> Result<(), StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        let _ = topic;
+        Err(StorageError::Config(
+            "forum topic context updates are not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Delete exactly one transport-scoped user context.
+    async fn delete_user_context(
+        &self,
+        user_id: i64,
+        context_key: &str,
+    ) -> Result<bool, StorageError> {
+        let _ = user_id;
+        let _ = context_key;
+        Err(StorageError::Config(
+            "context deletion is not implemented for this storage provider".to_string(),
         ))
     }
     /// Get the selected Agent model for one transport context.
