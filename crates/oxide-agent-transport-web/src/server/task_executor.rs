@@ -205,11 +205,11 @@ async fn execute_agent_task(
     // for all latency milestones (NOT HTTP request time).
     let agent_started_at = Instant::now();
 
-    let executor_arc = match registry.get(&sid).await {
-        Some(e) => e,
+    let (executor_arc, cancellation_token) = match registry.execution_handles(&sid).await {
+        Some(handles) => handles,
         None => {
             if let Some(web_task) = &ctx.web_task {
-                persist_task_failed(web_task, "Runtime executor not found.").await;
+                persist_task_failed(web_task, "Runtime session not found.").await;
             }
             session_manager.fail_task(task_id, session_id).await;
             return;
@@ -219,26 +219,7 @@ async fn execute_agent_task(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id,
         task_id = %task_id,
-        phase = "runtime_executor_resolved",
-        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
-        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
-        "web task executor latency"
-    );
-    let cancellation_token = match registry.get_cancellation_token(&sid).await {
-        Some(token) => token,
-        None => {
-            if let Some(web_task) = &ctx.web_task {
-                persist_task_failed(web_task, "Runtime cancellation token not found.").await;
-            }
-            session_manager.fail_task(task_id, session_id).await;
-            return;
-        }
-    };
-    debug!(
-        target: WEB_LATENCY_TARGET,
-        session_id = %session_id,
-        task_id = %task_id,
-        phase = "runtime_cancellation_token_resolved",
+        phase = "runtime_execution_handles_resolved",
         queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
         executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
         "web task executor latency"

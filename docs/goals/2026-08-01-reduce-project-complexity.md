@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R7.
-- Smallest next action: Replace `SessionRegistry`'s parallel executor, cancellation-token, and inbox maps with one `SessionEntry` map.
+- Smallest next action: Make `ToolCatalog` the sole tool executor/spec owner and remove `ToolRegistry` plus duplicate registration/conversion plumbing.
 - Expected evidence: Web contracts/transport/UI tests pass and each duplicated mechanism has one owner.
 - Stop or replan if: A supposedly duplicate Web/Life path has different observable scope or lifecycle semantics.
 
 ## Current State
 
 - Resolved: R1-R6.
-- Last relevant evidence: Web session and Life multipart uploads share one staging mechanism while retaining caller-owned scopes; all 168 Web transport tests pass.
+- Last relevant evidence: `SessionRegistry` now has one `SessionEntry` map and task-start paths obtain paired executor/token handles; 12 runtime, 144 Telegram, and 168 Web tests pass.
 - Blocker: None.
-- Next: R7 `SessionRegistry` owner consolidation.
+- Next: R7 `ToolCatalog` owner consolidation.
 
 ## Material Decisions
 
@@ -149,6 +149,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 checkpoint 2 made `WebSessionManager::resolve_session_id` the task executor's session-ID owner and removed duplicate hashing; all 168 Web tests passed. Next: checkpoint adapter.
 - 2026-08-01: R7 checkpoint 3 reused `StorageFlowCheckpoint` for Life execution and removed its duplicate adapter; all 168 Web tests passed. Next: attachment staging.
 - 2026-08-01: R7 checkpoint 4 shared multipart attachment staging between Web sessions and Life while preserving distinct sandbox scopes; all 168 Web tests passed. Next: `SessionRegistry`.
+- 2026-08-01: R7 checkpoint 5 replaced three session maps with one `SessionEntry` map, deleted unused `get_or_create`, and paired task execution handles; runtime, Telegram, and Web tests passed. Next: `ToolCatalog`.
 
 ## Completion
 

@@ -15,9 +15,13 @@ use tracing::{info, warn};
 
 /// Global session registry for agent executors.
 pub struct SessionRegistry {
-    sessions: RwLock<HashMap<SessionId, Arc<RwLock<AgentExecutor>>>>,
-    cancellation_tokens: RwLock<HashMap<SessionId, Arc<CancellationToken>>>,
-    runtime_context_inboxes: RwLock<HashMap<SessionId, RuntimeContextInbox>>,
+    sessions: RwLock<HashMap<SessionId, SessionEntry>>,
+}
+
+struct SessionEntry {
+    executor: Arc<RwLock<AgentExecutor>>,
+    cancellation_token: Arc<CancellationToken>,
+    runtime_context_inbox: RuntimeContextInbox,
 }
 
 impl Default for SessionRegistry {
@@ -32,52 +36,27 @@ impl SessionRegistry {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            cancellation_tokens: RwLock::new(HashMap::new()),
-            runtime_context_inboxes: RwLock::new(HashMap::new()),
         }
-    }
-
-    /// Get existing session or create new one using factory
-    pub async fn get_or_create<F>(&self, id: SessionId, factory: F) -> Arc<RwLock<AgentExecutor>>
-    where
-        F: FnOnce() -> AgentExecutor,
-    {
-        // Check if session exists
-        {
-            let sessions = self.sessions.read().await;
-            if let Some(executor) = sessions.get(&id) {
-                return executor.clone();
-            }
-        }
-
-        // Create new session
-        let built_executor = factory();
-        let inbox = built_executor.runtime_context_inbox();
-        let executor = Arc::new(RwLock::new(built_executor));
-        let token = Arc::new(CancellationToken::new());
-
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(id, executor.clone());
-        }
-
-        {
-            let mut tokens = self.cancellation_tokens.write().await;
-            tokens.insert(id, token);
-        }
-
-        {
-            let mut inboxes = self.runtime_context_inboxes.write().await;
-            inboxes.insert(id, inbox);
-        }
-
-        executor
     }
 
     /// Get session if exists
     pub async fn get(&self, id: &SessionId) -> Option<Arc<RwLock<AgentExecutor>>> {
         let sessions = self.sessions.read().await;
-        sessions.get(id).cloned()
+        sessions.get(id).map(|entry| Arc::clone(&entry.executor))
+    }
+
+    /// Get the executor and cancellation token from one registry snapshot.
+    pub async fn execution_handles(
+        &self,
+        id: &SessionId,
+    ) -> Option<(Arc<RwLock<AgentExecutor>>, Arc<CancellationToken>)> {
+        let sessions = self.sessions.read().await;
+        sessions.get(id).map(|entry| {
+            (
+                Arc::clone(&entry.executor),
+                Arc::clone(&entry.cancellation_token),
+            )
+        })
     }
 
     /// Check if session exists
@@ -88,31 +67,24 @@ impl SessionRegistry {
 
     /// Insert a session directly
     pub async fn insert(&self, id: SessionId, executor: AgentExecutor) {
-        let inbox = executor.runtime_context_inbox();
-        let executor_arc = Arc::new(RwLock::new(executor));
-        let token = Arc::new(CancellationToken::new());
-
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(id, executor_arc);
-        }
-
-        {
-            let mut tokens = self.cancellation_tokens.write().await;
-            tokens.insert(id, token);
-        }
-
-        {
-            let mut inboxes = self.runtime_context_inboxes.write().await;
-            inboxes.insert(id, inbox);
-        }
+        let runtime_context_inbox = executor.runtime_context_inbox();
+        self.sessions.write().await.insert(
+            id,
+            SessionEntry {
+                executor: Arc::new(RwLock::new(executor)),
+                cancellation_token: Arc::new(CancellationToken::new()),
+                runtime_context_inbox,
+            },
+        );
     }
 
     /// Queue additional user context for the next safe iteration boundary.
     pub async fn enqueue_runtime_context(&self, id: &SessionId, content: String) -> bool {
-        let inboxes = self.runtime_context_inboxes.read().await;
-        if let Some(inbox) = inboxes.get(id) {
-            inbox.push(RuntimeContextInjection::text(content));
+        let sessions = self.sessions.read().await;
+        if let Some(entry) = sessions.get(id) {
+            entry
+                .runtime_context_inbox
+                .push(RuntimeContextInjection::text(content));
             return true;
         }
 
@@ -139,7 +111,7 @@ impl SessionRegistry {
     pub async fn is_running(&self, id: &SessionId) -> bool {
         let executor_arc = {
             let sessions = self.sessions.read().await;
-            sessions.get(id).cloned()
+            sessions.get(id).map(|entry| Arc::clone(&entry.executor))
         };
 
         let Some(executor_arc) = executor_arc else {
@@ -154,31 +126,30 @@ impl SessionRegistry {
 
     /// Cancel the current task for a session (lock-free)
     ///
-    /// Returns `true` if cancellation was requested, `false` if no token found
+    /// Returns `true` if cancellation was requested, `false` if the session is missing.
     pub async fn cancel(&self, id: &SessionId) -> bool {
-        let tokens = self.cancellation_tokens.read().await;
-        if let Some(token) = tokens.get(id) {
+        let token = self
+            .sessions
+            .read()
+            .await
+            .get(id)
+            .map(|entry| Arc::clone(&entry.cancellation_token));
+        if let Some(token) = token {
             token.cancel();
             info!("Cancellation requested for session");
             true
         } else {
-            warn!("No cancellation token found for session");
+            warn!("No session found for cancellation");
             false
         }
     }
 
     /// Renew the cancellation token for a session
     pub async fn renew_cancellation_token(&self, id: &SessionId) {
-        let mut tokens = self.cancellation_tokens.write().await;
-        if let Some(id) = tokens.keys().find(|k| *k == id).cloned() {
-            tokens.insert(id, Arc::new(CancellationToken::new()));
+        let mut sessions = self.sessions.write().await;
+        if let Some(entry) = sessions.get_mut(id) {
+            entry.cancellation_token = Arc::new(CancellationToken::new());
         }
-    }
-
-    /// Get the cancellation token for a session
-    pub async fn get_cancellation_token(&self, id: &SessionId) -> Option<Arc<CancellationToken>> {
-        let tokens = self.cancellation_tokens.read().await;
-        tokens.get(id).cloned()
     }
 
     /// Reset a session (clear memory, todos, status)
@@ -208,7 +179,7 @@ impl SessionRegistry {
     {
         let executor_arc = {
             let sessions = self.sessions.read().await;
-            sessions.get(id).cloned()
+            sessions.get(id).map(|entry| Arc::clone(&entry.executor))
         };
 
         let Some(executor_arc) = executor_arc else {
@@ -223,31 +194,15 @@ impl SessionRegistry {
 
     /// Remove a session from the registry
     pub async fn remove(&self, id: &SessionId) {
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.remove(id);
-        }
-
-        {
-            let mut tokens = self.cancellation_tokens.write().await;
-            tokens.remove(id);
-        }
-
-        {
-            let mut inboxes = self.runtime_context_inboxes.write().await;
-            inboxes.remove(id);
-        }
+        self.sessions.write().await.remove(id);
     }
 
     /// Remove a session only if it is currently idle.
     ///
-    /// Returns `true` when the session and token were removed, `false` otherwise.
+    /// Returns `true` when the session entry was removed, `false` otherwise.
     pub async fn remove_if_idle(&self, id: &SessionId) -> bool {
         let mut sessions = self.sessions.write().await;
-        let mut tokens = self.cancellation_tokens.write().await;
-        let mut inboxes = self.runtime_context_inboxes.write().await;
-
-        let Some(executor_arc) = sessions.get(id).cloned() else {
+        let Some(executor_arc) = sessions.get(id).map(|entry| Arc::clone(&entry.executor)) else {
             return false;
         };
 
@@ -261,8 +216,6 @@ impl SessionRegistry {
         }
 
         sessions.remove(id);
-        tokens.remove(id);
-        inboxes.remove(id);
         true
     }
 
@@ -270,7 +223,7 @@ impl SessionRegistry {
     pub async fn clear_todos(&self, id: &SessionId) -> bool {
         let executor_arc = {
             let sessions = self.sessions.read().await;
-            sessions.get(id).cloned()
+            sessions.get(id).map(|entry| Arc::clone(&entry.executor))
         };
 
         let Some(executor_arc) = executor_arc else {
@@ -325,7 +278,7 @@ mod tests {
 
         assert!(removed);
         assert!(!registry.contains(&session_id).await);
-        assert!(registry.get_cancellation_token(&session_id).await.is_none());
+        assert!(registry.execution_handles(&session_id).await.is_none());
     }
 
     #[tokio::test]
@@ -350,7 +303,31 @@ mod tests {
 
         assert!(!removed);
         assert!(registry.contains(&session_id).await);
-        assert!(registry.get_cancellation_token(&session_id).await.is_some());
+        assert!(registry.execution_handles(&session_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_independent_of_executor_lock_and_renewable() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(252_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+        let (executor, original_token) = registry
+            .execution_handles(&session_id)
+            .await
+            .expect("session entry must exist");
+
+        let _executor_guard = executor.write().await;
+        assert!(registry.cancel(&session_id).await);
+        assert!(original_token.is_cancelled());
+
+        registry.renew_cancellation_token(&session_id).await;
+        let (_, renewed_token) = registry
+            .execution_handles(&session_id)
+            .await
+            .expect("renewed session entry must exist");
+        assert!(!renewed_token.is_cancelled());
     }
 
     #[tokio::test]

@@ -843,14 +843,10 @@ async fn execute_agent_task(
     model: Option<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
+    let (executor_arc, cancellation_token) = SESSION_REGISTRY
+        .execution_handles(&session_id)
         .await
         .ok_or_else(|| anyhow!("No agent session found"))?;
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No cancellation token found"))?;
 
     let mut executor = executor_arc.write().await;
     debug!(
@@ -877,14 +873,10 @@ async fn execute_agent_task_continuation(
     model_override: ModelOverrideUpdate,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
+    let (executor_arc, cancellation_token) = SESSION_REGISTRY
+        .execution_handles(&session_id)
         .await
         .ok_or_else(|| anyhow!("No agent session found"))?;
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No cancellation token found"))?;
 
     let mut executor = executor_arc.write().await;
     if executor.is_timed_out() {
@@ -912,14 +904,10 @@ pub(crate) async fn execute_user_input_resume(
     model: Option<ModelInfo>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<AgentExecutionOutcome> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
+    let (executor_arc, cancellation_token) = SESSION_REGISTRY
+        .execution_handles(&session_id)
         .await
         .ok_or_else(|| anyhow!("No agent session found"))?;
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No cancellation token found"))?;
 
     let mut executor = executor_arc.write().await;
     if executor.is_timed_out() {
@@ -940,14 +928,10 @@ pub(crate) async fn execute_manual_compaction(
     session_id: SessionId,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
 ) -> Result<()> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
+    let (executor_arc, cancellation_token) = SESSION_REGISTRY
+        .execution_handles(&session_id)
         .await
         .ok_or_else(|| anyhow!("No agent session found"))?;
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No cancellation token found"))?;
 
     let mut executor = executor_arc.write().await;
     if executor.is_timed_out() {
