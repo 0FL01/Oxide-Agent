@@ -103,7 +103,9 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
             .collect(),
         registered_llm_provider_aliases_dummy_config: registered_provider_names
             .into_iter()
-            .filter(|provider| !provider.starts_with("llm-provider/"))
+            .filter(|provider| {
+                !provider.starts_with("llm-provider/") && !is_openai_base_instance(provider)
+            })
             .collect(),
         storage_backend_module_ids: module_ids_by_kind(
             compiled_manifest.modules(),
@@ -408,8 +410,10 @@ fn assert_provider_alias_contract(
     let allowed_provider_names = allowed_provider_names_for_enabled_modules(&enabled_module_ids);
 
     for provider_name in &provider_names {
+        let openai_base_instance_is_owned = enabled_module_ids.contains("llm-provider/openai-base")
+            && is_openai_base_instance(provider_name);
         assert!(
-            allowed_provider_names.contains(provider_name),
+            allowed_provider_names.contains(provider_name) || openai_base_instance_is_owned,
             "registered provider name {provider_name} is not owned by an enabled provider module for {profile}; allowed={allowed_provider_names:?}"
         );
     }
@@ -422,6 +426,12 @@ fn assert_provider_alias_contract(
             "enabled provider module {module_id} must register its canonical provider ID for {profile}"
         );
     }
+}
+
+fn is_openai_base_instance(provider_name: &str) -> bool {
+    provider_name
+        .strip_prefix("openai-base:")
+        .is_some_and(|instance| !instance.is_empty())
 }
 
 fn allowed_provider_names_for_enabled_modules(
