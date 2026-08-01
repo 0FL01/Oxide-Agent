@@ -1,8 +1,103 @@
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
+    PersistedTaskEvent, ProgressSnapshot, SessionSummary, TaskDetail, TaskEventKind, TaskStatus,
+    TaskSummary,
 };
 use serde_json::Value;
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ActivityLoadPhase {
+    Loading,
+    Ready,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TaskActivityState {
+    pub(super) phase: ActivityLoadPhase,
+    pub(super) progress: Option<ProgressSnapshot>,
+    pub(super) before_seq: u64,
+    pub(super) has_more: bool,
+    pub(super) loading_older: bool,
+}
+
+impl TaskActivityState {
+    pub(super) const fn loading() -> Self {
+        Self {
+            phase: ActivityLoadPhase::Loading,
+            progress: None,
+            before_seq: 0,
+            has_more: false,
+            loading_older: false,
+        }
+    }
+
+    pub(super) const fn live() -> Self {
+        Self {
+            phase: ActivityLoadPhase::Ready,
+            progress: None,
+            before_seq: 0,
+            has_more: false,
+            loading_older: false,
+        }
+    }
+}
+
+pub(super) fn begin_activity_load(
+    states: &mut HashMap<String, TaskActivityState>,
+    task_id: &str,
+) -> bool {
+    if states.contains_key(task_id) {
+        return false;
+    }
+    states.insert(task_id.to_string(), TaskActivityState::loading());
+    true
+}
+
+pub(super) fn complete_activity_load(
+    states: &mut HashMap<String, TaskActivityState>,
+    task_id: &str,
+    before_seq: u64,
+    has_more: bool,
+    progress: Option<ProgressSnapshot>,
+) -> bool {
+    let Some(state) = states.get_mut(task_id) else {
+        return false;
+    };
+    if !matches!(state.phase, ActivityLoadPhase::Loading) {
+        return false;
+    }
+    state.phase = ActivityLoadPhase::Ready;
+    state.progress = progress;
+    state.before_seq = before_seq;
+    state.has_more = has_more;
+    state.loading_older = false;
+    true
+}
+
+pub(super) fn fail_activity_load(
+    states: &mut HashMap<String, TaskActivityState>,
+    task_id: &str,
+    error: String,
+) {
+    if let Some(state) = states.get_mut(task_id)
+        && matches!(state.phase, ActivityLoadPhase::Loading)
+    {
+        state.phase = ActivityLoadPhase::Failed(error);
+    }
+}
+
+pub(super) fn update_activity_progress(
+    states: &mut HashMap<String, TaskActivityState>,
+    task_id: String,
+    progress: Option<ProgressSnapshot>,
+) {
+    states
+        .entry(task_id)
+        .or_insert_with(TaskActivityState::live)
+        .progress = progress;
+}
 
 pub(super) fn artifact_image_url(
     session_id: Option<&str>,
@@ -530,5 +625,54 @@ mod tests {
             ),
         ];
         assert!(latest_pinned_todos(&events).is_none());
+    }
+
+    fn progress(iteration: usize) -> ProgressSnapshot {
+        ProgressSnapshot {
+            current_iteration: iteration,
+            max_iterations: 100,
+            is_finished: false,
+            error: None,
+            current_thought: None,
+            current_todos: None,
+            last_compaction_status: None,
+            repeated_compaction_warning: None,
+            last_history_repair_status: None,
+            latest_token_snapshot: None,
+            llm_retry: None,
+        }
+    }
+
+    #[test]
+    fn activity_load_completion_only_updates_requested_task() {
+        let mut states = HashMap::new();
+        assert!(begin_activity_load(&mut states, "task-a"));
+        assert!(begin_activity_load(&mut states, "task-b"));
+
+        assert!(complete_activity_load(
+            &mut states,
+            "task-a",
+            10,
+            true,
+            Some(progress(4)),
+        ));
+
+        assert!(matches!(states["task-a"].phase, ActivityLoadPhase::Ready));
+        assert_eq!(states["task-a"].progress, Some(progress(4)));
+        assert!(matches!(states["task-b"].phase, ActivityLoadPhase::Loading));
+        assert_eq!(states["task-b"].progress, None);
+    }
+
+    #[test]
+    fn live_progress_update_keeps_task_ownership() {
+        let mut states = HashMap::from([
+            ("task-a".to_string(), TaskActivityState::live()),
+            ("task-b".to_string(), TaskActivityState::live()),
+        ]);
+
+        update_activity_progress(&mut states, "task-b".to_string(), Some(progress(7)));
+
+        assert_eq!(states["task-a"].progress, None);
+        assert_eq!(states["task-b"].progress, Some(progress(7)));
     }
 }

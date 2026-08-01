@@ -3,12 +3,11 @@ use crate::routes::AppRoute;
 use crate::sessions::SessionSidebar;
 use crate::tasks::TaskConsole;
 use leptos::prelude::*;
-use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, SessionSummary};
+use oxide_agent_web_contracts::{PersistedTaskEvent, SessionSummary};
 
 #[component]
 pub fn AppLayout(route: ReadSignal<AppRoute>) -> impl IntoView {
     let (events, set_events) = signal(Vec::<PersistedTaskEvent>::new());
-    let (progress, set_progress) = signal(None::<ProgressSnapshot>);
     let (sessions, set_sessions) = signal(Vec::<SessionSummary>::new());
 
     // Derive `session_id` reactively from the route signal.
@@ -39,9 +38,7 @@ pub fn AppLayout(route: ReadSignal<AppRoute>) -> impl IntoView {
                             <TaskConsole
                                 session_id=session_id
                                 events=events
-                                progress=progress
                                 set_events=set_events
-                                set_progress=set_progress
                                 set_sessions=set_sessions
                             />
                         }.into_any()

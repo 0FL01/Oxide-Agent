@@ -1,5 +1,5 @@
 use crate::sse::{TaskStreamConfig, spawn_task_stream};
-use leptos::prelude::{ReadSignal, Set, WriteSignal};
+use leptos::prelude::{Callback, ReadSignal, Set, WriteSignal};
 use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, SessionSummary, TaskDetail, TaskSummary,
 };
@@ -7,7 +7,7 @@ use oxide_agent_web_contracts::{
 #[derive(Clone, Copy)]
 pub(super) struct StreamUiSignals {
     pub(super) set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    pub(super) set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    pub(super) update_progress: Callback<(String, Option<ProgressSnapshot>)>,
     pub(super) set_active_task: WriteSignal<Option<TaskDetail>>,
     pub(super) set_tasks: WriteSignal<Vec<TaskSummary>>,
     pub(super) set_error: WriteSignal<Option<String>>,
@@ -31,7 +31,7 @@ pub(super) fn start_task_stream(
         initial_last_seq,
         set_sessions: signals.set_sessions,
         set_events: signals.set_events,
-        set_progress: signals.set_progress,
+        update_progress: signals.update_progress,
         set_active_task: signals.set_active_task,
         set_tasks: signals.set_tasks,
         set_error: signals.set_error,

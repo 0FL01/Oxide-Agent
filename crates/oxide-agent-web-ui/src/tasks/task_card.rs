@@ -50,10 +50,7 @@ pub(super) struct TaskCardSignals {
     pub(super) events: ReadSignal<Vec<PersistedTaskEvent>>,
     pub(super) selected_versions: ReadSignal<HashMap<String, String>>,
     pub(super) set_selected_versions: WriteSignal<HashMap<String, String>>,
-    pub(super) drawer_open: ReadSignal<bool>,
-    pub(super) set_drawer_open: WriteSignal<bool>,
-    pub(super) activity_task_id: ReadSignal<Option<String>>,
-    pub(super) set_activity_task_id: WriteSignal<Option<String>>,
+    pub(super) set_activity: Callback<Option<String>>,
     pub(super) stream_signals: StreamUiSignals,
     pub(super) set_error: WriteSignal<Option<String>>,
 }
@@ -71,10 +68,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         events,
         selected_versions,
         set_selected_versions,
-        drawer_open,
-        set_drawer_open,
-        activity_task_id,
-        set_activity_task_id,
+        set_activity,
         stream_signals,
         set_error,
     } = signals;
@@ -137,7 +131,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_saving,
         set_editing,
         set_selected_versions,
-        set_drawer_open,
+        set_activity,
         stream_signals,
         set_error,
     };
@@ -145,6 +139,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
         set_editing,
         set_draft,
         set_selected_versions,
+        set_activity,
     };
 
     view! {
@@ -168,15 +163,7 @@ pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl I
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
             let task_id_for_activity = task.task_id.clone();
             let open_activity = Callback::new(move |_| {
-                if drawer_open.get_untracked()
-                    && activity_task_id.get_untracked().as_deref() == Some(task_id_for_activity.as_str())
-                {
-                    set_drawer_open.set(false);
-                    set_activity_task_id.set(None);
-                } else {
-                    set_activity_task_id.set(Some(task_id_for_activity.clone()));
-                    set_drawer_open.set(true);
-                }
+                set_activity.run(Some(task_id_for_activity.clone()));
             });
             let previous_task = view.previous_task;
             let next_task = view.next_task;
@@ -352,6 +339,7 @@ struct VersionSwitchSignals {
     set_editing: WriteSignal<bool>,
     set_draft: WriteSignal<String>,
     set_selected_versions: WriteSignal<HashMap<String, String>>,
+    set_activity: Callback<Option<String>>,
 }
 
 #[component]
@@ -451,6 +439,7 @@ fn select_task_version(
         signals.set_selected_versions.update(|items| {
             items.insert(version_group_id.to_string(), task.task_id);
         });
+        signals.set_activity.run(None);
     }
 }
 
@@ -658,7 +647,7 @@ struct TaskInputEditSignals {
     set_saving: WriteSignal<bool>,
     set_editing: WriteSignal<bool>,
     set_selected_versions: WriteSignal<HashMap<String, String>>,
-    set_drawer_open: WriteSignal<bool>,
+    set_activity: Callback<Option<String>>,
     stream_signals: StreamUiSignals,
     set_error: WriteSignal<Option<String>>,
 }
@@ -679,7 +668,7 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
         set_saving,
         set_editing,
         set_selected_versions,
-        set_drawer_open,
+        set_activity,
         stream_signals,
         set_error,
     } = signals;
@@ -708,8 +697,9 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                 {
                     Ok(response) => {
                         let task = response.task;
-                        stream_signals.set_events.set(Vec::new());
-                        stream_signals.set_progress.set(None);
+                        stream_signals
+                            .update_progress
+                            .run((task.task_id.clone(), None));
                         stream_signals
                             .set_active_task
                             .set(Some(summary_to_detail(&session_id, &task)));
@@ -719,7 +709,7 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                         set_selected_versions.update(|items| {
                             items.insert(version_group_id.clone(), task.task_id.clone());
                         });
-                        set_drawer_open.set(false);
+                        set_activity.run(None);
                         start_task_stream(
                             client,
                             session_id.clone(),

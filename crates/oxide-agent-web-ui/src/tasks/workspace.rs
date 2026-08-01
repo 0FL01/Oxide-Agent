@@ -29,8 +29,10 @@ use super::profile::{
     profile_value_to_id,
 };
 use super::state::{
-    browser_now_millis, latest_editable_task_id, latest_task, remove_session_summary,
-    summary_to_detail, upsert_session_summary, upsert_task_summary,
+    ActivityLoadPhase, TaskActivityState, begin_activity_load, browser_now_millis,
+    complete_activity_load, fail_activity_load, latest_editable_task_id, latest_task,
+    remove_session_summary, summary_to_detail, update_activity_progress, upsert_session_summary,
+    upsert_task_summary,
 };
 use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
@@ -40,13 +42,6 @@ const TASK_EVENTS_INITIAL_LIMIT: usize = 100;
 const TASK_EVENTS_OLDER_LIMIT: usize = 500;
 const TASKS_PAGE_LIMIT: usize = 20;
 const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
-
-#[derive(Clone, Copy, Default)]
-struct ActivityPageState {
-    before_seq: u64,
-    has_more: bool,
-    loading: bool,
-}
 
 #[derive(Clone)]
 struct SettingsProfilesCacheEntry {
@@ -124,6 +119,42 @@ async fn load_latest_task_events(
             TASK_EVENTS_INITIAL_LIMIT,
         )
         .await
+}
+
+struct LoadedTaskActivity {
+    events: Vec<PersistedTaskEvent>,
+    progress: Option<ProgressSnapshot>,
+    first_seq: u64,
+    last_seq: u64,
+    has_more: bool,
+}
+
+async fn load_task_activity(
+    client: &ApiClient,
+    session_id: &str,
+    task: &TaskSummary,
+) -> Result<LoadedTaskActivity, ApiClientError> {
+    let task_id = &task.task_id;
+    let (events_result, progress_result) = join!(
+        load_latest_task_events(client, session_id, task_id, task.last_event_seq),
+        client.task_progress(session_id, task_id),
+    );
+    let events = events_result?;
+    let progress = progress_result?;
+    if progress.task_id.as_str() != task_id {
+        return Err(ApiClientError::Browser(format!(
+            "activity progress task mismatch: requested {task_id}, received {}",
+            progress.task_id
+        )));
+    }
+    let last_seq = max_event_seq(&events.events);
+    Ok(LoadedTaskActivity {
+        events: events.events,
+        progress: progress.progress,
+        first_seq: events.first_seq,
+        last_seq,
+        has_more: events.has_more,
+    })
 }
 
 async fn prepare_task_input(
@@ -205,18 +236,14 @@ fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
 pub fn TaskConsole(
     session_id: Memo<Option<String>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
-    progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    set_progress: WriteSignal<Option<ProgressSnapshot>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     view! {
         <Workspace
             session_id=session_id
             events=events
-            progress=progress
             set_events=set_events
-            set_progress=set_progress
             set_sessions=set_sessions
         />
     }
@@ -230,9 +257,7 @@ pub fn TaskConsole(
 fn Workspace(
     session_id: Memo<Option<String>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
-    progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    set_progress: WriteSignal<Option<ProgressSnapshot>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     let auth = use_auth();
@@ -240,7 +265,9 @@ fn Workspace(
     let (tasks_has_more, set_tasks_has_more) = signal(false);
     let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
     let (loading_older_tasks, set_loading_older_tasks) = signal(false);
-    let (activity_pages, set_activity_pages) = signal(HashMap::<String, ActivityPageState>::new());
+    let (activity_states, set_activity_states) =
+        signal(HashMap::<String, TaskActivityState>::new());
+    let (activity_epoch, set_activity_epoch) = signal(0_u64);
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
@@ -261,8 +288,15 @@ fn Workspace(
     let (model_updating, set_model_updating) = signal(false);
     let textarea_ref = NodeRef::<html::Textarea>::new();
 
-    let (drawer_open, set_drawer_open) = signal(false);
     let (activity_task_id, set_activity_task_id) = signal(None::<String>);
+
+    let update_progress = Callback::new(
+        move |(task_id, progress): (String, Option<ProgressSnapshot>)| {
+            set_activity_states.update(|states| {
+                update_activity_progress(states, task_id, progress);
+            });
+        },
+    );
 
     // Lightbox overlay state — session-scoped, provided via context so any
     // child component (e.g. BrowserToolCard) can open a full-screen image.
@@ -328,16 +362,16 @@ fn Workspace(
     let load_all = move |sid: String| {
         set_loading.set(true);
         set_error.set(None);
+        set_activity_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+        let epoch = activity_epoch.get_untracked();
         // Clear stale state before loading (but NOT tasks — pre-populated
         // data from a just-submitted first message should stay visible).
         set_events.set(Vec::new());
-        set_progress.set(None);
         set_active_task.set(None);
         set_streaming_task_id.set(None);
         set_selected_versions.set(HashMap::new());
-        set_activity_pages.set(HashMap::new());
+        set_activity_states.set(HashMap::new());
         set_activity_task_id.set(None);
-        set_drawer_open.set(false);
         set_lightbox_image.set(None);
         spawn_ui(async move {
             let client = auth.client();
@@ -347,7 +381,9 @@ fn Workspace(
             );
 
             // Discard stale results if the user navigated to a different session.
-            if session_id.get_untracked().as_deref() != Some(sid.as_str()) {
+            if activity_epoch.get_untracked() != epoch
+                || session_id.get_untracked().as_deref() != Some(sid.as_str())
+            {
                 return;
             }
 
@@ -375,7 +411,6 @@ fn Workspace(
 
             match tasks_result {
                 Ok(response) => {
-                    set_drawer_open.set(false);
                     set_tasks_has_more.set(response.has_more);
                     set_tasks_next_offset.set(response.next_offset);
                     let latest = latest_task(&response.tasks);
@@ -383,31 +418,35 @@ fn Workspace(
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
                         let task_detail = summary_to_detail(&sid, &task);
-                        let initial_last_seq = match load_latest_task_events(
-                            &client,
-                            &sid,
-                            &task_id,
-                            task.last_event_seq,
-                        )
-                        .await
+                        set_activity_states.update(|states| {
+                            begin_activity_load(states, &task_id);
+                        });
+                        let activity_result = load_task_activity(&client, &sid, &task).await;
+                        if activity_epoch.get_untracked() != epoch
+                            || session_id.get_untracked().as_deref() != Some(sid.as_str())
                         {
-                            Ok(response) => {
-                                let last_seq = max_event_seq(&response.events);
-                                set_activity_pages.update(|items| {
-                                    items.insert(
-                                        task_id.clone(),
-                                        ActivityPageState {
-                                            before_seq: response.first_seq,
-                                            has_more: response.has_more,
-                                            loading: false,
-                                        },
+                            return;
+                        }
+                        let initial_last_seq = match activity_result {
+                            Ok(activity) => {
+                                set_activity_states.update(|states| {
+                                    complete_activity_load(
+                                        states,
+                                        &task_id,
+                                        activity.first_seq,
+                                        activity.has_more,
+                                        activity.progress,
                                     );
                                 });
-                                merge_task_events(set_events, response.events);
-                                last_seq
+                                merge_task_events(set_events, activity.events);
+                                activity.last_seq
                             }
                             Err(error) => {
-                                set_error.set(Some(error.to_string()));
+                                let message = error.to_string();
+                                set_activity_states.update(|states| {
+                                    fail_activity_load(states, &task_id, message.clone());
+                                });
+                                set_error.set(Some(message));
                                 0
                             }
                         };
@@ -420,7 +459,7 @@ fn Workspace(
                                 initial_last_seq,
                                 StreamUiSignals {
                                     set_events,
-                                    set_progress,
+                                    update_progress,
                                     set_active_task,
                                     set_tasks,
                                     set_error,
@@ -435,21 +474,13 @@ fn Workspace(
                             } else {
                                 set_active_task.set(None);
                             }
-                            // Hydrate persisted progress for non-streamed tasks so the
-                            // activity context card (Free/Flow/Prompt/Tools + health)
-                            // renders after reload, not only while streaming.
-                            if let Ok(response) = client.task_progress(&sid, &task_id).await {
-                                set_progress.set(response.progress);
-                            }
                         }
                     } else {
                         // Empty session — clear signals
                         set_events.set(Vec::new());
-                        set_progress.set(None);
                         set_active_task.set(None);
-                        set_activity_pages.set(HashMap::new());
+                        set_activity_states.set(HashMap::new());
                         set_activity_task_id.set(None);
-                        set_drawer_open.set(false);
                         set_lightbox_image.set(None);
                     }
                 }
@@ -467,15 +498,14 @@ fn Workspace(
             load_all(id);
         } else {
             // Welcome mode — clear all chat state
+            set_activity_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
             set_tasks.set(Vec::new());
             set_events.set(Vec::new());
-            set_progress.set(None);
             set_active_task.set(None);
             set_streaming_task_id.set(None);
             set_selected_versions.set(HashMap::new());
-            set_activity_pages.set(HashMap::new());
+            set_activity_states.set(HashMap::new());
             set_activity_task_id.set(None);
-            set_drawer_open.set(false);
             set_lightbox_image.set(None);
             set_loading.set(false);
             // Reset profile to welcome default
@@ -515,51 +545,127 @@ fn Workspace(
         let Some(task_id) = activity_task_id.get_untracked() else {
             return;
         };
-        let page_state = activity_pages
-            .get_untracked()
-            .get(&task_id)
-            .copied()
-            .unwrap_or_default();
-        if page_state.loading || !page_state.has_more {
+        let Some(page_state) = activity_states.get_untracked().get(&task_id).cloned() else {
+            return;
+        };
+        if !matches!(page_state.phase, ActivityLoadPhase::Ready)
+            || page_state.loading_older
+            || !page_state.has_more
+        {
             return;
         }
 
         let before_seq = page_state.before_seq;
         if before_seq == 0 {
-            set_activity_pages.update(|items| {
-                items.entry(task_id).or_default().has_more = false;
+            set_activity_states.update(|states| {
+                if let Some(state) = states.get_mut(&task_id) {
+                    state.has_more = false;
+                }
             });
             return;
         }
 
-        set_activity_pages.update(|items| {
-            items.entry(task_id.clone()).or_default().loading = true;
+        set_activity_states.update(|states| {
+            if let Some(state) = states.get_mut(&task_id) {
+                state.loading_older = true;
+            }
         });
+        let epoch = activity_epoch.get_untracked();
         set_error.set(None);
         spawn_ui(async move {
             let client = auth.client();
-            match client
+            let result = client
                 .task_events_before_page(&sid, &task_id, before_seq, TASK_EVENTS_OLDER_LIMIT)
-                .await
+                .await;
+            if activity_epoch.get_untracked() != epoch
+                || session_id.get_untracked().as_deref() != Some(sid.as_str())
             {
+                return;
+            }
+            match result {
                 Ok(response) => {
-                    set_activity_pages.update(|items| {
-                        items.insert(
-                            task_id.clone(),
-                            ActivityPageState {
-                                before_seq: response.first_seq,
-                                has_more: response.has_more,
-                                loading: false,
-                            },
-                        );
+                    set_activity_states.update(|states| {
+                        if let Some(state) = states.get_mut(&task_id)
+                            && matches!(state.phase, ActivityLoadPhase::Ready)
+                        {
+                            state.before_seq = response.first_seq;
+                            state.has_more = response.has_more;
+                        }
                     });
                     merge_task_events(set_events, response.events);
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
             }
-            set_activity_pages.update(|items| {
-                items.entry(task_id).or_default().loading = false;
+            set_activity_states.update(|states| {
+                if let Some(state) = states.get_mut(&task_id) {
+                    state.loading_older = false;
+                }
             });
+        });
+    });
+
+    let set_activity = Callback::new(move |requested_task_id: Option<String>| {
+        let Some(task_id) = requested_task_id else {
+            set_activity_task_id.set(None);
+            return;
+        };
+        if activity_task_id.get_untracked().as_deref() == Some(task_id.as_str()) {
+            set_activity_task_id.set(None);
+            return;
+        }
+        let Some(sid) = session_id.get_untracked() else {
+            return;
+        };
+        let Some(task) = tasks
+            .get_untracked()
+            .into_iter()
+            .find(|task| task.task_id == task_id)
+        else {
+            return;
+        };
+
+        set_activity_task_id.set(Some(task_id.clone()));
+        let should_load = {
+            let mut should_load = false;
+            set_activity_states.update(|states| {
+                should_load = begin_activity_load(states, &task_id);
+            });
+            should_load
+        };
+        if !should_load {
+            return;
+        }
+
+        let epoch = activity_epoch.get_untracked();
+        spawn_ui(async move {
+            let client = auth.client();
+            let result = load_task_activity(&client, &sid, &task).await;
+            if activity_epoch.get_untracked() != epoch
+                || session_id.get_untracked().as_deref() != Some(sid.as_str())
+            {
+                return;
+            }
+            match result {
+                Ok(activity) => {
+                    set_activity_states.update(|states| {
+                        complete_activity_load(
+                            states,
+                            &task_id,
+                            activity.first_seq,
+                            activity.has_more,
+                            activity.progress,
+                        );
+                    });
+                    merge_task_events(set_events, activity.events);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    set_activity_states.update(|states| {
+                        fail_activity_load(states, &task_id, message.clone());
+                    });
+                    set_error.set(Some(message));
+                }
+            }
         });
     });
 
@@ -773,13 +879,6 @@ fn Workspace(
             }
             // ── Chat flow ─────────────────────────────────────────────
             Some(sid) => {
-                // Clear stale activity for the new task
-                set_events.set(Vec::new());
-                set_progress.set(None);
-                set_activity_pages.set(HashMap::new());
-                set_activity_task_id.set(None);
-                set_drawer_open.set(false);
-                set_lightbox_image.set(None);
                 spawn_ui(async move {
                     let client = auth.client();
                     let (task_input, attachments) =
@@ -828,6 +927,9 @@ fn Workspace(
                             set_input.set(String::new());
                             reset_composer_textarea_height(textarea_ref);
                             set_pending_files.set(Vec::new());
+                            set_activity.run(None);
+                            set_lightbox_image.set(None);
+                            update_progress.run((task.task_id.clone(), None));
                             set_active_task.set(Some(summary_to_detail(&sid, &task)));
                             set_selected_versions.update(|items| {
                                 items.insert(
@@ -842,7 +944,7 @@ fn Workspace(
                                 0,
                                 StreamUiSignals {
                                     set_events,
-                                    set_progress,
+                                    update_progress,
                                     set_active_task,
                                     set_tasks,
                                     set_error,
@@ -959,13 +1061,10 @@ fn Workspace(
                                                     events,
                                                     selected_versions,
                                                     set_selected_versions,
-                                                    drawer_open,
-                                                    set_drawer_open,
-                                                    activity_task_id,
-                                                    set_activity_task_id,
+                                                    set_activity,
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
-                                                        set_progress,
+                                                        update_progress,
                                                         set_active_task,
                                                         set_tasks,
                                                         set_error,
@@ -989,10 +1088,7 @@ fn Workspace(
                         visible_task_ids=Signal::derive(move || {
                             selected_visible_activity_task_ids(&tasks.get(), &selected_versions.get())
                         })
-                        open=drawer_open
-                        set_open=set_drawer_open
-                        activity_task_id=activity_task_id
-                        set_activity_task_id=set_activity_task_id
+                        set_activity=set_activity
                     />
                 </div>
 
@@ -1133,26 +1229,12 @@ fn Workspace(
                 </form>
             </div>
             <ActivityDrawer
-                open=drawer_open
-                set_open=set_drawer_open
                 activity_task_id=activity_task_id
-                set_activity_task_id=set_activity_task_id
+                set_activity=set_activity
+                activity_states=activity_states
                 tasks=tasks
                 active_task=active_task
                 events=events
-                progress=progress
-                has_older_events=Signal::derive(move || {
-                    activity_task_id
-                        .get()
-                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
-                        .is_some_and(|state| state.has_more)
-                })
-                loading_older_events=Signal::derive(move || {
-                    activity_task_id
-                        .get()
-                        .and_then(|task_id| activity_pages.get().get(&task_id).copied())
-                        .is_some_and(|state| state.loading)
-                })
                 load_older_events=load_older_activity
                 now_millis=elapsed_now_millis
             />

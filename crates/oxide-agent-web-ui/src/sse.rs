@@ -19,7 +19,7 @@ pub struct TaskStreamConfig {
     pub initial_last_seq: u64,
     pub set_sessions: WriteSignal<Vec<SessionSummary>>,
     pub set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    pub set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    pub update_progress: Callback<(String, Option<ProgressSnapshot>)>,
     pub set_active_task: WriteSignal<Option<TaskDetail>>,
     pub set_tasks: WriteSignal<Vec<TaskSummary>>,
     pub set_error: WriteSignal<Option<String>>,
@@ -275,7 +275,9 @@ fn handle_progress_message(
     match serde_json::from_str::<TaskSseProgressMessage>(&payload) {
         Ok(message) => {
             if stream_is_current(config) && message.task_id == config.task_id {
-                config.set_progress.set(Some(message.progress));
+                config
+                    .update_progress
+                    .run((message.task_id, Some(message.progress)));
             }
         }
         Err(error) => {
@@ -438,7 +440,9 @@ async fn refresh_progress(config: &TaskStreamConfig) -> bool {
         Ok(response) => {
             let terminal = response.status.is_terminal();
             if stream_is_current(config) {
-                config.set_progress.set(response.progress);
+                config
+                    .update_progress
+                    .run((response.task_id, response.progress));
             }
             terminal
         }
@@ -461,7 +465,9 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<(TaskStatus, u
             let status = summary.status;
             let last_event_seq = detail.last_event_seq;
             if stream_is_current(config) {
-                config.set_progress.set(detail.last_progress.clone());
+                config
+                    .update_progress
+                    .run((detail.task_id.clone(), detail.last_progress.clone()));
                 if detail.status.is_terminal() {
                     config.set_active_task.set(None);
                 } else {

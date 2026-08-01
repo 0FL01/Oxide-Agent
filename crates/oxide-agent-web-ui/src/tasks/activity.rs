@@ -3,12 +3,13 @@ use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
 use super::state::{
-    ActivityTiming, activity_elapsed_seconds, format_duration, latest_pinned_todos,
-    should_render_global_activity_chip,
+    ActivityLoadPhase, ActivityTiming, TaskActivityState, activity_elapsed_seconds,
+    format_duration, latest_pinned_todos, should_render_global_activity_chip,
 };
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
@@ -21,10 +22,7 @@ pub(super) fn ActivityStatusChip(
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
     visible_task_ids: Signal<Vec<String>>,
-    open: ReadSignal<bool>,
-    set_open: WriteSignal<bool>,
-    activity_task_id: ReadSignal<Option<String>>,
-    set_activity_task_id: WriteSignal<Option<String>>,
+    set_activity: Callback<Option<String>>,
 ) -> impl IntoView {
     view! {
         {move || {
@@ -48,7 +46,7 @@ pub(super) fn ActivityStatusChip(
             };
             view! {
                 <div class="status-wrap">
-                    <button class="status-chip" type="button" on:click=move |_| toggle_drawer_for_task(open, set_open, activity_task_id, set_activity_task_id, task_id.clone())>
+                    <button class="status-chip" type="button" on:click=move |_| set_activity.run(task_id.clone())>
                         <span>{label}</span>
                         <span class="chevron">"›"</span>
                     </button>
@@ -71,41 +69,28 @@ pub(super) fn ThinkingButton(
     }
 }
 
-fn toggle_drawer_for_task(
-    open: ReadSignal<bool>,
-    set_open: WriteSignal<bool>,
-    activity_task_id: ReadSignal<Option<String>>,
-    set_activity_task_id: WriteSignal<Option<String>>,
-    task_id: Option<String>,
-) {
-    if open.get() && activity_task_id.get() == task_id {
-        set_open.set(false);
-        set_activity_task_id.set(None);
-    } else {
-        set_activity_task_id.set(task_id);
-        set_open.set(true);
-    }
-}
-
 #[component]
 pub(super) fn ActivityDrawer(
-    open: ReadSignal<bool>,
-    set_open: WriteSignal<bool>,
     activity_task_id: ReadSignal<Option<String>>,
-    set_activity_task_id: WriteSignal<Option<String>>,
+    set_activity: Callback<Option<String>>,
+    activity_states: ReadSignal<HashMap<String, TaskActivityState>>,
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
-    progress: ReadSignal<Option<ProgressSnapshot>>,
-    has_older_events: Signal<bool>,
-    loading_older_events: Signal<bool>,
     load_older_events: Callback<leptos::ev::MouseEvent>,
     now_millis: ReadSignal<i64>,
 ) -> impl IntoView {
     let (show_sub_agent_events, set_show_sub_agent_events) = signal(true);
+    let selected_state = Signal::derive(move || {
+        activity_task_id
+            .get()
+            .and_then(|task_id| activity_states.get().get(&task_id).cloned())
+    });
+    let selected_progress =
+        Signal::derive(move || selected_state.get().and_then(|state| state.progress));
 
     view! {
-        <aside class=move || if open.get() && activity_task_id.get().is_some() { "activity-drawer open" } else { "activity-drawer" }>
+        <aside class=move || if activity_task_id.get().is_some() { "activity-drawer open" } else { "activity-drawer" }>
             <header class="activity-header">
                 <div class="activity-title-row">
                     <span class="activity-title">"Activity"</span>
@@ -122,23 +107,22 @@ pub(super) fn ActivityDrawer(
                     >
                         {move || if show_sub_agent_events.get() { "Sub-agents" } else { "Root only" }}
                     </button>
-                    <button class="activity-close" type="button" on:click=move |_| {
-                        set_open.set(false);
-                        set_activity_task_id.set(None);
-                    }>"×"</button>
+                    <button class="activity-close" type="button" on:click=move |_| set_activity.run(None)>"×"</button>
                 </div>
             </header>
-            <ContextCard progress=progress />
+            <ContextCard progress=selected_progress />
             <div class="activity-timeline">
-                {move || has_older_events.get().then(|| view! {
+                {move || selected_state.get().is_some_and(|state| {
+                    matches!(state.phase, ActivityLoadPhase::Ready) && state.has_more
+                }).then(|| view! {
                     <div class="activity-load-older">
                         <button
                             type="button"
                             class="secondary"
-                            disabled=loading_older_events
+                            disabled=Signal::derive(move || selected_state.get().is_some_and(|state| state.loading_older))
                             on:click=move |ev| load_older_events.run(ev)
                         >
-                            {move || if loading_older_events.get() { "Loading older activity..." } else { "Load older activity" }}
+                            {move || if selected_state.get().is_some_and(|state| state.loading_older) { "Loading older activity..." } else { "Load older activity" }}
                         </button>
                     </div>
                 })}
@@ -146,8 +130,20 @@ pub(super) fn ActivityDrawer(
                     let Some(task_id) = activity_task_id.get() else {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
                     };
+                    let Some(state) = selected_state.get() else {
+                        return view! { <div class="activity-empty">"Loading activity..."</div> }.into_any();
+                    };
+                    match state.phase {
+                        ActivityLoadPhase::Loading => {
+                            return view! { <div class="activity-empty">"Loading activity..."</div> }.into_any();
+                        }
+                        ActivityLoadPhase::Failed(error) => {
+                            return view! { <div class="activity-empty">{format!("Failed to load activity: {error}")}</div> }.into_any();
+                        }
+                        ActivityLoadPhase::Ready => {}
+                    }
                     let include_sub_agents = show_sub_agent_events.get();
-                    let task_events: Vec<PersistedTaskEvent> = events
+                    let mut task_events: Vec<PersistedTaskEvent> = events
                         .get()
                         .into_iter()
                         .filter(|event| event.task_id == task_id)
@@ -155,6 +151,7 @@ pub(super) fn ActivityDrawer(
                         .filter(|event| is_chat_visible_event(&event.kind))
                         .filter(is_useful_event)
                         .collect();
+                    task_events.sort_by_key(|event| event.seq);
                     let task_is_terminal = activity_task_status(&task_id, active_task, tasks)
                         .is_some_and(|status| status.is_terminal());
                     let todos = latest_pinned_todos(&task_events);
@@ -456,7 +453,7 @@ fn sub_agent_label(event: &PersistedTaskEvent) -> String {
 }
 
 #[component]
-fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView {
+fn ContextCard(progress: Signal<Option<ProgressSnapshot>>) -> impl IntoView {
     let snapshot_memo = Memo::new(move |_| progress.get().and_then(|p| p.latest_token_snapshot));
 
     view! {
