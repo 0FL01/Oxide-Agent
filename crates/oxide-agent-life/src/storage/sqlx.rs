@@ -915,39 +915,6 @@ impl LifeStorageRepository for SqlxLifeStorage {
         Ok(())
     }
 
-    async fn save_life_memory_checkpoint(
-        &self,
-        principal_user_id: PrincipalUserId,
-        context_key: &str,
-        flow_id: &str,
-        memory: &serde_json::Value,
-        schema_version: i32,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<()> {
-        query::<Postgres>(
-            r#"
-            INSERT INTO agent_memory_snapshots (
-                user_id, context_key, flow_id, memory, schema_version, created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $6)
-            ON CONFLICT (user_id, context_key, flow_id) DO UPDATE
-            SET memory = EXCLUDED.memory,
-                schema_version = EXCLUDED.schema_version,
-                updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(principal_user_id.get())
-        .bind(context_key)
-        .bind(flow_id)
-        .bind(memory)
-        .bind(schema_version)
-        .bind(now.get())
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
-    }
-
     async fn claim_input_and_start_run(
         &self,
         principal_user_id: PrincipalUserId,
@@ -2400,41 +2367,6 @@ mod tests {
             run_status.get::<i64, _>("last_checkpoint_at"),
             now.get() + 5
         );
-
-        must(
-            storage
-                .save_life_memory_checkpoint(
-                    principal_user_id,
-                    crate::worker::LIFE_CONTEXT_KEY,
-                    crate::worker::LIFE_FLOW_ID,
-                    &json!({"checkpoint": "final"}),
-                    1,
-                    TimestampMillis::new(now.get() + 5),
-                )
-                .await,
-            "save final checkpoint",
-        );
-        let checkpoint = must(
-            query::<Postgres>(
-                r#"
-                SELECT memory, schema_version, updated_at
-                FROM agent_memory_snapshots
-                WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
-                "#,
-            )
-            .bind(principal_user_id.get())
-            .bind(crate::worker::LIFE_CONTEXT_KEY)
-            .bind(crate::worker::LIFE_FLOW_ID)
-            .fetch_one(storage.pool())
-            .await,
-            "load final checkpoint",
-        );
-        assert_eq!(
-            checkpoint.get::<serde_json::Value, _>("memory"),
-            json!({"checkpoint": "final"})
-        );
-        assert_eq!(checkpoint.get::<i32, _>("schema_version"), 1);
-        assert_eq!(checkpoint.get::<i64, _>("updated_at"), now.get() + 5);
     }
 
     #[tokio::test]

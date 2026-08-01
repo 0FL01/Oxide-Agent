@@ -2,11 +2,11 @@
 //!
 //! The worker owns run state. Transports and the gateway submit only inputs; this
 //! module claims queued input from Postgres, starts a persisted run, exposes the
-//! stable life hot-memory scope, and records transport-neutral run events.
+//! stable life execution, and records transport-neutral run events.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use thiserror::Error;
 
 use crate::domain::{
@@ -38,36 +38,11 @@ pub struct ProcessPrincipalInput {
     pub input_id: InputId,
 }
 
-/// Stable hot-memory scope for life-mode final checkpoints.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StableLifeMemoryScope {
-    /// User/principal id used by `agent_memory_snapshots.user_id`.
-    pub user_id: i64,
-    /// Stable life context key.
-    pub context_key: String,
-    /// Stable life flow id.
-    pub flow_id: String,
-}
-
-impl StableLifeMemoryScope {
-    /// Builds the PRD-mandated stable life scope.
-    #[must_use]
-    pub fn for_principal(principal_user_id: PrincipalUserId) -> Self {
-        Self {
-            user_id: principal_user_id.get(),
-            context_key: LIFE_CONTEXT_KEY.to_owned(),
-            flow_id: LIFE_FLOW_ID.to_owned(),
-        }
-    }
-}
-
 /// Claimed run context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimedLifeRun {
     /// Run id.
     pub run_id: RunId,
-    /// Stable hot-memory checkpoint scope.
-    pub stable_memory_scope: StableLifeMemoryScope,
     /// Claimed input that started the run.
     pub input: LifeInput,
     /// User turn content loaded from `life_turns` at claim time.
@@ -78,7 +53,6 @@ impl From<ClaimedLifeInputRun> for ClaimedLifeRun {
     fn from(value: ClaimedLifeInputRun) -> Self {
         Self {
             run_id: value.run.run_id,
-            stable_memory_scope: StableLifeMemoryScope::for_principal(value.run.principal_user_id),
             input: value.input,
             user_content: value.user_content,
         }
@@ -99,10 +73,6 @@ pub struct LifeWorkerRunContext {
 pub struct LifeRunExecutionOutcome {
     /// Timestamp at which the final checkpoint was durably persisted.
     pub final_checkpoint_at: TimestampMillis,
-    /// Opaque agent memory snapshot to persist under the stable life scope.
-    pub final_memory: Value,
-    /// Snapshot schema version.
-    pub final_memory_schema_version: i32,
 }
 
 /// Worker result for one command.
@@ -114,8 +84,6 @@ pub enum LifeWorkerProcessResult {
     Completed {
         /// Completed run id.
         run_id: RunId,
-        /// Stable hot-memory checkpoint scope.
-        stable_memory_scope: StableLifeMemoryScope,
     },
     /// A run was cancelled by an owner request.
     Cancelled {
@@ -233,15 +201,6 @@ pub trait LifeWorkerStore: Send + Sync {
         now: TimestampMillis,
     ) -> LifeWorkerResult<bool>;
 
-    /// Synchronously persists the stable life hot-memory checkpoint.
-    async fn save_life_memory_checkpoint(
-        &self,
-        stable_scope: &StableLifeMemoryScope,
-        memory: &Value,
-        schema_version: i32,
-        now: TimestampMillis,
-    ) -> LifeWorkerResult<()>;
-
     /// Appends a run event.
     async fn append_event(&self, event: &LifeEvent) -> LifeWorkerResult<()>;
 
@@ -335,28 +294,6 @@ where
         LifeStorageRepository::heartbeat_run_lease(self, run_id, worker_id, now)
             .await
             .map_err(Into::into)
-    }
-
-    async fn save_life_memory_checkpoint(
-        &self,
-        stable_scope: &StableLifeMemoryScope,
-        memory: &Value,
-        schema_version: i32,
-        now: TimestampMillis,
-    ) -> LifeWorkerResult<()> {
-        let principal_user_id =
-            PrincipalUserId::new(stable_scope.user_id).map_err(LifeStorageError::Domain)?;
-        LifeStorageRepository::save_life_memory_checkpoint(
-            self,
-            principal_user_id,
-            &stable_scope.context_key,
-            &stable_scope.flow_id,
-            memory,
-            schema_version,
-            now,
-        )
-        .await
-        .map_err(Into::into)
     }
 
     async fn append_event(&self, event: &LifeEvent) -> LifeWorkerResult<()> {
@@ -568,11 +505,6 @@ where
             match execution_result {
                 Ok(outcome) => {
                     let finished_at = self.clock.now()?;
-                    // The adapter is responsible for durable memory checkpoint
-                    // persistence (via StorageFlowCheckpoint + forced
-                    // persist_memory_checkpoint). The worker does NOT call
-                    // save_life_memory_checkpoint — that would be a double-write
-                    // bypassing the proper AgentMemory serialization path.
                     self.store
                         .mark_input_consumed(claimed_run.input.input_id, finished_at)
                         .await?;
@@ -590,7 +522,6 @@ where
 
                     let completed = LifeWorkerProcessResult::Completed {
                         run_id: claimed_run.run_id,
-                        stable_memory_scope: claimed_run.stable_memory_scope,
                     };
                     let next_run_id = RunId::new_v4();
                     let Some(next_claimed) = self
@@ -670,10 +601,8 @@ mod tests {
     use super::*;
     use crate::domain::{LifeInputStatus, LifeRun, TurnId};
 
-    type RecordedCheckpoint = (StableLifeMemoryScope, Value, i32, TimestampMillis);
-
     #[tokio::test]
-    async fn worker_claims_run_and_uses_stable_life_scope() {
+    async fn worker_claims_and_completes_run() {
         let principal = PrincipalUserId::new(100500).expect("positive principal");
         let input_id = InputId::new_v4();
         let store = FakeWorkerStore::with_claim(principal, input_id);
@@ -698,21 +627,11 @@ mod tests {
             .await
             .expect("worker should process input");
 
-        let LifeWorkerProcessResult::Completed {
-            stable_memory_scope,
-            ..
-        } = result
-        else {
+        let LifeWorkerProcessResult::Completed { .. } = result else {
             panic!("expected completed result");
         };
-        assert_eq!(stable_memory_scope.user_id, principal.get());
-        assert_eq!(stable_memory_scope.context_key, LIFE_CONTEXT_KEY);
-        assert_eq!(stable_memory_scope.flow_id, LIFE_FLOW_ID);
         assert_eq!(store.completed_runs.lock().expect("lock").len(), 1);
         assert_eq!(*store.consumed_inputs.lock().expect("lock"), vec![input_id]);
-        // Worker no longer saves checkpoints — the adapter handles durable
-        // memory persistence via StorageFlowCheckpoint.
-        assert!(store.checkpoints.lock().expect("lock").is_empty());
         assert_eq!(store.event_kinds(), vec!["run_started", "run_completed"]);
 
         let context = seen_context
@@ -720,10 +639,6 @@ mod tests {
             .expect("lock")
             .clone()
             .expect("executor should see context");
-        assert_eq!(
-            context.run.stable_memory_scope.context_key,
-            LIFE_CONTEXT_KEY
-        );
         assert_eq!(context.run.user_content, "test user content");
     }
 
@@ -1030,7 +945,6 @@ mod tests {
         failed_runs: Arc<Mutex<Vec<RunId>>>,
         cancelled_runs: Arc<Mutex<Vec<RunId>>>,
         consumed_inputs: Arc<Mutex<Vec<InputId>>>,
-        checkpoints: Arc<Mutex<Vec<RecordedCheckpoint>>>,
         queued_claims: Arc<Mutex<Vec<ClaimedLifeInputRun>>>,
         claim_next_worker_ids: Arc<Mutex<Vec<String>>>,
     }
@@ -1081,7 +995,6 @@ mod tests {
                 failed_runs: Arc::new(Mutex::new(Vec::new())),
                 cancelled_runs: Arc::new(Mutex::new(Vec::new())),
                 consumed_inputs: Arc::new(Mutex::new(Vec::new())),
-                checkpoints: Arc::new(Mutex::new(Vec::new())),
                 queued_claims: Arc::new(Mutex::new(Vec::new())),
                 claim_next_worker_ids: Arc::new(Mutex::new(Vec::new())),
             }
@@ -1142,22 +1055,6 @@ mod tests {
             Ok(true)
         }
 
-        async fn save_life_memory_checkpoint(
-            &self,
-            stable_scope: &StableLifeMemoryScope,
-            memory: &Value,
-            schema_version: i32,
-            now: TimestampMillis,
-        ) -> LifeWorkerResult<()> {
-            self.checkpoints.lock().expect("lock").push((
-                stable_scope.clone(),
-                memory.clone(),
-                schema_version,
-                now,
-            ));
-            Ok(())
-        }
-
         async fn append_event(&self, event: &LifeEvent) -> LifeWorkerResult<()> {
             self.events.lock().expect("lock").push(event.clone());
             Ok(())
@@ -1210,8 +1107,6 @@ mod tests {
             Self {
                 outcome: Ok(LifeRunExecutionOutcome {
                     final_checkpoint_at,
-                    final_memory: json!({"checkpoint": "final"}),
-                    final_memory_schema_version: 1,
                 }),
                 seen_context: Arc::new(Mutex::new(None)),
                 seen_contexts: Arc::new(Mutex::new(Vec::new())),

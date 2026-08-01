@@ -416,10 +416,6 @@ impl LifeRunExecutor for LifeAgentExecutor {
         self.persist_assistant_turn(principal_user_id, run_id, &assistant_content, now)
             .await?;
 
-        // 10. Serialize the final memory snapshot for the outcome (informational).
-        let final_memory =
-            serde_json::to_value(&executor.session().memory).unwrap_or(serde_json::json!({}));
-
         info!(
             user_id,
             run_id = %run_id,
@@ -430,8 +426,6 @@ impl LifeRunExecutor for LifeAgentExecutor {
 
         Ok(LifeRunExecutionOutcome {
             final_checkpoint_at,
-            final_memory,
-            final_memory_schema_version: 1,
         })
     }
 }

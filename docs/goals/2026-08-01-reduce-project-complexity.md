@@ -1,0 +1,142 @@
+# Goal: Reduce duplicate owners and supported variants
+
+Status: active
+Source: User-approved simplification plan and audit, 2026-08-01
+Last updated: 2026-08-01
+
+## Objective
+
+Remove the approved dead paths, duplicate runtime owners, aggregate context writer, Telegram ingress duplication, and obsolete deployment profiles; finish with one supported root-Compose `profile-full` deployment running on the current host.
+
+## Execution Directive
+
+Complete the frozen Required Outcomes using the listed Change Envelope and Primary Evidence. Work on the smallest unresolved outcome. Do not add requirements from reviews, tests, tools, speculative risks, or optional source text. Finish when every required outcome is resolved and affected constraints remain satisfied.
+
+## Frozen Contract
+
+### Required Outcomes
+
+- R1: Life has one typed memory-checkpoint path and only bounded transcript/event read APIs.
+  - Source: Approved M1.1 plan.
+  - Acceptance: The raw Life checkpoint contract, unused outcome memory payload, `StableLifeMemoryScope`, and unpaged `list_turns`/`list_events` are absent; typed flow checkpointing, checkpoint timestamps, and privacy wipe remain.
+  - Primary evidence: Focused `oxide-agent-life` and Web Life tests.
+  - Status: in_progress
+  - Evidence: Raw checkpoint contract and outcome payload removed; 30 Life tests and 7 focused Web Life executor tests pass.
+- R2: Web task delivery has one active event representation.
+  - Source: Approved M1.2 plan.
+  - Acceptance: The lightweight `TaskEventEntry` buffer and unused `WebAgentTransport` are absent; persisted replay, broadcast, historical event deserialization, status/progress caches, and task timeline remain.
+  - Primary evidence: Web transport unit and SSE replay/live-delivery tests.
+  - Status: pending
+  - Evidence:
+- R3: Compaction has no dead scope/budget protocol or duplicate selection owner.
+  - Source: Approved M1.3 plan.
+  - Acceptance: `CompactionScope` and unread request/trigger state are absent; selection/block resolution is owned by `CompactionEngine`; candidate apply, final apply, graph validation, tool-batch atomicity, and no-op comparison remain.
+  - Primary evidence: Focused core compaction tests.
+  - Status: pending
+  - Evidence:
+- R4: Internal provider/capability compatibility shells are removed without changing live protocols.
+  - Source: Approved M1.4 plan.
+  - Acceptance: The unused Anthropic module re-export, OpenAI Base profile alias, unused `ModuleRegistry`, and proven duplicate OpenRouter helpers are absent; unique assertions live with canonical implementations and Anthropic Messages protocol identifiers remain.
+  - Primary evidence: Focused provider tests and module-registry check.
+  - Status: pending
+  - Evidence:
+- R5: Telegram mechanical paths have one session ID, cancellation result, view owner, and progress transport.
+  - Source: Approved M1.5 plan.
+  - Acceptance: `AgentModeSessionKeys`, impossible todo-clear outcome, sole-implementation `AgentView` trait, and duplicate progress transport implementation are absent; session derivation, silent file delivery, loop notifications, thread targeting, and keyboard cleanup remain.
+  - Primary evidence: Telegram library and topic/thread tests.
+  - Status: pending
+  - Evidence:
+- R6: Application code no longer maintains the unread `agent_flows` registry.
+  - Source: Approved M1.6 plan.
+  - Acceptance: Flow record APIs, reads, writes, mocks, and duplicate state are absent; active flow pointers and memory snapshots remain; the existing table and cleanup-only deletes remain for data retention and rollback.
+  - Primary evidence: Core storage and Telegram flow lifecycle tests plus source search.
+  - Status: pending
+  - Evidence:
+- R7: Web, session runtime, and tool execution each have one internal owner for duplicated state.
+  - Source: Approved M2 plan.
+  - Acceptance: Web session DTO/hash/checkpoint/upload mechanics have one owner each; `SessionRegistry` uses one `SessionEntry` map; `ToolCatalog` is the sole executor/spec registry and preserves lazy/sub-agent behavior.
+  - Primary evidence: Focused Web, runtime, tool runtime, delegation, and history-correlation tests.
+  - Status: pending
+  - Evidence:
+- R8: Context persistence uses row- and field-scoped operations instead of whole-user replacement.
+  - Source: Approved M3 plan.
+  - Acceptance: Telegram and manager production paths no longer call aggregate `update_user_config`; atomic flow ensure, DM mirror, context lifecycle, and model selection preserve existing rows without a schema change.
+  - Primary evidence: Real-Postgres concurrent context, flow, DM mirror, manager lifecycle, and model-selection tests.
+  - Status: pending
+  - Evidence:
+- R9: Telegram has one non-command ingress owner.
+  - Source: Approved M4 plan.
+  - Acceptance: Topic route resolves once; first accepted text/media input is processed once; commands, controls, confirmations, DM fallback, mention gating, thread isolation, preprocessing, and one activity touch remain; the handlers-to-agent-handlers cycle is absent.
+  - Primary evidence: Telegram ingress, confirmation, and topic/thread integration tests.
+  - Status: pending
+  - Evidence:
+- R10: The repository supports one deployment profile and production Compose entrypoint.
+  - Source: User confirmation that deployment will use one profile.
+  - Acceptance: Root `docker-compose.yml` and `profile-full` are the supported deployment path; obsolete production split Compose files, slim Cargo profiles, reference profile TOMLs, and their CI/xtask/docs branches are absent; module registry and atomic module features remain.
+  - Primary evidence: Module-registry check, full-profile workspace gates, root Compose validation, and release workflow inspection.
+  - Status: pending
+  - Evidence:
+- R11: The completed simplification is committed, pushed, built, and redeployed on the current host.
+  - Source: Explicit user instruction.
+  - Acceptance: Atomic implementation commits are on `origin/main`; release images build; the unified stack runs with migrations current and required services healthy.
+  - Primary evidence: Clean synchronized Git state, successful Docker build/Compose rollout, migration query, Web health, container state, and startup logs.
+  - Status: pending
+  - Evidence:
+
+### Constraints
+
+- C1: Do not edit `.env`, `.env.example`, environment storage, or environment generation behavior.
+- C2: Existing PostgreSQL data must be preserved. Do not edit applied migrations, drop `agent_flows`, or add a destructive migration.
+- C3: Keep the implementation solo-project simple: no versioned release framework, immutable-tag framework, compatibility layer, new dependency, service, queue, cache, or generic repository abstraction.
+- C4: Preserve current external HTTP/SSE/Telegram behavior and persisted historical deserialization unless an R-item explicitly changes an internal source surface.
+- C5: Use one coherent commit per independently verifiable batch; run proportional checks before each commit and the full required gates once before final deployment.
+
+### Non-goals
+
+- Persistent SSH MCP session redesign or cancellation framework changes.
+- Crawler tool-name contraction.
+- Scalar/vector model configuration contraction or MiniMax identity migration.
+- Reminder scheduler, Browser Live retention, Docker daemon relocation, or unrelated cleanup.
+- Removing local-service support unless it is a direct orphan of the approved single deployment path.
+- Supporting unknown external Rust consumers of internal `0.1` workspace crates through compatibility wrappers.
+
+## Change Envelope
+
+- Target: Approved M1-M5 symbols and their direct consumers/tests/docs; deployment composition/profile declarations and generated artifacts owned by the module registry.
+- Expected paths, symbols, and direct consumers: `oxide-agent-life`; core compaction/providers/storage/tool runtime; Web event/session/Life paths and contracts/UI direct consumers; Telegram session/view/progress/ingress paths; runtime session registry; Cargo/profile/Compose/CI/xtask/current docs.
+- Allowed artifacts: Rust source/tests, existing manifests, Compose/workflow/docs, checked-in generated profile artifacts, and this goal document.
+- Forbidden artifacts: `.env*` changes; new dependencies/services/background mechanisms; destructive or compatibility migrations; old/new permanent runtime paths; speculative hardening.
+- User or harness budget: optimize for deletion of owners, branches, state, and supported variants rather than line-golf; stop each batch once its stated owner is singular and evidence passes.
+
+## Current Checkpoint
+
+- Closes: R1.
+- Smallest next action: Delete the uncalled unpaged Life `list_turns` and `list_events` methods, then close R1 with focused Life validation.
+- Expected evidence: Focused Life tests pass and source search finds only bounded paged/ascending read APIs.
+- Stop or replan if: A production consumer of the raw checkpoint path or unpaged reads is found.
+
+## Current State
+
+- Resolved: R1 raw checkpoint owner removed; typed flow checkpoint remains.
+- Last relevant evidence: `cargo test -p oxide-agent-life --lib` passed 30 tests; focused Web Life executor tests passed 7 tests.
+- Blocker: None.
+- Next: R1 unpaged read deletion.
+
+## Material Decisions
+
+- 2026-08-01: Use root `docker-compose.yml` and `profile-full` as the sole deployment path.
+- 2026-08-01: Do not touch environment files or their storage/generation behavior.
+- 2026-08-01: Keep the program deletion-dominant; defer SSH, crawler, model-config, reminder, browser, and Docker-daemon redesigns.
+- 2026-08-01: Preserve existing database state; leave obsolete tables inert or cleanup-only rather than dropping them.
+
+## Checkpoint History
+
+- 2026-08-01: Frozen from the user-approved audited plan; implementation not yet started.
+- 2026-08-01: R1 checkpoint 1 removed the raw Life checkpoint contract and unused outcome memory payload (192 net LOC); focused Life and Web Life tests passed. Next: remove unpaged reads.
+
+## Completion
+
+- Resolved outcomes:
+- Commands and artifacts:
+- Constraint and diff-scope check:
+- Final status:

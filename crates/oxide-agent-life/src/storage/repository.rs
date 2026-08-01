@@ -148,17 +148,6 @@ pub trait LifeStorageRepository: Send + Sync {
     /// Enqueues a canonical user input for future worker processing.
     async fn enqueue_input(&self, input: &LifeInput) -> LifeStorageResult<()>;
 
-    /// Synchronously persists the stable life hot-memory checkpoint.
-    async fn save_life_memory_checkpoint(
-        &self,
-        principal_user_id: PrincipalUserId,
-        context_key: &str,
-        flow_id: &str,
-        memory: &Value,
-        schema_version: i32,
-        now: TimestampMillis,
-    ) -> LifeStorageResult<()>;
-
     /// Atomically claims a queued input and starts a running life run.
     async fn claim_input_and_start_run(
         &self,
