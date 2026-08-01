@@ -1,6 +1,6 @@
 # Goal: Reduce duplicate owners and supported variants
 
-Status: active
+Status: complete
 Source: User-approved simplification plan and audit, 2026-08-01
 Last updated: 2026-08-01
 
@@ -80,8 +80,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Explicit user instruction.
   - Acceptance: Atomic implementation commits are on `origin/main`; release images build; the unified stack runs with migrations current and required services healthy.
   - Primary evidence: Clean synchronized Git state, successful Docker build/Compose rollout, migration query, Web health, container state, and startup logs.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: Implementation commits are synchronized with `origin/main`; full workspace tests, Clippy, fmt, module-registry, wasm, and Compose checks pass. Images `oxide-agent@fe0c48f83eca` and `oxide-agent-web@79d2d301eacc` built and run in root Compose; Web health is OK, sandboxd/browser-sidecar are healthy, migration `14|true` is current, Telegram/Web workers started, and recent service logs contain no errors.
 
 ### Constraints
 
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R11.
-- Smallest next action: Run the final full-profile validation gates, commit the Compose contraction, push all atomic commits, then build and redeploy root Compose on the current host without changing environment or persistent data.
-- Expected evidence: Full tests/clippy/fmt/registry/Compose checks pass; Git is synchronized; release images build; migration 14 remains current; Web and required containers are healthy with clean startup logs.
-- Stop or replan if: A failing required gate is caused by the simplification, deployment would require an environment change, or current database state differs from the already migrated production contract.
+- Closes: None; the goal is complete.
+- Smallest next action: Stop.
+- Expected evidence: All R-items are verified below.
+- Stop or replan if: Not applicable.
 
 ## Current State
 
-- Resolved: R1-R10.
-- Last relevant evidence: Root Compose validates; only root `docker-compose.yml` and `profile-full` remain in current deployment/build/docs paths; the release workflow uses root Compose without changing environment generation.
+- Resolved: R1-R11.
+- Last relevant evidence: Full validation and current-host root-Compose rollout passed; Git is synchronized, migration 14 is current, Web health is OK, and required containers are running.
 - Blocker: None.
-- Next: R11 final validation, push, build, and current-host redeploy.
+- Next: None.
 
 ## Material Decisions
 
@@ -157,10 +157,11 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R9 replaced the `Start` modality fan-out and handlers cycle with one default Agent Mode ingress, one topic-route resolution, and private-chat-only dialogue confirmations (749 net LOC); full Telegram package tests and bot composition check pass. Next: R10.
 - 2026-08-01: R10 checkpoint 1 removed both slim Cargo profiles, per-module profile membership, generated profile TOMLs, obsolete snapshots, and profile-specific CI/test branches; registry check, full workspace check, registry snapshot, and 168 Web tests pass. Next: root Compose contraction.
 - 2026-08-01: R10 completed by making root Compose the sole current deployment entrypoint and deleting four split/overlay files plus orphaned SearXNG config (616 net LOC); root Compose validation and current-reference inspection pass. Next: R11.
+- 2026-08-01: R11 completed after two stale test-only assertions were corrected: full workspace tests, Clippy, fmt, module-registry, wasm, and Compose checks passed; commits were pushed; release images built and root Compose redeployed with migration 14 current and healthy services.
 
 ## Completion
 
-- Resolved outcomes:
-- Commands and artifacts:
-- Constraint and diff-scope check:
-- Final status:
+- Resolved outcomes: R1-R11 verified.
+- Commands and artifacts: Full-profile workspace tests; all-target/all-feature Clippy; fmt; module-registry check; Web UI wasm check; root Compose validation/build/rollout; migration, health, container, image, and log checks.
+- Constraint and diff-scope check: No `.env*`, schema, applied migration, new dependency/service, queue, cache, or compatibility path was added; existing database data and historical contracts remain.
+- Final status: Complete on the current host.
