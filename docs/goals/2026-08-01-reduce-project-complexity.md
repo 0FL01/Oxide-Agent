@@ -38,8 +38,8 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M1.4 plan.
   - Acceptance: The unused Anthropic module re-export, OpenAI Base profile alias, unused `ModuleRegistry`, and proven duplicate OpenRouter helpers are absent; unique assertions live with canonical implementations and Anthropic Messages protocol identifiers remain.
   - Primary evidence: Focused provider tests and module-registry check.
-  - Status: pending
-  - Evidence:
+  - Status: in_progress
+  - Evidence: Unused Anthropic compatibility module and capability `ModuleRegistry` removed; modular registry snapshot passes and live Anthropic protocol identifiers remain.
 - R5: Telegram mechanical paths have one session ID, cancellation result, view owner, and progress transport.
   - Source: Approved M1.5 plan.
   - Acceptance: `AgentModeSessionKeys`, impossible todo-clear outcome, sole-implementation `AgentView` trait, and duplicate progress transport implementation are absent; session derivation, silent file delivery, loop notifications, thread targeting, and keyboard cleanup remain.
@@ -111,16 +111,16 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 ## Current Checkpoint
 
 - Closes: R4.
-- Smallest next action: Remove the unused Anthropic compatibility module and capability `ModuleRegistry`, then validate canonical imports and registry behavior.
-- Expected evidence: Focused provider/module-registry tests pass and only live Anthropic protocol identifiers remain.
-- Stop or replan if: Either wrapper has a production consumer or removing it changes capability/provider output.
+- Smallest next action: Move unique OpenAI Base profile assertions to the canonical Chat Completions profile tests, switch imports, and remove the alias module.
+- Expected evidence: Canonical profile and OpenAI Base tests pass with no `OpenAICompatibleProfile` alias module.
+- Stop or replan if: The alias owns behavior not exposed by `ChatCompletionsProfile`.
 
 ## Current State
 
-- Resolved: R1-R3.
-- Last relevant evidence: Seven session tests passed after `CompactionScope` deletion; source search found no remaining scope symbol or method.
+- Resolved: R1-R3; R4 compatibility re-exports partly removed.
+- Last relevant evidence: Full-profile modular registry snapshot passed after Anthropic/module registry deletion.
 - Blocker: None.
-- Next: R4 provider/capability compatibility-shell deletion.
+- Next: R4 OpenAI Base profile alias deletion.
 
 ## Material Decisions
 
@@ -138,6 +138,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R3 checkpoint 1 made `CompactionEngine` the selection/block-resolution owner and deleted 52 duplicate controller LOC; engine/controller tests passed. Next: budget protocol deletion.
 - 2026-08-01: R3 checkpoint 2 removed `CompactionRequest`, `CompactionTrigger`, and unread task/model/sub-agent plumbing (95 net LOC); focused budget and runner tests passed. Next: `CompactionScope` deletion.
 - 2026-08-01: R3 completed by deleting `CompactionScope` and all trait/session projections (55 net LOC); session tests passed and references are absent. Next: R4.
+- 2026-08-01: R4 checkpoint 1 removed the unused Anthropic compatibility module and `ModuleRegistry` (53 LOC); registry snapshot passed. Next: OpenAI Base alias.
 
 ## Completion
 
