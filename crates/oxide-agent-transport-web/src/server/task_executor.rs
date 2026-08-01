@@ -192,7 +192,7 @@ async fn execute_agent_task(
     );
 
     let registry = session_manager.session_registry();
-    let sid = derive_session_id(&session_manager, session_id).await;
+    let sid = session_manager.resolve_session_id(session_id).await;
     let Some(sid) = sid else {
         if let Some(web_task) = &ctx.web_task {
             persist_task_failed(web_task, "Runtime session not found.").await;
@@ -937,17 +937,4 @@ fn relative_timestamp_ms(
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> i64 {
     timestamp.timestamp_millis() - agent_started_at_ms
-}
-
-async fn derive_session_id(
-    session_manager: &WebSessionManager,
-    session_id: &str,
-) -> Option<oxide_agent_core::agent::SessionId> {
-    let meta = session_manager.get_session(session_id).await?;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    session_id.hash(&mut h);
-    meta.user_id.hash(&mut h);
-    Some(oxide_agent_core::agent::SessionId::from(h.finish() as i64))
 }

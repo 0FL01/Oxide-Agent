@@ -467,16 +467,7 @@ impl WebSessionManager {
         let skip_fresh_durable_bootstrap =
             skip_fresh_durable_bootstrap && is_fresh_web_session_context(&context_key);
 
-        let session_id_i64 = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            session_id.hash(&mut h);
-            user_id.hash(&mut h);
-            h.finish() as i64
-        };
-
-        let sid = SessionId::from(session_id_i64);
+        let sid = derive_web_session_id(user_id, &session_id);
         let sandbox_scope = web_session_sandbox_scope(user_id, &context_key);
         log_session_create_phase(
             user_id,
@@ -693,10 +684,9 @@ impl WebSessionManager {
         agent_profile_id: Option<String>,
         execution_profile: Option<AgentExecutionProfile>,
     ) -> bool {
-        let Some(meta) = self.sessions.read().await.get(session_id).cloned() else {
+        let Some(sid) = self.resolve_session_id(session_id).await else {
             return false;
         };
-        let sid = derive_web_session_id(meta.user_id, session_id);
         let Some(executor_arc) = self.registry.get(&sid).await else {
             return false;
         };
@@ -989,7 +979,7 @@ impl WebSessionManager {
     }
 
     /// Resolve session_id string to `SessionId`.
-    async fn resolve_session_id(&self, session_id: &str) -> Option<SessionId> {
+    pub(crate) async fn resolve_session_id(&self, session_id: &str) -> Option<SessionId> {
         let sessions = self.sessions.read().await;
         let meta = sessions.get(session_id)?;
         // Re-derive the SessionId using the same hash as create_session.
