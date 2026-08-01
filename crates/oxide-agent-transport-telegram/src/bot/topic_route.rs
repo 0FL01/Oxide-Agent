@@ -408,9 +408,9 @@ mod tests {
     };
     use oxide_agent_core::llm::InvocationId;
     use oxide_agent_core::storage::{
-        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, OptionalMetadataPatch,
-        StorageError, StorageProvider, TopicBindingKind, TopicBindingRecord,
-        UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+        AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, ForumTopicContext,
+        OptionalMetadataPatch, StorageError, StorageProvider, TopicBindingKind, TopicBindingRecord,
+        UpsertAgentProfileOptions, UpsertTopicBindingOptions,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -578,22 +578,11 @@ mod tests {
 
     #[async_trait]
     impl StorageProvider for TestStorage {
-        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-            Ok(UserConfig::default())
-        }
-
-        async fn update_user_config(
+        async fn upsert_forum_topic_context(
             &self,
             _user_id: i64,
-            _config: UserConfig,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn update_user_state(
-            &self,
-            _user_id: i64,
-            _state: String,
+            _context_key: &str,
+            _topic: ForumTopicContext,
         ) -> Result<(), StorageError> {
             Ok(())
         }

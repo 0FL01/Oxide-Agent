@@ -4,7 +4,7 @@ use super::{
     ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
     TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-    UserConfig, UserContextConfig,
+    UserContextConfig,
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
@@ -13,14 +13,6 @@ use async_trait::async_trait;
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
-    /// Get user configuration.
-    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError>;
-    /// Update user configuration.
-    async fn update_user_config(
-        &self,
-        user_id: i64,
-        config: UserConfig,
-    ) -> Result<(), StorageError>;
     /// Get one transport-scoped user context.
     async fn get_user_context(
         &self,
@@ -148,8 +140,6 @@ pub trait StorageProvider: Send + Sync {
             "context model selection is not implemented for this storage provider".to_string(),
         ))
     }
-    /// Update user state.
-    async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError>;
     /// Get user state.
     async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError>;
     /// Save agent memory to storage.

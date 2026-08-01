@@ -52,7 +52,7 @@ pub use reminder::{
 pub use sqlx::SqlxStorage;
 #[cfg(oxide_module_storage_sqlx)]
 pub use sqlx_config::{SQLX_STORAGE_MODULE_ID, SqlxStorageConfig};
-pub use user::{ForumTopicContext, UserConfig, UserContextConfig};
+pub use user::{ForumTopicContext, UserContextConfig};
 
 #[cfg(test)]
 mod tests;

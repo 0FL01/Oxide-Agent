@@ -152,39 +152,25 @@ mod tests {
     use oxide_agent_core::storage::{
         AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
         StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-        UserConfig, UserContextConfig,
+        UserContextConfig,
     };
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use teloxide::types::{ChatId, MessageId, ThreadId};
 
     #[derive(Default)]
+    struct ConfigState {
+        state: Option<String>,
+        contexts: HashMap<String, UserContextConfig>,
+    }
+
+    #[derive(Default)]
     struct ConfigStorage {
-        config: Mutex<UserConfig>,
+        config: Mutex<ConfigState>,
     }
 
     #[async_trait]
     impl StorageProvider for ConfigStorage {
-        async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-            self.config
-                .lock()
-                .map(|config| config.clone())
-                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))
-        }
-
-        async fn update_user_config(
-            &self,
-            _user_id: i64,
-            config: UserConfig,
-        ) -> Result<(), StorageError> {
-            let mut guard = self
-                .config
-                .lock()
-                .map_err(|_| StorageError::Config("config mutex poisoned".to_string()))?;
-            *guard = config;
-            Ok(())
-        }
-
         async fn get_user_context(
             &self,
             _user_id: i64,
@@ -257,14 +243,6 @@ mod tests {
             context.current_agent_flow_id = Some(flow_id);
             context.chat_id = Some(chat_id);
             context.thread_id = thread_id;
-            Ok(())
-        }
-
-        async fn update_user_state(
-            &self,
-            _user_id: i64,
-            _state: String,
-        ) -> Result<(), StorageError> {
             Ok(())
         }
 
@@ -416,7 +394,8 @@ mod tests {
     #[tokio::test]
     async fn ensure_current_agent_flow_id_only_touches_requested_context() {
         let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
-            config: Mutex::new(UserConfig {
+            config: Mutex::new(ConfigState {
+                state: None,
                 contexts: HashMap::from([(
                     "-1001:77".to_string(),
                     UserContextConfig {
@@ -430,7 +409,6 @@ mod tests {
                         forum_topic_closed: false,
                     },
                 )]),
-                ..UserConfig::default()
             }),
         });
         let thread_spec =
@@ -441,30 +419,28 @@ mod tests {
                 .expect("ensure must succeed");
 
         let saved = storage
-            .get_user_config(7)
+            .get_user_context(7, "-1001:42")
             .await
-            .expect("config load must succeed");
+            .expect("context load must succeed")
+            .expect("requested context must exist");
+        let other = storage
+            .get_user_context(7, "-1001:77")
+            .await
+            .expect("context load must succeed")
+            .expect("other context must exist");
         assert!(created);
         assert_eq!(
-            saved
-                .contexts
-                .get("-1001:42")
-                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            saved.current_agent_flow_id.as_deref(),
             Some(flow_id.as_str())
         );
-        assert_eq!(
-            saved
-                .contexts
-                .get("-1001:77")
-                .and_then(|context| context.current_agent_flow_id.as_deref()),
-            Some("flow-b")
-        );
+        assert_eq!(other.current_agent_flow_id.as_deref(), Some("flow-b"));
     }
 
     #[tokio::test]
     async fn reset_current_agent_flow_id_only_touches_requested_context() {
         let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
-            config: Mutex::new(UserConfig {
+            config: Mutex::new(ConfigState {
+                state: None,
                 contexts: HashMap::from([
                     (
                         "-1001:42".to_string(),
@@ -493,7 +469,6 @@ mod tests {
                         },
                     ),
                 ]),
-                ..UserConfig::default()
             }),
         });
         let thread_spec =
@@ -503,23 +478,20 @@ mod tests {
             .expect("reset must succeed");
 
         let saved = storage
-            .get_user_config(7)
+            .get_user_context(7, "-1001:42")
             .await
-            .expect("config load must succeed");
+            .expect("context load must succeed")
+            .expect("requested context must exist");
+        let other = storage
+            .get_user_context(7, "-1001:77")
+            .await
+            .expect("context load must succeed")
+            .expect("other context must exist");
         assert_ne!(new_flow_id, "flow-a");
         assert_eq!(
-            saved
-                .contexts
-                .get("-1001:42")
-                .and_then(|context| context.current_agent_flow_id.as_deref()),
+            saved.current_agent_flow_id.as_deref(),
             Some(new_flow_id.as_str())
         );
-        assert_eq!(
-            saved
-                .contexts
-                .get("-1001:77")
-                .and_then(|context| context.current_agent_flow_id.as_deref()),
-            Some("flow-b")
-        );
+        assert_eq!(other.current_agent_flow_id.as_deref(), Some("flow-b"));
     }
 }

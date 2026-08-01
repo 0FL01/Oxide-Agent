@@ -14,8 +14,7 @@ use oxide_agent_core::agent::tool_runtime::{
 use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError, StorageProvider,
-    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
-    UserContextConfig,
+    TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserContextConfig,
 };
 use oxide_agent_transport_telegram::bot::thread::{
     resolve_thread_spec_from_context, thread_peer_key_from_spec,
@@ -27,7 +26,7 @@ use teloxide::types::{ChatId, MessageId, ThreadId};
 
 #[derive(Default)]
 struct IntegrationStorage {
-    user_config: Mutex<UserConfig>,
+    contexts: Mutex<HashMap<String, UserContextConfig>>,
     cleared_memories: Mutex<Vec<String>>,
     deleted_bindings: Mutex<Vec<String>>,
     audit_events: Mutex<Vec<AppendAuditEventOptions>>,
@@ -40,22 +39,19 @@ impl IntegrationStorage {
 
     fn with_topic_context(context_key: &str) -> Self {
         Self {
-            user_config: Mutex::new(UserConfig {
-                contexts: HashMap::from([(
-                    context_key.to_string(),
-                    UserContextConfig {
-                        state: Some("agent_mode".to_string()),
-                        current_agent_flow_id: Some("flow-1".to_string()),
-                        chat_id: Some(-100_123),
-                        thread_id: Some(77),
-                        forum_topic_name: Some("Topic 77".to_string()),
-                        forum_topic_icon_color: Some(7_322_096),
-                        forum_topic_icon_custom_emoji_id: None,
-                        forum_topic_closed: false,
-                    },
-                )]),
-                ..UserConfig::default()
-            }),
+            contexts: Mutex::new(HashMap::from([(
+                context_key.to_string(),
+                UserContextConfig {
+                    state: Some("agent_mode".to_string()),
+                    current_agent_flow_id: Some("flow-1".to_string()),
+                    chat_id: Some(-100_123),
+                    thread_id: Some(77),
+                    forum_topic_name: Some("Topic 77".to_string()),
+                    forum_topic_icon_color: Some(7_322_096),
+                    forum_topic_icon_custom_emoji_id: None,
+                    forum_topic_closed: false,
+                },
+            )])),
             ..Self::default()
         }
     }
@@ -63,21 +59,15 @@ impl IntegrationStorage {
 
 #[async_trait]
 impl StorageProvider for IntegrationStorage {
-    async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-        self.user_config
-            .lock()
-            .map(|config| config.clone())
-            .map_err(|_| Self::lock_error())
-    }
-
-    async fn update_user_config(
+    async fn get_user_context(
         &self,
         _user_id: i64,
-        config: UserConfig,
-    ) -> Result<(), StorageError> {
-        let mut guard = self.user_config.lock().map_err(|_| Self::lock_error())?;
-        *guard = config;
-        Ok(())
+        context_key: &str,
+    ) -> Result<Option<UserContextConfig>, StorageError> {
+        self.contexts
+            .lock()
+            .map(|contexts| contexts.get(context_key).cloned())
+            .map_err(|_| Self::lock_error())
     }
 
     async fn delete_user_context(
@@ -86,16 +76,11 @@ impl StorageProvider for IntegrationStorage {
         context_key: &str,
     ) -> Result<bool, StorageError> {
         Ok(self
-            .user_config
+            .contexts
             .lock()
             .map_err(|_| Self::lock_error())?
-            .contexts
             .remove(context_key)
             .is_some())
-    }
-
-    async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
-        Ok(())
     }
 
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
@@ -420,11 +405,10 @@ async fn manager_forum_topic_delete_cleans_transport_topic_scope() -> anyhow::Re
         &[context_key.clone(), "77".to_string()]
     );
     assert!(
-        !storage
-            .get_user_config(user_id)
+        storage
+            .get_user_context(user_id, &context_key)
             .await?
-            .contexts
-            .contains_key(&context_key)
+            .is_none()
     );
     assert_eq!(
         storage.audit_events.lock().expect("mutex poisoned").len(),

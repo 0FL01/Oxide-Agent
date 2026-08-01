@@ -6,7 +6,7 @@ use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, OptionalMetadataPatch,
     StorageError, StorageProvider, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
-    UpsertTopicBindingOptions, UserConfig,
+    UpsertTopicBindingOptions,
 };
 use oxide_agent_transport_telegram::bot::thread::{
     build_outbound_thread_params, resolve_thread_spec_from_context,
@@ -84,22 +84,6 @@ impl TestStorage {
 
 #[async_trait]
 impl StorageProvider for TestStorage {
-    async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-        Ok(UserConfig::default())
-    }
-
-    async fn update_user_config(
-        &self,
-        _user_id: i64,
-        _config: UserConfig,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
-        Ok(())
-    }
-
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
     }

@@ -1,15 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-/// User-specific configuration persisted in storage.
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct UserConfig {
-    /// Current dialogue state.
-    pub state: Option<String>,
-    /// Context-scoped runtime metadata keyed by transport peer/thread identifier.
-    #[serde(default)]
-    pub contexts: HashMap<String, UserContextConfig>,
-}
 
 /// Context-scoped user configuration persisted alongside the global config.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]

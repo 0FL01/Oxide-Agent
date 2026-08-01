@@ -16,7 +16,7 @@ use oxide_agent_core::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, BrowserArtifactData,
     BrowserArtifactRecord, CreateReminderJobOptions, ForumTopicContext, ReminderJobRecord,
     ReminderJobStatus, StorageError, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord,
-    UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
+    UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
     UserContextConfig,
 };
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 /// All data is held in memory and lost on process exit.
 /// Thread-safe via `RwLock`.
 pub struct InMemoryStorage {
-    user_configs: RwLock<HashMap<i64, UserConfig>>,
+    user_contexts: RwLock<InMemoryUserContexts>,
     agent_memories: RwLock<HashMap<i64, AgentMemory>>,
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
@@ -38,12 +38,18 @@ pub struct InMemoryStorage {
     browser_artifacts: RwLock<HashMap<String, BrowserArtifactRecord>>,
 }
 
+#[derive(Default)]
+struct InMemoryUserContexts {
+    global_states: HashMap<i64, Option<String>>,
+    contexts: HashMap<(i64, String), UserContextConfig>,
+}
+
 impl InMemoryStorage {
     /// Create a new empty in-memory storage.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            user_configs: RwLock::new(HashMap::new()),
+            user_contexts: RwLock::new(InMemoryUserContexts::default()),
             agent_memories: RwLock::new(HashMap::new()),
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
@@ -69,32 +75,17 @@ impl Default for InMemoryStorage {
 
 #[async_trait]
 impl crate::api::StorageProvider for InMemoryStorage {
-    // --- User config ---
-
-    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
-        let configs = self.user_configs.read().await;
-        Ok(configs.get(&user_id).cloned().unwrap_or_default())
-    }
-
-    async fn update_user_config(
-        &self,
-        user_id: i64,
-        config: UserConfig,
-    ) -> Result<(), StorageError> {
-        let mut configs = self.user_configs.write().await;
-        configs.insert(user_id, config);
-        Ok(())
-    }
+    // --- User contexts ---
 
     async fn get_user_context(
         &self,
         user_id: i64,
         context_key: &str,
     ) -> Result<Option<UserContextConfig>, StorageError> {
-        let configs = self.user_configs.read().await;
-        Ok(configs
-            .get(&user_id)
-            .and_then(|config| config.contexts.get(context_key))
+        let contexts = self.user_contexts.read().await;
+        Ok(contexts
+            .contexts
+            .get(&(user_id, context_key.to_string()))
             .cloned())
     }
 
@@ -102,19 +93,15 @@ impl crate::api::StorageProvider for InMemoryStorage {
         &self,
         user_id: i64,
     ) -> Result<Vec<(String, UserContextConfig)>, StorageError> {
-        let configs = self.user_configs.read().await;
-        let mut contexts = configs
-            .get(&user_id)
-            .map(|config| {
-                config
-                    .contexts
-                    .iter()
-                    .map(|(key, context)| (key.clone(), context.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        contexts.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(contexts)
+        let store = self.user_contexts.read().await;
+        let mut result = store
+            .contexts
+            .iter()
+            .filter(|((stored_user_id, _), _)| *stored_user_id == user_id)
+            .map(|((_, key), context)| (key.clone(), context.clone()))
+            .collect::<Vec<_>>();
+        result.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(result)
     }
 
     async fn set_context_state(
@@ -126,14 +113,16 @@ impl crate::api::StorageProvider for InMemoryStorage {
         thread_id: Option<i64>,
         mirror_global_state: bool,
     ) -> Result<(), StorageError> {
-        let mut configs = self.user_configs.write().await;
-        let config = configs.entry(user_id).or_default();
-        let context = config.contexts.entry(context_key.to_string()).or_default();
+        let mut store = self.user_contexts.write().await;
+        let context = store
+            .contexts
+            .entry((user_id, context_key.to_string()))
+            .or_default();
         context.state = state.clone();
         context.chat_id = Some(chat_id);
         context.thread_id = thread_id;
         if mirror_global_state {
-            config.state = state;
+            store.global_states.insert(user_id, state);
         }
         Ok(())
     }
@@ -146,12 +135,10 @@ impl crate::api::StorageProvider for InMemoryStorage {
         chat_id: i64,
         thread_id: Option<i64>,
     ) -> Result<(String, bool), StorageError> {
-        let mut configs = self.user_configs.write().await;
-        let context = configs
-            .entry(user_id)
-            .or_default()
+        let mut store = self.user_contexts.write().await;
+        let context = store
             .contexts
-            .entry(context_key.to_string())
+            .entry((user_id, context_key.to_string()))
             .or_default();
         if let Some(flow_id) = context.current_agent_flow_id.clone() {
             return Ok((flow_id, false));
@@ -170,12 +157,10 @@ impl crate::api::StorageProvider for InMemoryStorage {
         chat_id: i64,
         thread_id: Option<i64>,
     ) -> Result<(), StorageError> {
-        let mut configs = self.user_configs.write().await;
-        let context = configs
-            .entry(user_id)
-            .or_default()
+        let mut store = self.user_contexts.write().await;
+        let context = store
             .contexts
-            .entry(context_key.to_string())
+            .entry((user_id, context_key.to_string()))
             .or_default();
         context.current_agent_flow_id = Some(flow_id);
         context.chat_id = Some(chat_id);
@@ -189,12 +174,10 @@ impl crate::api::StorageProvider for InMemoryStorage {
         context_key: &str,
         topic: ForumTopicContext,
     ) -> Result<(), StorageError> {
-        let mut configs = self.user_configs.write().await;
-        let context = configs
-            .entry(user_id)
-            .or_default()
+        let mut store = self.user_contexts.write().await;
+        let context = store
             .contexts
-            .entry(context_key.to_string())
+            .entry((user_id, context_key.to_string()))
             .or_default();
         context.chat_id = Some(topic.chat_id);
         context.thread_id = Some(topic.thread_id);
@@ -210,21 +193,16 @@ impl crate::api::StorageProvider for InMemoryStorage {
         user_id: i64,
         context_key: &str,
     ) -> Result<bool, StorageError> {
-        let mut configs = self.user_configs.write().await;
-        Ok(configs
-            .get_mut(&user_id)
-            .and_then(|config| config.contexts.remove(context_key))
+        let mut store = self.user_contexts.write().await;
+        Ok(store
+            .contexts
+            .remove(&(user_id, context_key.to_string()))
             .is_some())
     }
 
-    // User state is intentionally noop — not needed for E2E.
-
-    async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
+    async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+        let store = self.user_contexts.read().await;
+        Ok(store.global_states.get(&user_id).cloned().flatten())
     }
 
     // --- Agent memory: user-scoped ---

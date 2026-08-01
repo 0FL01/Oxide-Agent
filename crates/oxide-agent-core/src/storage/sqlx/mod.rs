@@ -16,7 +16,7 @@ use super::{
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
     TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
-    UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
+    UpsertTopicInfraConfigOptions, UserContextConfig,
     builders::{
         build_agent_profile_record, build_audit_event_record, build_reminder_job_record,
         build_topic_agents_md_record, build_topic_binding_record, build_topic_context_record,
@@ -201,131 +201,6 @@ impl SqlxStorage {
 
 #[async_trait]
 impl StorageProvider for SqlxStorage {
-    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
-        let row = query::<Postgres>(
-            r#"
-            SELECT state
-            FROM user_configs
-            WHERE user_id = $1
-            "#,
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_error)?;
-        let state = row
-            .map(|row| row_value::<Option<String>>(&row, "state"))
-            .transpose()?
-            .flatten();
-
-        let contexts = self
-            .list_user_contexts(user_id)
-            .await?
-            .into_iter()
-            .collect();
-
-        Ok(UserConfig { state, contexts })
-    }
-
-    async fn update_user_config(
-        &self,
-        user_id: i64,
-        config: UserConfig,
-    ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        ensure_user_row_in_tx(&mut tx, user_id).await?;
-        let now = current_timestamp_unix_secs();
-
-        query::<Postgres>(
-            r#"
-            INSERT INTO user_configs (user_id, state, schema_version, created_at, updated_at)
-            VALUES ($1, $2, 1, $3, $3)
-            ON CONFLICT (user_id) DO UPDATE
-            SET state = EXCLUDED.state,
-                schema_version = EXCLUDED.schema_version,
-                version = user_configs.version + 1,
-                updated_at = EXCLUDED.updated_at
-            WHERE user_configs.state IS DISTINCT FROM EXCLUDED.state
-            "#,
-        )
-        .bind(user_id)
-        .bind(config.state)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-
-        let mut contexts = config.contexts.into_iter().collect::<Vec<_>>();
-        contexts.sort_by(|left, right| left.0.cmp(&right.0));
-        let context_keys = contexts
-            .iter()
-            .map(|(context_key, _)| context_key.clone())
-            .collect::<Vec<_>>();
-
-        query::<Postgres>(
-            r#"
-            DELETE FROM user_contexts
-            WHERE user_id = $1 AND context_key <> ALL($2::text[])
-            "#,
-        )
-        .bind(user_id)
-        .bind(&context_keys)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-
-        for (context_key, context) in contexts {
-            let forum_topic_icon_color = context.forum_topic_icon_color.map(i64::from);
-            query::<Postgres>(
-                r#"
-                INSERT INTO user_contexts (
-                    user_id, context_key, state, current_agent_flow_id, chat_id, thread_id,
-                    forum_topic_name, forum_topic_icon_color,
-                    forum_topic_icon_custom_emoji_id, forum_topic_closed,
-                    schema_version, created_at, updated_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $11)
-                ON CONFLICT (user_id, context_key) DO UPDATE
-                SET state = EXCLUDED.state,
-                    current_agent_flow_id = EXCLUDED.current_agent_flow_id,
-                    chat_id = EXCLUDED.chat_id,
-                    thread_id = EXCLUDED.thread_id,
-                    forum_topic_name = EXCLUDED.forum_topic_name,
-                    forum_topic_icon_color = EXCLUDED.forum_topic_icon_color,
-                    forum_topic_icon_custom_emoji_id = EXCLUDED.forum_topic_icon_custom_emoji_id,
-                    forum_topic_closed = EXCLUDED.forum_topic_closed,
-                    schema_version = EXCLUDED.schema_version,
-                    version = user_contexts.version + 1,
-                    updated_at = EXCLUDED.updated_at
-                WHERE user_contexts.state IS DISTINCT FROM EXCLUDED.state
-                   OR user_contexts.current_agent_flow_id IS DISTINCT FROM EXCLUDED.current_agent_flow_id
-                   OR user_contexts.chat_id IS DISTINCT FROM EXCLUDED.chat_id
-                   OR user_contexts.thread_id IS DISTINCT FROM EXCLUDED.thread_id
-                   OR user_contexts.forum_topic_name IS DISTINCT FROM EXCLUDED.forum_topic_name
-                   OR user_contexts.forum_topic_icon_color IS DISTINCT FROM EXCLUDED.forum_topic_icon_color
-                   OR user_contexts.forum_topic_icon_custom_emoji_id IS DISTINCT FROM EXCLUDED.forum_topic_icon_custom_emoji_id
-                   OR user_contexts.forum_topic_closed IS DISTINCT FROM EXCLUDED.forum_topic_closed
-                "#,
-            )
-            .bind(user_id)
-            .bind(context_key)
-            .bind(context.state)
-            .bind(context.current_agent_flow_id)
-            .bind(context.chat_id)
-            .bind(context.thread_id)
-            .bind(context.forum_topic_name)
-            .bind(forum_topic_icon_color)
-            .bind(context.forum_topic_icon_custom_emoji_id)
-            .bind(context.forum_topic_closed)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
-        }
-
-        tx.commit().await.map_err(db_error)
-    }
-
     async fn get_user_context(
         &self,
         user_id: i64,
@@ -700,33 +575,6 @@ impl StorageProvider for SqlxStorage {
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
-        tx.commit().await.map_err(db_error)
-    }
-
-    async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        ensure_user_row_in_tx(&mut tx, user_id).await?;
-        let now = current_timestamp_unix_secs();
-
-        query::<Postgres>(
-            r#"
-            INSERT INTO user_configs (user_id, state, schema_version, created_at, updated_at)
-            VALUES ($1, $2, 1, $3, $3)
-            ON CONFLICT (user_id) DO UPDATE
-            SET state = EXCLUDED.state,
-                schema_version = EXCLUDED.schema_version,
-                version = user_configs.version + 1,
-                updated_at = EXCLUDED.updated_at
-            WHERE user_configs.state IS DISTINCT FROM EXCLUDED.state
-            "#,
-        )
-        .bind(user_id)
-        .bind(state)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-
         tx.commit().await.map_err(db_error)
     }
 

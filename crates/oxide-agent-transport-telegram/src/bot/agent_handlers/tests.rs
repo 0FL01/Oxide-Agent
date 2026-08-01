@@ -35,7 +35,6 @@ use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError, StorageProvider,
     TopicAgentsMdRecord, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-    UserConfig,
 };
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -189,22 +188,6 @@ impl NoopStorage {
 
 #[async_trait]
 impl StorageProvider for NoopStorage {
-    async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-        Ok(UserConfig::default())
-    }
-
-    async fn update_user_config(
-        &self,
-        _user_id: i64,
-        _config: UserConfig,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
-        Ok(())
-    }
-
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
     }

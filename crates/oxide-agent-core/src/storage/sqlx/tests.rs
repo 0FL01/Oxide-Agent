@@ -9,7 +9,6 @@ use sqlx_core::query::query;
 use sqlx_core::raw_sql::raw_sql;
 use sqlx_postgres::Postgres;
 
-use super::row_value;
 use super::{SqlxStorage, SqlxStorageConfig};
 use crate::agent::memory::AgentMemory;
 use crate::storage::{
@@ -17,7 +16,7 @@ use crate::storage::{
     OptionalMetadataPatch, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
     StorageError, StorageProvider, TopicBindingKind, TopicInfraAuthMode, TopicInfraToolMode,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
-    UpsertTopicContextOptions, UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
+    UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
 };
 
 static USER_COUNTER: AtomicI64 = AtomicI64::new(1);
@@ -32,79 +31,6 @@ async fn sqlx_storage_connects_and_runs_migrations_when_test_url_is_set() {
         .check_database_connection()
         .await
         .expect("SQLx storage health query should pass after migrations");
-}
-
-#[tokio::test]
-async fn sqlx_user_config_roundtrips_without_rewriting_unchanged_contexts() {
-    let Some(storage) = sqlx_test_storage().await else {
-        return;
-    };
-    let user_id = unique_user_id();
-
-    let initial = storage
-        .get_user_config(user_id)
-        .await
-        .expect("missing user config should load defaults");
-    assert!(initial.state.is_none());
-    assert!(initial.contexts.is_empty());
-
-    let mut config = UserConfig {
-        state: Some("global-state".to_string()),
-        ..UserConfig::default()
-    };
-    config.contexts.insert(
-        "telegram:100:200".to_string(),
-        UserContextConfig {
-            state: Some("topic-state".to_string()),
-            current_agent_flow_id: Some("flow-1".to_string()),
-            chat_id: Some(100),
-            thread_id: Some(200),
-            forum_topic_name: Some("Ops".to_string()),
-            forum_topic_icon_color: Some(0x6FB9F0),
-            forum_topic_icon_custom_emoji_id: Some("emoji".to_string()),
-            forum_topic_closed: true,
-        },
-    );
-
-    storage
-        .update_user_config(user_id, config)
-        .await
-        .expect("user config should be stored in SQL rows");
-
-    let loaded = storage
-        .get_user_config(user_id)
-        .await
-        .expect("stored user config should load");
-    assert_eq!(loaded.state.as_deref(), Some("global-state"));
-    let context = loaded
-        .contexts
-        .get("telegram:100:200")
-        .expect("context row should be reconstructed");
-    assert_eq!(context.state.as_deref(), Some("topic-state"));
-    assert_eq!(context.current_agent_flow_id.as_deref(), Some("flow-1"));
-    assert_eq!(context.chat_id, Some(100));
-    assert_eq!(context.thread_id, Some(200));
-    assert_eq!(context.forum_topic_name.as_deref(), Some("Ops"));
-    assert_eq!(context.forum_topic_icon_color, Some(0x6FB9F0));
-    assert_eq!(
-        context.forum_topic_icon_custom_emoji_id.as_deref(),
-        Some("emoji")
-    );
-    assert!(context.forum_topic_closed);
-
-    let version_before = user_context_version(&storage, user_id, "telegram:100:200").await;
-    storage
-        .update_user_state(user_id, "global-state-2".to_string())
-        .await
-        .expect("global state update should not rewrite context rows");
-    let version_after = user_context_version(&storage, user_id, "telegram:100:200").await;
-    assert_eq!(version_before, version_after);
-
-    let state = storage
-        .get_user_state(user_id)
-        .await
-        .expect("user state should load");
-    assert_eq!(state.as_deref(), Some("global-state-2"));
 }
 
 #[tokio::test]
@@ -132,22 +58,6 @@ async fn sqlx_context_model_selection_is_atomic_and_context_scoped() {
         )
         .await
         .expect("second model selection should be stored");
-
-    let mut stale_aggregate = UserConfig::default();
-    stale_aggregate.contexts.insert(
-        first_context.to_string(),
-        UserContextConfig {
-            state: Some("active".to_string()),
-            ..UserContextConfig::default()
-        },
-    );
-    stale_aggregate
-        .contexts
-        .insert(second_context.to_string(), UserContextConfig::default());
-    storage
-        .update_user_config(user_id, stale_aggregate)
-        .await
-        .expect("aggregate update should preserve field-owned selections");
 
     assert_eq!(
         storage
@@ -258,6 +168,42 @@ async fn sqlx_context_fields_are_updated_independently() {
             .as_deref(),
         Some("provider/model-a")
     );
+}
+
+#[tokio::test]
+async fn sqlx_context_updates_do_not_clobber_other_rows() {
+    let Some(storage) = sqlx_test_storage_with_connections(4).await else {
+        return;
+    };
+    let user_id = unique_user_id();
+
+    let first = storage.set_context_state(
+        user_id,
+        "telegram:-100:200",
+        Some("first".to_string()),
+        -100,
+        Some(200),
+        false,
+    );
+    let second = storage.set_context_state(
+        user_id,
+        "telegram:-100:201",
+        Some("second".to_string()),
+        -100,
+        Some(201),
+        false,
+    );
+    let (first, second) = tokio::join!(first, second);
+    first.expect("first context update should succeed");
+    second.expect("second context update should succeed");
+
+    let contexts = storage
+        .list_user_contexts(user_id)
+        .await
+        .expect("contexts should load");
+    assert_eq!(contexts.len(), 2);
+    assert_eq!(contexts[0].1.state.as_deref(), Some("first"));
+    assert_eq!(contexts[1].1.state.as_deref(), Some("second"));
 }
 
 #[tokio::test]
@@ -1009,22 +955,6 @@ fn unique_user_id() -> i64 {
         .expect("system clock should be after unix epoch")
         .as_micros() as i64;
     1_000_000_000_000 + (micros % 1_000_000_000_000) + USER_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-async fn user_context_version(storage: &SqlxStorage, user_id: i64, context_key: &str) -> i64 {
-    let row = query::<Postgres>(
-        r#"
-            SELECT version
-            FROM user_contexts
-            WHERE user_id = $1 AND context_key = $2
-            "#,
-    )
-    .bind(user_id)
-    .bind(context_key)
-    .fetch_one(storage.pool())
-    .await
-    .expect("context row should exist");
-    row_value(&row, "version").expect("context version should decode")
 }
 
 fn assert_memory_eq(expected: &AgentMemory, actual: &AgentMemory) {

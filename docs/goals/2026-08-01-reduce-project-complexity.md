@@ -62,13 +62,13 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
   - Source: Approved M3 plan.
   - Acceptance: Telegram and manager production paths no longer call aggregate `update_user_config`; atomic flow ensure, DM mirror, context lifecycle, and model selection preserve existing rows without a schema change.
   - Primary evidence: Real-Postgres concurrent context, flow, DM mirror, manager lifecycle, and model-selection tests.
-  - Status: in_progress
-  - Evidence:
+  - Status: verified
+  - Evidence: Aggregate `UserConfig` and its get/update API are absent; Telegram and manager use row/field operations. Six real PostgreSQL context tests cover concurrent rows, atomic flow ensure, transactional DM mirror, model/field independence, and exact-row deletion; storage, manager, Telegram, and Web tests pass.
 - R9: Telegram has one non-command ingress owner.
   - Source: Approved M4 plan.
   - Acceptance: Topic route resolves once; first accepted text/media input is processed once; commands, controls, confirmations, DM fallback, mention gating, thread isolation, preprocessing, and one activity touch remain; the handlers-to-agent-handlers cycle is absent.
   - Primary evidence: Telegram ingress, confirmation, and topic/thread integration tests.
-  - Status: pending
+  - Status: in_progress
   - Evidence:
 - R10: The repository supports one deployment profile and production Compose entrypoint.
   - Source: User confirmation that deployment will use one profile.
@@ -110,17 +110,17 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 
 ## Current Checkpoint
 
-- Closes: R8.
-- Smallest next action: Remove the now-unconsumed aggregate `UserConfig` storage API and representation, then verify every storage implementation and transport test uses explicit global-state or context operations.
-- Expected evidence: Source search finds no aggregate config API/type; full storage, manager, Telegram, and Web tests pass with real PostgreSQL context coverage.
-- Stop or replan if: Existing row ownership requires a schema change, compatibility path, or cannot preserve an observable aggregate read contract.
+- Closes: R9.
+- Smallest next action: Trace the current `State::Start` and `State::AgentMode` non-command dispatch ordering, then replace the duplicated first-message wrappers with one ingress owner without changing command or confirmation precedence.
+- Expected evidence: One non-command dispatcher path processes text and supported media once, resolves topic routing once, and retains focused ingress/topic/thread tests.
+- Stop or replan if: Confirmation isolation or first-message behavior requires a new persisted state/config contract outside the approved ingress flow.
 
 ## Current State
 
-- Resolved: R1-R7.
-- Last relevant evidence: Telegram and manager context writes/deletes are row- or field-scoped; manager tests and real PostgreSQL tests prove unrelated fields survive and exact-row deletion preserves neighboring contexts.
+- Resolved: R1-R8.
+- Last relevant evidence: Aggregate context replacement is absent; six real PostgreSQL context tests plus 55 storage, 54 manager, 144 Telegram, and 168 Web library tests pass.
 - Blocker: None.
-- Next: R8 row-scoped context storage.
+- Next: R9 single Telegram ingress.
 
 ## Material Decisions
 
@@ -153,6 +153,7 @@ Complete the frozen Required Outcomes using the listed Change Envelope and Prima
 - 2026-08-01: R7 completed by deleting `ToolRegistry`, duplicate executor registration/conversion/state, and sub-agent executor vectors; `ToolCatalog` now owns execution and specs, with focused runtime/runner/delegation/static tests passing. Next: R8.
 - 2026-08-01: R8 checkpoint 1 moved Telegram context state and flow persistence to field-scoped operations with atomic flow initialization and transactional DM mirroring; real PostgreSQL plus full Telegram/Web library tests pass. Next: manager context catalog operations.
 - 2026-08-01: R8 checkpoint 2 moved manager forum catalog writes/deletes and sandbox/catalog reads to row-scoped operations; 54 manager tests, Telegram cleanup integration, and five real PostgreSQL context tests pass. Next: remove aggregate config API.
+- 2026-08-01: R8 completed by deleting `UserConfig`, aggregate get/update storage APIs, and the unused standalone global-state writer (430 net LOC); concurrent PostgreSQL and full affected transport tests pass. Next: R9.
 
 ## Completion
 

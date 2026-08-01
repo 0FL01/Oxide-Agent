@@ -35,7 +35,7 @@ use crate::llm::LlmError;
 use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, CreateReminderJobOptions,
     ReminderJobRecord, ReminderJobStatus, TopicBindingKind, TopicBindingRecord,
-    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions,
 };
 use mockall::predicate::*;
 
@@ -75,8 +75,6 @@ pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvid
 /// # Returns
 ///
 /// A `MockStorageProvider` where:
-/// - `get_user_config` returns a default empty `UserConfig`
-/// - `update_user_config` / `update_user_state` return `Ok(())`
 /// - `get_user_state` returns `Ok(None)`
 /// - `clear_agent_memory` / `clear_all_context` return `Ok(())`
 /// - `save_agent_memory` returns `Ok(())`
@@ -105,10 +103,6 @@ pub fn mock_storage_noop() -> crate::storage::MockStorageProvider {
 }
 
 fn configure_basic_expectations(mock: &mut crate::storage::MockStorageProvider) {
-    mock.expect_get_user_config()
-        .returning(|_| Ok(UserConfig::default()));
-
-    mock.expect_update_user_config().returning(|_, _| Ok(()));
     mock.expect_get_user_context().returning(|_, _| Ok(None));
     mock.expect_list_user_contexts()
         .returning(|_| Ok(Vec::new()));
@@ -122,7 +116,6 @@ fn configure_basic_expectations(mock: &mut crate::storage::MockStorageProvider) 
         .returning(|_, _, _| Ok(()));
     mock.expect_delete_user_context()
         .returning(|_, _| Ok(false));
-    mock.expect_update_user_state().returning(|_, _| Ok(()));
     mock.expect_get_user_state().returning(|_| Ok(None));
     mock.expect_check_connection().returning(|| Ok(()));
     mock.expect_clear_all_context().returning(|_| Ok(()));
