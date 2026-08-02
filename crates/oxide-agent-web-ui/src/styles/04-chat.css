@@ -440,10 +440,6 @@
   overflow-wrap: anywhere;
 }
 
-.assistant-progress-block:last-child {
-  background: rgba(96, 165, 250, 0.07);
-}
-
 .assistant-progress-headline {
   color: var(--fg);
   font-size: 13px;
