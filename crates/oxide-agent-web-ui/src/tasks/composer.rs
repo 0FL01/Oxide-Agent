@@ -271,6 +271,14 @@ pub(crate) fn reset_composer_textarea_height(textarea_ref: NodeRef<html::Textare
     }
 }
 
+pub(crate) fn resize_textarea_to_content(textarea_ref: NodeRef<html::Textarea>) {
+    if let Some(textarea) = textarea_ref.get() {
+        use wasm_bindgen::JsCast;
+        let el: web_sys::HtmlElement = textarea.unchecked_into();
+        resize_textarea_element(&el);
+    }
+}
+
 pub(crate) fn handle_composer_paste(
     ev: &leptos::ev::ClipboardEvent,
     current_input: &str,
@@ -337,19 +345,19 @@ pub(crate) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
     }
 }
 
-fn resize_textarea_from_input_event(ev: &leptos::ev::Event) {
-    const MAX_TEXTAREA_HEIGHT_PX: f64 = 208.0;
-
+pub(crate) fn resize_textarea_from_input_event(ev: &leptos::ev::Event) {
     let Some(target) = ev.target() else {
         return;
     };
     use wasm_bindgen::JsCast;
     let el: web_sys::HtmlElement = target.unchecked_into();
+    resize_textarea_element(&el);
+}
+
+fn resize_textarea_element(el: &web_sys::HtmlElement) {
     el.style().set_property("height", "auto").ok();
-    let scroll = el.scroll_height();
-    let height = (scroll as f64).min(MAX_TEXTAREA_HEIGHT_PX);
     el.style()
-        .set_property("height", &format!("{height}px"))
+        .set_property("height", &format!("{}px", el.scroll_height()))
         .ok();
 }
 

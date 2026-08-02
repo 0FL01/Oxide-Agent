@@ -496,8 +496,9 @@
 .inline-edit textarea {
   display: block;
   width: 100%;
-  min-height: 240px;
+  min-height: 72px;
   max-height: min(70vh, 720px);
+  overflow-y: auto;
   box-sizing: border-box;
   font-family: var(--font-mono);
   font-size: 13px;

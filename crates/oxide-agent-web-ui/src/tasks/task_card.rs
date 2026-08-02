@@ -10,7 +10,9 @@ use std::collections::HashMap;
 
 use super::WEB_AGENT_EFFORT;
 use super::activity::ThinkingButton;
-use super::composer::MessageAttachments;
+use super::composer::{
+    MessageAttachments, resize_textarea_from_input_event, resize_textarea_to_content,
+};
 use super::delivered_files::{
     DeliveredFilesMessage, delivered_files_for_task, linkify_delivered_files_in_markdown,
 };
@@ -664,6 +666,9 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
         set_error,
     } = signals;
     let auth = use_auth();
+    let textarea_ref = NodeRef::<html::Textarea>::new();
+    let measure_ref = textarea_ref;
+    Effect::new(move |_| resize_textarea_to_content(measure_ref));
     let submit_edit = {
         let session_id = session_id.clone();
         let task_id = task_id.clone();
@@ -724,9 +729,13 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
     view! {
         <form class="inline-edit" on:submit=submit_edit>
             <textarea
-                rows="14"
+                node_ref=textarea_ref
+                rows="3"
                 prop:value=draft
-                on:input=move |ev| set_draft.set(event_target_value(&ev))
+                on:input=move |ev| {
+                    set_draft.set(event_target_value(&ev));
+                    resize_textarea_from_input_event(&ev);
+                }
             />
             <div class="composer-actions">
                 <button type="submit" disabled=saving>"Save"</button>
