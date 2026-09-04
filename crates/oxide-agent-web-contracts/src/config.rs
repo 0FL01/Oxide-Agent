@@ -81,6 +81,7 @@ pub struct UpdateAgentProfileResponse {
 #[serde(rename_all = "snake_case")]
 pub enum ModelRouteProtocolView {
     OpenAiChatCompletions,
+    OpenAiResponses,
     AnthropicMessages,
     Unknown,
 }
@@ -119,7 +120,18 @@ pub struct ListModelRoutesResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelRouteView, ModelSelection, UpdateUserSettingsRequest};
+    use super::{
+        ModelRouteProtocolView, ModelRouteView, ModelSelection, UpdateUserSettingsRequest,
+    };
+
+    #[test]
+    fn responses_protocol_uses_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_value(ModelRouteProtocolView::OpenAiResponses)
+                .expect("protocol serializes"),
+            serde_json::json!("open_ai_responses")
+        );
+    }
 
     #[test]
     fn model_selection_uses_qualified_id_contract() {

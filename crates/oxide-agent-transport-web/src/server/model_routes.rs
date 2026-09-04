@@ -71,6 +71,7 @@ fn model_route_view_from_discovered(model: DiscoveredLlmModel) -> ModelRouteView
 fn model_route_protocol_view(value: &str) -> ModelRouteProtocolView {
     match value.trim().to_ascii_lowercase().as_str() {
         "openai_chat_completions" => ModelRouteProtocolView::OpenAiChatCompletions,
+        "openai_responses" => ModelRouteProtocolView::OpenAiResponses,
         "anthropic_messages" => ModelRouteProtocolView::AnthropicMessages,
         _ => ModelRouteProtocolView::Unknown,
     }
@@ -211,4 +212,18 @@ fn normalized_openai_base_instance_name(name: &str) -> Option<String> {
         return None;
     }
     Some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_route_protocol_view;
+    use oxide_agent_web_contracts::ModelRouteProtocolView;
+
+    #[test]
+    fn responses_protocol_is_runnable_protocol() {
+        assert_eq!(
+            model_route_protocol_view("openai_responses"),
+            ModelRouteProtocolView::OpenAiResponses
+        );
+    }
 }

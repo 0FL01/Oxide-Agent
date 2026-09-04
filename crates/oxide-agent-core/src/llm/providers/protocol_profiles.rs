@@ -94,6 +94,9 @@ impl ToolProtocolProfile {
 pub const CHAT_LIKE_TOOL_PROFILE: ToolProtocolProfile =
     ToolProtocolProfile::new(ToolProtocol::ChatLike, ToolTransport::ClientRoundTrip);
 
+pub const RESPONSES_LIKE_TOOL_PROFILE: ToolProtocolProfile =
+    ToolProtocolProfile::new(ToolProtocol::ResponsesLike, ToolTransport::ClientRoundTrip);
+
 pub const ANTHROPIC_CLIENT_TOOL_PROFILE: ToolProtocolProfile = ToolProtocolProfile::new(
     ToolProtocol::AnthropicClientTools,
     ToolTransport::ClientRoundTrip,

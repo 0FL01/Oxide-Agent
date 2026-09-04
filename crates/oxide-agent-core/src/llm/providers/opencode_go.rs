@@ -24,6 +24,7 @@ use tracing::{debug, trace, warn};
 
 pub mod discovery;
 pub(crate) mod module;
+mod responses;
 pub(crate) use module::{OpenCodeGoProviderModule, OpenCodeZenProviderModule};
 
 const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
@@ -76,6 +77,7 @@ impl OpenCodeProviderProfile {
 pub struct OpenCodeGoProvider {
     chat_client: ChatCompletionsClient,
     messages_client: messages::MessagesClient,
+    responses_client: responses::ResponsesClient,
     api_base_messages: String,
     profile: OpenCodeProviderProfile,
     throttle: Arc<OpenCodeGoAdaptiveThrottle>,
@@ -160,6 +162,11 @@ impl OpenCodeGoProvider {
             api_key.clone(),
             profile.messages_profile(),
         );
+        let responses_client = responses::ResponsesClient::new(
+            http_client.clone(),
+            derive_responses_api_base(&api_base),
+            api_key.clone(),
+        );
         let chat_client = ChatCompletionsClient::new(
             http_client,
             api_base,
@@ -170,6 +177,7 @@ impl OpenCodeGoProvider {
         Self {
             chat_client,
             messages_client,
+            responses_client,
             api_base_messages,
             profile,
             throttle: OpenCodeGoAdaptiveThrottle::from_env(),
@@ -448,6 +456,7 @@ impl LlmProvider for OpenCodeGoProvider {
             effective_temperature(self.profile, model_id, OPENCODE_GO_CHAT_TEMPERATURE);
         let request_kind = match protocol {
             ModelProtocol::OpenAiChatCompletions => "chat_completion",
+            ModelProtocol::OpenAiResponses => "responses",
             ModelProtocol::AnthropicMessages => "messages",
             ModelProtocol::Unknown => {
                 return Err(unsupported_protocol_error(model_id, self.profile));
@@ -461,6 +470,13 @@ impl LlmProvider for OpenCodeGoProvider {
                 model_id,
                 max_tokens,
                 temperature,
+            ),
+            ModelProtocol::OpenAiResponses => responses::build_text_body(
+                system_prompt,
+                history,
+                user_message,
+                normalize_model_id(model_id),
+                max_tokens,
             ),
             ModelProtocol::AnthropicMessages => {
                 let thinking = messages::response::is_reasoning_model(model_id)
@@ -479,6 +495,7 @@ impl LlmProvider for OpenCodeGoProvider {
         };
         let api_base = match protocol {
             ModelProtocol::OpenAiChatCompletions => self.chat_client.endpoint(),
+            ModelProtocol::OpenAiResponses => self.responses_client.endpoint(),
             ModelProtocol::AnthropicMessages => self.api_base_messages.as_str(),
             ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
         };
@@ -496,11 +513,13 @@ impl LlmProvider for OpenCodeGoProvider {
         let result = async {
             let response = match protocol {
                 ModelProtocol::OpenAiChatCompletions => self.chat_client.post_json(&body).await?,
+                ModelProtocol::OpenAiResponses => self.responses_client.post_json(&body).await?,
                 ModelProtocol::AnthropicMessages => self.messages_client.post_json(&body).await?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
             let parsed = match protocol {
                 ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
+                ModelProtocol::OpenAiResponses => responses::parse_response(response)?,
                 ModelProtocol::AnthropicMessages => messages::response::parse_response(
                     response,
                     messages::MessagesProfile::opencode_go(),
@@ -563,9 +582,20 @@ impl LlmProvider for OpenCodeGoProvider {
                     temperature,
                 ),
             ),
+            ModelProtocol::OpenAiResponses => (
+                "responses_image_analysis",
+                self.responses_client.endpoint(),
+                responses::build_image_body(
+                    &image_bytes,
+                    text_prompt,
+                    system_prompt,
+                    normalize_model_id(model_id),
+                    OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS,
+                ),
+            ),
             ModelProtocol::AnthropicMessages => {
                 return Err(LlmError::api_error(format!(
-                    "{} image analysis requires OpenAI Chat Completions protocol for model '{}'",
+                    "{} image analysis requires an OpenAI image-capable protocol for model '{}'",
                     self.profile.display_name,
                     normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
                 )));
@@ -588,8 +618,20 @@ impl LlmProvider for OpenCodeGoProvider {
         });
 
         let result = async {
-            let response = self.chat_client.post_json(&body).await?;
-            let parsed = parse_chat_response(response.clone())?;
+            let response = match protocol {
+                ModelProtocol::OpenAiChatCompletions => self.chat_client.post_json(&body).await?,
+                ModelProtocol::OpenAiResponses => self.responses_client.post_json(&body).await?,
+                ModelProtocol::AnthropicMessages | ModelProtocol::Unknown => {
+                    unreachable!("unsupported image protocol returned before request")
+                }
+            };
+            let parsed = match protocol {
+                ModelProtocol::OpenAiChatCompletions => parse_chat_response(response.clone())?,
+                ModelProtocol::OpenAiResponses => responses::parse_response(response.clone())?,
+                ModelProtocol::AnthropicMessages | ModelProtocol::Unknown => {
+                    unreachable!("unsupported image protocol returned before request")
+                }
+            };
             log_response_summary(self.profile, request_kind, model_id, &parsed);
             let usage = parsed.usage.clone();
             let text = parsed.content.ok_or_else(|| {
@@ -639,6 +681,7 @@ impl LlmProvider for OpenCodeGoProvider {
         let protocol = self.resolve_model_protocol(model_id).await;
         let request_kind = match protocol {
             ModelProtocol::OpenAiChatCompletions => "chat_with_tools",
+            ModelProtocol::OpenAiResponses => "responses_with_tools",
             ModelProtocol::AnthropicMessages => "messages_with_tools",
             ModelProtocol::Unknown => {
                 return Err(unsupported_protocol_error(model_id, self.profile));
@@ -653,6 +696,14 @@ impl LlmProvider for OpenCodeGoProvider {
                 max_tokens,
                 Some(temperature),
                 json_mode,
+                reasoning_effort,
+            ),
+            ModelProtocol::OpenAiResponses => responses::build_tool_body(
+                system_prompt,
+                messages,
+                tools,
+                normalize_model_id(model_id),
+                max_tokens,
                 reasoning_effort,
             ),
             ModelProtocol::AnthropicMessages => {
@@ -673,6 +724,7 @@ impl LlmProvider for OpenCodeGoProvider {
         };
         let api_base = match protocol {
             ModelProtocol::OpenAiChatCompletions => self.chat_client.endpoint(),
+            ModelProtocol::OpenAiResponses => self.responses_client.endpoint(),
             ModelProtocol::AnthropicMessages => self.api_base_messages.as_str(),
             ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
         };
@@ -690,12 +742,14 @@ impl LlmProvider for OpenCodeGoProvider {
         let result = async {
             let response = match protocol {
                 ModelProtocol::OpenAiChatCompletions => self.chat_client.post_json(&body).await?,
+                ModelProtocol::OpenAiResponses => self.responses_client.post_json(&body).await?,
                 ModelProtocol::AnthropicMessages => self.messages_client.post_json(&body).await?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
 
             let parsed = match protocol {
                 ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
+                ModelProtocol::OpenAiResponses => responses::parse_response(response)?,
                 ModelProtocol::AnthropicMessages => messages::response::parse_response(
                     response,
                     messages::MessagesProfile::opencode_go(),
@@ -761,6 +815,17 @@ fn derive_messages_api_base(api_base: &str) -> String {
         return format!("{trimmed}/messages");
     }
     format!("{trimmed}/messages")
+}
+
+fn derive_responses_api_base(api_base: &str) -> String {
+    let trimmed = api_base.trim().trim_end_matches('/');
+    if trimmed.ends_with("/responses") {
+        return trimmed.to_string();
+    }
+    if let Some(prefix) = trimmed.strip_suffix("/chat/completions") {
+        return format!("{prefix}/responses");
+    }
+    format!("{trimmed}/responses")
 }
 
 fn unsupported_protocol_error(model_id: &str, profile: OpenCodeProviderProfile) -> LlmError {
@@ -973,9 +1038,9 @@ mod tests {
     use super::{
         OpenCodeGoAdaptiveThrottle, OpenCodeGoProvider, OpenCodeProviderProfile,
         build_chat_completion_body, build_tool_chat_body, derive_messages_api_base,
-        effective_temperature, normalize_model_id, opencode_go_should_throttle,
-        parse_chat_response, parse_tool_calls, parse_usage, prepare_structured_messages,
-        prepare_tools_json, unsupported_protocol_error,
+        derive_responses_api_base, effective_temperature, normalize_model_id,
+        opencode_go_should_throttle, parse_chat_response, parse_tool_calls, parse_usage,
+        prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
     };
     use crate::llm::providers::chat_completions::profile::ChatCompletionsProfile;
     use crate::llm::providers::messages::MessagesProfile;
@@ -1237,6 +1302,54 @@ mod tests {
         assert_eq!(body["system"], json!("system"));
         assert_eq!(body["messages"][0]["role"], json!("user"));
         assert!(body.get("response_format").is_none());
+    }
+
+    #[tokio::test]
+    async fn muse_branch_uses_non_streaming_responses_endpoint() {
+        let models_url = run_static_json_server(
+            r#"{"data":[{"id":"muse-spark-1.3-contributor","object":"model"}]}"#,
+            4,
+        )
+        .await;
+        let (chat_endpoint, request_rx) = run_capture_server(
+            "/v1/chat/completions",
+            r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}"#,
+        )
+        .await;
+        let provider = OpenCodeGoProvider::new_with_profile_and_client_and_discovery(
+            " token ".to_string(),
+            chat_endpoint,
+            "http://127.0.0.1:9/v1/messages".to_string(),
+            reqwest::Client::new(),
+            OpenCodeGoDiscoveryConfig::new(models_url, Duration::from_secs(600), BTreeMap::new()),
+            OpenCodeProviderProfile::go(),
+        );
+
+        let response = provider
+            .chat_with_tools(ChatWithToolsRequest {
+                system_prompt: "system",
+                messages: &[Message::user("hello")],
+                tools: &[read_file_tool()],
+                model_id: "opencode-go/muse-spark-1.3-contributor",
+                max_tokens: 32,
+                temperature: Some(0.8),
+                json_mode: false,
+                reasoning_effort: Some("high"),
+            })
+            .await
+            .expect("Responses branch succeeds");
+        let request = request_rx.await.expect("request captured");
+        let lowercase = request.to_ascii_lowercase();
+        let body = request_body(&request);
+
+        assert_eq!(response.content.as_deref(), Some("ok"));
+        assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+        assert!(lowercase.contains("authorization: bearer token"));
+        assert_eq!(body["model"], json!("muse-spark-1.3-contributor"));
+        assert_eq!(body["stream"], json!(false));
+        assert_eq!(body["reasoning"]["effort"], json!("high"));
+        assert_eq!(body["tools"][0]["name"], json!("read_file"));
+        assert!(body.get("temperature").is_none());
     }
 
     #[test]
@@ -1568,6 +1681,22 @@ mod tests {
         assert_eq!(
             derive_messages_api_base("https://opencode.ai/zen/go/v1"),
             "https://opencode.ai/zen/go/v1/messages"
+        );
+    }
+
+    #[test]
+    fn derives_responses_endpoint_from_supported_api_bases() {
+        assert_eq!(
+            derive_responses_api_base("https://opencode.ai/zen/go/v1/chat/completions"),
+            "https://opencode.ai/zen/go/v1/responses"
+        );
+        assert_eq!(
+            derive_responses_api_base("https://opencode.ai/zen/go/v1"),
+            "https://opencode.ai/zen/go/v1/responses"
+        );
+        assert_eq!(
+            derive_responses_api_base("https://opencode.ai/zen/go/v1/responses"),
+            "https://opencode.ai/zen/go/v1/responses"
         );
     }
 

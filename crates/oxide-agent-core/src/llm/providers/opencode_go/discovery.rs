@@ -74,6 +74,7 @@ pub struct RawOpenCodeGoModelArchitecture {
 #[serde(rename_all = "snake_case")]
 pub enum ModelProtocol {
     OpenAiChatCompletions,
+    OpenAiResponses,
     AnthropicMessages,
     Unknown,
 }
@@ -83,6 +84,7 @@ impl ModelProtocol {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiChatCompletions => "openai_chat_completions",
+            Self::OpenAiResponses => "openai_responses",
             Self::AnthropicMessages => "anthropic_messages",
             Self::Unknown => "unknown",
         }
@@ -97,6 +99,7 @@ impl FromStr for ModelProtocol {
             "openai_chat_completions" | "openai" | "chat_completions" => {
                 Ok(Self::OpenAiChatCompletions)
             }
+            "openai_responses" | "responses" => Ok(Self::OpenAiResponses),
             "anthropic_messages" | "anthropic" | "messages" => Ok(Self::AnthropicMessages),
             "unknown" => Ok(Self::Unknown),
             other => Err(OpenCodeGoDiscoveryError::InvalidProtocol(other.to_string())),
@@ -693,6 +696,9 @@ pub fn infer_protocol_for_prefix(
     }
 
     let lower = model_id.to_ascii_lowercase();
+    if lower.starts_with("muse-spark-") {
+        return ModelProtocol::OpenAiResponses;
+    }
     if lower.starts_with("glm-")
         || lower.starts_with("kimi-")
         || lower.starts_with("deepseek-")
@@ -1008,6 +1014,18 @@ mod tests {
         assert_eq!(
             infer_protocol("qwen3.7-max", &overrides),
             ModelProtocol::AnthropicMessages
+        );
+        assert_eq!(
+            infer_protocol("opencode-go/muse-spark-1.3-contributor", &overrides),
+            ModelProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            infer_protocol_for_prefix(
+                "opencode-zen/muse-spark-1.2-contributor-free",
+                OPENCODE_ZEN_PROVIDER_ID,
+                &overrides,
+            ),
+            ModelProtocol::OpenAiResponses
         );
         assert_eq!(
             infer_protocol("hy3-preview", &overrides),
