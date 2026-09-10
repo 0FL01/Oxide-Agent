@@ -28,6 +28,7 @@ pub use provider::MockLlmProvider;
 pub(crate) use support::backoff::is_transient_server_status;
 #[cfg(feature = "http-client")]
 pub use support::http;
+pub use support::session::with_llm_session;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, MessageContentPart, ProviderItemId,
     ProviderToolCallId, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,

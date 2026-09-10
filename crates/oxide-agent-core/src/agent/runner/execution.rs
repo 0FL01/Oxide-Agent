@@ -29,7 +29,11 @@ impl AgentRunner {
         );
         self.reset_loop_detector(ctx).await;
         self.apply_before_agent_hooks(ctx)?;
-        self.run_loop(ctx).await
+        let session_id = format!(
+            "oxide-agent:{}",
+            ctx.session_id.as_deref().unwrap_or(ctx.task_id)
+        );
+        crate::llm::with_llm_session(session_id, self.run_loop(ctx)).await
     }
 
     async fn run_loop(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {

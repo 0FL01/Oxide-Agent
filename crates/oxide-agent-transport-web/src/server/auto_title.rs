@@ -156,11 +156,14 @@ async fn attempt_auto_title_for_session(
 
     let raw_title = match tokio::time::timeout(
         AUTO_TITLE_ATTEMPT_TIMEOUT,
-        generate_title(
-            state.session_manager.llm_client(),
-            model,
-            &source_message,
-            session_id,
+        oxide_agent_core::llm::with_llm_session(
+            format!("oxide-auto-title:{session_id}"),
+            generate_title(
+                state.session_manager.llm_client(),
+                model,
+                &source_message,
+                session_id,
+            ),
         ),
     )
     .await

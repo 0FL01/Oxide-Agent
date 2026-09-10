@@ -72,7 +72,12 @@ impl MessagesClient {
     /// Send a JSON request and return the parsed JSON response.
     pub(crate) async fn post_json(&self, body: &Value) -> Result<Value, LlmError> {
         let auth = self.profile.auth_header(&self.api_key);
-        let extra_headers = self.profile.extra_headers(&self.api_key);
+        let session_id = (self.profile == MessagesProfile::opencode_go())
+            .then(crate::llm::support::session::current_session_id);
+        let mut extra_headers = self.profile.extra_headers(&self.api_key);
+        if let Some(session_id) = session_id.as_deref() {
+            extra_headers.push(("x-opencode-session", session_id));
+        }
         send_json_request(
             &self.http_client,
             &self.endpoint,

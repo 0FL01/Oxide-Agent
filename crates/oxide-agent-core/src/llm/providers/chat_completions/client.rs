@@ -77,12 +77,18 @@ impl ChatCompletionsClient {
 
     pub(crate) async fn post_json(&self, body: &Value) -> Result<Value, LlmError> {
         let auth = self.auth_header();
+        let session_id = matches!(self.profile.label, "opencode_go" | "opencode_zen")
+            .then(crate::llm::support::session::current_session_id);
+        let mut extra_headers = self.profile.extra_headers.to_vec();
+        if let Some(session_id) = session_id.as_deref() {
+            extra_headers.push(("x-opencode-session", session_id));
+        }
         send_json_request(
             &self.http_client,
             &self.endpoint,
             body,
             auth.as_deref(),
-            self.profile.extra_headers,
+            &extra_headers,
         )
         .await
         .map_err(|error| apply_profile_rate_limit_wait(error, self.profile))

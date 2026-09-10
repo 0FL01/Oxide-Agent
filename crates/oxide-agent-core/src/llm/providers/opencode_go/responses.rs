@@ -33,12 +33,13 @@ impl ResponsesClient {
     pub(super) async fn post_json(&self, body: &Value) -> Result<Value, LlmError> {
         let auth =
             (!self.api_key.trim().is_empty()).then(|| format!("Bearer {}", self.api_key.trim()));
+        let session_id = crate::llm::support::session::current_session_id();
         send_json_request(
             &self.http_client,
             &self.endpoint,
             body,
             auth.as_deref(),
-            &[],
+            &[("x-opencode-session", &session_id)],
         )
         .await
     }

@@ -14,6 +14,7 @@ pub mod http;
     oxide_module_llm_provider_openrouter
 ))]
 pub(crate) mod media;
+pub(crate) mod session;
 #[cfg(any(
     oxide_module_llm_provider_openai_chatgpt,
     oxide_module_llm_provider_openai_base,

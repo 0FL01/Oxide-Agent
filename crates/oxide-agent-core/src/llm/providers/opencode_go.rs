@@ -1201,8 +1201,9 @@ mod tests {
             OpenCodeProviderProfile::go(),
         );
 
-        provider
-            .chat_with_tools(ChatWithToolsRequest {
+        crate::llm::with_llm_session(
+            "oxide-agent:chat-test".to_string(),
+            provider.chat_with_tools(ChatWithToolsRequest {
                 system_prompt: "system",
                 messages: &[],
                 tools: &[],
@@ -1211,11 +1212,14 @@ mod tests {
                 temperature: Some(0.8),
                 json_mode: false,
                 reasoning_effort: None,
-            })
-            .await
-            .expect("tool response succeeds");
+            }),
+        )
+        .await
+        .expect("tool response succeeds");
 
-        let body = request_body(&request_rx.await.expect("request captured"));
+        let request = request_rx.await.expect("request captured");
+        assert!(request.contains("x-opencode-session: oxide-agent:chat-test\r\n"));
+        let body = request_body(&request);
         assert_eq!(body["model"], json!("mimo-v2.5"));
         let temperature = body["temperature"]
             .as_f64()
@@ -1285,10 +1289,12 @@ mod tests {
             OpenCodeProviderProfile::go(),
         );
 
-        let response = provider
-            .complete_internal_text("system", &[], "hello", "opencode-go/minimax-m2", 32)
-            .await
-            .expect("messages branch succeeds");
+        let response = crate::llm::with_llm_session(
+            "oxide-agent:messages-test".to_string(),
+            provider.complete_internal_text("system", &[], "hello", "opencode-go/minimax-m2", 32),
+        )
+        .await
+        .expect("messages branch succeeds");
         let request = request_rx.await.expect("request captured");
         let lowercase = request.to_ascii_lowercase();
         let body = request_body(&request);
@@ -1298,6 +1304,7 @@ mod tests {
         assert!(lowercase.contains("authorization: bearer token"));
         assert!(lowercase.contains("x-api-key:  token "));
         assert!(lowercase.contains("anthropic-version: 2023-06-01"));
+        assert!(lowercase.contains("x-opencode-session: oxide-agent:messages-test\r\n"));
         assert_eq!(body["model"], json!("minimax-m2"));
         assert_eq!(body["system"], json!("system"));
         assert_eq!(body["messages"][0]["role"], json!("user"));
@@ -1325,8 +1332,9 @@ mod tests {
             OpenCodeProviderProfile::go(),
         );
 
-        let response = provider
-            .chat_with_tools(ChatWithToolsRequest {
+        let response = crate::llm::with_llm_session(
+            "oxide-agent:muse-test".to_string(),
+            provider.chat_with_tools(ChatWithToolsRequest {
                 system_prompt: "system",
                 messages: &[Message::user("hello")],
                 tools: &[read_file_tool()],
@@ -1335,9 +1343,10 @@ mod tests {
                 temperature: Some(0.8),
                 json_mode: false,
                 reasoning_effort: Some("high"),
-            })
-            .await
-            .expect("Responses branch succeeds");
+            }),
+        )
+        .await
+        .expect("Responses branch succeeds");
         let request = request_rx.await.expect("request captured");
         let lowercase = request.to_ascii_lowercase();
         let body = request_body(&request);
@@ -1345,6 +1354,8 @@ mod tests {
         assert_eq!(response.content.as_deref(), Some("ok"));
         assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
         assert!(lowercase.contains("authorization: bearer token"));
+        assert!(lowercase.contains("user-agent: oxide-agent/0.1.0\r\n"));
+        assert!(lowercase.contains("x-opencode-session: oxide-agent:muse-test\r\n"));
         assert_eq!(body["model"], json!("muse-spark-1.3-contributor"));
         assert_eq!(body["stream"], json!(false));
         assert_eq!(body["reasoning"]["effort"], json!("high"));
