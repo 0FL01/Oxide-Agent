@@ -561,10 +561,11 @@ fn serialize_json(value: serde_json::Value) -> String {
     })
 }
 
-/// Result of building the sub-agent tool catalog and browser cleanup handle.
+/// Registered sub-agent tools and the activation handle captured by their executors.
 struct SubAgentToolBuild {
     browser_cleanup: Option<Arc<dyn BrowserSessionCleanup>>,
     catalog: ToolCatalog,
+    tool_surface_handle: Arc<ToolSurfaceHandle>,
 }
 
 impl DelegationProvider {
@@ -785,6 +786,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         SubAgentToolBuild {
             browser_cleanup,
             catalog,
+            tool_surface_handle: module_ctx.tool_surface_handle(),
         }
     }
 
@@ -803,12 +805,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         }
         let provider = module.shared_provider(ctx)?;
         let browser_executors = provider.tool_runtime_executors();
-
-        // Record group→tools mapping for the sub-agent's lazy tool surface.
-        if let Some(group) = module.capability_group() {
-            let names: Vec<ToolName> = browser_executors.iter().map(|e| e.name()).collect();
-            ctx.tool_surface_handle().record_group_tools(group, names);
-        }
 
         // Build catalog entries for browser tools.
         for executor in &browser_executors {
@@ -882,12 +878,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         }
 
         let module_executors = module.tool_runtime_executors(ctx);
-
-        // Record group→tools mapping for the sub-agent's lazy tool surface.
-        if let Some(group) = module.capability_group() {
-            let names: Vec<ToolName> = module_executors.iter().map(|e| e.name()).collect();
-            ctx.tool_surface_handle().record_group_tools(group, names);
-        }
 
         // Build catalog entries with module metadata.
         for executor in &module_executors {
@@ -1152,12 +1142,15 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             allowed
         };
 
-        // Filter the catalog to the allowed whitelist, then derive the
-        // surface handle from the filtered catalog.
-        // This ensures retrieve_tools can only activate tools the sub-agent
-        // is permitted to use (M9 closure).
+        // Keep the handle captured by retrieve_tools: replacing it here would
+        // disconnect activation from the runner's model-visible schemas.
+        // Populate its group map only after filtering, so activation results
+        // cannot include tools outside this sub-agent's whitelist.
         let tool_catalog = Arc::new(tool_build.catalog.filter_by_names(&allowed));
-        let tool_surface_handle = Arc::new(ToolSurfaceHandle::from_catalog(&tool_catalog));
+        let tool_surface_handle = tool_build.tool_surface_handle;
+        for (group, names) in tool_catalog.group_map() {
+            tool_surface_handle.record_group_tools(group, names.into_iter().collect());
+        }
         let tools = tool_surface_handle.visible_specs(&tool_catalog);
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let catalog_specs: Vec<ToolDefinition> =
@@ -2181,6 +2174,153 @@ mod tests {
         drop(parent_tx);
 
         assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[cfg(all(oxide_module_tool_retrieve_tools, oxide_module_tool_sandbox_fileops))]
+    #[tokio::test]
+    async fn prepared_sub_agent_activation_reaches_next_llm_request() {
+        use crate::llm::{ChatResponse, MockLlmProvider, ToolCall, ToolCallFunction};
+
+        let settings = Arc::new(AgentSettings {
+            sub_agent_model_id: Some("deepseek-v4-flash".to_string()),
+            sub_agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        });
+        let mut llm_provider = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        for turn in 0..3 {
+            llm_provider
+                .expect_chat_with_tools()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .return_once(move |request| {
+                    let names: HashSet<&str> = request
+                        .tools
+                        .iter()
+                        .map(|tool| tool.name.as_str())
+                        .collect();
+                    let expected = if turn == 0 {
+                        HashSet::from(["retrieve_tools"])
+                    } else {
+                        HashSet::from(["retrieve_tools", "read_file", "write_file"])
+                    };
+                    assert_eq!(names, expected, "model-visible tools on turn {turn}");
+
+                    if turn < 2 {
+                        Ok(ChatResponse {
+                            content: None,
+                            tool_calls: vec![ToolCall::new(
+                                format!("retrieve-{turn}"),
+                                ToolCallFunction {
+                                    name: "retrieve_tools".to_string(),
+                                    arguments: r#"{"capabilities":["files"]}"#.to_string(),
+                                },
+                                false,
+                            )],
+                            finish_reason: "tool_calls".to_string(),
+                            reasoning_content: None,
+                            usage: None,
+                        })
+                    } else {
+                        Ok(ChatResponse {
+                            content: Some(
+                                r#"{"thought":"done","final_answer":"done"}"#.to_string(),
+                            ),
+                            tool_calls: Vec::new(),
+                            finish_reason: "stop".to_string(),
+                            reasoning_content: None,
+                            usage: None,
+                        })
+                    }
+                });
+        }
+        let mut client = LlmClient::new(&settings);
+        client.register_provider("opencode-go".to_string(), Arc::new(llm_provider));
+        let client = Arc::new(client);
+        let provider = DelegationProvider::new(Arc::clone(&client), 1_i64, settings);
+        let mut prepared = provider
+            .prepare_sub_agent_execution(
+                r#"{"task":"Activate file tools twice, then finish.","tools":["read_file","write_file"]}"#,
+                &HashSet::new(),
+                None,
+                None,
+            )
+            .await
+            .expect("sub-agent preparation succeeds");
+        let mut runner = DelegationProvider::create_sub_agent_runner_with_client(
+            client,
+            DelegationProvider::blocked_tool_set(),
+            prepared.sub_session.memory().max_tokens(),
+        );
+        let mut ctx = DelegationProvider::build_sub_agent_runner_context(&mut prepared);
+        let result = runner.run(&mut ctx).await.expect("sub-agent run succeeds");
+        assert!(
+            matches!(result, crate::agent::runner::AgentRunResult::Final(answer) if answer == "done")
+        );
+    }
+
+    #[cfg(all(oxide_module_tool_retrieve_tools, oxide_module_tool_sandbox_fileops))]
+    #[tokio::test]
+    async fn prepared_sub_agent_activation_is_whitelisted_and_run_scoped() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let args = r#"{"task":"Inspect a file.","tools":["read_file"]}"#;
+        let mut first = provider
+            .prepare_sub_agent_execution(args, &HashSet::new(), None, None)
+            .await
+            .expect("first sub-agent preparation succeeds");
+        let mut second = provider
+            .prepare_sub_agent_execution(args, &HashSet::new(), None, None)
+            .await
+            .expect("second sub-agent preparation succeeds");
+        let retrieve = first
+            .tool_catalog
+            .get_executor(&ToolName::from("retrieve_tools"))
+            .expect("retrieve_tools registered");
+
+        for (activated, already_active) in [
+            (json!(["read_file"]), json!([])),
+            (json!([]), json!(["read_file"])),
+        ] {
+            let output = retrieve
+                .execute(runtime_invocation(
+                    "retrieve_tools",
+                    r#"{"capabilities":["files","shell"]}"#,
+                ))
+                .await
+                .expect("activation succeeds");
+            assert_eq!(output.status, ToolOutputStatus::Success);
+            assert_eq!(
+                output.structured_payload,
+                Some(json!({
+                    "activated": activated,
+                    "already_active": already_active,
+                    "unknown_groups": ["shell"]
+                }))
+            );
+        }
+
+        let mut first_ctx = DelegationProvider::build_sub_agent_runner_context(&mut first);
+        first_ctx.refresh_visible_tools();
+        assert_eq!(
+            first_ctx
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["retrieve_tools", "read_file"])
+        );
+        let mut second_ctx = DelegationProvider::build_sub_agent_runner_context(&mut second);
+        second_ctx.refresh_visible_tools();
+        assert_eq!(
+            second_ctx
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["retrieve_tools"])
+        );
     }
 
     #[cfg(oxide_module_tool_todos)]
