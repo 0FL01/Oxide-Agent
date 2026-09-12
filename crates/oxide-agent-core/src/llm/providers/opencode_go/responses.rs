@@ -221,7 +221,7 @@ fn prepare_tools(tools: &[ToolDefinition]) -> Vec<Value> {
 }
 
 pub(super) fn parse_response(response: Value) -> Result<ChatResponse, LlmError> {
-    if let Some(error) = response.get("error") {
+    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
         let message = error
             .get("message")
             .and_then(Value::as_str)
@@ -413,6 +413,7 @@ mod tests {
     fn parses_text_tool_calls_usage_and_wire_ids() {
         let parsed = parse_response(json!({
             "status": "completed",
+            "error": null,
             "output": [
                 {
                     "type": "message",
@@ -447,5 +448,23 @@ mod tests {
             "item-2"
         );
         assert_eq!(parsed.usage.expect("usage").cached_tokens, Some(4));
+    }
+
+    #[test]
+    fn rejects_response_with_provider_error() {
+        let error = parse_response(json!({
+            "status": "failed",
+            "error": {
+                "code": "server_error",
+                "message": "The model failed to generate a response."
+            },
+            "output": []
+        }))
+        .expect_err("provider error must not be treated as a successful response");
+
+        assert_eq!(
+            error.to_string(),
+            "API error: OpenCode Responses API error: The model failed to generate a response."
+        );
     }
 }
