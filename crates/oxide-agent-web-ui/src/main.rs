@@ -57,6 +57,16 @@ fn main() {
 mod css_contract_tests {
     const ACTIVITY_CSS: &str = include_str!("styles/06-activity.css");
     const TOOL_CARDS_RS: &str = include_str!("tasks/tool_cards.rs");
+    const INDEX_HTML: &str = include_str!("../index.html");
+
+    #[test]
+    fn document_assets_match_same_origin_content_security_policy() {
+        assert!(INDEX_HTML.contains("data-trunk rel=\"icon\""));
+        assert!(INDEX_HTML.contains("href=\"favicon.svg\""));
+        assert!(!INDEX_HTML.contains("data:image"));
+        assert!(!INDEX_HTML.contains("fonts.googleapis.com"));
+        assert!(!INDEX_HTML.contains("fonts.gstatic.com"));
+    }
 
     #[test]
     fn browser_screenshot_thumbnail_uses_fixed_ratio_viewport() {

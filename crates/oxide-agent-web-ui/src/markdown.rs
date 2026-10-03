@@ -110,6 +110,20 @@ mod tests {
     }
 
     #[test]
+    fn preserves_heading_levels_lists_and_code_whitespace() {
+        let html = render_markdown(
+            "# Первый\n\n## Второй\n\n### Третий\n\n**Не заголовок**\n\n- Первый\n  - Вложенный\n- Второй\n\n```rust\nfn main() {\n    let value = 42;\n}\n```",
+        );
+
+        assert!(html.contains("<h1>Первый</h1>"));
+        assert!(html.contains("<h2>Второй</h2>"));
+        assert!(html.contains("<h3>Третий</h3>"));
+        assert!(html.contains("<p><strong>Не заголовок</strong></p>"));
+        assert_eq!(html.matches("<ul>").count(), 2);
+        assert!(html.contains("fn main() {\n    let value = 42;\n}\n"));
+    }
+
+    #[test]
     fn blocks_raw_html_from_markdown() {
         let html = render_markdown("<input type=\"text\" autofocus><script>alert(1)</script>");
 

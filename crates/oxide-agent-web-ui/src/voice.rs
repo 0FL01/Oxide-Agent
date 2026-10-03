@@ -4,7 +4,7 @@ use gloo_timers::callback::Interval;
 use leptos::prelude::*;
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     sync::atomic::{AtomicU64, Ordering},
 };
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
@@ -107,12 +107,14 @@ pub(crate) fn VoiceRecorderControl(
             match start_recording(
                 recording_id,
                 auth,
-                set_status,
-                set_busy,
-                set_error,
-                set_elapsed_ms,
-                set_waveform,
-                on_transcript,
+                VoiceRecordingCallbacks {
+                    set_status,
+                    set_busy,
+                    set_error,
+                    set_elapsed_ms,
+                    set_waveform,
+                    on_transcript,
+                },
             )
             .await
             {
@@ -210,16 +212,28 @@ fn WaveformBars(levels: ReadSignal<Vec<u8>>) -> impl IntoView {
     }
 }
 
-async fn start_recording(
-    recording_id: u64,
-    auth: AuthContext,
+struct VoiceRecordingCallbacks {
     set_status: WriteSignal<VoiceRecorderStatus>,
     set_busy: WriteSignal<bool>,
     set_error: WriteSignal<Option<String>>,
     set_elapsed_ms: WriteSignal<u32>,
     set_waveform: WriteSignal<Vec<u8>>,
     on_transcript: Callback<String>,
+}
+
+async fn start_recording(
+    recording_id: u64,
+    auth: AuthContext,
+    callbacks: VoiceRecordingCallbacks,
 ) -> Result<ActiveVoiceRecording, String> {
+    let VoiceRecordingCallbacks {
+        set_status,
+        set_busy,
+        set_error,
+        set_elapsed_ms,
+        set_waveform,
+        on_transcript,
+    } = callbacks;
     let window = web_sys::window().ok_or_else(|| "Browser window is unavailable.".to_string())?;
     let media_devices = window
         .navigator()
@@ -237,9 +251,8 @@ async fn start_recording(
     .dyn_into::<web_sys::MediaStream>()
     .map_err(|_| "Browser returned an invalid microphone stream.".to_string())?;
 
-    let recorder = media_recorder_for_stream(&stream).map_err(|error| {
+    let recorder = media_recorder_for_stream(&stream).inspect_err(|_| {
         stop_media_stream_tracks(&stream);
-        error
     })?;
     let recorder_mime_type = recorder.mime_type();
     let mime_type = if recorder_mime_type.trim().is_empty() {
@@ -421,11 +434,11 @@ fn cancel_active_recording(
 fn begin_recording_slot(recording_id: u64) -> bool {
     ACTIVE_RECORDINGS.with(|recordings| {
         let mut recordings = recordings.borrow_mut();
-        if recordings.contains_key(&recording_id) {
-            false
-        } else {
-            recordings.insert(recording_id, VoiceRecordingSlot::Pending);
+        if let Entry::Vacant(entry) = recordings.entry(recording_id) {
+            entry.insert(VoiceRecordingSlot::Pending);
             true
+        } else {
+            false
         }
     })
 }

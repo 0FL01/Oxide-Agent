@@ -38,8 +38,8 @@
 }
 
 .message {
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
   color: var(--fg);
 }
 
@@ -47,7 +47,7 @@
   background: transparent;
   font-family: var(--font-sans);
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--chat-font-size);
 }
 
 .assistant-message {
@@ -172,7 +172,7 @@
   display: flex;
   justify-content: center;
   margin: 0 auto 24px;
-  max-width: 800px;
+  max-width: var(--chat-max-width);
 }
 
 .empty-state-title {
@@ -187,7 +187,7 @@
 }
 
 .task-card {
-  max-width: 800px;
+  max-width: var(--chat-max-width);
   margin: 0 auto 32px;
   border: 0;
   background: transparent;
@@ -229,6 +229,8 @@
 
 .message-attachment-item,
 .pending-attachment-item {
+  font-size: 13px;
+  line-height: 1.5;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -353,7 +355,7 @@
 }
 
 .task-action-row {
-  max-width: 800px;
+  max-width: var(--chat-max-width);
   margin: -8px auto 24px;
 }
 
@@ -424,7 +426,7 @@
   padding: 0;
   margin-top: 0;
   color: var(--fg);
-  line-height: 1.7;
+  line-height: var(--chat-line-height);
 }
 
 .assistant-progress-log {
@@ -442,8 +444,8 @@
 
 .assistant-progress-headline {
   color: var(--fg);
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
 }
 
 .assistant-progress-headline > :first-child {
@@ -496,7 +498,7 @@
   max-height: min(70vh, 720px);
   overflow-y: auto;
   box-sizing: border-box;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.65;
+  font-family: var(--font-sans);
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
 }

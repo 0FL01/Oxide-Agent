@@ -95,7 +95,10 @@ fn LifeTurnCard(
             <div class="life-turn-header">
                 <span class="life-turn-role">{role_label}</span>
             </div>
-            <div class="life-turn-content" inner_html=content_html></div>
+            <div
+                class=if is_user { "life-turn-content" } else { "life-turn-content markdown-content" }
+                inner_html=content_html
+            ></div>
             {move || {
                 if attachments.is_empty() {
                     ().into_any()

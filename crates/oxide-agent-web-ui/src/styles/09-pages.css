@@ -225,7 +225,7 @@
 
 .life-transcript,
 .life-active-run-status {
-  max-width: 820px;
+  max-width: var(--chat-max-width);
   width: 100%;
   margin: 0 auto;
 }
@@ -245,8 +245,8 @@
 .life-turn {
   padding: 12px 16px;
   border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
   word-break: break-word;
 }
 
@@ -257,6 +257,8 @@
 
 .life-turn.assistant {
   background: transparent;
+  padding-right: 0;
+  padding-left: 0;
 }
 
 .life-turn-header {
@@ -272,53 +274,8 @@
 }
 
 .life-turn-content {
-  overflow-x: auto;
-}
-
-.life-turn-content p {
-  margin: 0 0 8px;
-}
-
-.life-turn-content p:last-child {
-  margin-bottom: 0;
-}
-
-.life-turn-content pre {
-  margin: 8px 0;
-  padding: 12px;
-  border-radius: 6px;
-  background: var(--code-bg);
-  overflow-x: auto;
-  font-size: 13px;
-}
-
-.life-turn-content code {
-  font-family: var(--mono-font);
-  font-size: 13px;
-}
-
-.life-turn-content :not(pre) > code {
-  padding: 2px 5px;
-  border-radius: 3px;
-  background: var(--code-bg);
-}
-
-.life-turn-content table {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 8px 0;
-}
-
-.life-turn-content th,
-.life-turn-content td {
-  border: 1px solid var(--border);
-  padding: 6px 10px;
-  text-align: left;
-}
-
-.life-turn-content th {
-  background: var(--surface);
-  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .life-empty-state {

@@ -112,8 +112,10 @@
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+  --chat-font-size: 16px;
+  --chat-line-height: 1.625;
+  --chat-max-width: 768px;
   --sidebar-width: 260px;
   --drawer-width: 400px;
   --topbar-height: 48px;
 }
-
