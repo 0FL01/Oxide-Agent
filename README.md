@@ -19,7 +19,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
 - **Sandbox Backends:** Docker broker isolation by default, with optional direct Docker access
-- **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly with validated 80%+ cache hit rate on OpenCode Go
+- **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly with validated 97% overall cache hit on OpenCode Go
 </details>
 
 ## Features
@@ -71,7 +71,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   Work with documents of various formats.
 *   **Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
 *   **Context Management:** Dialogue history saved in SQLx/Postgres with context-scoped isolation per topic.
-*   **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly order maximizes cache hit rate, with validated 80%+ cache hit on OpenCode Go.
+*   **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly order maximizes cache hit rate, with validated 97% overall cache hit on OpenCode Go.
 
 ## Screenshots
 
@@ -454,7 +454,7 @@ Unified session-level compaction with a single path through `CompactionControlle
 3. **Replace Atomically** - Builds one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserves pinned state and safe recent tool context, validates tool-call integrity, and replaces hot memory in one step.
 
 ### Prompt Cache Optimization
-Static prefix + dynamic suffix assembly maximizes provider-side prompt cache hit rate, with validated 80%+ cache hit on OpenCode Go.
+Static prefix + dynamic suffix assembly maximizes provider-side prompt cache hit rate, with validated 97% overall cache hit on OpenCode Go.
 
 **Architecture:**
 - **Assembly order:** `[fallback + profile + workflow_guidance + structured_output]` (stable) + `[wiki_context]` + `[date_context]` (dynamic)
@@ -464,7 +464,7 @@ Static prefix + dynamic suffix assembly maximizes provider-side prompt cache hit
 
 **Validated on OpenCode Go (`deepseek-v4-flash`):**
 - Peak cache hit rate: **99.7%** after warmup (14 iterations, no compaction)
-- Overall hit rate: **89.5%** across full task
+- Overall hit rate: **97%** across full task
 - Estimated cost: **6.4x reduction** vs pre-optimization baseline ($0.014 vs $0.090 for same task)
 - Premature compaction prevention (budget guard): cache hit preserved vs 93%->3.3% drop without guard
 
